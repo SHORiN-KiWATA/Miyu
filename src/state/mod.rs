@@ -55,6 +55,18 @@ impl StateStore {
         self.append_entry("assistant", content, reasoning)
     }
 
+    pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
+        let entries = self.load_conversation()?;
+        if !matches!(entries.last(), Some(entry) if entry.role == "user") {
+            return Ok(false);
+        }
+        self.append_assistant_message(
+            "上一轮响应已中断，未完成。不要继续执行上一轮任务，除非用户重新要求。",
+            None,
+        )?;
+        Ok(true)
+    }
+
     fn append_entry(&self, role: &str, content: &str, reasoning: Option<&str>) -> Result<()> {
         self.init_files()?;
         let entry = ConversationEntry {
@@ -225,4 +237,24 @@ pub struct StoredConversationEntry {
 fn touch(path: PathBuf) -> Result<()> {
     OpenOptions::new().create(true).append(true).open(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_orphan_user_turn_as_interrupted() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore {
+            state_dir: temp.path().to_path_buf(),
+        };
+        store.append_message("user", "old task").unwrap();
+        assert!(store.mark_interrupted_turn_if_needed().unwrap());
+        let entries = store.load_conversation().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].role, "assistant");
+        assert!(entries[1].content.contains("已中断"));
+        assert!(!store.mark_interrupted_turn_if_needed().unwrap());
+    }
 }

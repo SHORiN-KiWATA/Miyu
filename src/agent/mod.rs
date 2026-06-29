@@ -111,6 +111,7 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
+        self.state.mark_interrupted_turn_if_needed()?;
         let evicted = self.state.trim_conversation_to_budget(
             self.context_chars,
             self.trim_at_ratio,
@@ -205,6 +206,18 @@ impl Agent {
                         "Plan mode blocked non-read-only tool: {}",
                         call.function.name
                     );
+                }
+                if call.function.name == "install_aur_package"
+                    && used_tools.iter().any(|name| name == "review_aur_package")
+                {
+                    let output = "tool error: install_aur_package cannot run in the same turn as review_aur_package; ask the user to confirm installation first".to_string();
+                    on_event(AgentEvent::ToolResult {
+                        name: call.function.name.clone(),
+                        ok: false,
+                        output: output.clone(),
+                    })?;
+                    messages.push(ChatMessage::tool(call.id, output));
+                    continue;
                 }
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
                 let tool_future = self.tools.call_with_progress(

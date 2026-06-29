@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use sha1::Digest as Sha1Digest;
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register(ToolSpec::new("calculate_hash", "Calculate hashes for text/hex/base64 input. Supports md5, sha1, sha224, sha256, sha384, sha512, sha3_224, sha3_256, sha3_384, sha3_512, blake2b, blake2s, b2sum/blake3, crc32, adler32, and all/mainstream.", json!({"type":"object","properties":{"input_text":{"type":"string"},"algorithms":{"type":"string"},"input_format":{"type":"string","enum":["text","hex","base64"]}},"required":["input_text"],"additionalProperties":false}), |args| async move { calculate(args) }));
+    registry.register(ToolSpec::new("calculate_hash", "Calculate hashes for text/hex/base64 input. Supports md5, sha1, sha224, sha256, sha384, sha512, sha3_224, sha3_256, sha3_384, sha3_512, blake2b, b2sum, blake2s, blake3, crc32, adler32, and all/mainstream. b2sum matches GNU/coreutils b2sum: BLAKE2b-512. For shell echo semantics include the trailing newline in input_text.", json!({"type":"object","properties":{"input_text":{"type":"string","description":"Input text bytes. Include \\n when matching shell commands like echo."},"algorithms":{"type":"string"},"input_format":{"type":"string","enum":["text","hex","base64"]}},"required":["input_text"],"additionalProperties":false}), |args| async move { calculate(args) }));
     registry.register(ToolSpec::new("decode_encoded_text", "Decode base64, hex, url, html, or rot13 encoded text.", json!({"type":"object","properties":{"input_text":{"type":"string"},"input_format":{"type":"string","enum":["base64","hex","url","html","rot13"]},"text_encoding":{"type":"string"}},"required":["input_text","input_format"],"additionalProperties":false}), |args| async move { decode(args) }));
 }
 
@@ -49,9 +49,9 @@ fn calculate(args: Value) -> Result<String> {
             "sha3_256" | "sha3-256" => format!("{:x}", sha3::Sha3_256::digest(&data)),
             "sha3_384" | "sha3-384" => format!("{:x}", sha3::Sha3_384::digest(&data)),
             "sha3_512" | "sha3-512" => format!("{:x}", sha3::Sha3_512::digest(&data)),
-            "blake2b" => format!("{:x}", Blake2b512::digest(&data)),
+            "blake2b" | "b2sum" => format!("{:x}", Blake2b512::digest(&data)),
             "blake2s" => format!("{:x}", Blake2s256::digest(&data)),
-            "b2sum" | "blake3" => blake3::hash(&data).to_hex().to_string(),
+            "blake3" => blake3::hash(&data).to_hex().to_string(),
             "crc32" => format!("{:08x}", crc32fast::hash(&data)),
             "adler32" => format!("{:08x}", adler32(&data)),
             other => format!("unsupported algorithm: {other}"),
@@ -123,4 +123,50 @@ fn rot13(ch: char) -> char {
 
 mod md5_compat {
     pub use md5::compute;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn b2sum_matches_coreutils_blake2b_with_echo_newline() {
+        let output = calculate(json!({
+            "input_text": "arch\n",
+            "algorithms": "b2sum",
+            "input_format": "text"
+        }))
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["byte_length"], 5);
+        assert!(value["results"]["b2sum"]
+            .as_str()
+            .unwrap()
+            .starts_with("67989d"));
+
+        let output = calculate(json!({
+            "input_text": "debian\n",
+            "algorithms": "b2sum",
+            "input_format": "text"
+        }))
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["byte_length"], 7);
+        assert!(value["results"]["b2sum"]
+            .as_str()
+            .unwrap()
+            .starts_with("28364b"));
+    }
+
+    #[test]
+    fn b2sum_and_blake3_are_not_aliases() {
+        let output = calculate(json!({
+            "input_text": "arch\n",
+            "algorithms": "b2sum,blake3",
+            "input_format": "text"
+        }))
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_ne!(value["results"]["b2sum"], value["results"]["blake3"]);
+    }
 }

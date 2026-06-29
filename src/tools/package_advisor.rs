@@ -7,16 +7,20 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 const AUR_REVIEW_RULES: &str = include_str!("../prompts/aur-review.md");
 const MAX_FILE_CHARS: usize = 24_000;
 const MAX_FILES: usize = 80;
+const FETCH_TIMEOUT_SECONDS: u64 = 120;
+const INSTALL_TIMEOUT_SECONDS: u64 = 900;
+const MAKEPKG_TIMEOUT_SECONDS: u64 = 1800;
 
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     let review_paths = paths.clone();
     registry.register(ToolSpec::new(
         "review_aur_package",
-        "Fetch AUR build files and prepare a PKGBUILD security review. This records a short-lived review state required before install_aur_package can install the package.",
+        "Fetch AUR build files and prepare a PKGBUILD security review. After review, stop and ask the user whether to install; do not call install_aur_package in the same turn.",
         json!({"type":"object","properties":{"package":{"type":"string","description":"AUR package name."}},"required":["package"],"additionalProperties":false}),
         move |args| {
             let paths = review_paths.clone();
@@ -26,8 +30,8 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     let install_paths = paths.clone();
     registry.register(ToolSpec::new(
         "install_aur_package",
-        "Install an AUR package only after review_aur_package recorded an allowed review state for the same package. Tries paru, then yay, then AUR snapshot + makepkg + pacman -U fallback.",
-        json!({"type":"object","properties":{"package":{"type":"string","description":"AUR package name."}},"required":["package"],"additionalProperties":false}),
+        "Install an AUR package only after review_aur_package recorded an allowed review state and the user explicitly confirmed installation in a later reply. Requires user_confirmed=true. Tries paru, then yay, then AUR snapshot + makepkg + pacman -U fallback.",
+        json!({"type":"object","properties":{"package":{"type":"string","description":"AUR package name."},"user_confirmed":{"type":"boolean","description":"Set true only when the user explicitly confirmed installation after seeing the review."}},"required":["package","user_confirmed"],"additionalProperties":false}),
         move |args| {
             let paths = install_paths.clone();
             async move { install_aur_package(args, paths).await }
@@ -69,12 +73,18 @@ async fn review_aur_package(args: Value, paths: MiyuPaths) -> Result<String> {
 
 async fn install_aur_package(args: Value, paths: MiyuPaths) -> Result<String> {
     let package = required(&args, "package")?;
+    if args.get("user_confirmed").and_then(Value::as_bool) != Some(true) {
+        bail!("AUR install requires explicit user confirmation after review: {package}")
+    }
     validate_package_name(&package)?;
     let review = review_state_for_package(&paths, &package)?
         .ok_or_else(|| anyhow::anyhow!("AUR package must be reviewed before install: {package}"))?;
     if !review["install_allowed"].as_bool().unwrap_or(false) {
         bail!("AUR package review did not allow install: {package}")
     }
+    record_install_confirmation(&paths, &package)?;
+    let review = review_state_for_package(&paths, &package)?
+        .ok_or_else(|| anyhow::anyhow!("AUR package must be reviewed before install: {package}"))?;
     let result = if let Some(helper) = aur_helper().await {
         install_with_helper(&helper, &package).await?
     } else {
@@ -85,7 +95,7 @@ async fn install_aur_package(args: Value, paths: MiyuPaths) -> Result<String> {
         "package": package,
         "review": review,
         "install_result": result,
-        "output_instruction": "Explain that install was allowed because review_aur_package recorded an allowed review state. Include install success or failure concisely."
+        "output_instruction": "Explain that install was allowed because review_aur_package recorded an allowed review state and the user explicitly confirmed installation. Include install success or failure concisely."
     }))?)
 }
 
@@ -112,7 +122,7 @@ fn review_result(
         "files_reviewed": files.iter().map(|file| &file["path"]).collect::<Vec<_>>(),
         "files": files,
         "review_rules": AUR_REVIEW_RULES,
-        "output_instruction": "Use review_rules exactly, but omit the PAC_DECISION machine-readable line in the final answer. Mention risk.level and install_allowed. Do not install, build, run makepkg, or ask follow-up questions unless required files are missing."
+        "output_instruction": "Use review_rules exactly, but omit the PAC_DECISION machine-readable line in the final answer. Mention risk.level and install_allowed. Do not install, build, run makepkg, or ask follow-up questions unless required files are missing. If install_allowed is true, ask the user whether to install and stop."
     }))?)
 }
 
@@ -158,8 +168,9 @@ async fn fetch_with_helper(helper: &str, package: &str, root: &Path) -> Result<(
         .arg(package)
         .current_dir(root)
         .stdin(Stdio::null())
-        .output()
-        .await?;
+        .kill_on_drop(true)
+        .output();
+    let output = command_output_with_timeout(output, helper, FETCH_TIMEOUT_SECONDS).await?;
     if !output.status.success() {
         bail!(
             "{helper} failed: {}",
@@ -192,11 +203,13 @@ async fn fetch_with_curl_fallback(metadata: &Value, root: &Path) -> Result<()> {
 async fn install_with_helper(helper: &str, package: &str) -> Result<Value> {
     let output = Command::new(helper)
         .arg("-S")
+        .arg("--noconfirm")
         .arg("--needed")
         .arg(package)
         .stdin(Stdio::null())
-        .output()
-        .await?;
+        .kill_on_drop(true)
+        .output();
+    let output = command_output_with_timeout(output, helper, INSTALL_TIMEOUT_SECONDS).await?;
     Ok(command_result(helper, output))
 }
 
@@ -213,8 +226,9 @@ async fn install_with_makepkg_fallback(package: &str, paths: &MiyuPaths) -> Resu
         .arg("--noconfirm")
         .current_dir(&build_dir)
         .stdin(Stdio::null())
-        .output()
-        .await?;
+        .kill_on_drop(true)
+        .output();
+    let makepkg = command_output_with_timeout(makepkg, "makepkg", MAKEPKG_TIMEOUT_SECONDS).await?;
     if !makepkg.status.success() {
         return Ok(command_result("makepkg", makepkg));
     }
@@ -224,9 +238,21 @@ async fn install_with_makepkg_fallback(package: &str, paths: &MiyuPaths) -> Resu
         .arg("--noconfirm")
         .arg(&package_file)
         .stdin(Stdio::null())
-        .output()
-        .await?;
+        .kill_on_drop(true)
+        .output();
+    let pacman = command_output_with_timeout(pacman, "pacman -U", INSTALL_TIMEOUT_SECONDS).await?;
     Ok(command_result("pacman -U", pacman))
+}
+
+async fn command_output_with_timeout(
+    output: impl std::future::Future<Output = std::io::Result<std::process::Output>>,
+    command: &str,
+    timeout_seconds: u64,
+) -> Result<std::process::Output> {
+    match timeout(Duration::from_secs(timeout_seconds), output).await {
+        Ok(output) => Ok(output?),
+        Err(_) => bail!("{command} timed out after {timeout_seconds}s"),
+    }
 }
 
 fn command_result(command: &str, output: std::process::Output) -> Value {
@@ -408,6 +434,7 @@ fn record_review_state(
         "reviewed_at_unix": current_unix_seconds(),
         "risk": risk,
         "install_allowed": install_allowed,
+        "user_confirmed_install": false,
     });
     std::fs::write(
         aur_review_state_path(paths),
@@ -418,6 +445,20 @@ fn record_review_state(
 
 fn review_state_for_package(paths: &MiyuPaths, package: &str) -> Result<Option<Value>> {
     Ok(load_review_state(paths)?.get(package).cloned())
+}
+
+fn record_install_confirmation(paths: &MiyuPaths, package: &str) -> Result<()> {
+    let mut state = load_review_state(paths)?;
+    let Some(entry) = state.get_mut(package) else {
+        bail!("AUR package must be reviewed before install: {package}")
+    };
+    entry["user_confirmed_install"] = json!(true);
+    entry["user_confirmed_at_unix"] = json!(current_unix_seconds());
+    std::fs::write(
+        aur_review_state_path(paths),
+        format!("{}\n", serde_json::to_string_pretty(&state)?),
+    )?;
+    Ok(())
 }
 
 fn load_review_state(paths: &MiyuPaths) -> Result<Value> {
@@ -497,8 +538,19 @@ mod tests {
         record_review_state(&paths, "foo", &risk, true).unwrap();
         let state = review_state_for_package(&paths, "foo").unwrap().unwrap();
         assert_eq!(state["install_allowed"], true);
+        assert_eq!(state["user_confirmed_install"], false);
+        record_install_confirmation(&paths, "foo").unwrap();
+        let state = review_state_for_package(&paths, "foo").unwrap().unwrap();
+        assert_eq!(state["user_confirmed_install"], true);
         clear_aur_review_state(&paths).unwrap();
         assert!(review_state_for_package(&paths, "foo").unwrap().is_none());
+    }
+
+    #[test]
+    fn install_confirmation_requires_existing_review() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path().to_path_buf());
+        assert!(record_install_confirmation(&paths, "foo").is_err());
     }
 
     fn test_paths(state_dir: PathBuf) -> MiyuPaths {

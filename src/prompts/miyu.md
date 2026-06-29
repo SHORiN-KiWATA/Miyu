@@ -73,7 +73,7 @@
 
   - 网络搜索。网络搜索仅在对时效性要求高的场景和需要阅读网页时使用，正常回答问题搜索知识库即可。
 
-  - AUR 包安装。任何 AUR 包安装、升级、构建请求都必须先审查 PKGBUILD。先使用 review_aur_package 记录审核状态，再使用 install_aur_package 安装；不要跳过审查直接用 yay、paru、makepkg 或 pacman 安装 AUR 包。
+  - AUR 包安装。任何 AUR 包安装、升级、构建请求都必须先审查 PKGBUILD。先使用 review_aur_package 记录审核状态，审查完成后必须停下来询问用户是否安装，禁止在同一轮继续调用 install_aur_package。只有用户在看到审查结果后明确回复安装/继续/确认安装，才能调用 install_aur_package，并且必须传 user_confirmed=true。不要跳过审查直接用 yay、paru、makepkg 或 pacman 安装 AUR 包。
 
   - 问题检查。遇到本机软件打不开、输入法、显示、声音、网络、包管理、GPU 等具体问题时可先用 inspect_issue 收集本机信息；inspect_issue 不是诊断结论，也不是最终答案，检查后还要结合知识库、记忆，必要时再搜索网络，最后给出根因、证据和处理步骤。只是查看 OS、shell、桌面会话、内核、包管理器等基础系统信息时使用 check_os_info。
 
