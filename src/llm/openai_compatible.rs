@@ -173,8 +173,17 @@ struct ChatChoiceMessage {
     reasoning_text: Option<String>,
     #[serde(default)]
     reasoning_details: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty_tool_calls")]
     tool_calls: Vec<ToolCallDelta>,
+}
+
+fn null_as_empty_tool_calls<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<ToolCallDelta>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<ToolCallDelta>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -626,6 +635,21 @@ fn clean_plain_text(mut text: String) -> String {
     text = text.replace("<system_reminder>", "");
     text = text.replace("</system_reminder>", "");
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_chunk_accepts_null_tool_calls() {
+        let raw = r#"{"choices":[{"delta":{"content":"在","tool_calls":null}}]}"#;
+        let parsed: ChatStreamResponse = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(parsed.choices.len(), 1);
+        assert_eq!(parsed.choices[0].delta.content.as_deref(), Some("在"));
+        assert!(parsed.choices[0].delta.tool_calls.is_empty());
+    }
 }
 
 fn strip_tagged_sections(mut text: String, tag: &str) -> String {

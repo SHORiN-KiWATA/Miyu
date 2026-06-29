@@ -1332,7 +1332,8 @@ impl<'a> ProviderBrowser<'a> {
     }
 
     fn add_provider(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        if let Some(provider) = edit_provider_form(stdout, ProviderConfig::default_openai())? {
+        if let Some(provider) = edit_provider_form(stdout, ProviderConfig::new_openai_compatible())?
+        {
             self.config.upsert_provider(provider);
             self.provider_idx = self.config.providers.len().saturating_sub(1);
             self.refresh_models();

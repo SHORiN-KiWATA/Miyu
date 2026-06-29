@@ -780,6 +780,13 @@ impl ProviderConfig {
         }
     }
 
+    pub fn new_openai_compatible() -> Self {
+        let mut provider = Self::default_openai();
+        provider.models.clear();
+        provider.default_model.clear();
+        provider
+    }
+
     pub fn resolved_api_key(&self, paths: &MiyuPaths) -> Result<String> {
         if let Some(api_key) = self.api_key.as_deref() {
             if let Some(env_name) = api_key.strip_prefix("$env:") {
@@ -1536,6 +1543,14 @@ mod tests {
         config.providers[0].models.clear();
         config.providers[0].default_model.clear();
         assert!(config.provider_model_choices().is_empty());
+    }
+
+    #[test]
+    fn new_openai_compatible_provider_has_no_active_model() {
+        let provider = ProviderConfig::new_openai_compatible();
+
+        assert!(provider.models.is_empty());
+        assert!(provider.default_model.is_empty());
     }
 
     #[test]
