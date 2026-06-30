@@ -5,6 +5,7 @@ mod deep_research;
 mod default_tools;
 mod diagnostics;
 mod exchange_rate;
+mod fcitx_wiki;
 mod hash_codec;
 mod image_generation;
 pub mod knowledge_base;
@@ -38,6 +39,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     default_tools::register(&mut registry, true);
     alarm::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
+    fcitx_wiki::register(&mut registry);
     weather::register(&mut registry);
     exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     xuanxue::register(&mut registry);
@@ -92,6 +94,7 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     let mut registry = ToolRegistry::new();
     default_tools::register_readonly(&mut registry);
     web::register_fetch(&mut registry);
+    fcitx_wiki::register(&mut registry);
     if config.plugins.archlinux.enabled {
         archlinux::register(&mut registry);
     }

@@ -533,6 +533,7 @@ fn readable_tool_name(name: &str) -> &str {
         "check_os_info" => "查看系统信息",
         "web_search" => "网页搜索",
         "web_fetch" => "读取网页",
+        "fcitx5_input_method_wiki_qurey" => "查询 Fcitx5 Wiki",
         "search_web_images" => "搜索图片",
         "analyze_image" | "vision_analyze" => "分析图片",
         "print_image" => "显示图片",
@@ -1943,6 +1944,10 @@ mod tests {
         assert_eq!(readable_tool_name("aur_check_status"), "查询 AUR 状态");
         assert_eq!(readable_tool_name("online_man_search"), "搜索在线手册");
         assert_eq!(readable_tool_name("online_man_get_page"), "读取在线手册");
+        assert_eq!(
+            readable_tool_name("fcitx5_input_method_wiki_qurey"),
+            "查询 Fcitx5 Wiki"
+        );
         assert_eq!(readable_tool_name("install_aur_package"), "安装 AUR 包");
         assert_eq!(
             readable_tool_name("search_knowledge_base_by_name"),
