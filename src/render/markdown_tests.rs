@@ -1,8 +1,8 @@
 use super::*;
 use crate::render::style::{
     BOLD_STYLE, CODE_BLOCK_BG, CODE_BLOCK_FRAME_STYLE, CODE_FUNCTION_STYLE, CODE_KEYWORD_STYLE,
-    CODE_TOKEN_RESET, HEADER_STYLE, IMAGE_STYLE, INLINE_CODE_STYLE, ITALIC_STYLE, MATH_STYLE,
-    PRIMARY_STYLE, RESET, STRIKE_STYLE, TERTIARY_STYLE, URL_STYLE,
+    CODE_TOKEN_RESET, HEADER_STYLE, IMAGE_STYLE, INLINE_CODE_STYLE, ITALIC_STYLE, PRIMARY_STYLE,
+    RESET, STRIKE_STYLE, TERTIARY_STYLE, URL_STYLE,
 };
 use std::sync::Mutex;
 
@@ -183,9 +183,15 @@ fn keeps_identifier_underscores_literal() {
 
 #[test]
 fn renders_inline_math_formulas_visibly() {
+    let _guard = ASSET_STUB_LOCK.lock().unwrap();
+    std::env::set_var("MIYU_RENDER_ASSET_TEST_STUB", "1");
     let output = render_inline("inline $E=mc^2$ and display $$a^2+b^2=c^2$$");
-    assert!(output.contains(&format!("{MATH_STYLE}$E=mc^2${RESET}")));
-    assert!(output.contains(&format!("{MATH_STYLE}$$ a^2+b^2=c^2 $${RESET}")));
+    std::env::remove_var("MIYU_RENDER_ASSET_TEST_STUB");
+    assert!(output.contains("inline "));
+    assert!(output.contains(" and display "));
+    assert!(output.contains("[inline math rendering skipped]"));
+    assert!(!output.contains("$E=mc^2$"));
+    assert!(!output.contains("$$a^2+b^2=c^2$$"));
 }
 
 #[test]

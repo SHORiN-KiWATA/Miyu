@@ -17,6 +17,12 @@ enum AssetKind {
     Math,
 }
 
+#[derive(Clone, Copy)]
+enum MathRenderMode {
+    Block,
+    Inline,
+}
+
 impl AssetKind {
     /// 返回资产类型展示名称。
     ///
@@ -64,7 +70,18 @@ pub(crate) fn render_asset_block(lang: &str, lines: &[String]) -> String {
 /// 返回:
 /// - 终端图片协议文本或错误提示
 pub(crate) fn render_math_block(lines: &[String]) -> String {
-    render_asset(AssetKind::Math, &lines.join("\n"))
+    render_math_source(&lines.join("\n"), MathRenderMode::Block)
+}
+
+/// 渲染行内数学公式。
+///
+/// 参数:
+/// - `source`: 数学公式源码
+///
+/// 返回:
+/// - 终端图片协议文本或错误提示
+pub(crate) fn render_inline_math(source: &str) -> String {
+    render_math_source(source, MathRenderMode::Inline)
 }
 
 /// 解析资产代码块类型。
@@ -94,6 +111,9 @@ fn render_asset(kind: AssetKind, source: &str) -> String {
     if source.trim().is_empty() {
         return render_error(kind.label(), "content is empty");
     }
+    if matches!(kind, AssetKind::Math) {
+        return render_math_source(source, MathRenderMode::Block);
+    }
     if test_stub_enabled() {
         return render_success(kind.label(), "[asset rendering skipped]\n".to_string());
     }
@@ -101,6 +121,51 @@ fn render_asset(kind: AssetKind, source: &str) -> String {
         Ok(rendered) => render_success(kind.label(), rendered),
         Err(error) => render_error(kind.label(), &error.to_string()),
     }
+}
+
+/// 渲染数学公式源码。
+///
+/// 参数:
+/// - `source`: 数学公式源码
+/// - `mode`: 数学公式展示模式
+///
+/// 返回:
+/// - 终端图片协议文本或错误提示
+fn render_math_source(source: &str, mode: MathRenderMode) -> String {
+    if source.trim().is_empty() {
+        return render_error("math", "content is empty");
+    }
+    if test_stub_enabled() {
+        let placeholder = match mode {
+            MathRenderMode::Block => "[asset rendering skipped]\n".to_string(),
+            MathRenderMode::Inline => "[inline math rendering skipped]\n".to_string(),
+        };
+        return match mode {
+            MathRenderMode::Block => render_success("math", placeholder),
+            MathRenderMode::Inline => placeholder,
+        };
+    }
+    match render_math_inner(source, mode) {
+        Ok(rendered) => match mode {
+            MathRenderMode::Block => render_success("math", rendered),
+            MathRenderMode::Inline => rendered,
+        },
+        Err(error) => render_error("math", &error.to_string()),
+    }
+}
+
+/// 生成数学公式临时图片并转换为终端图片文本。
+///
+/// 参数:
+/// - `source`: 数学公式源码
+/// - `mode`: 数学公式展示模式
+///
+/// 返回:
+/// - 终端图片协议文本或 chafa 文本输出
+fn render_math_inner(source: &str, mode: MathRenderMode) -> Result<String> {
+    let temp_dir = tempfile::tempdir().context("failed to create temporary render directory")?;
+    let image = render_math_image(source, &temp_dir, mode)?;
+    terminal_image::render_terminal_image(&image)
 }
 
 /// 生成资产临时图片并转换为终端图片文本。
@@ -115,7 +180,7 @@ fn render_asset_inner(kind: AssetKind, source: &str) -> Result<String> {
     let temp_dir = tempfile::tempdir().context("failed to create temporary render directory")?;
     let image = match kind {
         AssetKind::Mermaid => render_mermaid_image(source, &temp_dir)?,
-        AssetKind::Math => render_math_image(source, &temp_dir)?,
+        AssetKind::Math => render_math_image(source, &temp_dir, MathRenderMode::Block)?,
     };
     terminal_image::render_terminal_image(&image)
 }
@@ -155,8 +220,8 @@ fn render_mermaid_image(source: &str, temp_dir: &TempDir) -> Result<PathBuf> {
 ///
 /// 返回:
 /// - 生成的 PNG 路径
-fn render_math_image(source: &str, temp_dir: &TempDir) -> Result<PathBuf> {
-    if let Some(output) = try_render_ratex_math(source, temp_dir)? {
+fn render_math_image(source: &str, temp_dir: &TempDir, mode: MathRenderMode) -> Result<PathBuf> {
+    if let Some(output) = try_render_ratex_math(source, temp_dir, mode)? {
         return Ok(output);
     }
     if let Some(output) = try_render_typst_math(source, temp_dir)? {
@@ -179,23 +244,38 @@ fn render_math_image(source: &str, temp_dir: &TempDir) -> Result<PathBuf> {
 ///
 /// 返回:
 /// - 成功时返回图片路径，失败时返回空并交给后续降级方案
-fn try_render_ratex_math(source: &str, temp_dir: &TempDir) -> Result<Option<PathBuf>> {
+fn try_render_ratex_math(
+    source: &str,
+    temp_dir: &TempDir,
+    mode: MathRenderMode,
+) -> Result<Option<PathBuf>> {
     let formula = normalize_math_source(source);
     let ast = match parse(&formula) {
         Ok(ast) => ast,
         Err(_) => return Ok(None),
     };
     let color = Color::parse("#d7e3ff").unwrap_or(Color::BLACK);
-    let background_color = Color::parse("#111827").unwrap_or(Color::WHITE);
+    let background_color = match mode {
+        MathRenderMode::Block => Color::parse("#111827").unwrap_or(Color::WHITE),
+        MathRenderMode::Inline => Color::parse("transparent").unwrap_or(Color::WHITE),
+    };
+    let math_style = match mode {
+        MathRenderMode::Block => MathStyle::Display,
+        MathRenderMode::Inline => MathStyle::Text,
+    };
+    let (font_size, padding, device_pixel_ratio) = match mode {
+        MathRenderMode::Block => (36.0, 14.0, 2.0),
+        MathRenderMode::Inline => (26.0, 2.0, 2.0),
+    };
     let layout_opts = LayoutOptions::default()
-        .with_style(MathStyle::Display)
+        .with_style(math_style)
         .with_color(color);
     let render_opts = RenderOptions {
-        font_size: 36.0,
-        padding: 14.0,
+        font_size,
+        padding,
         background_color,
         font_dir: String::new(),
-        device_pixel_ratio: 2.0,
+        device_pixel_ratio,
     };
     let layout_box = layout(&ast, &layout_opts);
     let display_list = to_display_list(&layout_box);
@@ -461,15 +541,30 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let formulas = [
             r"\int_a^b f(x)\,dx = F(b) - F(a)",
+            r"\lim_{x \to 0} \frac{\sin x}{x} = 1",
             r"\left( \sum_{i=1}^{n} a_i b_i \right)^2 \le \left( \sum_{i=1}^{n} a_i^2 \right) \left( \sum_{i=1}^{n} b_i^2 \right)",
             r"P(A|B) = \frac{P(B|A)\,P(A)}{P(B)}",
             r"\mathcal{L}\{f(t)\} = F(s) = \int_0^\infty e^{-st} f(t)\,dt",
         ];
         for formula in formulas {
-            let output = try_render_ratex_math(formula, &temp_dir).unwrap();
+            let output = try_render_ratex_math(formula, &temp_dir, MathRenderMode::Block).unwrap();
             let output = output.expect("RaTeX should render this formula");
             let metadata = fs::metadata(output).unwrap();
             assert!(metadata.len() > 0);
         }
+    }
+
+    #[test]
+    fn ratex_renders_inline_formula_to_png() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output = try_render_ratex_math(
+            r"\lim_{x \to 0} \frac{\sin x}{x} = 1",
+            &temp_dir,
+            MathRenderMode::Inline,
+        )
+        .unwrap();
+        let output = output.expect("RaTeX should render inline formula");
+        let metadata = fs::metadata(output).unwrap();
+        assert!(metadata.len() > 0);
     }
 }

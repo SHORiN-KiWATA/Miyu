@@ -2,7 +2,7 @@ use crate::render::asset_block;
 use crate::render::code_block::render_code_block;
 use crate::render::style::{
     BOLD_STYLE, HEADER_STYLE, IMAGE_STYLE, INLINE_CODE_STYLE, ITALIC_STYLE, LINK_LABEL_STYLE,
-    MATH_STYLE, RESET, STRIKE_STYLE, TERTIARY_STYLE, URL_STYLE,
+    RESET, STRIKE_STYLE, TERTIARY_STYLE, URL_STYLE,
 };
 use crate::render::table::{self, TableAlign};
 use crossterm::terminal;
@@ -323,22 +323,16 @@ pub(crate) fn render_inline(text: &str) -> String {
         }
         if index + 1 < chars.len() && chars[index] == '$' && chars[index + 1] == '$' {
             if let Some(end) = find_double_marker(&chars, index + 2, '$') {
-                output.push_str(MATH_STYLE);
-                output.push_str("$$ ");
-                output.extend(chars[index + 2..end].iter());
-                output.push_str(" $$");
-                output.push_str(RESET);
+                let formula = chars[index + 2..end].iter().collect::<String>();
+                output.push_str(&asset_block::render_inline_math(&formula));
                 index = end + 2;
                 continue;
             }
         }
         if chars[index] == '$' {
             if let Some(end) = find_marker(&chars, index + 1, '$') {
-                output.push_str(MATH_STYLE);
-                output.push('$');
-                output.extend(chars[index + 1..end].iter());
-                output.push('$');
-                output.push_str(RESET);
+                let formula = chars[index + 1..end].iter().collect::<String>();
+                output.push_str(&asset_block::render_inline_math(&formula));
                 index = end + 1;
                 continue;
             }

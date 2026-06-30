@@ -7,7 +7,6 @@ pub(crate) const INLINE_CODE_STYLE: &str = SECONDARY_STYLE;
 pub(crate) const LINK_LABEL_STYLE: &str = "\x1b[4m\x1b[38;5;81m";
 pub(crate) const URL_STYLE: &str = "\x1b[2m\x1b[38;5;75m";
 pub(crate) const IMAGE_STYLE: &str = "\x1b[1m\x1b[38;5;213m";
-pub(crate) const MATH_STYLE: &str = "\x1b[38;5;117m";
 pub(crate) const BOLD_STYLE: &str = "\x1b[1m\x1b[34m";
 pub(crate) const ITALIC_STYLE: &str = "\x1b[3m\x1b[38;5;250m";
 pub(crate) const STRIKE_STYLE: &str = "\x1b[9m";
