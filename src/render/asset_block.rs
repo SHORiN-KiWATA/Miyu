@@ -1,6 +1,11 @@
 use crate::render::style::{ASSET_ERROR_STYLE, RESET, SECONDARY_STYLE};
 use crate::render::terminal_image;
 use anyhow::{bail, Context, Result};
+use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_parser::parser::parse;
+use ratex_render::{render_to_png, RenderOptions};
+use ratex_types::color::Color;
+use ratex_types::math_style::MathStyle;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -151,6 +156,9 @@ fn render_mermaid_image(source: &str, temp_dir: &TempDir) -> Result<PathBuf> {
 /// 返回:
 /// - 生成的 PNG 路径
 fn render_math_image(source: &str, temp_dir: &TempDir) -> Result<PathBuf> {
+    if let Some(output) = try_render_ratex_math(source, temp_dir)? {
+        return Ok(output);
+    }
     if let Some(output) = try_render_typst_math(source, temp_dir)? {
         return Ok(output);
     }
@@ -161,6 +169,55 @@ fn render_math_image(source: &str, temp_dir: &TempDir) -> Result<PathBuf> {
     convert_svg_to_png(&svg, &output)?;
     ensure_file_exists(&output)?;
     Ok(output)
+}
+
+/// 优先使用 RaTeX 的纯 Rust 管线渲染数学公式。
+///
+/// 参数:
+/// - `source`: 数学公式源码
+/// - `temp_dir`: 临时目录
+///
+/// 返回:
+/// - 成功时返回图片路径，失败时返回空并交给后续降级方案
+fn try_render_ratex_math(source: &str, temp_dir: &TempDir) -> Result<Option<PathBuf>> {
+    let formula = normalize_math_source(source);
+    let ast = match parse(&formula) {
+        Ok(ast) => ast,
+        Err(_) => return Ok(None),
+    };
+    let color = Color::parse("#d7e3ff").unwrap_or(Color::BLACK);
+    let background_color = Color::parse("#111827").unwrap_or(Color::WHITE);
+    let layout_opts = LayoutOptions::default()
+        .with_style(MathStyle::Display)
+        .with_color(color);
+    let render_opts = RenderOptions {
+        font_size: 36.0,
+        padding: 14.0,
+        background_color,
+        font_dir: String::new(),
+        device_pixel_ratio: 2.0,
+    };
+    let layout_box = layout(&ast, &layout_opts);
+    let display_list = to_display_list(&layout_box);
+    let png = match render_to_png(&display_list, &render_opts) {
+        Ok(png) => png,
+        Err(_) => return Ok(None),
+    };
+    let output = temp_dir.path().join("formula.png");
+    fs::write(&output, png).with_context(|| format!("failed to write {}", output.display()))?;
+    ensure_file_exists(&output)?;
+    Ok(Some(output))
+}
+
+/// 归一化数学公式源码。
+///
+/// 参数:
+/// - `source`: 原始公式
+///
+/// 返回:
+/// - 适合数学解析器处理的单行公式
+fn normalize_math_source(source: &str) -> String {
+    source.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// 优先尝试用 Typst 渲染数学公式。
@@ -397,5 +454,22 @@ mod tests {
         assert!(svg.contains("&lt;"));
         assert!(svg.contains("&gt;"));
         assert!(svg.contains("&quot;"));
+    }
+
+    #[test]
+    fn ratex_renders_common_formulas_to_png() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let formulas = [
+            r"\int_a^b f(x)\,dx = F(b) - F(a)",
+            r"\left( \sum_{i=1}^{n} a_i b_i \right)^2 \le \left( \sum_{i=1}^{n} a_i^2 \right) \left( \sum_{i=1}^{n} b_i^2 \right)",
+            r"P(A|B) = \frac{P(B|A)\,P(A)}{P(B)}",
+            r"\mathcal{L}\{f(t)\} = F(s) = \int_0^\infty e^{-st} f(t)\,dt",
+        ];
+        for formula in formulas {
+            let output = try_render_ratex_math(formula, &temp_dir).unwrap();
+            let output = output.expect("RaTeX should render this formula");
+            let metadata = fs::metadata(output).unwrap();
+            assert!(metadata.len() > 0);
+        }
     }
 }
