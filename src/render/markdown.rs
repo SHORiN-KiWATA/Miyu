@@ -313,6 +313,10 @@ pub(crate) fn render_inline(text: &str) -> String {
             }
         }
         if chars[index] == '`' {
+            if is_line_start_formula_prefix(&output, &chars, index) {
+                index += 1;
+                continue;
+            }
             if let Some(end) = find_marker(&chars, index + 1, '`') {
                 output.push_str(INLINE_CODE_STYLE);
                 output.extend(chars[index + 1..end].iter());
@@ -320,6 +324,10 @@ pub(crate) fn render_inline(text: &str) -> String {
                 index = end + 1;
                 continue;
             }
+        }
+        if chars[index] == '、' && is_line_start_formula_prefix(&output, &chars, index) {
+            index += 1;
+            continue;
         }
         if index + 1 < chars.len() && chars[index] == '$' && chars[index + 1] == '$' {
             if let Some(end) = find_double_marker(&chars, index + 2, '$') {
@@ -413,6 +421,21 @@ pub(crate) fn render_inline(text: &str) -> String {
         index += 1;
     }
     output
+}
+
+/// 判断当前位置是否为独立公式行前的孤立前缀。
+///
+/// 参数:
+/// - `output`: 已渲染输出
+/// - `chars`: 原始字符数组
+/// - `index`: 当前索引
+///
+/// 返回:
+/// - 是否可清理此前缀
+fn is_line_start_formula_prefix(output: &str, chars: &[char], index: usize) -> bool {
+    output.trim().is_empty()
+        && matches!(chars.get(index + 1), Some('$'))
+        && chars[index + 1..].iter().filter(|ch| **ch == '$').count() >= 2
 }
 
 /// 解析 Markdown 引用层级。

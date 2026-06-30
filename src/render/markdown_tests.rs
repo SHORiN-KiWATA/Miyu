@@ -195,6 +195,19 @@ fn renders_inline_math_formulas_visibly() {
 }
 
 #[test]
+fn removes_stray_formula_prefix_at_line_start() {
+    let _guard = ASSET_STUB_LOCK.lock().unwrap();
+    std::env::set_var("MIYU_RENDER_ASSET_TEST_STUB", "1");
+    let backtick = render_inline("`$x^2$");
+    let dunhao = render_inline("、$x^2$");
+    let text = render_inline("文字、$x^2$");
+    std::env::remove_var("MIYU_RENDER_ASSET_TEST_STUB");
+    assert!(!backtick.starts_with('`'));
+    assert!(!dunhao.starts_with('、'));
+    assert!(text.starts_with("文字、"));
+}
+
+#[test]
 fn renders_multiline_math_blocks_as_assets() {
     let _guard = ASSET_STUB_LOCK.lock().unwrap();
     std::env::set_var("MIYU_RENDER_ASSET_TEST_STUB", "1");

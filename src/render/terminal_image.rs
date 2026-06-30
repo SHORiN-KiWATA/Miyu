@@ -112,6 +112,7 @@ fn render_chafa_image(path: &Path) -> Result<String> {
     if let Some(size) = chafa_size() {
         command.arg("--size").arg(size);
     }
+    command.arg("--fg-only").arg("--threshold").arg("0.75");
     let output = command
         .arg(path)
         .stdin(Stdio::null())

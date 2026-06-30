@@ -255,17 +255,14 @@ fn try_render_ratex_math(
         Err(_) => return Ok(None),
     };
     let color = Color::parse("#d7e3ff").unwrap_or(Color::BLACK);
-    let background_color = match mode {
-        MathRenderMode::Block => Color::parse("#111827").unwrap_or(Color::WHITE),
-        MathRenderMode::Inline => Color::parse("transparent").unwrap_or(Color::WHITE),
-    };
+    let background_color = transparent_color();
     let math_style = match mode {
         MathRenderMode::Block => MathStyle::Display,
         MathRenderMode::Inline => MathStyle::Text,
     };
     let (font_size, padding, device_pixel_ratio) = match mode {
-        MathRenderMode::Block => (36.0, 14.0, 2.0),
-        MathRenderMode::Inline => (26.0, 2.0, 2.0),
+        MathRenderMode::Block => (36.0, 6.0, 2.0),
+        MathRenderMode::Inline => (26.0, 0.0, 2.0),
     };
     let layout_opts = LayoutOptions::default()
         .with_style(math_style)
@@ -287,6 +284,19 @@ fn try_render_ratex_math(
     fs::write(&output, png).with_context(|| format!("failed to write {}", output.display()))?;
     ensure_file_exists(&output)?;
     Ok(Some(output))
+}
+
+/// 返回透明背景颜色。
+///
+/// 返回:
+/// - 透明颜色
+fn transparent_color() -> Color {
+    Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    }
 }
 
 /// 归一化数学公式源码。
@@ -315,7 +325,7 @@ fn try_render_typst_math(source: &str, temp_dir: &TempDir) -> Result<Option<Path
     let input = temp_dir.path().join("formula.typ");
     let output = temp_dir.path().join("formula.png");
     let content = format!(
-        "#set page(width: auto, height: auto, margin: 12pt, fill: rgb(\"111827\"))\n#set text(fill: rgb(\"d7e3ff\"), size: 18pt)\n$ {} $\n",
+        "#set page(width: auto, height: auto, margin: 12pt)\n#set text(fill: rgb(\"d7e3ff\"), size: 18pt)\n$ {} $\n",
         source.trim()
     );
     fs::write(&input, content).with_context(|| format!("failed to write {}", input.display()))?;
@@ -380,7 +390,7 @@ fn build_math_svg(source: &str) -> String {
         ));
     }
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><rect width="100%" height="100%" rx="12" fill="#111827"/>{text}</svg>"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">{text}</svg>"##
     )
 }
 
