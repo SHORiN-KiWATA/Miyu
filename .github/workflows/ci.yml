@@ -1,0 +1,112 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    name: fmt & clippy
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install ALSA dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: miyu-x86_64-linux-gnu.tar.gz
+            runner: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: miyu-aarch64-linux-gnu.tar.gz
+            runner: linux-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: miyu-x86_64-apple-darwin.tar.gz
+            runner: macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: miyu-aarch64-apple-darwin.tar.gz
+            runner: macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: miyu-x86_64-pc-windows-msvc.zip
+            runner: windows-x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: miyu-aarch64-pc-windows-msvc.zip
+            runner: windows-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install ALSA dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.runner }}-
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Strip debug symbols (Unix)
+        if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/miyu
+        continue-on-error: true
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.archive }} miyu
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../${{ matrix.archive }} miyu.exe
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          retention-days: 14
+          compression-level: 0
