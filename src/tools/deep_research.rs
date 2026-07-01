@@ -6,7 +6,7 @@ use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -290,7 +290,7 @@ async fn run_deep_research(
             progress.phase("thinker failed to produce a draft");
             break;
         }
-        progress.phase(&format!(
+        progress.phase(format!(
             "round {iteration}: draft ready chars={}",
             draft.chars().count()
         ));
@@ -325,7 +325,7 @@ async fn run_deep_research(
             progress.phase(format!("round {iteration}: accepted"));
             break;
         }
-        progress.phase(&format!(
+        progress.phase(format!(
             "round {iteration}: revision requested - {}",
             clip_inline(
                 review
@@ -497,7 +497,7 @@ async fn chat_with_tools(
                 state.stats.tool_calls += 1;
             }
             progress.tool(format!("tool #{steps}: {} running", call.function.name));
-            progress.detail(&format!(
+            progress.detail(format!(
                 "→{} {}",
                 call.function.name,
                 compact_arguments(&call.function.arguments)
@@ -531,7 +531,7 @@ async fn chat_with_tools(
                 call.function.name,
                 if ok { "ok" } else { "error" }
             ));
-            progress.detail(&format!(
+            progress.detail(format!(
                 "←{} {}",
                 call.function.name,
                 if ok { "ok" } else { "error" }
@@ -649,6 +649,7 @@ fn strip_reference_section(value: &str) -> String {
     value.to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     plugin: &DeepResearchPluginConfig,
     paths: &MiyuPaths,
@@ -824,7 +825,7 @@ fn sanitize_filename(value: &str) -> String {
     }
 }
 
-fn unique_report_filename(output_dir: &PathBuf, title: &str) -> String {
+fn unique_report_filename(output_dir: &Path, title: &str) -> String {
     let stem = sanitize_filename(&strip_title_date_prefix(title));
     let suffix = format!(
         "{}_{}",
@@ -973,10 +974,7 @@ fn strip_leading_weekday(value: &str) -> String {
         "周天",
     ];
     let mut title = value.trim_start();
-    loop {
-        let Some(weekday) = weekdays.iter().find(|weekday| title.starts_with(**weekday)) else {
-            break;
-        };
+    while let Some(weekday) = weekdays.iter().find(|weekday| title.starts_with(**weekday)) {
         title = title[weekday.len()..].trim_start();
     }
     title.to_string()
