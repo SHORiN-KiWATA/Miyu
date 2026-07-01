@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Lower the macOS minimum deployment target so binaries run on
+  # older releases (down to Big Sur) regardless of which runner image
+  # produced them. Has no effect on non-macOS platforms.
+  MACOSX_DEPLOYMENT_TARGET: '11.0'
 
 jobs:
   lint:
