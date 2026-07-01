@@ -46,7 +46,7 @@ jobs:
             target: x86_64-apple-darwin
             archive: miyu-x86_64-apple-darwin.tar.gz
             runner: macos-x64
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             archive: miyu-aarch64-apple-darwin.tar.gz
             runner: macos-arm64
