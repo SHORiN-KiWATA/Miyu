@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main, master, dev]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -96,4 +97,48 @@ jobs:
           path: target/${{ matrix.target }}/release/miyu${{ runner.os == 'Windows' && '.exe' || '' }}
           if-no-files-found: error
           retention-days: 14
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+      - name: Cargo publish
+        run: cargo publish --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Restructure artifacts
+        run: |
+          mkdir -p release-assets
+          for dir in artifacts/miyu-*; do
+            target=$(basename "$dir" | sed 's/^miyu-//')
+            ext=""
+            [[ "$target" == *windows* ]] && ext=".exe"
+            mv "$dir/miyu$ext" "release-assets/miyu-$target$ext"
+          done
+          ls -l release-assets
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
