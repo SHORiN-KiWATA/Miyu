@@ -169,6 +169,13 @@ miyu config
 
   ![](./pics/深度研究.png)
 
+- 人格市场
+
+  >我要看看你家Miyu!
+
+  一键领取猫娘（雾）
+
+
 ## 许可
 
 Miyu 使用 MIT License 发布，见 `LICENSE`。
