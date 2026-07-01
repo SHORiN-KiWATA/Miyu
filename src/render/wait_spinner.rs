@@ -134,12 +134,8 @@ fn paint_active_dot(index: usize) -> String {
     }
 }
 
-fn paint_inactive_dot(fade: f64) -> String {
-    if fade > 0.24 {
-        format!("\x1b[2m\x1b[36m{INACTIVE_DOT}\x1b[0m")
-    } else {
-        format!("\x1b[2m\x1b[36m{INACTIVE_DOT}\x1b[0m")
-    }
+fn paint_inactive_dot(_fade: f64) -> String {
+    format!("\x1b[2m\x1b[36m{INACTIVE_DOT}\x1b[0m")
 }
 
 fn total_frames() -> usize {
