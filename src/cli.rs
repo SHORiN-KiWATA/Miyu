@@ -1269,6 +1269,7 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
     result
 }
 
+#[cfg(unix)]
 fn drain_stdin() {
     use std::os::fd::AsRawFd;
 
@@ -1298,6 +1299,9 @@ fn drain_stdin() {
 
     let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
 }
+
+#[cfg(not(unix))]
+fn drain_stdin() {}
 
 async fn run_chat_with_options(
     paths: &MiyuPaths,
@@ -1650,20 +1654,18 @@ fn read_repl_input(
                         cursor,
                     )?;
                 }
-                KeyCode::Up => {
-                    if !history.is_empty() {
-                        history_index = history_index.saturating_sub(1);
-                        input = history.get(history_index).cloned().unwrap_or_default();
-                        cursor = input.chars().count();
-                        render_repl_input(
-                            &mut stdout,
-                            &mut input_row,
-                            &mut rendered_rows,
-                            mode,
-                            &input,
-                            cursor,
-                        )?;
-                    }
+                KeyCode::Up if !history.is_empty() => {
+                    history_index = history_index.saturating_sub(1);
+                    input = history.get(history_index).cloned().unwrap_or_default();
+                    cursor = input.chars().count();
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                    )?;
                 }
                 KeyCode::Down => {
                     if history_index + 1 < history.len() {
@@ -2123,6 +2125,7 @@ fn complete_repl_command(input: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod repl_input_tests {
     use super::*;
 
