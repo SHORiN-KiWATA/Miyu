@@ -40,27 +40,21 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: miyu-x86_64-linux-gnu.tar.gz
             runner: linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            archive: miyu-aarch64-linux-gnu.tar.gz
             runner: linux-arm64
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            archive: miyu-x86_64-apple-darwin.tar.gz
             runner: macos-x64
           - os: macos-14
             target: aarch64-apple-darwin
-            archive: miyu-aarch64-apple-darwin.tar.gz
             runner: macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: miyu-x86_64-pc-windows-msvc.zip
             runner: windows-x64
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
-            archive: miyu-aarch64-pc-windows-msvc.zip
             runner: windows-arm64
     steps:
       - uses: actions/checkout@v4
@@ -95,23 +89,11 @@ jobs:
         run: strip target/${{ matrix.target }}/release/miyu
         continue-on-error: true
 
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.archive }} miyu
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../${{ matrix.archive }} miyu.exe
-        shell: bash
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          name: miyu-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/miyu${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
           retention-days: 14
-          compression-level: 0
 
