@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev]
   pull_request:
   workflow_dispatch:
 
@@ -110,3 +110,4 @@ jobs:
           path: ${{ matrix.archive }}
           retention-days: 14
           compression-level: 0
+
