@@ -2216,7 +2216,7 @@ fn finalize_input_method_confidence(report: &mut DiagnosticReport) {
     {
         score = score.min(70);
     }
-    if report.facts.get("input_method.questions").is_none() {
+    if !report.facts.contains_key("input_method.questions") {
         score = score.min(75);
     }
     let threshold = 95;
@@ -3896,7 +3896,7 @@ mod tests {
         linux_input_method_path_report(&mut report, Some(&profile));
 
         let path_report = report.facts.get("input_method.path_report").unwrap();
-        assert!(report.facts.get("input_method.questions").is_some());
+        assert!(report.facts.contains_key("input_method.questions"));
         assert!(path_report.get("app_adaptation").is_some());
         assert!(path_report.get("environment_module_path").is_some());
         assert!(path_report.get("wayland_protocol_path").is_some());
