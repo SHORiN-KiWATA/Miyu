@@ -81,6 +81,7 @@ pub fn readable_tool_name(name: &str) -> &str {
         "aur_search_packages" => "搜索 AUR",
         "aur_get_package_info" => "查看 AUR 包",
         "aur_check_status" => "查询 AUR 状态",
+        "archlinux_official_package_query" => "查询 Arch 官方包",
         "query_deepseek_status" => "查询 DeepSeek 状态",
         "pacman_search" => "搜索软件包",
         "archwiki_query" => "查询 ArchWiki",
@@ -96,12 +97,15 @@ pub fn readable_tool_name(name: &str) -> &str {
         "xuanxue_divine" => "玄学占卜",
         "draw_zhouyi_hexagram" => "周易起卦",
         "draw_tarot_card" => "抽塔罗牌",
-        "draw_fortune_lot" => "抽签",
+        "draw_fortune_lot" => "吉凶占",
+        "roll_dice" => "掷骰子",
         "load_skill" => "加载技能",
         "review_aur_package" => "审查 AUR 包",
         "install_aur_package" => "安装 AUR 包",
         "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
         "linux_game_compatibility" => "查询 Linux 游戏兼容性",
+        "gather_linux_game_compatibility_signals" => "收集游戏兼容性",
+        "register_linux_game_evidence" => "登记兼容性证据",
         _ => name,
     }
 }
@@ -165,7 +169,8 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         package_advisor::register(&mut registry, paths.clone());
     }
     if config.plugins.linux_game_compatibility.enabled {
-        linux_game::register(&mut registry);
+        let game_tools = registry.clone();
+        linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }
     if config.plugins.diagnostics.enabled {
         diagnostics::register(&mut registry, config.clone());
@@ -200,7 +205,8 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
         package_advisor::register(&mut registry, paths.clone());
     }
     if config.plugins.linux_game_compatibility.enabled {
-        linux_game::register(&mut registry);
+        let game_tools = registry.clone();
+        linux_game::register(&mut registry, config.clone(), paths.clone(), game_tools);
     }
     if config.plugins.diagnostics.enabled {
         diagnostics::register(&mut registry, config.clone());

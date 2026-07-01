@@ -2080,7 +2080,7 @@ mod tests {
         assert_eq!(readable_tool_name("get_exchange_rate"), "汇率查询");
         assert_eq!(readable_tool_name("draw_zhouyi_hexagram"), "周易起卦");
         assert_eq!(readable_tool_name("draw_tarot_card"), "抽塔罗牌");
-        assert_eq!(readable_tool_name("draw_fortune_lot"), "抽签");
+        assert_eq!(readable_tool_name("draw_fortune_lot"), "吉凶占");
         assert_eq!(readable_tool_name("vision_analyze"), "分析图片");
         assert_eq!(readable_tool_name("search_meme"), "搜索表情包");
         assert_eq!(readable_tool_name("show_meme"), "发送表情");

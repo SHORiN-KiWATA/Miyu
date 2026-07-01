@@ -1,5 +1,6 @@
 use super::{empty_parameters, ToolRegistry, ToolSpec};
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, Rng};
+use serde_json::{json, Value};
 
 const ZHOUYI_HEXAGRAMS: &[&str] = &[
     "乾为天",
@@ -149,31 +150,23 @@ const TAROT_CARDS: &[&str] = &[
     "星币国王",
 ];
 
-const FORTUNE_LOTS: &[(&str, &str, &str)] = &[
-    ("第一签", "大吉", "云开日出，所求渐明。"),
-    ("第二签", "大吉", "春水初生，舟行自稳。"),
-    ("第三签", "中吉", "花在枝头，静待风来。"),
-    ("第四签", "中吉", "旧路逢灯，缓步可达。"),
-    ("第五签", "小吉", "细雨润田，先难后易。"),
-    ("第六签", "小吉", "远钟入耳，消息将临。"),
-    ("第七签", "平", "水静无波，守常为宜。"),
-    ("第八签", "平", "云行半岭，未可躁进。"),
-    ("第九签", "小凶", "风急灯摇，谨言慎行。"),
-    ("第十签", "小凶", "石径生苔，慢行无失。"),
-    ("第十一签", "凶", "夜雨迷途，暂缓远行。"),
-    ("第十二签", "大凶", "雷过空山，先守后谋。"),
-    ("第十三签", "大吉", "青云得路，贵在乘时。"),
-    ("第十四签", "中吉", "有客携书，转机在近。"),
-    ("第十五签", "小吉", "月照浅滩，小利可求。"),
-    ("第十六签", "平", "门前落叶，整理旧事。"),
-    ("第十七签", "小凶", "雾重桥低，勿争一时。"),
-    ("第十八签", "凶", "逆水行舟，力少事迟。"),
-    ("第十九签", "大吉", "鹤鸣高树，名利双清。"),
-    ("第二十签", "中吉", "路逢新雨，洗去尘心。"),
-    ("第二十一签", "小吉", "竹影过墙，暗助可期。"),
-    ("第二十二签", "平", "棋局未终，勿急落子。"),
-    ("第二十三签", "小凶", "火小烟多，先除杂念。"),
-    ("第二十四签", "大吉", "东风入户，万象更新。"),
+const FORTUNE_DIVINATIONS: &[(&str, &str)] = &[
+    ("大吉", "运势的最高峰，万事亨通，求财、姻缘、事业皆极顺遂。"),
+    ("吉", "稳健的吉利状态。运势持久。"),
+    (
+        "中吉",
+        "非常不错的好运，虽不如大吉猛烈，但平稳且有上升空间。",
+    ),
+    (
+        "小吉",
+        "有小小的福气或幸运，平淡中带有喜悦，不宜过分强求大富大贵。",
+    ),
+    ("末吉", "吉利的末尾。意味着目前处于谷底。"),
+    (
+        "凶",
+        "运势不佳，容易遇到阻碍或犯错，需要格外小心谨慎、反省自身。",
+    ),
+    ("大凶", "最差、最险恶的运势。多伴随口舌、破财或灾祸。"),
 ];
 
 pub fn register(registry: &mut ToolRegistry) {
@@ -195,13 +188,56 @@ pub fn register(registry: &mut ToolRegistry) {
     ));
     registry.register(ToolSpec::new(
         "draw_fortune_lot",
-        "随机从签筒中抽取签号、吉凶和签文。适用于抽签、运势、吉凶相关请求。工具只负责抽签，不负责解释。",
+        "Run a random fortune divination and return the fortune level plus meaning. Use for fortune, luck, or mysticism requests. / 随机进行一次吉凶占，返回吉凶等级和含义。适用于占卜吉凶、运势、玄学相关请求。工具只负责随机给出吉凶，不负责解释。",
         empty_parameters(),
         |_| async {
-            let (lot_no, luck, verse) = choice(FORTUNE_LOTS);
-            Ok(format!("{lot_no}：{luck}\n签文：{verse}"))
+            let (luck, meaning) = choice(FORTUNE_DIVINATIONS);
+            Ok(format!("{luck}：{meaning}"))
         },
     ));
+    registry.register(ToolSpec::new(
+        "roll_dice",
+        "Roll dice and return each roll plus totals. Use for dice rolling, random tabletop checks, d6/d20, or 掷骰子 requests. / 掷骰子并返回每颗骰子点数和总和。适用于骰子、跑团检定、d6/d20 等请求。",
+        json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer", "description": "Number of dice, default 1, max 100. / 骰子数量，默认 1，最多 100。" },
+                "sides": { "type": "integer", "description": "Sides per die, default 6, max 1000. / 每颗骰子的面数，默认 6，最多 1000。" },
+                "modifier": { "type": "integer", "description": "Optional total modifier. / 可选总和修正值。" }
+            },
+            "additionalProperties": false
+        }),
+        |args| async move { roll_dice(args) },
+    ));
+}
+
+fn roll_dice(args: Value) -> anyhow::Result<String> {
+    let count = args
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .clamp(1, 100);
+    let sides = args
+        .get("sides")
+        .and_then(Value::as_u64)
+        .unwrap_or(6)
+        .clamp(2, 1000);
+    let modifier = args.get("modifier").and_then(Value::as_i64).unwrap_or(0);
+    let mut rng = rand::thread_rng();
+    let rolls = (0..count)
+        .map(|_| rng.gen_range(1..=sides) as i64)
+        .collect::<Vec<_>>();
+    let total = rolls.iter().sum::<i64>();
+    Ok(json!({
+        "ok": true,
+        "count": count,
+        "sides": sides,
+        "rolls": rolls,
+        "total": total,
+        "modifier": modifier,
+        "modified_total": total + modifier,
+    })
+    .to_string())
 }
 
 fn choice<T>(items: &'static [T]) -> &'static T {

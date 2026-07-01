@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new("aur_search_packages", "Search AUR packages via official RPC.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"},"search_by":{"type":"string"}},"required":["query"],"additionalProperties":false}), |args| async move { aur_search(args).await }));
     registry.register(ToolSpec::new("aur_get_package_info", "Get AUR package information via official RPC.", json!({"type":"object","properties":{"package_name":{"type":"string"}},"required":["package_name"],"additionalProperties":false}), |args| async move { aur_info(args).await }));
+    registry.register(ToolSpec::new("archlinux_official_package_query", "Query official Arch Linux package database. Supports search and exact package details. / 查询 Arch Linux 官方软件包数据库，支持搜索和精确包详情。", json!({"type":"object","properties":{"package_name":{"type":"string","description":"Package name. / 包名。"},"repo":{"type":"string","description":"Repository for detail mode, e.g. core or extra. / 详情模式的仓库，例如 core 或 extra。"},"arch":{"type":"string","description":"Architecture for detail mode, default x86_64. / 详情模式架构，默认 x86_64。"},"mode":{"type":"string","enum":["auto","search","detail"],"description":"auto uses detail when repo is provided, otherwise search. / auto 在提供 repo 时查详情，否则搜索。"}},"required":["package_name"],"additionalProperties":false}), |args| async move { official_package_query(args).await }));
     registry.register(ToolSpec::new(
         "aur_check_status",
         "Check Arch Linux service status.",
@@ -12,6 +13,69 @@ pub fn register(registry: &mut ToolRegistry) {
         |_| async move { arch_status().await },
     ));
     registry.register(ToolSpec::new("archwiki_query", "Search or read ArchWiki pages.", json!({"type":"object","properties":{"query":{"type":"string"},"title":{"type":"string"},"mode":{"type":"string","enum":["auto","search","page"]}},"additionalProperties":false}), |args| async move { archwiki(args).await }));
+}
+
+async fn official_package_query(args: Value) -> Result<String> {
+    let package = required(&args, "package_name")?;
+    let repo = args
+        .get("repo")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let arch = args
+        .get("arch")
+        .and_then(Value::as_str)
+        .unwrap_or("x86_64")
+        .trim();
+    let mode = args.get("mode").and_then(Value::as_str).unwrap_or("auto");
+    let mode = if mode == "auto" && !repo.is_empty() {
+        "detail"
+    } else if mode == "auto" {
+        "search"
+    } else {
+        mode
+    };
+    let url = match mode {
+        "detail" => {
+            if repo.is_empty() {
+                bail!("repo is required for detail mode")
+            }
+            format!(
+                "https://archlinux.org/packages/{}/{}/{}/json/",
+                urlencoding::encode(repo),
+                urlencoding::encode(arch),
+                urlencoding::encode(&package)
+            )
+        }
+        "search" => format!(
+            "https://archlinux.org/packages/search/json/?name={}",
+            urlencoding::encode(&package)
+        ),
+        _ => bail!("mode must be auto, search, or detail"),
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("miyu-archlinux-official-package-query/0.1")
+        .build()?;
+    let resp = client.get(&url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!(
+            "Arch official package API returned HTTP {} for {}",
+            status,
+            url
+        )
+    }
+    let data: Value = resp.json().await?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "success": true,
+        "mode": mode,
+        "package_name": package,
+        "repo": if repo.is_empty() { Value::Null } else { json!(repo) },
+        "arch": arch,
+        "url": url,
+        "data": data,
+    }))?)
 }
 
 async fn aur_search(args: Value) -> Result<String> {

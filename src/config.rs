@@ -1434,11 +1434,11 @@ fn default_memory_min_method_chars() -> usize {
 }
 
 fn default_print_image_width_percent() -> u8 {
-    60
+    45
 }
 
 fn default_print_image_height_percent() -> u8 {
-    50
+    35
 }
 
 fn default_memes_width_percent() -> u8 {

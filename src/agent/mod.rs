@@ -10,6 +10,7 @@ use crate::state::StateStore;
 use crate::tools::{self, memes, ToolPermission, ToolRegistry};
 use anyhow::{bail, Result};
 use chrono::Local;
+use std::io::IsTerminal;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -148,8 +149,14 @@ impl Agent {
         }
         let mut on_event = on_event;
         let mut used_tools = Vec::new();
+        let mut persisted_tool_reports = Vec::new();
         let result = self
-            .chat_with_tools(&mut messages, &mut used_tools, &mut on_event)
+            .chat_with_tools(
+                &mut messages,
+                &mut used_tools,
+                &mut persisted_tool_reports,
+                &mut on_event,
+            )
             .await?;
         if let Some(plan) = auto_meme_plan {
             on_event(AgentEvent::ExternalOutput)?;
@@ -158,6 +165,9 @@ impl Agent {
         }
         self.state
             .append_assistant_message(&result.content, result.reasoning.as_deref())?;
+        for (tool_name, report) in persisted_tool_reports {
+            self.state.append_tool_report_context(&tool_name, &report)?;
+        }
         self.memory.process_after_turn(&input, &result.content)?;
         if let Some(usage) = &result.usage {
             self.state.add_usage(usage)?;
@@ -169,6 +179,7 @@ impl Agent {
         &self,
         messages: &mut Vec<ChatMessage>,
         used_tools: &mut Vec<String>,
+        persisted_tool_reports: &mut Vec<(String, String)>,
         on_event: &mut F,
     ) -> Result<ChatResult>
     where
@@ -260,6 +271,13 @@ impl Agent {
                                         ok: true,
                                         output: output.clone(),
                                     })?;
+                                    if let Some(report) = extract_persistable_tool_report(
+                                        &call.function.name,
+                                        &output,
+                                    ) {
+                                        persisted_tool_reports
+                                            .push((call.function.name.clone(), report));
+                                    }
                                     output
                                 }
                                 Err(err) => {
@@ -305,15 +323,73 @@ impl Agent {
     }
 }
 
+fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
+    let field = match tool_name {
+        "linux_game_compatibility" => "final_report",
+        "deep_diagnose" | "deep_research" => "final_answer",
+        _ => return None,
+    };
+    serde_json::from_str::<serde_json::Value>(output)
+        .ok()
+        .and_then(|value| {
+            value
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .map(str::to_string)
+        })
+        .filter(|report| !report.is_empty())
+}
+
 fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
     let cwd = std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+    let runtime = terminal_runtime_context();
     format!(
-        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n当前工作目录：{cwd}。涉及相对路径、当前项目、文件操作时优先以此为准。\n</system-reminder>\n\n{}",
+        "{system_prompt}\n\n<system-reminder>\n当前系统时间：{}。用户询问当前时间时，优先使用这里的时间，不需要调用命令查询。\n当前工作目录：{cwd}。涉及相对路径、当前项目、文件操作时优先以此为准。\n{runtime}\n</system-reminder>\n\n{}",
         Local::now().format("%Y年%m月%d日 %H:%M"),
         mode.reminder()
     )
+}
+
+fn terminal_runtime_context() -> String {
+    let stdin_tty = std::io::stdin().is_terminal();
+    let stdout_tty = std::io::stdout().is_terminal();
+    let stderr_tty = std::io::stderr().is_terminal();
+    let environment = if stdin_tty || stdout_tty || stderr_tty {
+        if crate::i18n::is_zh() {
+            "终端会话"
+        } else {
+            "terminal session"
+        }
+    } else if crate::i18n::is_zh() {
+        "非交互或管道环境"
+    } else {
+        "non-interactive or piped environment"
+    };
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut terminal_parts = Vec::new();
+    for key in ["TERM_PROGRAM", "TERM", "COLORTERM"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                terminal_parts.push(format!("{key}={value}"));
+            }
+        }
+    }
+    let terminal = if terminal_parts.is_empty() {
+        "unknown".to_string()
+    } else {
+        terminal_parts.join(", ")
+    };
+    if crate::i18n::is_zh() {
+        format!("当前运行环境：{environment}。当前 shell：{shell}。当前终端标识：{terminal}。")
+    } else {
+        format!("Current runtime environment: {environment}. Current shell: {shell}. Terminal identifiers: {terminal}.")
+    }
 }
 
 fn clean_user_visible_text(input: &str) -> String {
