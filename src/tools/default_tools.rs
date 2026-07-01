@@ -711,7 +711,7 @@ fn ensure_safe_trash_target(path: &Path) -> Result<()> {
         Path::new("/usr"),
         Path::new("/var"),
     ];
-    if dangerous.iter().any(|item| path == *item) {
+    if dangerous.contains(&path) {
         bail!(
             "refusing to trash dangerous system path: {}",
             path.display()
