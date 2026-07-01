@@ -1103,7 +1103,7 @@ fn format_text_file(content: &str) -> String {
 
 fn parse_key_list(value: &str) -> Vec<String> {
     value
-        .split(|ch| ch == ',' || ch == '\n' || ch == '\r')
+        .split([',', '\n', '\r'])
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_string)
@@ -1508,7 +1508,7 @@ impl<'a> ProviderBrowser<'a> {
                 .to_string()
         };
         let status = if self.loading {
-            format!("{}", self.status)
+            self.status.to_string()
         } else {
             self.status.clone()
         };
@@ -1878,11 +1878,9 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
                 edit_textarea(stdout, &mut fields[selected].value)?;
                 return Ok(true);
             }
-            KeyCode::Enter if !editing => {
-                if !fields[selected].boolean {
-                    fcitx.enter_editing();
-                    editing = true;
-                }
+            KeyCode::Enter if !editing && !fields[selected].boolean => {
+                fcitx.enter_editing();
+                editing = true;
             }
             KeyCode::Char('s') if !editing => return Ok(true),
             KeyCode::Up | KeyCode::Char('k') if !editing => selected = selected.saturating_sub(1),
@@ -1902,10 +1900,8 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
             }
             KeyCode::Home if editing => cursors[selected] = 0,
             KeyCode::End if editing => cursors[selected] = fields[selected].value.chars().count(),
-            KeyCode::Backspace if editing => {
-                if cursors[selected] > 0 {
-                    remove_char_before_cursor(&mut fields[selected].value, &mut cursors[selected]);
-                }
+            KeyCode::Backspace if editing && cursors[selected] > 0 => {
+                remove_char_before_cursor(&mut fields[selected].value, &mut cursors[selected]);
             }
             KeyCode::Delete if editing => {
                 remove_char_at_cursor(&mut fields[selected].value, cursors[selected])
@@ -2153,6 +2149,7 @@ fn draw_box(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_column(
     stdout: &mut io::Stdout,
     x: u16,
@@ -2208,7 +2205,7 @@ fn draw_form(
     cursors: &[usize],
 ) -> Result<()> {
     let (cols, rows) = terminal::size()?;
-    let width = cols.saturating_sub(8).min(96).max(48);
+    let width = cols.saturating_sub(8).clamp(48, 96);
     let height = (fields.len() as u16 + 8)
         .min(rows.saturating_sub(4))
         .max(10);
