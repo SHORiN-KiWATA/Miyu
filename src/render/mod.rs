@@ -478,7 +478,7 @@ impl StreamRenderer {
             .tool_stats
             .iter()
             .map(|(name, stats)| {
-                let header = tool_status_text(&self.display_tool_name(name), stats);
+                let header = tool_status_text(self.display_tool_name(name), stats);
                 stats.progress.as_ref().map_or(header.clone(), |message| {
                     let progress = message
                         .lines()
@@ -910,7 +910,7 @@ fn render_inline(text: &str) -> String {
                             output.push_str(": ");
                             output.push_str(&alt);
                         }
-                        output.push_str("]");
+                        output.push(']');
                         output.push_str(RESET);
                         output.push('(');
                         output.push_str(&render_url(
@@ -981,15 +981,13 @@ fn render_inline(text: &str) -> String {
                 continue;
             }
         }
-        if chars[index] == '_' {
-            if is_emphasis_start(&chars, index) {
-                if let Some(end) = find_emphasis_end(&chars, index + 1, '_') {
-                    output.push_str(ITALIC_STYLE);
-                    output.extend(chars[index + 1..end].iter());
-                    output.push_str(RESET);
-                    index = end + 1;
-                    continue;
-                }
+        if chars[index] == '_' && is_emphasis_start(&chars, index) {
+            if let Some(end) = find_emphasis_end(&chars, index + 1, '_') {
+                output.push_str(ITALIC_STYLE);
+                output.extend(chars[index + 1..end].iter());
+                output.push_str(RESET);
+                index = end + 1;
+                continue;
             }
         }
         if chars[index] == '[' {
