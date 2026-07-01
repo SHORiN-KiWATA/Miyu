@@ -211,7 +211,7 @@ pub struct MemoryConfig {
     pub learning_min_method_chars: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginsConfig {
     #[serde(default)]
     pub weather: PluginEnabledConfig,
@@ -499,33 +499,6 @@ impl Default for DisplayConfig {
             reasoning: default_reasoning_display(),
             tool_calls: default_tool_call_display(),
             readable_tool_names: default_true(),
-        }
-    }
-}
-
-impl Default for PluginsConfig {
-    fn default() -> Self {
-        Self {
-            weather: PluginEnabledConfig::default(),
-            web: WebPluginConfig::default(),
-            web_images: WebImagesPluginConfig::default(),
-            deep_research: DeepResearchPluginConfig::default(),
-            vision: VisionPluginConfig::default(),
-            exchange_rate: ExchangeRatePluginConfig::default(),
-            xuanxue: PluginEnabledConfig::default(),
-            image_generation: ImageGenerationPluginConfig::default(),
-            print_image: PrintImagePluginConfig::default(),
-            memes: MemesPluginConfig::default(),
-            knowledge_base: KnowledgeBasePluginConfig::default(),
-            archlinux: PluginEnabledConfig::default(),
-            man: PluginEnabledConfig::default(),
-            moegirl: PluginEnabledConfig::default(),
-            hash_codec: PluginEnabledConfig::default(),
-            calculator: CalculatorPluginConfig::default(),
-            package_advisor: PluginEnabledConfig::default(),
-            linux_game_compatibility: PluginEnabledConfig::default(),
-            diagnostics: DiagnosticsPluginConfig::default(),
-            memory: MemoryConfig::default(),
         }
     }
 }
