@@ -1779,6 +1779,10 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         Field::new("显示工具调用信息", config.display.tool_calls.clone())
             .choices(&["summary", "full", "hidden"]),
         Field::boolean("工具名可读显示", config.display.readable_tool_names),
+        Field::new(
+            "Market URL",
+            format!("{}/{}", config.market.repo, config.market.branch),
+        ),
     ];
     if run_form(stdout, " GLOBAL SETTINGS ", &mut fields)? {
         config.tools.enabled = parse_bool_field(&fields[0].value)?;
@@ -1788,6 +1792,10 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         config.display.reasoning = fields[4].value.trim().to_string();
         config.display.tool_calls = fields[5].value.trim().to_string();
         config.display.readable_tool_names = parse_bool_field(&fields[6].value)?;
+        let url = fields[7].value.trim().to_string();
+        if !url.is_empty() && url.contains('/') {
+            config.market.repo = url;
+        }
     }
     Ok(())
 }

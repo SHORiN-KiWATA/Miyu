@@ -17,7 +17,7 @@ mod memory;
 mod moegirl;
 mod package_advisor;
 mod registry;
-mod skills;
+pub(crate) mod skills;
 mod vision;
 mod weather;
 mod web;

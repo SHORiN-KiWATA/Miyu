@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub prompt: PromptConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub market: MarketConfig,
     #[serde(default, skip_serializing)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -262,6 +264,31 @@ pub struct PluginEnabledConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketConfig {
+    #[serde(default = "default_market_repo")]
+    pub repo: String,
+    #[serde(default = "default_market_branch")]
+    pub branch: String,
+}
+
+fn default_market_repo() -> String {
+    "RyanZhangK/Miyu".to_string()
+}
+
+fn default_market_branch() -> String {
+    "market".to_string()
+}
+
+impl Default for MarketConfig {
+    fn default() -> Self {
+        Self {
+            repo: default_market_repo(),
+            branch: default_market_branch(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebPluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -474,6 +501,7 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             prompt: PromptConfig::default(),
             plugins: PluginsConfig::default(),
+            market: MarketConfig::default(),
             memory: MemoryConfig::default(),
             system_prompt_file: Some("system-prompt.md".to_string()),
             system_prompt: None,
