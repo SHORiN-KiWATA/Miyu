@@ -99,7 +99,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: build
+    needs: [lint, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -114,9 +114,11 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: build
+    needs: [lint, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Download all artifacts
@@ -124,7 +126,9 @@ jobs:
         with:
           path: artifacts
       - name: Restructure artifacts
+        shell: bash
         run: |
+          shopt -s nullglob
           mkdir -p release-assets
           for dir in artifacts/miyu-*; do
             target=$(basename "$dir" | sed 's/^miyu-//')
@@ -132,6 +136,10 @@ jobs:
             [[ "$target" == *windows* ]] && ext=".exe"
             mv "$dir/miyu$ext" "release-assets/miyu-$target$ext"
           done
+          if [ -z "$(ls -A release-assets 2>/dev/null)" ]; then
+            echo "::error::no artifacts downloaded; refusing to create empty release"
+            exit 1
+          fi
           ls -l release-assets
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
