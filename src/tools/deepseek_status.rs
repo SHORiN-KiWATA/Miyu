@@ -43,7 +43,7 @@ async fn query_deepseek_status(args: Value) -> Result<String> {
 
 async fn fetch_status_html() -> Result<String> {
     match fetch_status_html_with_curl().await {
-        Ok(html) => return Ok(html),
+        Ok(html) => Ok(html),
         Err(curl_err) => match fetch_status_html_with_reqwest().await {
             Ok(html) => Ok(html),
             Err(reqwest_err) => bail!(
@@ -205,7 +205,7 @@ fn build_response(raw: &Value, include_incidents: bool, max_incidents: usize) ->
             let Some(id) = component.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            if affected_ids.iter().any(|affected| *affected == id) {
+            if affected_ids.contains(&id) {
                 component["status"] = Value::String(change_status.to_string());
             }
         }
