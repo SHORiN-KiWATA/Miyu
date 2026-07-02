@@ -170,7 +170,7 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
     fixed + &truncate(description, remaining)
 }
 
-fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
+fn plugin_names() -> [(&'static str, &'static str, &'static str); 14] {
     [
         ("web", "网络搜索", "搜索 API 与脚本 fallback"),
         ("deep_research", "深度研究", "长任务研究并输出 Markdown"),
@@ -189,6 +189,7 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
             "Linux 游戏兼容",
             "Proton/反作弊/兼容性查询",
         ),
+        ("market", "人格市场", "人格与角色浏览/安装/更新"),
     ]
 }
 
@@ -207,6 +208,7 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
         10 => config.plugins.memory.enabled,
         11 => config.plugins.package_advisor.enabled,
         12 => config.plugins.linux_game_compatibility.enabled,
+        13 => config.plugins.market.enabled,
         _ => false,
     }
 }
@@ -227,6 +229,7 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
         10 => config.plugins.memory.enabled = value,
         11 => config.plugins.package_advisor.enabled = value,
         12 => config.plugins.linux_game_compatibility.enabled = value,
+        13 => config.plugins.market.enabled = value,
         _ => {}
     }
 }
@@ -533,6 +536,12 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             "启用",
             config.plugins.linux_game_compatibility.enabled,
         )],
+        13 => vec![
+            Field::boolean("启用", config.plugins.market.enabled),
+            Field::new("Market Repo", config.market.repo.clone()),
+            Field::new("Market Branch", config.market.branch.clone()),
+            Field::new("Token", config.market.token.clone()),
+        ],
         _ => vec![Field::boolean("启用", plugin_enabled(config, index))],
     }
 }
@@ -670,6 +679,18 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
         }
         12 => {
             config.plugins.linux_game_compatibility.enabled = parse_bool_field(&fields[0].value)?;
+        }
+        13 => {
+            config.plugins.market.enabled = parse_bool_field(&fields[0].value)?;
+            let repo = fields[1].value.trim().to_string();
+            if !repo.is_empty() {
+                config.market.repo = repo;
+            }
+            let branch = fields[2].value.trim().to_string();
+            if !branch.is_empty() {
+                config.market.branch = branch;
+            }
+            config.market.token = fields[3].value.trim().to_string();
         }
         _ => {
             let value = parse_bool_field(&fields[0].value)?;

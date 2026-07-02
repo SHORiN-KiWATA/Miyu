@@ -168,7 +168,7 @@ async fn run_web_search(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn frontmatter_value(raw: &str, key: &str) -> Option<String> {
+pub(crate) fn frontmatter_value(raw: &str, key: &str) -> Option<String> {
     let mut lines = raw.lines();
     if lines.next()? != "---" {
         return None;
@@ -187,7 +187,7 @@ fn frontmatter_value(raw: &str, key: &str) -> Option<String> {
     None
 }
 
-fn strip_frontmatter(raw: &str) -> String {
+pub(crate) fn strip_frontmatter(raw: &str) -> String {
     let mut lines = raw.lines();
     if lines.next() != Some("---") {
         return raw.to_string();

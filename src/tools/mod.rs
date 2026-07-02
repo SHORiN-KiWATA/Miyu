@@ -12,12 +12,13 @@ mod image_generation;
 pub mod knowledge_base;
 mod linux_game;
 mod man;
+mod market_tools;
 pub(crate) mod memes;
 mod memory;
 mod moegirl;
 mod package_advisor;
 mod registry;
-mod skills;
+pub(crate) mod skills;
 mod vision;
 mod weather;
 mod web;
@@ -89,6 +90,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.memory_config().enabled {
         memory::register(&mut registry, config.clone(), paths.clone());
     }
+    if config.plugins.market.enabled {
+        market_tools::register(&mut registry, config.clone(), paths.clone());
+    }
     registry
 }
 
@@ -123,6 +127,9 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     if config.memory_config().enabled {
         memory::register_readonly(&mut registry, config.clone(), paths.clone());
+    }
+    if config.plugins.market.enabled {
+        market_tools::register_readonly(&mut registry, config.clone(), paths.clone());
     }
     registry
 }
