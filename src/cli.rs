@@ -1520,6 +1520,10 @@ fn print_repl_help() {
     println!("  Enter       {}", t("send message", "发送消息"));
     println!("  Ctrl+J      {}", t("insert newline", "插入换行"));
     println!(
+        "  Ctrl+L      {}",
+        t("clear screen", "清屏")
+    );
+    println!(
         "  Up/Down     {}",
         t("browse input history", "切换输入历史")
     );
@@ -1727,6 +1731,20 @@ fn read_repl_input(
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(None);
+                }
+                KeyCode::Char('l') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    queue!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+                    stdout.flush()?;
+                    input_row = 0;
+                    rendered_rows = 0;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                    )?;
                 }
                 KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
                     remove_word_before_cursor(&mut input, &mut cursor);
