@@ -129,7 +129,7 @@ async fn search_web_images(
     let Some(count) = args.get("count").and_then(Value::as_u64) else {
         bail!("count is required; choose the number of images from the user's request")
     };
-    let count = count.clamp(1, plugin.max_results.max(1).min(10) as u64) as usize;
+    let count = count.clamp(1, plugin.max_results.clamp(1, 10) as u64) as usize;
     let safe_search = args
         .get("safe_search")
         .and_then(Value::as_bool)
@@ -407,6 +407,7 @@ fn parse_bing_results(html: &str, limit: usize) -> Vec<ImageCandidate> {
     candidates
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_candidate(
     title: &str,
     page_url: &str,
@@ -448,6 +449,7 @@ fn build_candidate(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_and_store_images(
     config: &AppConfig,
     paths: &MiyuPaths,

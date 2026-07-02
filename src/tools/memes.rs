@@ -949,12 +949,8 @@ fn meme_print_size(args: &Value, config: &MemesPluginConfig) -> Option<String> {
 
 fn configured_meme_size(config: &MemesPluginConfig) -> Option<String> {
     let (cols, rows) = crossterm::terminal::size().ok()?;
-    let width = ((cols as u32 * config.width_percent as u32) / 100)
-        .max(1)
-        .min(160);
-    let height = ((rows as u32 * config.height_percent as u32) / 100)
-        .max(1)
-        .min(80);
+    let width = ((cols as u32 * config.width_percent as u32) / 100).clamp(1, 160);
+    let height = ((rows as u32 * config.height_percent as u32) / 100).clamp(1, 80);
     Some(format!("{width}x{height}"))
 }
 

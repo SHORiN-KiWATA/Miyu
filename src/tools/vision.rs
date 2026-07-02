@@ -202,8 +202,8 @@ async fn analyze_image_url_with_prompt(
     if !vision.enabled {
         bail!("vision plugin is disabled")
     }
-    let provider = vision_provider(&config, vision)?;
-    let client = OpenAiCompatibleClient::new(&provider, &config, &paths)?;
+    let provider = vision_provider(config, vision)?;
+    let client = OpenAiCompatibleClient::new(&provider, config, paths)?;
     let result = client
         .chat_stream(
             vec![
