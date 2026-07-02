@@ -1,0 +1,151 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master, dev]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Lower the macOS minimum deployment target so binaries run on
+  # older releases (down to Big Sur) regardless of which runner image
+  # produced them. Has no effect on non-macOS platforms.
+  MACOSX_DEPLOYMENT_TARGET: '11.0'
+
+jobs:
+  lint:
+    name: fmt & clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install ALSA dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            runner: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            runner: linux-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            runner: macos-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            runner: macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            runner: windows-x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            runner: windows-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install ALSA dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.runner }}-
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Strip debug symbols (Unix)
+        if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/miyu
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: miyu-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/miyu${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [lint, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+      - name: Cargo publish
+        run: cargo publish --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    name: GitHub Release
+    needs: [lint, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Restructure artifacts
+        shell: bash
+        run: |
+          shopt -s nullglob
+          mkdir -p release-assets
+          for dir in artifacts/miyu-*; do
+            target=$(basename "$dir" | sed 's/^miyu-//')
+            ext=""
+            [[ "$target" == *windows* ]] && ext=".exe"
+            mv "$dir/miyu$ext" "release-assets/miyu-$target$ext"
+          done
+          if [ -z "$(ls -A release-assets 2>/dev/null)" ]; then
+            echo "::error::no artifacts downloaded; refusing to create empty release"
+            exit 1
+          fi
+          ls -l release-assets
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
