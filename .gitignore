@@ -1,6 +1,7 @@
 /target/
 /.idea/
 /.vscode/
+CLAUDE.md
 .DS_Store
 *.tmp
 *.bak

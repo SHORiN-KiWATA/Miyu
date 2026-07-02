@@ -2,6 +2,7 @@ use crate::agent::{Agent, AgentEvent, AgentMode};
 use crate::config::AppConfig;
 use crate::i18n::{is_zh, text as t};
 use crate::llm::OpenAiCompatibleClient;
+use crate::market;
 use crate::memory::MemoryStore;
 use crate::paths::MiyuPaths;
 use crate::render;
@@ -202,6 +203,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ),
         ("skills", "Manage assistant skills", "管理助手 skills"),
         (
+            "market",
+            "Browse and install personas and identities",
+            "浏览和安装人格与角色",
+        ),
+        (
             "reset",
             "Clear current conversation history",
             "清空当前会话历史",
@@ -217,6 +223,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         .mut_subcommand("kb", localize_kb_command)
         .mut_subcommand("memory", localize_memory_command)
         .mut_subcommand("skills", localize_skills_command)
+        .mut_subcommand("market", localize_market_command)
         .mut_subcommand("config", localize_config_command)
         .mut_subcommand("reset", localize_reset_command);
     command
@@ -267,6 +274,64 @@ fn localize_reset_command(command: clap::Command) -> clap::Command {
             "all 同时清空长期记忆",
         ))
     })
+}
+
+fn localize_market_command(mut command: clap::Command) -> clap::Command {
+    for (name, en, zh) in [
+        (
+            "list",
+            "List available personas or identities",
+            "列出可用人格或角色",
+        ),
+        (
+            "show",
+            "Show content of a persona or identity",
+            "显示人格或角色内容",
+        ),
+        (
+            "install",
+            "Install a persona or identity from market",
+            "从市场安装人格或角色",
+        ),
+        (
+            "update",
+            "Update installed personas or identities",
+            "更新已安装的人格或角色",
+        ),
+    ] {
+        command = command.mut_subcommand(name, |sub| sub.about(t(en, zh)));
+    }
+    command = command
+        .mut_subcommand("list", |sub| {
+            sub.mut_arg("kind", |arg| {
+                arg.help(t("personas or identities", "personas 或 identities"))
+            })
+        })
+        .mut_subcommand("show", |sub| {
+            sub.mut_arg("kind", |arg| {
+                arg.help(t("persona or identity", "persona 或 identity"))
+            })
+            .mut_arg("name", |arg| {
+                arg.help(t("Persona/identity name", "人格/角色名称"))
+            })
+        })
+        .mut_subcommand("install", |sub| {
+            sub.mut_arg("kind", |arg| {
+                arg.help(t("persona or identity", "persona 或 identity"))
+            })
+            .mut_arg("name", |arg| {
+                arg.help(t("Persona/identity name", "人格/角色名称"))
+            })
+        })
+        .mut_subcommand("update", |sub| {
+            sub.mut_arg("kind", |arg| {
+                arg.help(t("personas or identities", "personas 或 identities"))
+            })
+            .mut_arg("name", |arg| {
+                arg.help(t("Persona/identity name (omit to update all)", "人格/角色名称（省略则更新全部）"))
+            })
+        });
+    command
 }
 
 fn localize_kb_command(mut command: clap::Command) -> clap::Command {
@@ -401,6 +466,7 @@ pub enum Command {
     UpdateDefaultKb,
     Memory(MemoryArgs),
     Skills(SkillsArgs),
+    Market(MarketArgs),
     Reset(ResetArgs),
 }
 
@@ -522,6 +588,31 @@ pub struct SkillNameArgs {
     pub name: String,
 }
 
+#[derive(Debug, Args)]
+pub struct MarketArgs {
+    #[command(subcommand)]
+    pub command: MarketCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MarketCommand {
+    List {
+        kind: String,
+    },
+    Show {
+        kind: String,
+        name: String,
+    },
+    Install {
+        kind: String,
+        name: String,
+    },
+    Update {
+        kind: String,
+        name: Option<String>,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 pub enum KbCommand {
     Add(KbAddArgs),
@@ -639,6 +730,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
+        Some(Command::Market(args)) => run_market(&paths, args).await,
         Some(Command::Reset(args)) => run_reset(&paths, args.scope.as_deref()),
         None => {
             let message = join_message(cli.message);
@@ -2486,6 +2578,20 @@ fn skill_dir(paths: &MiyuPaths, name: &str) -> Result<PathBuf> {
         bail!("{}: {name}", t("skill not found", "未找到 skill"));
     }
     Ok(dir)
+}
+
+async fn run_market(paths: &MiyuPaths, args: MarketArgs) -> Result<()> {
+    let config = AppConfig::load_or_default(paths)?;
+    match args.command {
+        MarketCommand::List { kind } => market::list(&config.market, &kind).await,
+        MarketCommand::Show { kind, name } => market::show(&config.market, &kind, &name).await,
+        MarketCommand::Install { kind, name } => {
+            market::install(&config, paths, &kind, &name).await
+        }
+        MarketCommand::Update { kind, name } => {
+            market::update(&config, paths, &kind, name.as_deref()).await
+        }
+    }
 }
 
 fn run_reset(paths: &MiyuPaths, scope: Option<&str>) -> Result<()> {

@@ -7,6 +7,7 @@ mod default_kb;
 mod default_models;
 mod i18n;
 mod llm;
+mod market;
 mod memory;
 mod paths;
 mod prompts;
