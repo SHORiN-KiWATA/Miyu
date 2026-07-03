@@ -1524,6 +1524,10 @@ fn print_repl_help() {
     println!("  Enter       {}", t("send message", "发送消息"));
     println!("  Ctrl+J      {}", t("insert newline", "插入换行"));
     println!(
+        "  Ctrl+L      {}",
+        t("clear screen", "清屏")
+    );
+    println!(
         "  Up/Down     {}",
         t("browse input history", "切换输入历史")
     );
@@ -1551,6 +1555,7 @@ fn read_repl_input(
     execute!(stdout, EnableBracketedPaste)?;
     let (_, mut input_row) = cursor::position()?;
     let mut rendered_rows = 0u16;
+    let mut is_pasted = false;
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -1558,12 +1563,14 @@ fn read_repl_input(
         mode,
         &input,
         cursor,
+        is_pasted,
     )?;
     loop {
         match event::read()? {
             Event::Paste(text) => {
                 let text = strip_terminal_control_sequences(&text);
                 insert_str_at_cursor(&mut input, &mut cursor, &text);
+                is_pasted = true;
                 render_repl_input(
                     &mut stdout,
                     &mut input_row,
@@ -1571,6 +1578,7 @@ fn read_repl_input(
                     mode,
                     &input,
                     cursor,
+                    is_pasted,
                 )?;
             }
             Event::Key(KeyEvent {
@@ -1589,6 +1597,7 @@ fn read_repl_input(
                             AgentMode::Yolo
                         };
                     }
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1596,11 +1605,13 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Esc => {
                     input.clear();
                     cursor = 0;
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1608,6 +1619,7 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Left => {
@@ -1619,6 +1631,7 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Right => {
@@ -1630,6 +1643,7 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Home => {
@@ -1641,6 +1655,7 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::End => {
@@ -1652,20 +1667,25 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
-                KeyCode::Up if !history.is_empty() => {
-                    history_index = history_index.saturating_sub(1);
-                    input = history.get(history_index).cloned().unwrap_or_default();
-                    cursor = input.chars().count();
-                    render_repl_input(
-                        &mut stdout,
-                        &mut input_row,
-                        &mut rendered_rows,
-                        mode,
-                        &input,
-                        cursor,
-                    )?;
+                KeyCode::Up => {
+                    if !history.is_empty() {
+                        history_index = history_index.saturating_sub(1);
+                        input = history.get(history_index).cloned().unwrap_or_default();
+                        cursor = input.chars().count();
+                        is_pasted = false;
+                        render_repl_input(
+                            &mut stdout,
+                            &mut input_row,
+                            &mut rendered_rows,
+                            mode,
+                            &input,
+                            cursor,
+                            is_pasted,
+                        )?;
+                    }
                 }
                 KeyCode::Down => {
                     if history_index + 1 < history.len() {
@@ -1676,6 +1696,7 @@ fn read_repl_input(
                         input.clear();
                     }
                     cursor = input.chars().count();
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1683,6 +1704,7 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Enter => {
@@ -1694,6 +1716,7 @@ fn read_repl_input(
                 }
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut input, &mut cursor);
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1701,12 +1724,14 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     if !input.is_empty() {
                         input.clear();
                         cursor = 0;
+                        is_pasted = false;
                         render_repl_input(
                             &mut stdout,
                             &mut input_row,
@@ -1714,6 +1739,7 @@ fn read_repl_input(
                             mode,
                             &input,
                             cursor,
+                            is_pasted,
                         )?;
                         continue;
                     }
@@ -1730,8 +1756,11 @@ fn read_repl_input(
                     terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
-                KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    remove_word_before_cursor(&mut input, &mut cursor);
+                KeyCode::Char('l') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    queue!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+                    stdout.flush()?;
+                    input_row = 0;
+                    rendered_rows = 0;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1739,12 +1768,27 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
+                    )?;
+                }
+                KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    remove_word_before_cursor(&mut input, &mut cursor);
+                    is_pasted = false;
+                    render_repl_input(
+                        &mut stdout,
+                        &mut input_row,
+                        &mut rendered_rows,
+                        mode,
+                        &input,
+                        cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Backspace => {
                     if cursor > 0 {
                         remove_char_before_cursor(&mut input, &mut cursor);
                     }
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1752,10 +1796,12 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Delete => {
                     remove_char_at_cursor(&mut input, cursor);
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1763,12 +1809,14 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
                     if !is_disallowed_control_char(ch) {
                         insert_char_at_cursor(&mut input, &mut cursor, ch);
                     }
+                    is_pasted = false;
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1776,6 +1824,7 @@ fn read_repl_input(
                         mode,
                         &input,
                         cursor,
+                        is_pasted,
                     )?;
                 }
                 _ => {}
@@ -1792,13 +1841,14 @@ fn render_repl_input(
     mode: AgentMode,
     input: &str,
     cursor: usize,
+    is_pasted: bool,
 ) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let prompt_prefix = format!("{} > ", colored_mode_label(mode));
     let plain_prefix = format!("[{}] > ", mode.label());
     let display_lines =
-        repl_visible_input_lines(&plain_prefix, &lines, REPL_MAX_VISIBLE_INPUT_ROWS);
+        repl_visible_input_lines(&plain_prefix, &lines, REPL_MAX_VISIBLE_INPUT_ROWS, is_pasted);
     let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
@@ -1849,9 +1899,14 @@ fn render_repl_input(
     Ok(())
 }
 
-fn repl_visible_input_lines(prefix: &str, lines: &[String], max_rows: u16) -> Vec<String> {
+fn repl_visible_input_lines(
+    prefix: &str,
+    lines: &[String],
+    max_rows: u16,
+    is_pasted: bool,
+) -> Vec<String> {
     let total_rows = repl_prompt_rows(prefix, lines);
-    if total_rows <= max_rows || lines.len() <= 2 {
+    if total_rows <= max_rows || lines.len() <= 2 || !is_pasted {
         return lines.to_vec();
     }
 
@@ -2215,7 +2270,7 @@ mod repl_input_tests {
         let lines = (0..20)
             .map(|index| format!("line {index}"))
             .collect::<Vec<_>>();
-        let visible = repl_visible_input_lines("[YOLO] > ", &lines, 12);
+        let visible = repl_visible_input_lines("[YOLO] > ", &lines, 12, true);
 
         assert_eq!(visible.len(), 3);
         assert_eq!(visible[0], "line 0");

@@ -222,6 +222,8 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub deep_research: DeepResearchPluginConfig,
     #[serde(default)]
+    pub deep_diagnose: DeepDiagnosePluginConfig,
+    #[serde(default)]
     pub vision: VisionPluginConfig,
     #[serde(default)]
     pub exchange_rate: ExchangeRatePluginConfig,
@@ -248,7 +250,7 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub package_advisor: PluginEnabledConfig,
     #[serde(default)]
-    pub linux_game_compatibility: PluginEnabledConfig,
+    pub linux_game_compatibility: LinuxGameCompatibilityConfig,
     #[serde(default)]
     pub diagnostics: DiagnosticsPluginConfig,
     #[serde(default)]
@@ -259,6 +261,14 @@ pub struct PluginsConfig {
 pub struct PluginEnabledConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinuxGameCompatibilityConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_subagent_max_tool_steps")]
+    pub max_tool_steps: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +321,26 @@ pub struct DeepResearchPluginConfig {
     pub max_final_answer_chars: usize,
     #[serde(default = "default_deep_research_tool_timeout")]
     pub tool_call_timeout_seconds: u64,
+    #[serde(default = "default_true")]
+    pub show_progress: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepDiagnosePluginConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_deep_research_depth")]
+    pub thinking_depth: String,
+    #[serde(default = "default_deep_research_max_review_revisions")]
+    pub max_review_revisions: usize,
+    #[serde(default = "default_deep_research_max_tool_steps")]
+    pub max_tool_steps_per_round: usize,
+    #[serde(default)]
+    pub max_final_answer_chars: usize,
+    #[serde(default = "default_deep_research_tool_timeout")]
+    pub tool_call_timeout_seconds: u64,
+    #[serde(default = "default_subagent_max_tool_steps")]
+    pub max_tool_steps: usize,
     #[serde(default = "default_true")]
     pub show_progress: bool,
 }
@@ -510,6 +540,7 @@ impl Default for PluginsConfig {
             web: WebPluginConfig::default(),
             web_images: WebImagesPluginConfig::default(),
             deep_research: DeepResearchPluginConfig::default(),
+            deep_diagnose: DeepDiagnosePluginConfig::default(),
             vision: VisionPluginConfig::default(),
             exchange_rate: ExchangeRatePluginConfig::default(),
             xuanxue: PluginEnabledConfig::default(),
@@ -523,7 +554,7 @@ impl Default for PluginsConfig {
             hash_codec: PluginEnabledConfig::default(),
             calculator: CalculatorPluginConfig::default(),
             package_advisor: PluginEnabledConfig::default(),
-            linux_game_compatibility: PluginEnabledConfig::default(),
+            linux_game_compatibility: LinuxGameCompatibilityConfig::default(),
             diagnostics: DiagnosticsPluginConfig::default(),
             memory: MemoryConfig::default(),
         }
@@ -534,6 +565,15 @@ impl Default for PluginEnabledConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
+        }
+    }
+}
+
+impl Default for LinuxGameCompatibilityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            max_tool_steps: default_subagent_max_tool_steps(),
         }
     }
 }
@@ -575,6 +615,21 @@ impl Default for DeepResearchPluginConfig {
             max_tool_steps_per_round: default_deep_research_max_tool_steps(),
             max_final_answer_chars: 0,
             tool_call_timeout_seconds: default_deep_research_tool_timeout(),
+            show_progress: default_true(),
+        }
+    }
+}
+
+impl Default for DeepDiagnosePluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            thinking_depth: default_deep_research_depth(),
+            max_review_revisions: default_deep_research_max_review_revisions(),
+            max_tool_steps_per_round: default_deep_research_max_tool_steps(),
+            max_final_answer_chars: 0,
+            tool_call_timeout_seconds: default_deep_research_tool_timeout(),
+            max_tool_steps: default_subagent_max_tool_steps(),
             show_progress: default_true(),
         }
     }
@@ -1003,6 +1058,13 @@ impl AppConfig {
             "minimal" | "low" | "medium" | "high" | "xhigh" => {}
             value => bail!("plugins.deep_research.thinking_depth is invalid: {value}"),
         }
+        match self.plugins.deep_diagnose.thinking_depth.as_str() {
+            "minimal" | "low" | "medium" | "high" | "xhigh" => {}
+            value => bail!("plugins.deep_diagnose.thinking_depth is invalid: {value}"),
+        }
+        if self.plugins.deep_diagnose.tool_call_timeout_seconds == 0 {
+            bail!("plugins.deep_diagnose.tool_call_timeout_seconds must be greater than 0");
+        }
         match self.plugins.image_generation.provider_type.as_str() {
             "openai" | "rightcode" => {}
             value => bail!("plugins.image_generation.provider_type is invalid: {value}"),
@@ -1392,11 +1454,11 @@ fn default_memory_min_method_chars() -> usize {
 }
 
 fn default_print_image_width_percent() -> u8 {
-    60
+    45
 }
 
 fn default_print_image_height_percent() -> u8 {
-    50
+    35
 }
 
 fn default_memes_width_percent() -> u8 {
@@ -1458,6 +1520,10 @@ fn default_deep_research_max_tool_steps() -> usize {
 
 fn default_deep_research_tool_timeout() -> u64 {
     90
+}
+
+fn default_subagent_max_tool_steps() -> usize {
+    100
 }
 
 fn default_image_generation_provider_type() -> String {

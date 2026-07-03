@@ -52,7 +52,7 @@ pub fn register_readonly(registry: &mut ToolRegistry) {
     ));
     registry.register(ToolSpec::new(
         "check_os_info",
-        t("Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context. For troubleshooting a concrete local issue, prefer inspect_issue.", "查看只读基础系统信息，包括 OS、shell、桌面会话、内核、主机和包管理器上下文。排查具体本机问题时优先使用 inspect_issue。"),
+        t("Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context. For concrete Linux input method issues, prefer linux_input_method_diagnose.", "查看只读基础系统信息，包括 OS、shell、桌面会话、内核、主机和包管理器上下文。排查具体 Linux 输入法问题时优先使用 linux_input_method_diagnose。"),
         json!({"type":"object","properties":{},"additionalProperties":false}),
         |_| async move { check_os_info() },
     ));
@@ -141,7 +141,7 @@ fn check_os_info() -> Result<String> {
         "package_manager_guess": package_manager_guess,
         "notes": [
             "This tool is read-only and does not execute shell commands.",
-            "This only reports basic OS context. For a concrete local issue, use inspect_issue."
+            "This only reports basic OS context. For concrete Linux input method issues, use linux_input_method_diagnose."
         ],
     }))?)
 }

@@ -55,6 +55,16 @@ impl StateStore {
         self.append_entry("assistant", content, reasoning)
     }
 
+    pub fn append_tool_report_context(&self, tool_name: &str, report: &str) -> Result<()> {
+        self.append_assistant_message(
+            &format!(
+                "<previous_tool_report name=\"{tool_name}\">\n{}\n</previous_tool_report>",
+                report.trim()
+            ),
+            None,
+        )
+    }
+
     pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
         let entries = self.load_conversation()?;
         if !matches!(entries.last(), Some(entry) if entry.role == "user") {

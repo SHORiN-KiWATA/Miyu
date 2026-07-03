@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::cursor::MoveToColumn;
+use crossterm::cursor::{MoveToColumn, MoveUp};
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use std::io::{self, IsTerminal, Write};
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const WIDTH: usize = 8;
+const WIDTH: usize = 7;
 const TRAIL_LEN: usize = 6;
 const HOLD_END: usize = 9;
 const HOLD_START: usize = 30;
@@ -16,6 +16,13 @@ const INTERVAL: Duration = Duration::from_millis(80);
 const MIN_FADE_ALPHA: f64 = 0.12;
 const ACTIVE_DOTS: [&str; TRAIL_LEN] = ["▪", "▪", "▫", "▫", "·", "·"];
 const INACTIVE_DOT: &str = "·";
+const BRAILLE_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpinnerStyle {
+    Scanner,
+    Braille,
+}
 
 #[derive(Clone, Copy)]
 struct ScannerState {
@@ -36,7 +43,10 @@ pub(crate) struct WaitSpinner {
 
 struct WaitSpinnerState {
     phase: String,
+    sub_phase: Option<String>,
     start: Instant,
+    lines_rendered: u16,
+    style: SpinnerStyle,
 }
 
 impl WaitSpinner {
@@ -44,10 +54,13 @@ impl WaitSpinner {
         io::stdout().is_terminal()
     }
 
-    pub(crate) fn start(phase: String) -> Self {
+    pub(crate) fn start(phase: String, style: SpinnerStyle) -> Self {
         let state = Arc::new(Mutex::new(WaitSpinnerState {
             phase,
+            sub_phase: None,
             start: Instant::now(),
+            lines_rendered: 0,
+            style,
         }));
         let running = Arc::new(AtomicBool::new(true));
         let thread_state = Arc::clone(&state);
@@ -66,12 +79,23 @@ impl WaitSpinner {
         }
     }
 
+    pub(crate) fn set_sub_phase(&self, sub_phase: Option<String>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.sub_phase = sub_phase;
+        }
+    }
+
     pub(crate) fn stop(&mut self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-        clear_spinner_line()
+        let lines = self
+            .state
+            .lock()
+            .map(|state| state.lines_rendered)
+            .unwrap_or(0);
+        clear_spinner_lines(lines)
     }
 }
 
@@ -84,35 +108,55 @@ impl Drop for WaitSpinner {
 fn run_spinner_loop(state: Arc<Mutex<WaitSpinnerState>>, running: Arc<AtomicBool>) {
     let mut frame = 0usize;
     while running.load(Ordering::SeqCst) {
-        let line = match state.lock() {
-            Ok(state) => render_frame(frame, &state),
-            Err(_) => String::new(),
+        let (output, prev_lines, lines) = match state.lock() {
+            Ok(mut guard) => {
+                let prev = guard.lines_rendered;
+                let (output, lines) = render_frame(frame, &guard);
+                guard.lines_rendered = lines;
+                (output, prev, lines)
+            }
+            Err(_) => (String::new(), 0, 0),
         };
-        if !line.is_empty() {
-            let _ = write_spinner_line(&line);
+        if !output.is_empty() {
+            let _ = write_spinner_lines(&output, prev_lines, lines);
         }
         thread::sleep(INTERVAL);
-        frame = (frame + 1) % total_frames();
+        let total = total_frames_for_style(state.lock().map(|s| s.style).unwrap_or(SpinnerStyle::Scanner));
+        frame = (frame + 1) % total.max(1);
     }
 }
 
-fn render_frame(frame: usize, state: &WaitSpinnerState) -> String {
-    let scanner = scanner_state(frame % total_frames());
+fn render_frame(frame: usize, state: &WaitSpinnerState) -> (String, u16) {
     let elapsed = state.start.elapsed();
     let elapsed = if elapsed > Duration::from_secs(1) {
         format!(" {:.1}s", elapsed.as_secs_f64())
     } else {
         String::new()
     };
-    let cells = (0..WIDTH)
-        .map(|char_index| render_cell(char_index, scanner))
-        .collect::<String>();
-    format!(
+    let spinner_prefix = match state.style {
+        SpinnerStyle::Scanner => {
+            let scanner = scanner_state(frame % total_frames_scanner());
+            (0..WIDTH)
+                .map(|char_index| render_cell(char_index, scanner))
+                .collect::<String>()
+        }
+        SpinnerStyle::Braille => {
+            paint_secondary(BRAILLE_FRAMES[frame % BRAILLE_FRAMES.len()])
+        }
+    };
+    let main_line = format!(
         "{} {}{}",
-        cells,
+        spinner_prefix,
         paint_secondary(&state.phase),
         paint_secondary(&elapsed)
-    )
+    );
+    match &state.sub_phase {
+        Some(sub) if !sub.trim().is_empty() => {
+            let sub_line = format!("  {}", paint_secondary(sub));
+            (format!("{main_line}\n{sub_line}"), 2)
+        }
+        _ => (main_line, 1),
+    }
 }
 
 fn render_cell(char_index: usize, state: ScannerState) -> String {
@@ -142,8 +186,15 @@ fn paint_inactive_dot(fade: f64) -> String {
     }
 }
 
-fn total_frames() -> usize {
+fn total_frames_scanner() -> usize {
     WIDTH + HOLD_END + (WIDTH - 1) + HOLD_START
+}
+
+fn total_frames_for_style(style: SpinnerStyle) -> usize {
+    match style {
+        SpinnerStyle::Scanner => total_frames_scanner(),
+        SpinnerStyle::Braille => BRAILLE_FRAMES.len(),
+    }
 }
 
 fn scanner_state(mut frame: usize) -> ScannerState {
@@ -231,17 +282,38 @@ fn paint_secondary(text: &str) -> String {
     format!("\x1b[2m\x1b[36m{text}\x1b[0m")
 }
 
-fn write_spinner_line(line: &str) -> Result<()> {
+fn write_spinner_lines(output: &str, prev_lines: u16, lines: u16) -> Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-    write!(stdout, "{line}")?;
+    if prev_lines > 1 {
+        for _ in 1..prev_lines {
+            execute!(stdout, MoveUp(1))?;
+        }
+    }
+    for (index, line) in output.lines().enumerate() {
+        execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        write!(stdout, "{line}")?;
+        if index + 1 < output.lines().count() {
+            write!(stdout, "\n")?;
+        }
+    }
+    if prev_lines > lines {
+        for _ in lines..prev_lines {
+            execute!(stdout, MoveUp(1))?;
+            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        }
+    }
     stdout.flush()?;
     Ok(())
 }
 
-fn clear_spinner_line() -> Result<()> {
+fn clear_spinner_lines(lines: u16) -> Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+    for i in 0..lines {
+        if i > 0 {
+            execute!(stdout, MoveUp(1))?;
+        }
+        execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+    }
     stdout.flush()?;
     Ok(())
 }
@@ -250,30 +322,71 @@ fn clear_spinner_line() -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn render_frame_has_phase_without_face() {
-        let state = WaitSpinnerState {
-            phase: "思考".to_string(),
+    fn make_state(phase: &str, sub_phase: Option<&str>, style: SpinnerStyle) -> WaitSpinnerState {
+        WaitSpinnerState {
+            phase: phase.to_string(),
+            sub_phase: sub_phase.map(|s| s.to_string()),
             start: Instant::now(),
-        };
-
-        let frame = render_frame(0, &state);
-
-        assert!(frame.contains("思考"));
-        assert!(!frame.contains('('));
+            lines_rendered: 0,
+            style,
+        }
     }
 
     #[test]
-    fn frames_loop_over_pattern() {
-        let state = WaitSpinnerState {
-            phase: "thinking".to_string(),
-            start: Instant::now(),
-        };
+    fn render_frame_scanner_has_phase_without_face() {
+        let state = make_state("思考", None, SpinnerStyle::Scanner);
 
-        assert_eq!(
-            render_frame(0, &state),
-            render_frame(total_frames(), &state)
+        let (frame, lines) = render_frame(0, &state);
+
+        assert!(frame.contains("思考"));
+        assert!(!frame.contains('('));
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn render_frame_braille_has_phase() {
+        let state = make_state("工具: 输入法诊断×1 运行中", None, SpinnerStyle::Braille);
+
+        let (frame, lines) = render_frame(0, &state);
+
+        assert!(frame.contains("输入法诊断"));
+        assert!(frame.contains("⠋"));
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn render_frame_with_sub_phase_produces_two_lines() {
+        let state = make_state(
+            "工具: 输入法诊断×1 运行中",
+            Some("第 1 轮：诊断中"),
+            SpinnerStyle::Scanner,
         );
+
+        let (frame, lines) = render_frame(0, &state);
+
+        assert!(frame.contains("输入法诊断"));
+        assert!(frame.contains("第 1 轮"));
+        assert_eq!(lines, 2);
+    }
+
+    #[test]
+    fn braille_frames_loop_over_pattern() {
+        let state = make_state("thinking", None, SpinnerStyle::Braille);
+
+        let (f1, _) = render_frame(0, &state);
+        let (f2, _) = render_frame(BRAILLE_FRAMES.len(), &state);
+
+        assert_eq!(f1, f2);
+    }
+
+    #[test]
+    fn scanner_frames_loop_over_pattern() {
+        let state = make_state("thinking", None, SpinnerStyle::Scanner);
+
+        let (f1, _) = render_frame(0, &state);
+        let (f2, _) = render_frame(total_frames_scanner(), &state);
+
+        assert_eq!(f1, f2);
     }
 
     #[test]
@@ -289,5 +402,20 @@ mod tests {
     fn active_and_inactive_dots_match_pr_style() {
         assert!(render_cell(4, scanner_state(4)).contains("▪"));
         assert!(paint_inactive_dot(1.0).contains(INACTIVE_DOT));
+    }
+
+    #[test]
+    fn braille_cycles_through_all_frames() {
+        let state = make_state("test", None, SpinnerStyle::Braille);
+
+        let chars: std::collections::HashSet<&str> = (0..BRAILLE_FRAMES.len())
+            .map(|i| {
+                let (frame, _) = render_frame(i, &state);
+                let first_char = frame.split_whitespace().next().unwrap_or("");
+                BRAILLE_FRAMES.iter().find(|&&b| first_char.contains(b)).copied().unwrap_or("")
+            })
+            .collect();
+
+        assert_eq!(chars.len(), BRAILLE_FRAMES.len());
     }
 }

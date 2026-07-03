@@ -57,7 +57,7 @@ impl OpenAiCompatibleClient {
             );
         }
         let client = Client::builder()
-            .timeout(Duration::from_secs(provider.timeout_seconds))
+            .connect_timeout(Duration::from_secs(provider.timeout_seconds.clamp(5, 30)))
             .build()?;
         let api_key = provider.resolved_api_key(paths)?;
         Ok(Self {
