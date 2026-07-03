@@ -1269,6 +1269,7 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
     result
 }
 
+#[cfg(unix)]
 fn drain_stdin() {
     use std::os::fd::AsRawFd;
 
@@ -1298,6 +1299,9 @@ fn drain_stdin() {
 
     let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
 }
+
+#[cfg(not(unix))]
+fn drain_stdin() {}
 
 async fn run_chat_with_options(
     paths: &MiyuPaths,
@@ -2176,6 +2180,7 @@ fn complete_repl_command(input: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod repl_input_tests {
     use super::*;
 

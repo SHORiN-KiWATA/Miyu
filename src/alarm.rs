@@ -127,13 +127,13 @@ pub fn stop_process(pid: u32) -> Result<()> {
         if status != 0 && process_exists(pid) {
             bail!("failed to stop alarm process {pid}")
         }
+        Ok(())
     }
     #[cfg(not(unix))]
     {
         let _ = pid;
         bail!("alarm cancellation is not supported on this platform")
     }
-    Ok(())
 }
 
 pub fn process_exists(pid: u32) -> bool {
