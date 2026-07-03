@@ -243,6 +243,18 @@ impl StreamRenderer {
                 return Ok(());
             }
         }
+        if matches!(name, "todowrite" | "todoupdate") && ok {
+            let mut stdout = io::stdout();
+            if write_todo_table(&mut stdout, output)? {
+                stdout.flush()?;
+                if self.tool_call_mode == ToolCallDisplayMode::Summary {
+                    let stats = self.tool_stats.entry(name.to_string()).or_default();
+                    stats.ok += 1;
+                    stats.progress = None;
+                }
+                return Ok(());
+            }
+        }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             let mut stdout = io::stdout();
             writeln!(stdout, "result {} {status}", self.display_tool_name(name))?;
@@ -1320,6 +1332,10 @@ fn horizontal_rule() -> String {
 }
 
 fn render_table(lines: &[String]) -> String {
+    render_table_with_header_style(lines, true)
+}
+
+fn render_table_with_header_style(lines: &[String], bold_header: bool) -> String {
     let alignments = lines
         .get(1)
         .filter(|line| is_table_separator(line))
@@ -1340,7 +1356,12 @@ fn render_table(lines: &[String]) -> String {
     let mut output = String::new();
     output.push_str(&top_table_border(&widths));
     for (row_index, row) in rows.iter().enumerate() {
-        output.push_str(&render_table_row(row, &widths, &alignments, row_index == 0));
+        output.push_str(&render_table_row(
+            row,
+            &widths,
+            &alignments,
+            bold_header && row_index == 0,
+        ));
         if row_index + 1 < rows.len() {
             output.push_str(&middle_table_border(&widths));
         }
@@ -1503,8 +1524,10 @@ fn wrap_ansi_text(text: &str, width: usize) -> Vec<String> {
 fn char_display_width(ch: char) -> usize {
     if ch.is_ascii() {
         1
-    } else {
+    } else if (ch as u32) >= 0x2e80 {
         2
+    } else {
+        1
     }
 }
 
@@ -1819,10 +1842,8 @@ fn visible_width(text: &str) -> usize {
             if ch == 'm' {
                 escape = false;
             }
-        } else if (ch as u32) >= 0x2e80 {
-            width += 2;
         } else {
-            width += 1;
+            width += char_display_width(ch);
         }
     }
     width
@@ -1835,6 +1856,68 @@ fn write_tool_payload(stdout: &mut io::Stdout, label: &str, payload: &str) -> Re
         writeln!(stdout, "\x1b[2m  {line}\x1b[0m")?;
     }
     Ok(())
+}
+
+fn write_todo_table(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
+    let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
+        return Ok(false);
+    };
+    let Some(todos) = value.get("todos").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+
+    if todos.is_empty() {
+        let lines = vec![
+            "| #Todo |".to_string(),
+            "|--- |".to_string(),
+            format!("| {} |", t("empty", "空")),
+        ];
+        write!(stdout, "{}", render_todo_table(&lines))?;
+        return Ok(true);
+    }
+
+    let mut lines = vec![
+        "| #Todo |".to_string(),
+        "|--- |".to_string(),
+    ];
+    for item in todos {
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+        let content = item
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        lines.push(format!(
+            "| {} {} |",
+            todo_status_marker(status),
+            escape_table_cell(content)
+        ));
+    }
+    write!(stdout, "{}", render_todo_table(&lines))?;
+    Ok(true)
+}
+
+fn render_todo_table(lines: &[String]) -> String {
+    render_table_with_header_style(lines, false)
+}
+
+fn todo_status_marker(status: &str) -> &'static str {
+    match status {
+        "completed" => "[✔]",
+        "in_progress" => "[·]",
+        "cancelled" => "[×]",
+        _ => "[ ]",
+    }
+}
+
+fn escape_table_cell(value: &str) -> String {
+    value
+        .replace('|', "\|")
+        .replace('\n', " ")
+        .trim()
+        .to_string()
 }
 
 fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
@@ -2096,6 +2179,82 @@ mod tests {
             .unwrap_or(100);
         let widest = output.lines().map(visible_width).max().unwrap_or(0);
         assert!(widest < terminal_width / 2, "table too wide: {widest}");
+    }
+
+    #[test]
+    fn todo_output_uses_single_column_rendered_table() {
+        let output = render_todo_table(&[
+            "| #Todo |".to_string(),
+            "|--- |".to_string(),
+            "| [·] 修复 todo 表格渲染 |".to_string(),
+            "| [ ] 补充单元测试 |".to_string(),
+            "| [✔] 跑 cargo test |".to_string(),
+        ]);
+        let visible = strip_ansi_for_test(&output);
+        assert!(output.contains('┌'));
+        assert!(output.contains('├'));
+        assert!(output.contains('└'));
+        assert!(!output.contains('┬'));
+        assert!(!output.contains('┼'));
+        assert!(!output.contains('┴'));
+        assert!(visible.contains("#Todo"));
+        assert!(!output.contains(&format!("{BOLD_STYLE}#Todo{RESET}")));
+        assert_eq!(visible.matches('│').count(), 8);
+        assert!(visible.contains("[·]"));
+        assert!(visible.contains("todo"));
+        assert!(visible.contains("[ ]"));
+        assert!(visible.contains("[✔]"));
+        assert!(!visible.contains("优先级"));
+        assert!(!visible.contains("序号"));
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(100);
+        for line in output.lines() {
+            assert!(
+                visible_width(line) < terminal_width,
+                "line too wide: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn todo_status_symbols_contribute_to_table_width() {
+        assert_eq!(visible_width("把冰箱门打开"), 12);
+        assert_eq!(visible_width("[✔] 把冰箱门打开"), 16);
+        assert_eq!(visible_width("[·] 把冰箱门打开"), 16);
+
+        let lines = [
+            "| #Todo |".to_string(),
+            "|--- |".to_string(),
+            "| [✔] 把冰箱门打开 |".to_string(),
+            "| [·] 把冰箱门关上 |".to_string(),
+        ];
+        let normal = render_table(&lines);
+        let output = render_todo_table(&lines);
+        let visible = strip_ansi_for_test(&output);
+        assert_eq!(visible_width(output.lines().next().unwrap()), visible_width(normal.lines().next().unwrap()));
+        assert!(!output.contains(&format!("{BOLD_STYLE}#Todo{RESET}")));
+        assert!(visible.contains("[✔]"));
+        assert!(visible.contains("[·]"));
+        assert_eq!(visible.lines().filter(|line| line.contains('│')).count(), 3);
+    }
+
+    fn strip_ansi_for_test(input: &str) -> String {
+        let mut output = String::new();
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+            output.push(ch);
+        }
+        output
     }
 
     #[test]

@@ -139,6 +139,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "register_script" => "注册脚本",
         "unregister_script" => "注销脚本",
         "todowrite" => "任务列表",
+        "todoupdate" => "更新任务",
         "review_aur_package" => "审查 AUR 包",
         "install_aur_package" => "安装 AUR 包",
         "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
