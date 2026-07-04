@@ -750,6 +750,7 @@ mod tests {
             bash_hook_file: temp.path().join("shell/bash-hook.sh"),
             zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
             scripts_dir: temp.path().join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
         }
     }
 

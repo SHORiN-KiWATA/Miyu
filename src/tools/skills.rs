@@ -237,6 +237,7 @@ mod tests {
             bash_hook_file: root.join("shell/bash-hook.sh"),
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
         }
     }
 

@@ -122,13 +122,14 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
-        self.chat_stream_with_images(input, &[], on_event).await
+        self.chat_stream_with_images(input, &[], &[], on_event).await
     }
 
     pub async fn chat_stream_with_images<F>(
         &mut self,
         input: &str,
         images: &[ClipboardImage],
+        image_paths: &[String],
         on_event: F,
     ) -> Result<ChatResult>
     where
@@ -209,6 +210,20 @@ impl Agent {
                     list
                 )
             };
+            messages.push(ChatMessage::system(hint));
+        }
+        if !image_paths.is_empty() {
+            let list = image_paths
+                .iter()
+                .enumerate()
+                .map(|(i, p)| format!("  [Image {}] {}", i + 1, p))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let hint = format!(
+                "用户粘贴了 {} 张本地图片路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些图片。",
+                image_paths.len(),
+                list
+            );
             messages.push(ChatMessage::system(hint));
         }
         if let Some(association) = self.memory.association(&input)? {

@@ -17,6 +17,7 @@ pub struct MiyuPaths {
     pub bash_hook_file: PathBuf,
     pub zsh_hook_file: PathBuf,
     pub scripts_dir: PathBuf,
+    pub system_scripts_dir: PathBuf,
 }
 
 impl MiyuPaths {
@@ -41,6 +42,7 @@ impl MiyuPaths {
         let bash_hook_file = config_dir.join("shell/bash-hook.sh");
         let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");
         let scripts_dir = config_dir.join("scripts");
+        let system_scripts_dir = PathBuf::from("/usr/share/miyu/scripts");
 
         Ok(Self {
             config_file: config_dir.join("config.jsonc"),
@@ -55,6 +57,7 @@ impl MiyuPaths {
             bash_hook_file,
             zsh_hook_file,
             scripts_dir,
+            system_scripts_dir,
         })
     }
 
@@ -125,6 +128,11 @@ impl MiyuPaths {
             "{}: {}",
             t("scripts_dir", "scripts 目录"),
             self.scripts_dir.display()
+        );
+        println!(
+            "{}: {}",
+            t("system_scripts_dir", "系统 scripts 目录"),
+            self.system_scripts_dir.display()
         );
     }
 }

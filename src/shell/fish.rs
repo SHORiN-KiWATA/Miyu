@@ -52,6 +52,7 @@ pub fn uninstall(paths: &MiyuPaths) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn fish_hook_defines_command_not_found_handler() {
@@ -85,6 +86,7 @@ mod tests {
             bash_hook_file: temp.path().join("bash-hook.sh"),
             zsh_hook_file: temp.path().join("zsh-hook.zsh"),
             scripts_dir: temp.path().join("scripts"),
+            system_scripts_dir: PathBuf::new(),
         };
 
         assert!(!uninstall(&paths).unwrap());

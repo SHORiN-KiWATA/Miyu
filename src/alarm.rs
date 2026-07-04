@@ -194,6 +194,7 @@ mod tests {
             bash_hook_file: PathBuf::new(),
             zsh_hook_file: PathBuf::new(),
             scripts_dir: PathBuf::new(),
+            system_scripts_dir: PathBuf::new(),
         }
     }
 

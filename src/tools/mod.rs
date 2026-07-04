@@ -140,6 +140,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "load_skill" => "加载技能",
         "register_script" => "注册脚本",
         "unregister_script" => "注销脚本",
+        "list_scripts" => "列出脚本",
         "todowrite" => "任务列表",
         "todoupdate" => "更新任务",
         "review_aur_package" => "审查 AUR 包",

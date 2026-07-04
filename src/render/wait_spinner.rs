@@ -1,18 +1,15 @@
 use anyhow::Result;
-use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
+use crossterm::cursor::{MoveToColumn, MoveUp};
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use std::io::{self, IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const WIDTH: usize = 7;
 const TRAIL_LEN: usize = 6;
 const HOLD_END: usize = 9;
 const HOLD_START: usize = 30;
-const INTERVAL: Duration = Duration::from_millis(80);
+pub(crate) const SPINNER_INTERVAL: Duration = Duration::from_millis(42);
 const MIN_FADE_ALPHA: f64 = 0.12;
 const ACTIVE_DOTS: [&str; TRAIL_LEN] = ["▪", "▪", "▫", "▫", "·", "·"];
 const INACTIVE_DOT: &str = "·";
@@ -36,17 +33,12 @@ struct ScannerState {
 }
 
 pub(crate) struct WaitSpinner {
-    state: Arc<Mutex<WaitSpinnerState>>,
-    running: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-struct WaitSpinnerState {
     phase: String,
     sub_phase: Option<String>,
     start: Instant,
     lines_rendered: u16,
     style: SpinnerStyle,
+    frame: usize,
 }
 
 impl WaitSpinner {
@@ -55,78 +47,47 @@ impl WaitSpinner {
     }
 
     pub(crate) fn start(phase: String, style: SpinnerStyle) -> Self {
-        let state = Arc::new(Mutex::new(WaitSpinnerState {
+        Self {
             phase,
             sub_phase: None,
             start: Instant::now(),
             lines_rendered: 0,
             style,
-        }));
-        let running = Arc::new(AtomicBool::new(true));
-        let thread_state = Arc::clone(&state);
-        let thread_running = Arc::clone(&running);
-        let handle = thread::spawn(move || run_spinner_loop(thread_state, thread_running));
-        Self {
-            state,
-            running,
-            handle: Some(handle),
+            frame: 0,
         }
     }
 
-    pub(crate) fn set_phase(&self, phase: String) {
-        if let Ok(mut state) = self.state.lock() {
-            state.phase = phase;
-        }
+    pub(crate) fn set_phase(&mut self, phase: String) {
+        self.phase = phase;
     }
 
-    pub(crate) fn set_sub_phase(&self, sub_phase: Option<String>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.sub_phase = sub_phase;
+    pub(crate) fn set_sub_phase(&mut self, sub_phase: Option<String>) {
+        self.sub_phase = sub_phase;
+    }
+
+    pub(crate) fn tick(&mut self) -> Result<()> {
+        let (output, prev_lines, lines) = {
+            let prev = self.lines_rendered;
+            let (output, lines) = render_frame(self.frame, self);
+            self.lines_rendered = lines;
+            (output, prev, lines)
+        };
+        if !output.is_empty() {
+            write_spinner_lines(&output, prev_lines, lines)?;
         }
+        let total = total_frames_for_style(self.style);
+        self.frame = (self.frame + 1) % total.max(1);
+        Ok(())
     }
 
     pub(crate) fn stop(&mut self) -> Result<()> {
-        self.running.store(false, Ordering::SeqCst);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        let lines = self
-            .state
-            .lock()
-            .map(|state| state.lines_rendered)
-            .unwrap_or(0);
-        clear_spinner_lines(lines)
+        clear_spinner_lines(self.lines_rendered)?;
+        self.lines_rendered = 0;
+        Ok(())
     }
 }
 
-impl Drop for WaitSpinner {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
-
-fn run_spinner_loop(state: Arc<Mutex<WaitSpinnerState>>, running: Arc<AtomicBool>) {
-    let mut frame = 0usize;
-    while running.load(Ordering::SeqCst) {
-        let (output, prev_lines, lines) = match state.lock() {
-            Ok(mut guard) => {
-                let prev = guard.lines_rendered;
-                let (output, lines) = render_frame(frame, &guard);
-                guard.lines_rendered = lines;
-                (output, prev, lines)
-            }
-            Err(_) => (String::new(), 0, 0),
-        };
-        if !output.is_empty() {
-            let _ = write_spinner_lines(&output, prev_lines, lines);
-        }
-        thread::sleep(INTERVAL);
-        let total = total_frames_for_style(state.lock().map(|s| s.style).unwrap_or(SpinnerStyle::Scanner));
-        frame = (frame + 1) % total.max(1);
-    }
-}
-
-fn render_frame(frame: usize, state: &WaitSpinnerState) -> (String, u16) {
+fn render_frame(frame: usize, state: &WaitSpinner) -> (String, u16) {
     let elapsed = state.start.elapsed();
     let elapsed = if elapsed > Duration::from_secs(1) {
         format!(" {:.1}s", elapsed.as_secs_f64())
@@ -298,11 +259,8 @@ fn write_spinner_lines(output: &str, prev_lines: u16, lines: u16) -> Result<()> 
     }
     if prev_lines > lines {
         for _ in lines..prev_lines {
-            execute!(stdout, MoveDown(1))?;
-            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-        }
-        for _ in lines..prev_lines {
             execute!(stdout, MoveUp(1))?;
+            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
         }
     }
     stdout.flush()?;
@@ -325,21 +283,22 @@ fn clear_spinner_lines(lines: u16) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn make_state(phase: &str, sub_phase: Option<&str>, style: SpinnerStyle) -> WaitSpinnerState {
-        WaitSpinnerState {
+    fn make_spinner(phase: &str, sub_phase: Option<&str>, style: SpinnerStyle) -> WaitSpinner {
+        WaitSpinner {
             phase: phase.to_string(),
             sub_phase: sub_phase.map(|s| s.to_string()),
             start: Instant::now(),
             lines_rendered: 0,
             style,
+            frame: 0,
         }
     }
 
     #[test]
     fn render_frame_scanner_has_phase_without_face() {
-        let state = make_state("思考", None, SpinnerStyle::Scanner);
+        let spinner = make_spinner("思考", None, SpinnerStyle::Scanner);
 
-        let (frame, lines) = render_frame(0, &state);
+        let (frame, lines) = render_frame(0, &spinner);
 
         assert!(frame.contains("思考"));
         assert!(!frame.contains('('));
@@ -348,9 +307,9 @@ mod tests {
 
     #[test]
     fn render_frame_braille_has_phase() {
-        let state = make_state("工具: 输入法诊断×1 运行中", None, SpinnerStyle::Braille);
+        let spinner = make_spinner("工具: 输入法诊断×1 运行中", None, SpinnerStyle::Braille);
 
-        let (frame, lines) = render_frame(0, &state);
+        let (frame, lines) = render_frame(0, &spinner);
 
         assert!(frame.contains("输入法诊断"));
         assert!(frame.contains("⠋"));
@@ -359,13 +318,13 @@ mod tests {
 
     #[test]
     fn render_frame_with_sub_phase_produces_two_lines() {
-        let state = make_state(
+        let spinner = make_spinner(
             "工具: 输入法诊断×1 运行中",
             Some("第 1 轮：诊断中"),
             SpinnerStyle::Scanner,
         );
 
-        let (frame, lines) = render_frame(0, &state);
+        let (frame, lines) = render_frame(0, &spinner);
 
         assert!(frame.contains("输入法诊断"));
         assert!(frame.contains("第 1 轮"));
@@ -374,20 +333,20 @@ mod tests {
 
     #[test]
     fn braille_frames_loop_over_pattern() {
-        let state = make_state("thinking", None, SpinnerStyle::Braille);
+        let spinner = make_spinner("thinking", None, SpinnerStyle::Braille);
 
-        let (f1, _) = render_frame(0, &state);
-        let (f2, _) = render_frame(BRAILLE_FRAMES.len(), &state);
+        let (f1, _) = render_frame(0, &spinner);
+        let (f2, _) = render_frame(BRAILLE_FRAMES.len(), &spinner);
 
         assert_eq!(f1, f2);
     }
 
     #[test]
     fn scanner_frames_loop_over_pattern() {
-        let state = make_state("thinking", None, SpinnerStyle::Scanner);
+        let spinner = make_spinner("thinking", None, SpinnerStyle::Scanner);
 
-        let (f1, _) = render_frame(0, &state);
-        let (f2, _) = render_frame(total_frames_scanner(), &state);
+        let (f1, _) = render_frame(0, &spinner);
+        let (f2, _) = render_frame(total_frames_scanner(), &spinner);
 
         assert_eq!(f1, f2);
     }
@@ -409,11 +368,11 @@ mod tests {
 
     #[test]
     fn braille_cycles_through_all_frames() {
-        let state = make_state("test", None, SpinnerStyle::Braille);
+        let spinner = make_spinner("test", None, SpinnerStyle::Braille);
 
         let chars: std::collections::HashSet<&str> = (0..BRAILLE_FRAMES.len())
             .map(|i| {
-                let (frame, _) = render_frame(i, &state);
+                let (frame, _) = render_frame(i, &spinner);
                 let first_char = frame.split_whitespace().next().unwrap_or("");
                 BRAILLE_FRAMES.iter().find(|&&b| first_char.contains(b)).copied().unwrap_or("")
             })

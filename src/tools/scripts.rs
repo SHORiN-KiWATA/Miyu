@@ -32,7 +32,8 @@ struct ScriptEntry {
 }
 
 pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    let entries = match scan_scripts(&paths.scripts_dir) {
+    let dirs = [paths.system_scripts_dir.as_path(), paths.scripts_dir.as_path()];
+    let entries = match scan_scripts(&dirs) {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -41,11 +42,16 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
             registry.register(spec);
         }
     }
-    register_script_tools(registry, paths.scripts_dir.clone());
+    register_script_tools(
+        registry,
+        paths.scripts_dir.clone(),
+        paths.system_scripts_dir.clone(),
+    );
 }
 
 pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    let entries = match scan_scripts(&paths.scripts_dir) {
+    let dirs = [paths.system_scripts_dir.as_path(), paths.scripts_dir.as_path()];
+    let entries = match scan_scripts(&dirs) {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -58,57 +64,65 @@ pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
     }
 }
 
-fn scan_scripts(scripts_dir: &Path) -> Result<Vec<ScriptEntry>> {
-    let mut entries = Vec::new();
-    let mut seen_ids = std::collections::BTreeSet::new();
+fn scan_scripts(dirs: &[&Path]) -> Result<Vec<ScriptEntry>> {
+    let mut entries: Vec<ScriptEntry> = Vec::new();
+    let mut id_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut seen_paths = std::collections::BTreeSet::new();
 
-    if !scripts_dir.is_dir() {
-        return Ok(entries);
-    }
+    for scripts_dir in dirs {
+        if !scripts_dir.is_dir() {
+            continue;
+        }
 
-    let index_path = scripts_dir.join("index.json");
-    let indexed: Vec<ScriptEntry> = if index_path.is_file() {
-        let raw = std::fs::read_to_string(&index_path)?;
-        let index: ScriptIndex = serde_json::from_str(&raw).unwrap_or_default();
-        index.scripts
-    } else {
-        Vec::new()
-    };
+        let index_path = scripts_dir.join("index.json");
+        let indexed: Vec<ScriptEntry> = if index_path.is_file() {
+            let raw = std::fs::read_to_string(&index_path)?;
+            let index: ScriptIndex = serde_json::from_str(&raw).unwrap_or_default();
+            index.scripts
+        } else {
+            Vec::new()
+        };
 
-    for entry in &indexed {
-        if !seen_ids.insert(entry.id.clone()) {
-            continue;
-        }
-        let path = resolve_script_path(&entry.path, scripts_dir);
-        let canon = canonicalize_key(&path);
-        if !seen_paths.insert(canon) {
-            continue;
-        }
-        if path.is_file() {
-            entries.push(entry.clone());
-        }
-    }
-
-    for file_entry in std::fs::read_dir(scripts_dir)? {
-        let file_entry = file_entry?;
-        let path = file_entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let fname = file_entry.file_name().to_string_lossy().to_string();
-        if fname == "index.json" || fname.starts_with('.') {
-            continue;
-        }
-        if let Some(entry) = auto_detect_script(&path) {
-            if !seen_ids.insert(entry.id.clone()) {
+        for entry in &indexed {
+            let path = resolve_script_path(&entry.path, scripts_dir);
+            if !path.is_file() {
                 continue;
             }
             let canon = canonicalize_key(&path);
-            if !seen_paths.insert(canon) {
+            seen_paths.insert(canon);
+            let mut entry = entry.clone();
+            entry.path = path.to_string_lossy().to_string();
+            if let Some(&idx) = id_index.get(&entry.id) {
+                entries[idx] = entry;
+            } else {
+                id_index.insert(entry.id.clone(), entries.len());
+                entries.push(entry);
+            }
+        }
+
+        for file_entry in std::fs::read_dir(scripts_dir)? {
+            let file_entry = file_entry?;
+            let path = file_entry.path();
+            if !path.is_file() {
                 continue;
             }
-            entries.push(entry);
+            let fname = file_entry.file_name().to_string_lossy().to_string();
+            if fname == "index.json" || fname.starts_with('.') {
+                continue;
+            }
+            if let Some(mut entry) = auto_detect_script(&path) {
+                let canon = canonicalize_key(&path);
+                if !seen_paths.insert(canon) {
+                    continue;
+                }
+                entry.path = path.to_string_lossy().to_string();
+                if let Some(&idx) = id_index.get(&entry.id) {
+                    entries[idx] = entry;
+                } else {
+                    id_index.insert(entry.id.clone(), entries.len());
+                    entries.push(entry);
+                }
+            }
         }
     }
 
@@ -147,7 +161,7 @@ fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
         "properties": {
             "stdin": {
                 "type": "string",
-                "description": t("Optional input passed to the script via stdin.", "可选的 stdin 输入。")
+                "description": t("Optional raw stdin input. If omitted, all arguments are sent as JSON via stdin.", "可选的原始 stdin 输入。省略时所有参数以 JSON 形式通过 stdin 传入。")
             }
         },
         "additionalProperties": true
@@ -206,7 +220,7 @@ fn entry_to_spec(entry: &ScriptEntry, scripts_dir: &Path) -> Result<ToolSpec> {
             "properties": {
                 "stdin": {
                     "type": "string",
-                    "description": t("Optional input passed to the script via stdin.", "可选的 stdin 输入。")
+                    "description": t("Optional raw stdin input. If omitted, all arguments are sent as JSON via stdin.", "可选的原始 stdin 输入。省略时所有参数以 JSON 形式通过 stdin 传入。")
                 }
             },
             "additionalProperties": true
@@ -245,28 +259,20 @@ async fn run_script(
         bail!("script not found: {}", script_path.display());
     }
 
-    let stdin_input = args
-        .get("stdin")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let stdin_input = if let Some(text) = args.get("stdin").and_then(Value::as_str) {
+        if !text.is_empty() {
+            text.to_string()
+        } else {
+            serde_json::to_string(args).unwrap_or_default()
+        }
+    } else {
+        serde_json::to_string(args).unwrap_or_default()
+    };
 
     let mut command = Command::new(&script_path);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-
-    let extra_args: Vec<String> = args
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .filter(|(k, _)| *k != "stdin")
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect()
-        })
-        .unwrap_or_default();
-    for a in &extra_args {
-        command.arg(a);
-    }
 
     let mut child = command.spawn()?;
     if !stdin_input.is_empty() {
@@ -320,8 +326,10 @@ fn make_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf) {
+fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf, system_scripts_dir: PathBuf) {
     let scripts_dir_2 = scripts_dir.clone();
+    let scripts_dir_3 = scripts_dir.clone();
+    let system_scripts_dir_2 = system_scripts_dir.clone();
     registry.register(ToolSpec::new(
         "register_script",
         t(
@@ -392,6 +400,24 @@ fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf) {
             async move { unregister_script_handler(args, &scripts_dir).await }
         },
     ).writes());
+
+    registry.register(ToolSpec::new(
+        "list_scripts",
+        t(
+            "List all registered script tools, including both system and user scripts. Returns id, display name, description, path, and source for each script.",
+            "列出所有已注册的脚本工具，包括系统脚本和用户脚本。返回每个脚本的 id、显示名称、描述、路径和来源。"
+        ),
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
+        move |_args| {
+            let scripts_dir = scripts_dir_3.clone();
+            let system_scripts_dir = system_scripts_dir_2.clone();
+            async move { list_scripts_handler(&scripts_dir, &system_scripts_dir).await }
+        },
+    ));
 }
 
 async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<String> {
@@ -530,6 +556,42 @@ async fn unregister_script_handler(args: Value, scripts_dir: &Path) -> Result<St
     ))
 }
 
+async fn list_scripts_handler(scripts_dir: &Path, system_scripts_dir: &Path) -> Result<String> {
+    let dirs = [system_scripts_dir, scripts_dir];
+    let entries = scan_scripts(&dirs)?;
+
+    let canon_sys = system_scripts_dir
+        .canonicalize()
+        .unwrap_or_else(|_| system_scripts_dir.to_path_buf());
+
+    let scripts: Vec<Value> = entries
+        .iter()
+        .map(|entry| {
+            let path = Path::new(&entry.path);
+            let canon_path = path
+                .canonicalize()
+                .unwrap_or_else(|_| path.to_path_buf());
+            let source = if canon_path.starts_with(&canon_sys) {
+                "system"
+            } else {
+                "user"
+            };
+            json!({
+                "id": entry.id,
+                "display_name": entry.display_name,
+                "description": entry.description,
+                "path": entry.path,
+                "source": source,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "scripts": scripts,
+        "total": entries.len(),
+    }))?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,7 +645,7 @@ mod tests {
             "#!/bin/bash\ndescription: Greet user\n\necho hi",
         )
         .unwrap();
-        let entries = scan_scripts(scripts_dir).unwrap();
+        let entries = scan_scripts(&[scripts_dir]).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "greet");
     }
@@ -607,7 +669,7 @@ mod tests {
             "#!/bin/bash\ndescription: Auto detected\n\necho auto",
         )
         .unwrap();
-        let entries = scan_scripts(scripts_dir).unwrap();
+        let entries = scan_scripts(&[scripts_dir]).unwrap();
         assert_eq!(entries.len(), 2);
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
         assert!(ids.contains(&"custom"));
@@ -625,8 +687,27 @@ mod tests {
             r#"{"scripts":[{"id":"alias1","display_name":"A1","description":"alias","path":"dup.sh"}]}"#,
         )
         .unwrap();
-        let entries = scan_scripts(scripts_dir).unwrap();
+        let entries = scan_scripts(&[scripts_dir]).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn scan_user_dir_overrides_system_dir() {
+        let sys_temp = tempfile::tempdir().unwrap();
+        let user_temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            sys_temp.path().join("tool.sh"),
+            "#!/bin/bash\ndescription: System version\n\necho sys",
+        )
+        .unwrap();
+        std::fs::write(
+            user_temp.path().join("tool.sh"),
+            "#!/bin/bash\ndescription: User version\n\necho user",
+        )
+        .unwrap();
+        let entries = scan_scripts(&[sys_temp.path(), user_temp.path()]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, "User version");
     }
 
     #[cfg(unix)]

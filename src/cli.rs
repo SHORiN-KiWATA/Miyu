@@ -935,6 +935,7 @@ fn alarm_worker_paths(state_dir: PathBuf) -> MiyuPaths {
         bash_hook_file: PathBuf::new(),
         zsh_hook_file: PathBuf::new(),
         scripts_dir: PathBuf::new(),
+        system_scripts_dir: PathBuf::new(),
     }
 }
 
@@ -1410,10 +1411,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         println!("\x1b[2m{message}\x1b[0m");
     }
     loop {
-        let (input, images) = match read_repl_input(mode, prefill.take(), &input_history)? {
-            Some((new_mode, input, images)) => {
+        let (input, images, image_paths) = match read_repl_input(mode, prefill.take(), &input_history)? {
+            Some((new_mode, input, images, image_paths)) => {
                 mode = new_mode;
-                (input, images)
+                (input, images, image_paths)
             }
             None => break,
         };
@@ -1489,7 +1490,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         );
         renderer.start_waiting()?;
         let chat_result = {
-            let chat = agent.chat_stream_with_images(input, &images, |event| handle_agent_event(&mut renderer, event));
+            let chat = agent.chat_stream_with_images(input, &images, &image_paths, |event| handle_agent_event(&mut renderer, event));
             tokio::pin!(chat);
             tokio::select! {
                 result = &mut chat => result.map(|_| ()),
@@ -1597,7 +1598,7 @@ fn read_repl_input(
     mut mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
-) -> Result<Option<(AgentMode, String, Vec<crate::clipboard::ClipboardImage>)>> {
+) -> Result<Option<(AgentMode, String, Vec<crate::clipboard::ClipboardImage>, Vec<String>)>> {
     let mut stdout = io::stdout();
     let mut input = strip_terminal_control_sequences(&prefill.unwrap_or_default());
     let mut cursor = input.chars().count();
@@ -1613,6 +1614,7 @@ fn read_repl_input(
     let mut rendered_rows = 0u16;
     let mut is_pasted = false;
     let mut pasted_images: Vec<crate::clipboard::ClipboardImage> = Vec::new();
+    let mut pasted_image_paths: Vec<String> = Vec::new();
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -1772,7 +1774,7 @@ fn read_repl_input(
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
-                    return Ok(Some((mode, input, pasted_images)));
+                    return Ok(Some((mode, input, pasted_images, pasted_image_paths)));
                 }
                 KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
                     insert_newline_at_cursor(&mut input, &mut cursor);
@@ -1876,7 +1878,7 @@ fn read_repl_input(
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
                     match crate::clipboard::read_clipboard_image() {
                         Ok(Some(img)) => {
-                            let index = pasted_images.len() + 1;
+                            let index = pasted_images.len() + pasted_image_paths.len() + 1;
                             let placeholder = format!("[Image {}] ", index);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             pasted_images.push(img);
@@ -1891,8 +1893,35 @@ fn read_repl_input(
                                 is_pasted,
                             )?;
                         }
-                        Ok(None) => {}
-                        Err(_) => {}
+                        _ => {
+                            if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
+                                if let Some(cp) = crate::clipboard::parse_clipboard_path(&text) {
+                                    let index = pasted_images.len() + pasted_image_paths.len() + 1;
+                                    if cp.is_image {
+                                        let filename = std::path::Path::new(&cp.path)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("image");
+                                        let placeholder =
+                                            format!("[Image {}: {}] ", index, filename);
+                                        insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
+                                        pasted_image_paths.push(cp.path);
+                                    } else {
+                                        insert_str_at_cursor(&mut input, &mut cursor, &cp.path);
+                                    }
+                                    is_pasted = false;
+                                    render_repl_input(
+                                        &mut stdout,
+                                        &mut input_row,
+                                        &mut rendered_rows,
+                                        mode,
+                                        &input,
+                                        cursor,
+                                        is_pasted,
+                                    )?;
+                                }
+                            }
+                        }
                     }
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2414,6 +2443,7 @@ mod repl_input_tests {
             bash_hook_file: PathBuf::new(),
             zsh_hook_file: PathBuf::new(),
             scripts_dir: PathBuf::new(),
+            system_scripts_dir: PathBuf::new(),
         };
         let state = StateStore::new(&paths).unwrap();
         state.append_message("user", "first").unwrap();
