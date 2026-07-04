@@ -24,12 +24,6 @@ pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool) {
         move |args| async move { run_command(args, allow_command_execution).await },
     ).writes());
     registry.register(ToolSpec::new(
-        "task_agent",
-        t("Create a focused subtask plan for a complex task. Current implementation returns a structured handoff prompt for the main agent.", "为复杂任务创建聚焦的子任务计划。当前实现会返回给主 agent 使用的结构化交接提示。"),
-        json!({"type":"object","properties":{"description":{"type":"string","description": t("Short task description.", "简短任务描述。")},"prompt":{"type":"string","description": t("Detailed subtask prompt.", "详细子任务提示。")}},"required":["prompt"],"additionalProperties":false}),
-        |args| async move { task_agent(args) },
-    ).writes());
-    registry.register(ToolSpec::new(
         "edit_file",
         t("Edit an existing UTF-8 file by replacing an inclusive 1-based line range. Use after read_file identifies exact line numbers.", "按 1 起始的闭区间行号替换现有 UTF-8 文件内容。应先用 read_file 确认准确行号。"),
         json!({"type":"object","properties":{"path":{"type":"string","description": t("Workspace-relative or absolute file path.", "工作区相对路径或绝对文件路径。")},"start_line":{"type":"integer","description": t("1-based first line to replace.", "要替换的第一行，1 起始。")},"end_line":{"type":"integer","description": t("1-based last line to replace, inclusive.", "要替换的最后一行，闭区间。")},"replacement":{"type":"string","description": t("Replacement text. May contain multiple lines. Empty text deletes the line range.", "替换文本，可包含多行；空文本会删除指定行范围。")}},"required":["path","start_line","end_line","replacement"],"additionalProperties":false}),
@@ -562,17 +556,6 @@ fn ensure_readonly_command(command: &str) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn task_agent(args: Value) -> Result<String> {
-    let prompt = required(&args, "prompt")?;
-    let description = args
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or("subtask");
-    Ok(serde_json::to_string_pretty(
-        &json!({"description": description, "prompt": prompt, "note": t("Subagent execution is not implemented yet; use this as a structured handoff.", "子 agent 执行尚未实现；请把它作为结构化交接内容使用。")}),
-    )?)
 }
 
 fn command_output(output: std::process::Output) -> Result<String> {

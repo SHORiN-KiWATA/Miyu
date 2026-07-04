@@ -1,16 +1,18 @@
-use super::{readable_tool_name, ToolProgress, ToolRegistry, ToolSpec};
+use super::subagent_runner::{
+    clip_inline, format_token_count, ProgressMode, SubagentProgress, SubagentRunner,
+};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, DeepResearchPluginConfig};
 use crate::i18n::{is_zh, text as t};
-use crate::llm::{ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage};
+use crate::llm::{ChatMessage, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use chrono::Local;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-const THINKER_SYSTEM_PROMPT: &str = r#"你是 Miyu 深度研究系统中的“沉思者”。
+const THINKER_SYSTEM_PROMPT: &str = r#"你是深度研究系统中的“沉思者”。
 你的任务是理解用户命题，主动调用可用工具查证，形成可发送给用户的 Markdown 草稿。
 
 工作原则：
@@ -23,7 +25,7 @@ const THINKER_SYSTEM_PROMPT: &str = r#"你是 Miyu 深度研究系统中的“�
 7. 不使用 emoji 或装饰性图标。
 "#;
 
-const REVIEWER_SYSTEM_PROMPT: &str = r#"你是 Miyu 深度研究系统中的“审视者”。
+const REVIEWER_SYSTEM_PROMPT: &str = r#"你是深度研究系统中的“审视者”。
 你只审查沉思者草稿，不替用户回答。请严格输出 JSON。
 
 审查重点：
@@ -45,72 +47,6 @@ struct DeepResearchContext {
     config: AppConfig,
     paths: MiyuPaths,
     tools: ToolRegistry,
-}
-
-#[derive(Clone)]
-struct ResearchProgress {
-    progress: ToolProgress,
-    mode: ResearchProgressMode,
-    enabled: bool,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ResearchProgressMode {
-    Hidden,
-    Summary,
-    Full,
-}
-
-impl ResearchProgress {
-    fn new(config: &AppConfig, progress: ToolProgress) -> Self {
-        let mode = match config
-            .display
-            .tool_calls
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "hidden" => ResearchProgressMode::Hidden,
-            "full" => ResearchProgressMode::Full,
-            _ => ResearchProgressMode::Summary,
-        };
-        Self {
-            progress,
-            mode,
-            enabled: config.plugins.deep_research.show_progress,
-        }
-    }
-
-    fn phase(&self, message: impl Into<String>) {
-        if self.enabled && self.mode != ResearchProgressMode::Hidden {
-            self.progress.report(message.into());
-        }
-    }
-
-    fn tool(&self, message: impl Into<String>) {
-        if self.enabled && self.mode != ResearchProgressMode::Hidden {
-            self.progress.report(message.into());
-        }
-    }
-
-    fn subtool(&self, message: impl Into<String>) {
-        if self.enabled && self.mode == ResearchProgressMode::Full {
-            self.progress.report(message.into());
-        }
-    }
-
-    fn reasoning(&self, text: &str) {
-        if self.enabled && self.mode != ResearchProgressMode::Hidden {
-            self.progress
-                .report(format!("__subagent_reasoning__{}", text));
-        }
-    }
-
-    fn subtool_text(&self, message: impl Into<String>) {
-        if self.enabled && self.mode == ResearchProgressMode::Summary {
-            self.progress.report(message.into());
-        }
-    }
 }
 
 #[derive(Default)]
@@ -235,7 +171,9 @@ async fn run_deep_research(
         bail!("topic is required")
     }
     let plugin = &context.config.plugins.deep_research;
-    let progress = ResearchProgress::new(&context.config, progress);
+    let sa_mode = ProgressMode::from_config(&context.config);
+    let sa_enabled = context.config.plugins.deep_research.show_progress;
+    let sa_progress = SubagentProgress::new(progress, sa_mode, sa_enabled);
     let depth = args
         .get("thinking_depth")
         .and_then(Value::as_str)
@@ -258,7 +196,7 @@ async fn run_deep_research(
         json!({"accepted": false, "challenge": "首轮暂无审视意见", "revision_instructions": []});
     let mut iterations = 0usize;
     let mut stop_reason = "max_review_revisions_reached".to_string();
-    progress.phase(format!(
+    sa_progress.phase(format!(
         "{}=\"{}\"",
         t("topic", "主题"),
         topic_title(&state, &topic)
@@ -270,45 +208,47 @@ async fn run_deep_research(
             break;
         }
         iterations = iteration;
-        progress.phase(format!("round {iteration}: thinker drafting"));
+        sa_progress.phase(if is_zh() {
+            format!("第 {iteration} 轮：沉思者起草")
+        } else {
+            format!("round {iteration}: thinker drafting")
+        });
         let tools = research_tool_registry(&context, Arc::clone(&state));
         let prompt = thinker_prompt(&topic, iteration, &draft, &review, &state)?;
-        let thinker_system = THINKER_SYSTEM_PROMPT;
-        let thinker = chat_with_tools(
-            &client,
-            vec![
-                ChatMessage::system(thinker_system),
-                ChatMessage::plain("user", prompt.clone()),
-            ],
+        let runner = SubagentRunner::new(
+            client.clone(),
+            THINKER_SYSTEM_PROMPT,
             tools,
-            max_tool_steps,
-            plugin.tool_call_timeout_seconds,
-            &progress,
-            Arc::clone(&state),
+            SubagentProgress::new(sa_progress.clone_inner(), sa_mode, sa_enabled),
         )
-        .await?;
-        state
-            .lock()
-            .expect("deep research state lock")
-            .stats
-            .add_usage_or_estimate(
-                thinker.usage.as_ref(),
-                &[thinker_system, &prompt, &thinker.content],
-            );
+        .max_steps(max_tool_steps)
+        .timeout_seconds(plugin.tool_call_timeout_seconds)
+        .excluded_tools(&["deep_research", "task", "task_agent"]);
+        let (thinker, sa_stats) = runner.run(&prompt).await?;
+        merge_stats(&state, &sa_stats);
         if !thinker.content.trim().is_empty() {
             draft = thinker.content.trim().to_string();
         }
         if draft.is_empty() {
             stop_reason = "thinker_failed".to_string();
-            progress.phase("thinker failed to produce a draft");
+            sa_progress.phase(if is_zh() {
+                "沉思者未能生成草稿"
+            } else {
+                "thinker failed to produce a draft"
+            });
             break;
         }
-        progress.phase(&format!(
-            "round {iteration}: draft ready chars={}",
-            draft.chars().count()
-        ));
+        sa_progress.phase(if is_zh() {
+            format!("第 {iteration} 轮：草稿就绪，{chars} 字", chars = draft.chars().count())
+        } else {
+            format!("round {iteration}: draft ready chars={}", draft.chars().count())
+        });
         let review_prompt = reviewer_prompt(&topic, iteration, &draft, &state)?;
-        progress.phase(format!("round {iteration}: reviewer checking"));
+        sa_progress.phase(if is_zh() {
+            format!("第 {iteration} 轮：审视者审查中")
+        } else {
+            format!("round {iteration}: reviewer checking")
+        });
         let reviewer_system = REVIEWER_SYSTEM_PROMPT;
         let review_result = client
             .chat_stream(
@@ -319,7 +259,7 @@ async fn run_deep_research(
                 Vec::new(),
                 |chunk: ChatStreamChunk| {
                     if chunk.kind == ChatStreamKind::Reasoning {
-                        progress.reasoning(&chunk.text);
+                        sa_progress.reasoning(&chunk.text);
                     }
                     Ok(())
                 },
@@ -340,22 +280,27 @@ async fn run_deep_research(
             .unwrap_or(false)
         {
             stop_reason = "accepted".to_string();
-            progress.phase(format!("round {iteration}: accepted"));
+            sa_progress.phase(if is_zh() {
+                format!("第 {iteration} 轮：通过")
+            } else {
+                format!("round {iteration}: accepted")
+            });
             break;
         }
-        progress.phase(&format!(
-            "round {iteration}: revision requested - {}",
-            clip_inline(
-                review
-                    .get("challenge")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reviewer requested changes"),
+        sa_progress.phase(if is_zh() {
+            format!("第 {iteration} 轮：需修订 — {}", clip_inline(
+                review.get("challenge").and_then(Value::as_str).unwrap_or("审视者要求修改"),
                 100
-            )
-        ));
+            ))
+        } else {
+            format!("round {iteration}: revision requested - {}", clip_inline(
+                review.get("challenge").and_then(Value::as_str).unwrap_or("reviewer requested changes"),
+                100
+            ))
+        });
     }
 
-    progress.phase("finalizing report");
+    sa_progress.phase(if is_zh() { "生成最终报告" } else { "finalizing report" });
     let mut final_answer = normalize_final_answer(&draft, &state)?;
     if plugin.max_final_answer_chars > 0
         && final_answer.chars().count() > plugin.max_final_answer_chars
@@ -380,7 +325,7 @@ async fn run_deep_research(
         &state,
     )?;
     let stats = public_stats(&state);
-    progress.phase(format!(
+    sa_progress.phase(format!(
         "{} {} {} {} {}\n{} {}",
         t("tool calls", "工具调用"),
         stats["tool_calls"].as_u64().unwrap_or(0),
@@ -475,108 +420,29 @@ fn register_reference_tools(registry: &mut ToolRegistry, state: Arc<Mutex<Resear
     ));
 }
 
-async fn chat_with_tools(
-    client: &OpenAiCompatibleClient,
-    mut messages: Vec<ChatMessage>,
-    tools: ToolRegistry,
-    max_steps: usize,
-    timeout_seconds: u64,
-    progress: &ResearchProgress,
-    state: Arc<Mutex<ResearchState>>,
-) -> Result<ChatResult> {
-    let definitions = tools.definitions_except(&["deep_research"]);
-    let mut steps = 0usize;
-    loop {
-        let result = client
-            .chat_stream(messages.clone(), definitions.clone(), |chunk: ChatStreamChunk| {
-                if chunk.kind == ChatStreamKind::Reasoning {
-                    progress.reasoning(&chunk.text);
-                }
-                Ok(())
-            })
-            .await?;
-        if result.tool_calls.is_empty() {
-            return Ok(result);
-        }
-        messages.push(ChatMessage::assistant(
-            result.content.clone(),
-            Some(result.tool_calls.clone()),
-        ));
-        for call in result.tool_calls {
-            if max_steps > 0 && steps >= max_steps {
-                progress.tool(format!(
-                    "→{} skipped: tool budget reached",
-                    call.function.name
-                ));
-                messages.push(ChatMessage::tool(
-                    call.id,
-                    "tool budget reached for this deep research round",
-                ));
-                continue;
-            }
-            steps += 1;
-            {
-                let mut state = state.lock().expect("deep research state lock");
-                state.stats.tool_calls += 1;
-            }
-            progress.subtool_text(if is_zh() {
-                format!(
-                    "工具 #{steps}：{} 运行中",
-                    readable_tool_name(&call.function.name)
-                )
-            } else {
-                format!("tool #{steps}: {} running", call.function.name)
-            });
-            progress.subtool(format!(
-                "__subtool_call__{}",
-                json!({
-                    "name": call.function.name,
-                    "args": call.function.arguments,
-                })
-            ));
-            let (output, ok) = match tokio::time::timeout(
-                Duration::from_secs(timeout_seconds.max(5)),
-                tools.call(&call.function.name, &call.function.arguments),
-            )
-            .await
-            {
-                Ok(Ok(output)) => (output, true),
-                Ok(Err(err)) => (format!("tool error: {err}"), false),
-                Err(_) => (
-                    format!(
-                        "tool error: {} timed out after {timeout_seconds}s",
-                        call.function.name
-                    ),
-                    false,
-                ),
-            };
-            {
-                let mut state = state.lock().expect("deep research state lock");
-                if ok {
-                    state.stats.tool_ok += 1;
-                } else {
-                    state.stats.tool_errors += 1;
-                }
-            }
-            progress.subtool_text(if is_zh() {
-                format!(
-                    "工具 #{steps}：{} ok",
-                    readable_tool_name(&call.function.name)
-                )
-            } else {
-                format!("tool #{steps}: {} ok", call.function.name)
-            });
-            progress.subtool(format!(
-                "__subtool_result__{}",
-                json!({
-                    "name": call.function.name,
-                    "ok": ok,
-                    "output": output,
-                })
-            ));
-            messages.push(ChatMessage::tool(call.id, output));
-        }
-    }
+fn merge_stats(state: &Arc<Mutex<ResearchState>>, sa_stats: &super::subagent_runner::SubagentStats) {
+    use super::subagent_runner::TokenEstimateMethod as SaTEM;
+    let mut state = state.lock().expect("deep research state lock");
+    state.stats.tool_calls += sa_stats.tool_calls;
+    state.stats.tool_ok += sa_stats.tool_ok;
+    state.stats.tool_errors += sa_stats.tool_errors;
+    state.stats.prompt_tokens += sa_stats.prompt_tokens;
+    state.stats.completion_tokens += sa_stats.completion_tokens;
+    state.stats.total_tokens += sa_stats.total_tokens;
+    state.stats.token_estimate += sa_stats.token_estimate;
+    let has_provider = state.stats.token_estimate_method == TokenEstimateMethod::ProviderUsage
+        || sa_stats.token_estimate_method == SaTEM::ProviderUsage;
+    let has_estimate = state.stats.token_estimate_method == TokenEstimateMethod::RoughCharEstimate
+        || state.stats.token_estimate_method == TokenEstimateMethod::None
+        || sa_stats.token_estimate_method == SaTEM::RoughCharEstimate
+        || sa_stats.token_estimate_method == SaTEM::None;
+    state.stats.token_estimate_method = if has_provider && !has_estimate {
+        TokenEstimateMethod::ProviderUsage
+    } else if has_provider {
+        TokenEstimateMethod::ProviderUsagePlusEstimate
+    } else {
+        TokenEstimateMethod::RoughCharEstimate
+    };
 }
 
 fn thinker_prompt(
@@ -842,32 +708,6 @@ fn estimate_tokens(texts: &[&str]) -> u64 {
         0
     } else {
         (chars / 4).max(1)
-    }
-}
-
-fn format_token_count(tokens: u64, estimated: bool) -> String {
-    let prefix = if estimated { "≈" } else { "" };
-    if tokens >= 1_000_000 {
-        format!("{prefix}{:.2}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{prefix}{:.1}K", tokens as f64 / 1_000.0)
-    } else {
-        format!("{prefix}{tokens}")
-    }
-}
-
-fn clip_inline(value: &str, max_chars: usize) -> String {
-    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if value.chars().count() <= max_chars {
-        value
-    } else {
-        format!(
-            "{}...",
-            value
-                .chars()
-                .take(max_chars.saturating_sub(3))
-                .collect::<String>()
-        )
     }
 }
 
