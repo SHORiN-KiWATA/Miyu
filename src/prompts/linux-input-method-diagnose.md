@@ -63,17 +63,11 @@
 
 现在可以开始判断输入法路径是否跑通。下面任意一条路径跑通，输入法理论上就可以正常使用。
 
-- Wayland 路径：软件以 Wayland 原生运行，桌面合成器和软件都支持兼容的 `text-input` 协议，输入法加载了对应的 Wayland frontend / input-method 相关模块，没有错误参数导致协议版本不匹配。
-
-- GTK 模块路径：输入法运行正常，软件是 GTK 或会使用 GTK 输入模块，目标进程设置了正确的 `GTK_IM_MODULE` 或 GTK 自动选择到了 fcitx，`im-fcitx5.so` 存在或已经加载，并且 locale 满足模块激活条件。
-
-- Qt 模块路径：输入法运行正常，软件是 Qt，目标进程设置了 `QT_IM_MODULE=fcitx`，或者 `QT_IM_MODULES` fallback 顺序中包含 fcitx，Qt fcitx platforminputcontext 插件存在或已经加载，并且 Qt 版本和当前平台后端支持这条路径。
-
-- SDL 路径：输入法运行正常，软件使用 SDL，目标进程设置了 `SDL_IM_MODULE=fcitx`，SDL 版本支持对应输入法路径。
-
-- XIM 协议路径：输入法运行正常，软件以 X11/XWayland 运行，目标进程设置了 `XMODIFIERS=@im=fcitx`，XIM frontend 可用，`im-xim.so` 存在或可用，并且目标进程 locale 满足 XIM 激活条件，不能是 `C` 或 `POSIX` 这类无效 locale。
-
-- Electron / Chromium / CEF 特殊路径：以 Wayland 原生运行时走 `text-input` 协议路径；以 X11/XWayland 运行时走 GTK 模块路径和 XIM 协议路径。不要只凭 Electron / Chromium / CEF 这个名字下结论，必须看实际运行模式和运行时证据。
+- Wayland 路径：软件以 Wayland 原生运行，桌面合成器和软件都支持兼容的 `text-input` 协议，输入法运行正常，没有错误的`--wayland-text-input-version`参数导致协议版本不匹配。
+- GTK 模块路径：输入法运行正常，软件是GTK软件或者XWayland运行的electron系软件，目标进程设置了正确的 `GTK_IM_MODULE` ，`im-fcitx5.so` 存在或已经加载，并且 locale 满足模块激活条件。
+- Qt 模块路径：输入法运行正常，软件是 Qt，目标进程设置了 `QT_IM_MODULE`或者 `QT_IM_MODULES` ，Qt fcitx platforminputcontext 插件存在或已经加载。
+- SDL 路径：输入法运行正常，软件使用 SDL，目标进程设置了 `SDL_IM_MODULE`，SDL 版本支持对应输入法路径。
+- XIM 协议路径：输入法运行正常，软件以 X11/XWayland 运行，目标进程设置了 `XMODIFIERS`，`im-xim.so` 存在或可用，并且目标进程 locale 满足激活条件。
 
 ## 诊断示例
 
