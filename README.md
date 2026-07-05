@@ -266,6 +266,11 @@ PR时必须提供功能的设计理念，作用场景和实际意义。一个 PR
 
 </details>
 
+
+## 致谢
+
+- [opencode](https://github.com/anomalyco/opencode) 最好的开源 Coding Agent。
+
 ## 许可
 
 Miyu 使用 MIT License 发布，见 `LICENSE`。
