@@ -1427,7 +1427,7 @@ fn default_true() -> bool {
 }
 
 fn default_tools_loading_mode() -> String {
-    "full".to_string()
+    "lazy".to_string()
 }
 
 fn default_reasoning_display() -> String {

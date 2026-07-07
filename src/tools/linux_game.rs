@@ -203,15 +203,33 @@ async fn deep_research_linux_game_compatibility(
         .unwrap_or_default()
         .trim()
         .to_string();
+    let mut stats = GameStats::default();
     let progress = GameProgress::new(&context.config, progress);
     progress.report(format!("{}: {}", "Linux 游戏兼容性", game));
+    progress.report("收集游戏兼容性信号");
+    stats.tool_calls += 1;
+    let signals = match gather_linux_game_compatibility_signals(json!({
+        "game": game,
+        "issue": issue,
+    }))
+    .await
+    {
+        Ok(output) => {
+            stats.tool_ok += 1;
+            output
+        }
+        Err(err) => {
+            stats.tool_errors += 1;
+            format!("tool error: {err}")
+        }
+    };
     let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?;
     let system_prompt = GAME_COMPATIBILITY_PROMPT;
     let prompt = format!(
-        "用户问题：\n游戏：{game}\n关注点：{}\n\n请按系统提示词流程完成调查。第一步必须调用 gather_linux_game_compatibility_signals。最终只输出调查报告。",
-        if issue.trim().is_empty() { "未明确" } else { &issue }
+        "用户问题：\n游戏：{game}\n关注点：{}\n\n宿主已预先采集兼容性信号如下。请基于这些信号和可用工具继续调查；证据不足时说明不确定。最终只输出调查报告。\n\n<compatibility_signals_json>\n{}\n</compatibility_signals_json>",
+        if issue.trim().is_empty() { "未明确" } else { &issue },
+        signals
     );
-    let mut stats = GameStats::default();
     let result = chat_with_tools(
         &client,
         vec![
@@ -245,14 +263,7 @@ async fn deep_research_linux_game_compatibility(
 }
 
 fn game_tool_registry(context: &GameCompatibilityContext) -> ToolRegistry {
-    let mut registry = context.tools.clone();
-    registry.register(ToolSpec::new(
-        "gather_linux_game_compatibility_signals",
-        "Gather Steam, ProtonDB, Can I Play on Linux, and AreWeAntiCheatYet compatibility signals for one game. / 收集单个游戏在 Steam、ProtonDB、Can I Play on Linux、AreWeAntiCheatYet 上的兼容性信号。",
-        json!({"type":"object","properties":{"game":{"type":"string","description":"Game title. / 游戏名称。"},"issue":{"type":"string","description":"Optional issue such as crash, multiplayer, anti-cheat, performance, mods. / 可选关注点，例如崩溃、多人、反作弊、性能、Mod。"}},"required":["game"],"additionalProperties":false}),
-        |args| async move { gather_linux_game_compatibility_signals(args).await },
-    ));
-    registry
+    context.tools.clone()
 }
 
 async fn chat_with_tools(

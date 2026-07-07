@@ -1782,7 +1782,7 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
     let mut fields = vec![
         Field::boolean("工具启用", config.tools.enabled),
         Field::new("工具最大轮数", config.tools.max_rounds.to_string()),
-        Field::new("工具信息处理", config.tools.loading_mode.clone()).choices(&["full", "lazy"]),
+        Field::new("工具信息如何传入", config.tools.loading_mode.clone()).choices(&["full", "lazy"]),
         Field::boolean("Skills 启用", config.skills.enabled),
         Field::boolean("允许执行命令", config.skills.allow_command_execution),
         Field::new("显示思考过程", config.display.reasoning.clone())

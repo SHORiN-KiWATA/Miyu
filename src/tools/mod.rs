@@ -63,7 +63,18 @@ pub fn readable_tool_name(name: &str) -> String {
         return format!("加载技能：{skill}");
     }
     if let Some(tools) = name.strip_prefix("load_tools:") {
-        return format!("加载工具：{tools}");
+        let display = tools
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| {
+                tool_descriptions::get(name)
+                    .map(|desc| desc.display_name.clone())
+                    .unwrap_or_else(|| name.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("、");
+        return format!("加载工具：{display}");
     }
     if let Ok(guard) = SCRIPT_DISPLAY_NAMES.read() {
         if let Some(map) = guard.as_ref() {
@@ -158,7 +169,6 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "install_aur_package" => "安装 AUR 包",
         "review_pkgbuild_directory" => "审查 PKGBUILD 目录",
         "deep_research_linux_game_compatibility" => "Linux 游戏兼容性调查",
-        "gather_linux_game_compatibility_signals" => "收集游戏兼容性",
         "register_linux_game_evidence" => "登记兼容性证据",
         "register_deep_research_topic_title" => "注册研究标题",
         "register_deep_research_reference" => "注册引用来源",

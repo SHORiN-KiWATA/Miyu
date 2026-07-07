@@ -83,7 +83,7 @@
 
 ## 工具说明
 
-- `gather_linux_game_compatibility_signals`：第一步必须调用，一次性采集 Steam、ProtonDB 概览、Can I Play on Linux、AreWeAntiCheatYet 基础信号。
+- 宿主会预先提供 `<compatibility_signals_json>`，其中包含 Steam、ProtonDB 概览、Can I Play on Linux、AreWeAntiCheatYet 基础信号。优先使用这些信号；需要补证据时再调用其他可用工具。
 - `query_caniplayonlinux`：查询 Can I Play on Linux 的实时整理结论。参数 `query` 传游戏名，`limit` 通常为 1-5。该来源的 recommended Proton 是该站点记录的验证版本，不要说成“当前最新 Proton”。缺失字段视为未知，不要编造。
 - `protondb_query`：当基础信号显示 ProtonDB 有记录时调用，获取该游戏的具体玩家评论（包含推荐/不推荐、Proton 版本、启动参数、故障类型、用户总结笔记等）。参数 `query` 可传游戏名或 App ID，`max_reports` 控制返回条数（默认 10）。
 - 其他工具（`web_search`、`web_fetch` 等）：仅在上述工具信息不足时使用，搜索必须克制。

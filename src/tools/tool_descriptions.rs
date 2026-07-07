@@ -40,7 +40,6 @@ macro_rules! tool_description_files {
             include_str!("descriptions/edit_knowledge_base_file.json"),
             include_str!("descriptions/edit_string.json"),
             include_str!("descriptions/fcitx5_input_method_wiki_qurey.json"),
-            include_str!("descriptions/gather_linux_game_compatibility_signals.json"),
             include_str!("descriptions/generate_image.json"),
             include_str!("descriptions/get_exchange_rate.json"),
             include_str!("descriptions/get_weather.json"),

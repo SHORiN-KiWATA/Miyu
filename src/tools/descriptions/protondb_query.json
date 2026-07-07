@@ -1,7 +1,7 @@
 {
   "name": "protondb_query",
   "display_name": "查询 ProtonDB",
-  "description": "查询 ProtonDB 上最新的 Linux 游戏兼容性评级和用户评论。支持 Steam App ID或游戏名称。",
+  "description": "查询 ProtonDB 上最新的 Linux 游戏兼容性评级和用户评论。支持 Steam App ID或游戏名称。如果被问到的游戏在steam上，优先查询 ProtonDB。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -14,5 +14,5 @@
     }
   },
   "permission": "readonly",
-  "always_loaded": true
+  "always_loaded": false
 }

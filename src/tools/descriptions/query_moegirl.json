@@ -1,7 +1,7 @@
 {
   "name": "query_moegirl",
   "display_name": "查询萌娘百科",
-  "description": "Search or read Moegirlpedia pages. ",
+  "description": "查询萌娘百科。被问到 ACG 相关内容时使用。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -32,5 +32,5 @@
     }
   },
   "permission": "readonly",
-  "always_loaded": true
+  "always_loaded": false
 }
