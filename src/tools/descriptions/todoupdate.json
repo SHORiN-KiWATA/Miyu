@@ -1,0 +1,65 @@
+{
+  "name": "todoupdate",
+  "display_name": "更新任务",
+  "description": "原子更新现有任务列表。用于小范围变更：新增、修改、删除或清空任务，不需要重传完整列表。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "updates": {
+        "type": "array",
+        "description": "按顺序原子应用的任务变更。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "add",
+                "update",
+                "remove",
+                "clear"
+              ]
+            },
+            "index": {
+              "type": "integer",
+              "description": "目标任务序号，1 起始。新增时表示插入位置；省略则追加。"
+            },
+            "match_content": {
+              "type": "string",
+              "description": "省略 index 时，用于定位目标任务的完整内容。"
+            },
+            "content": {
+              "type": "string",
+              "description": "新增或修改后的任务内容。"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      }
+    },
+    "required": [
+      "updates"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

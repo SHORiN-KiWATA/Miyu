@@ -1,0 +1,19 @@
+{
+  "name": "cancel_alarm",
+  "display_name": "取消闹钟",
+  "description": "按 id 取消已设定或正在响的闹钟。不知道 id 时先用 list_alarms。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "set_alarm 或 list_alarms 返回的闹钟 id。"
+      }
+    },
+    "required": [
+      "id"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

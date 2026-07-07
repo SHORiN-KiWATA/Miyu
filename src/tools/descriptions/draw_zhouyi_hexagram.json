@@ -1,0 +1,11 @@
+{
+  "name": "draw_zhouyi_hexagram",
+  "display_name": "六十四卦",
+  "description": "随机抽取一个周易六十四卦卦名。",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

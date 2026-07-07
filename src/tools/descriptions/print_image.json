@@ -1,0 +1,31 @@
+{
+  "name": "print_image",
+  "display_name": "显示图片",
+  "description": "使用 chafa 在当前终端输出中直接打印/渲染本地图片。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "image": {
+        "type": "string",
+        "description": "本地图片路径。"
+      },
+      "size": {
+        "type": "string",
+        "description": "可选 chafa 尺寸，例如 80x40。用它或 width/height 避免输出过大。"
+      },
+      "width": {
+        "type": "integer",
+        "description": "可选终端单元格输出宽度，例如 80。"
+      },
+      "height": {
+        "type": "integer",
+        "description": "可选终端单元格输出高度，例如 40。"
+      }
+    },
+    "required": [
+      "image"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

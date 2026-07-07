@@ -1,0 +1,39 @@
+{
+  "name": "register_deep_research_reference",
+  "display_name": "注册引用来源",
+  "description": "Register a source and receive a stable citation marker such as [W1].",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reference_type": {
+        "type": "string",
+        "enum": [
+          "R",
+          "K",
+          "W",
+          "record",
+          "knowledge",
+          "web"
+        ]
+      },
+      "title": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "snippet": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "reference_type",
+      "title"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

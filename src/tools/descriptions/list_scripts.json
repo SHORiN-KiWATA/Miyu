@@ -1,0 +1,11 @@
+{
+  "name": "list_scripts",
+  "display_name": "列出脚本",
+  "description": "列出所有已注册的脚本工具",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

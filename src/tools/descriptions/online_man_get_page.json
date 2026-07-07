@@ -1,0 +1,36 @@
+{
+  "name": "online_man_get_page",
+  "display_name": "读取在线手册",
+  "description": "Fetch an online Linux man page from Arch man pages or man7.org.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "section": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "arch",
+          "man7"
+        ]
+      },
+      "language": {
+        "type": "string"
+      },
+      "max_chars": {
+        "type": "integer",
+        "description": "Maximum returned characters. "
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

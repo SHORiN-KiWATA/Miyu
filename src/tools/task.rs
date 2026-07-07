@@ -14,9 +14,7 @@ const GENERAL_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md
 const EXPLORE_ALLOWED: &[&str] = &[
     "read_file",
     "glob",
-    "find_files",
     "grep",
-    "search_text",
     "check_os_info",
     "read_clipboard",
     "web_fetch",

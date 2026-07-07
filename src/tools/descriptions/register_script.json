@@ -1,0 +1,43 @@
+{
+  "name": "register_script",
+  "display_name": "注册脚本",
+  "description": "注册或更新用户脚本为工具。脚本必须存在于 scripts 目录中。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
+        "description": "唯一工具标识符（ASCII，字母开头）。这是 AI 调用的函数名。"
+      },
+      "display_name": {
+        "type": "string",
+        "description": "可读显示名称，可包含中文。"
+      },
+      "description": {
+        "type": "string",
+        "description": "展示给 AI 的工具描述。"
+      },
+      "path": {
+        "type": "string",
+        "description": "脚本文件名或相对/绝对路径。"
+      },
+      "parameters": {
+        "type": "object",
+        "description": "工具参数的 JSON schema。省略时使用带 stdin 的通用 schema。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "可选超时时间，单位秒，最大 300。"
+      }
+    },
+    "required": [
+      "id",
+      "display_name",
+      "description",
+      "path"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

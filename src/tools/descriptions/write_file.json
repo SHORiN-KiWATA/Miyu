@@ -1,0 +1,24 @@
+{
+  "name": "write_file",
+  "display_name": "写入文件",
+  "description": "写入文件内容。文件不存在时创建，存在时覆盖。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。"
+      },
+      "content": {
+        "type": "string",
+        "description": "要写入的完整文件内容。"
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true
+}

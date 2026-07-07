@@ -1,0 +1,34 @@
+{
+  "name": "edit_knowledge_base_file",
+  "display_name": "编辑知识库",
+  "description": "Edit an existing knowledge-base file by replacing an inclusive 1-based line range. Use after search_knowledge_base/read_knowledge_base_file identifies the exact file and line numbers.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file_name": {
+        "type": "string",
+        "description": "Knowledge base relative path to edit."
+      },
+      "start_line": {
+        "type": "integer",
+        "description": "1-based first line to replace."
+      },
+      "end_line": {
+        "type": "integer",
+        "description": "1-based last line to replace, inclusive."
+      },
+      "replacement": {
+        "type": "string",
+        "description": "Replacement text. May contain multiple lines. Empty text deletes the line range."
+      }
+    },
+    "required": [
+      "file_name",
+      "start_line",
+      "end_line",
+      "replacement"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true
+}

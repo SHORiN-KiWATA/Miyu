@@ -1,0 +1,23 @@
+{
+  "name": "search_knowledge_base_by_name",
+  "display_name": "按文件名称搜索知识库",
+  "description": "Find knowledge base files by file name, directory, extension, or path fragment. ",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file_name_query": {
+        "type": "string",
+        "description": "File name, directory, extension, or path fragment."
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Optional result limit."
+      }
+    },
+    "required": [
+      "file_name_query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

@@ -1,0 +1,21 @@
+{
+  "name": "read_clipboard",
+  "display_name": "读取剪贴板",
+  "description": "读取当前 Linux 剪贴板。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "preferred_type": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "text",
+          "image"
+        ],
+        "default": "auto"
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

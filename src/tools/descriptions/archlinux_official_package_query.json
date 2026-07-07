@@ -1,0 +1,35 @@
+{
+  "name": "archlinux_official_package_query",
+  "display_name": "查询 Arch 官方包",
+  "description": "查询 Arch Linux 官方软件包数据库，支持搜索和精确包详情。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "package_name": {
+        "type": "string",
+        "description": "包名。"
+      },
+      "repo": {
+        "type": "string",
+        "description": "详情模式的仓库，例如 core 或 extra。"
+      },
+      "arch": {
+        "type": "string",
+        "description": "详情模式架构，默认 x86_64。"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "search",
+          "detail"
+        ]
+      }
+    },
+    "required": [
+      "package_name"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

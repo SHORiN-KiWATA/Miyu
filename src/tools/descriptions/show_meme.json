@@ -1,0 +1,35 @@
+{
+  "name": "show_meme",
+  "display_name": "发送表情",
+  "description": "发送表情包并使用 chafa 在终端渲染。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "表情 sha256 id。"
+      },
+      "library": {
+        "type": "string",
+        "description": "可选表情库覆盖。"
+      },
+      "size": {
+        "type": "string",
+        "description": "可选 chafa 尺寸，例如 40x15。"
+      },
+      "width": {
+        "type": "integer",
+        "description": "可选终端单元格输出宽度。"
+      },
+      "height": {
+        "type": "integer",
+        "description": "可选终端单元格输出高度。"
+      }
+    },
+    "required": [
+      "id"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

@@ -1,0 +1,16 @@
+{
+  "name": "archlinux_news",
+  "display_name": "Arch 新闻",
+  "description": "获取 Arch Linux 最新新闻。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "description": "返回文章数量上限（1-20），默认 10。"
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

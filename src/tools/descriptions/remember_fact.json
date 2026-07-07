@@ -1,0 +1,23 @@
+{
+  "name": "remember_fact",
+  "display_name": "记录记忆",
+  "description": "长期记忆事实或有用知识点。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "要记住的简洁事实或知识点。"
+      },
+      "source": {
+        "type": "string",
+        "description": "可选来源标签。"
+      }
+    },
+    "required": [
+      "content"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true
+}

@@ -1,0 +1,30 @@
+{
+  "name": "calculate_hash",
+  "display_name": "计算哈希",
+  "description": "Calculate hashes for text/hex/base64 input. Supports all mainstream.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "input_text": {
+        "type": "string",
+        "description": "Input text bytes. Include \\n when matching shell commands like echo."
+      },
+      "algorithms": {
+        "type": "string"
+      },
+      "input_format": {
+        "type": "string",
+        "enum": [
+          "text",
+          "hex",
+          "base64"
+        ]
+      }
+    },
+    "required": [
+      "input_text"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

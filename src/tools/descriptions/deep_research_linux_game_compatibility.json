@@ -1,0 +1,23 @@
+{
+  "name": "deep_research_linux_game_compatibility",
+  "display_name": "Linux 游戏兼容性调查",
+  "description": "运行 Linux 游戏兼容性深度调查子代理并返回最终报告。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "game": {
+        "type": "string",
+        "description": "游戏名称。"
+      },
+      "issue": {
+        "type": "string",
+        "description": "可选关注点，例如崩溃、多人、反作弊、性能、Mod。"
+      }
+    },
+    "required": [
+      "game"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

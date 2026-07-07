@@ -1,0 +1,16 @@
+{
+  "name": "get_weather",
+  "display_name": "天气查询",
+  "description": "查询天气.Location can be city name, airport code, or empty for auto-detected location.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "location": {
+        "type": "string",
+        "description": "City/location, for example Tokyo or Beijing. Empty means auto-detect."
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

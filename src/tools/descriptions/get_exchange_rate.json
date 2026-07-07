@@ -1,0 +1,24 @@
+{
+  "name": "get_exchange_rate",
+  "display_name": "汇率查询",
+  "description": "查询不同货币之间的汇率。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "base": {
+        "type": "string",
+        "description": "Base currency, e.g. USD or 美元."
+      },
+      "target": {
+        "type": "string",
+        "description": "Target currency, e.g. JPY or 日元."
+      }
+    },
+    "required": [
+      "base",
+      "target"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

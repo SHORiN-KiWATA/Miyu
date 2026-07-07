@@ -1,0 +1,18 @@
+{
+  "name": "query_caniplayonlinux",
+  "display_name": "查询是否能在Linux上玩",
+  "description": "查询 caniplayonlinux.com 的 Linux 游戏兼容性信息。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

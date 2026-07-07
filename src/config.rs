@@ -165,6 +165,8 @@ pub struct ToolsConfig {
     pub enabled: bool,
     #[serde(default)]
     pub max_rounds: usize,
+    #[serde(default = "default_tools_loading_mode")]
+    pub loading_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -770,6 +772,7 @@ impl Default for ToolsConfig {
         Self {
             enabled: default_true(),
             max_rounds: 0,
+            loading_mode: default_tools_loading_mode(),
         }
     }
 }
@@ -1421,6 +1424,10 @@ fn is_auto_protocol(value: &str) -> bool {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_tools_loading_mode() -> String {
+    "full".to_string()
 }
 
 fn default_reasoning_display() -> String {

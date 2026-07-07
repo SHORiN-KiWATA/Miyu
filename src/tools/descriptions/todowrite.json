@@ -1,0 +1,50 @@
+{
+  "name": "todowrite",
+  "display_name": "任务列表",
+  "description": "创建或替换当前编码会话的完整结构化任务列表。用于初始化或重建整个列表；如果只是修改单个已有任务，请使用 todoupdate。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "todos": {
+        "type": "array",
+        "description": "完整任务列表。此操作会替换整个列表。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "任务简述。"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            }
+          },
+          "required": [
+            "content",
+            "status",
+            "priority"
+          ]
+        }
+      }
+    },
+    "required": [
+      "todos"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

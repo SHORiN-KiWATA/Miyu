@@ -1,0 +1,31 @@
+{
+  "name": "search_meme",
+  "display_name": "搜索表情包",
+  "description": "按场景、情绪、标签或画面内容搜索当前人格表情库。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "场景、情绪、画面内容或用户意图。"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "可选偏好标签。"
+      },
+      "library": {
+        "type": "string",
+        "description": "可选表情库覆盖。"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "候选数量上限，默认 6。"
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

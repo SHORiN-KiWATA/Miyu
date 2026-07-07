@@ -1,0 +1,36 @@
+{
+  "name": "task",
+  "display_name": "子代理任务",
+  "description": "启动子代理独立处理复杂任务。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "description": {
+        "type": "string",
+        "description": "简短任务描述，用于进度展示。"
+      },
+      "prompt": {
+        "type": "string",
+        "description": "详细任务提示。必须包含完整的上下文、目标和输出要求，因为子代理无法访问主 agent 的对话历史。"
+      },
+      "subagent_type": {
+        "type": "string",
+        "enum": [
+          "explore",
+          "general"
+        ],
+        "default": "general"
+      },
+      "max_steps": {
+        "type": "integer",
+        "description": "可选。覆盖子代理的工具调用预算上限。explore 默认 30，general 默认 50。"
+      }
+    },
+    "required": [
+      "description",
+      "prompt"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

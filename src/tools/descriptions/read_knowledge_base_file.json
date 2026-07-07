@@ -1,0 +1,27 @@
+{
+  "name": "read_knowledge_base_file",
+  "display_name": "读取知识库",
+  "description": "Read a knowledge base file by relative path with line pagination. ",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file_name": {
+        "type": "string",
+        "description": "Knowledge base relative path."
+      },
+      "start_line": {
+        "type": "integer",
+        "description": "1-based start line."
+      },
+      "max_lines": {
+        "type": "integer",
+        "description": "Optional line limit."
+      }
+    },
+    "required": [
+      "file_name"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

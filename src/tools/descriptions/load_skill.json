@@ -1,0 +1,19 @@
+{
+  "name": "load_skill",
+  "display_name": "加载技能",
+  "description": "",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "可用技能列表中的技能名称。"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

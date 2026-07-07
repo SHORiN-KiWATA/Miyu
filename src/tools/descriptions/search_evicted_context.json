@@ -1,0 +1,23 @@
+{
+  "name": "search_evicted_context",
+  "display_name": "搜索旧上下文",
+  "description": "搜索因上下文长度限制而被弹出到缓存的对话轮次内容。上下文明显缺少早前讨论时使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "搜索关键词或问题。"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "可选结果数量限制。"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

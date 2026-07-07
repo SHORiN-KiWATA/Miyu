@@ -1,0 +1,23 @@
+{
+  "name": "gather_linux_game_compatibility_signals",
+  "display_name": "收集游戏兼容性",
+  "description": "快速收集单个游戏在 Steam、ProtonDB、Can I Play on Linux、AreWeAntiCheatYet 上的兼容性信号。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "game": {
+        "type": "string",
+        "description": "Game title. / 游戏名称。"
+      },
+      "issue": {
+        "type": "string",
+        "description": "Optional issue such as crash, multiplayer, anti-cheat, performance, mods. / 可选关注点，例如崩溃、多人、反作弊、性能、Mod。"
+      }
+    },
+    "required": [
+      "game"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

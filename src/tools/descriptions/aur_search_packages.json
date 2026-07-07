@@ -1,0 +1,24 @@
+{
+  "name": "aur_search_packages",
+  "display_name": "搜索 AUR",
+  "description": "Search AUR packages.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      },
+      "search_by": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

@@ -1,0 +1,48 @@
+{
+  "name": "update_meme",
+  "display_name": "更新表情包",
+  "description": "更新当前表情库可写覆盖层中的表情元数据。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "表情 sha256 id。"
+      },
+      "library": {
+        "type": "string",
+        "description": "可选表情库覆盖。"
+      },
+      "name_zh": {
+        "type": "string"
+      },
+      "name_en": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "usage": {
+        "type": "string"
+      },
+      "avoid": {
+        "type": "string"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "enabled": {
+        "type": "boolean",
+        "description": "启用或禁用该表情。"
+      }
+    },
+    "required": [
+      "id"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

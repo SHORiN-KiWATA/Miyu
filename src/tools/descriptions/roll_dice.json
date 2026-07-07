@@ -1,0 +1,24 @@
+{
+  "name": "roll_dice",
+  "display_name": "roll_dice",
+  "description": "掷骰子并返回每颗骰子点数和总和。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer",
+        "description": "骰子数量，默认 1，最多 100。"
+      },
+      "sides": {
+        "type": "integer",
+        "description": "每颗骰子的面数，默认 6，最多 1000。"
+      },
+      "modifier": {
+        "type": "integer",
+        "description": "可选总和修正值。"
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

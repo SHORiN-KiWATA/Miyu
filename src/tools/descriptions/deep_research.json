@@ -1,0 +1,29 @@
+{
+  "name": "deep_research",
+  "display_name": "深度研究",
+  "description": "Run a dual-role deep research task and write the final Markdown report to the configured output directory.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "description": "Research question or topic."
+      },
+      "thinking_depth": {
+        "type": "string",
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    "required": [
+      "topic"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

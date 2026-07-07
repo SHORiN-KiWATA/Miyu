@@ -1,0 +1,11 @@
+{
+  "name": "aur_check_status",
+  "display_name": "查询 AUR 状态",
+  "description": "查询 AUR 是否正常工作。",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

@@ -1,0 +1,21 @@
+{
+  "name": "register_deep_research_topic_title",
+  "display_name": "注册研究标题",
+  "description": "Register a concise title for this deep research task.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic_title": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "topic_title"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

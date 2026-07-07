@@ -1,0 +1,19 @@
+{
+  "name": "remove_knowledge_base_file",
+  "display_name": "移除知识库",
+  "description": "Remove a knowledge-base file by relative path. ",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file_name": {
+        "type": "string",
+        "description": "Knowledge base relative path to remove."
+      }
+    },
+    "required": [
+      "file_name"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

@@ -1,0 +1,31 @@
+{
+  "name": "grep",
+  "display_name": "搜索内容",
+  "description": "在目录或单个文件中用 ripgrep 搜索内容。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "要搜索的目录或文件，默认工作区；查用户文件用 ~ 或 /home，受保护的全局搜索可用 /。"
+      },
+      "pattern": {
+        "type": "string",
+        "description": "正则模式。"
+      },
+      "include": {
+        "type": "string",
+        "description": "可选大小写不敏感文件 glob 过滤。"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "最多匹配数。"
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

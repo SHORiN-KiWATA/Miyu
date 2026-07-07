@@ -1,0 +1,24 @@
+{
+  "name": "install_aur_package",
+  "display_name": "安装 AUR 包",
+  "description": "Install an AUR package only after review_aur_package recorded an allowed review state and the user explicitly confirmed installation in a later reply. Requires user_confirmed=true. ",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "package": {
+        "type": "string",
+        "description": "AUR package name."
+      },
+      "user_confirmed": {
+        "type": "boolean",
+        "description": "Set true only when the user explicitly confirmed installation after seeing the review."
+      }
+    },
+    "required": [
+      "package",
+      "user_confirmed"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

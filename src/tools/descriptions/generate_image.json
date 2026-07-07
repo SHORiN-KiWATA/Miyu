@@ -1,0 +1,43 @@
+{
+  "name": "generate_image",
+  "display_name": "生成图片",
+  "description": "Generate an image from a text prompt using the configured OpenAI image API. Returns a local image path. if this tool returns printed=true, never call print_image for the same image.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Image generation prompt."
+      },
+      "aspect_ratio": {
+        "type": "string",
+        "enum": [
+          "自动",
+          "1:1",
+          "2:3",
+          "3:2",
+          "3:4",
+          "4:3",
+          "4:5",
+          "5:4",
+          "9:16",
+          "16:9",
+          "21:9"
+        ]
+      },
+      "resolution": {
+        "type": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

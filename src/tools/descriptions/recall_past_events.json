@@ -1,0 +1,23 @@
+{
+  "name": "recall_past_events",
+  "display_name": "回忆往事",
+  "description": "搜索过去发送过的对话。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "搜索关键词或问题。"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "可选结果数量限制。"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

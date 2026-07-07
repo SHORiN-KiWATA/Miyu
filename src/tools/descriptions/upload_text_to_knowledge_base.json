@@ -1,0 +1,27 @@
+{
+  "name": "upload_text_to_knowledge_base",
+  "display_name": "导入知识库",
+  "description": "Create a new knowledge-base file or replace an entire existing file. For updating part of an existing file, first search/read it and prefer edit_knowledge_base_file. Never use this for skills, memory, persona, identity, or configuration.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "Text content to save."
+      },
+      "title": {
+        "type": "string",
+        "description": "Optional title used for markdown heading and default file name."
+      },
+      "file_name": {
+        "type": "string",
+        "description": "Optional knowledge base relative path."
+      }
+    },
+    "required": [
+      "content"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

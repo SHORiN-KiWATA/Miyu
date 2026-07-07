@@ -1,0 +1,36 @@
+{
+  "name": "query_moegirl",
+  "display_name": "查询萌娘百科",
+  "description": "Search or read Moegirlpedia pages. ",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "search",
+          "page"
+        ]
+      },
+      "site": {
+        "type": "string",
+        "enum": [
+          "zh",
+          "cn",
+          "uk",
+          "ja",
+          ""
+        ]
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

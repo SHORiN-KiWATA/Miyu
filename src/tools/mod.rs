@@ -17,6 +17,7 @@ pub mod knowledge_base;
 mod linux_game;
 mod man;
 pub(crate) mod memes;
+mod load_tools;
 mod memory;
 mod moegirl;
 mod package_advisor;
@@ -26,6 +27,7 @@ mod scripts;
 mod skills;
 mod subagent_runner;
 mod task;
+pub mod tool_descriptions;
 mod todowrite;
 pub mod vision;
 mod weather;
@@ -57,6 +59,12 @@ pub fn register_script_display_names(registry: &ToolRegistry) {
 }
 
 pub fn readable_tool_name(name: &str) -> String {
+    if let Some(skill) = name.strip_prefix("load_skill:") {
+        return format!("加载技能：{skill}");
+    }
+    if let Some(tools) = name.strip_prefix("load_tools:") {
+        return format!("加载工具：{tools}");
+    }
     if let Ok(guard) = SCRIPT_DISPLAY_NAMES.read() {
         if let Some(map) = guard.as_ref() {
             if let Some(dn) = map.get(name) {
@@ -78,8 +86,8 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "list_directory" => "列目录",
         "create_directory" => "创建目录",
         "trash_path" => "移入回收站",
-        "find_files" | "glob" => "查找文件",
-        "search_text" | "grep" => "搜索文本",
+        "glob" => "查找文件",
+        "grep" => "搜索文本",
         "get_current_directory" => "当前目录",
         "get_current_time" => "当前时间",
         "check_issue" => "检查问题",
@@ -140,6 +148,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "draw_fortune_lot" => "吉凶占",
         "roll_dice" => "掷骰子",
         "load_skill" => "加载技能",
+        "load_tools" => "加载工具",
         "register_script" => "注册脚本",
         "unregister_script" => "注销脚本",
         "list_scripts" => "列出脚本",
@@ -236,6 +245,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     scripts::register(&mut registry, paths);
+    if config.tools.loading_mode == "lazy" {
+        load_tools::register(&mut registry);
+    }
     registry
 }
 
@@ -277,6 +289,9 @@ pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry 
     }
     if config.memory_config().enabled {
         memory::register_readonly(&mut registry, config.clone(), paths.clone());
+    }
+    if config.tools.loading_mode == "lazy" {
+        load_tools::register(&mut registry);
     }
     registry
 }

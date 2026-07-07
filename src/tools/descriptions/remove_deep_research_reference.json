@@ -1,0 +1,21 @@
+{
+  "name": "remove_deep_research_reference",
+  "display_name": "移除引用来源",
+  "description": "Remove a registered source by marker.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ref": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

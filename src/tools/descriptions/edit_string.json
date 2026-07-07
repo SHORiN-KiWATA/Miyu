@@ -1,0 +1,34 @@
+{
+  "name": "edit_string",
+  "display_name": "精确编辑",
+  "description": "通过精确字符串匹配替换编辑文件。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件路径。支持绝对路径、工作区相对路径和 ~/ 路径。"
+      },
+      "old_string": {
+        "type": "string",
+        "description": "要替换的精确文本。必须完全匹配包括空白和缩进。"
+      },
+      "new_string": {
+        "type": "string",
+        "description": "替换文本。必须与 old_string 不同。"
+      },
+      "replace_all": {
+        "type": "boolean",
+        "description": "替换所有匹配项（默认 false）。",
+        "default": false
+      }
+    },
+    "required": [
+      "path",
+      "old_string",
+      "new_string"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true
+}

@@ -1,7 +1,7 @@
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -36,6 +36,7 @@ pub struct ToolSpec {
     pub parameters: Value,
     pub permission: ToolPermission,
     pub display_name: Option<String>,
+    pub always_loaded: bool,
     handler: ToolHandler,
 }
 
@@ -62,6 +63,7 @@ impl ToolSpec {
             parameters,
             permission: ToolPermission::ReadOnly,
             display_name: None,
+            always_loaded: true,
             handler: Arc::new(move |args, _progress| Box::pin(handler(args))),
         }
     }
@@ -82,6 +84,7 @@ impl ToolSpec {
             parameters,
             permission: ToolPermission::ReadOnly,
             display_name: None,
+            always_loaded: true,
             handler: Arc::new(move |args, progress| Box::pin(handler(args, progress))),
         }
     }
@@ -93,6 +96,19 @@ impl ToolSpec {
 
     pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
         self.display_name = Some(display_name.into());
+        self
+    }
+
+    pub fn apply_built_in_description(mut self) -> Self {
+        if self.name == "load_skill" {
+            return self;
+        }
+        if let Some(desc) = crate::tools::tool_descriptions::get(&self.name) {
+            self.description = desc.description.clone();
+            self.parameters = desc.parameters.clone();
+            self.display_name = Some(desc.display_name.clone());
+            self.always_loaded = desc.always_loaded;
+        }
         self
     }
 
@@ -127,11 +143,20 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: ToolSpec) {
+        let tool = tool.apply_built_in_description();
         self.tools.insert(tool.name.clone(), tool);
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(ToolSpec::definition).collect()
+    }
+
+    pub fn lazy_definitions(&self, loaded: &BTreeSet<String>) -> Vec<ToolDefinition> {
+        self.tools
+            .values()
+            .filter(|tool| tool.always_loaded || loaded.contains(&tool.name))
+            .map(ToolSpec::definition)
+            .collect()
     }
 
     pub fn definitions_except(&self, excluded: &[&str]) -> Vec<ToolDefinition> {
@@ -209,4 +234,39 @@ pub fn empty_parameters() -> Value {
         "properties": {},
         "additionalProperties": false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn lazy_definitions_include_loaded_on_demand_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "read_file",
+            "old",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        ));
+        registry.register(ToolSpec::new(
+            "get_weather",
+            "old",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        ));
+
+        let names = |defs: Vec<ToolDefinition>| {
+            defs.into_iter()
+                .map(|def| def.function.name)
+                .collect::<BTreeSet<_>>()
+        };
+
+        assert!(names(registry.lazy_definitions(&BTreeSet::new())).contains("read_file"));
+        assert!(!names(registry.lazy_definitions(&BTreeSet::new())).contains("get_weather"));
+
+        let loaded = BTreeSet::from(["get_weather".to_string()]);
+        assert!(names(registry.lazy_definitions(&loaded)).contains("get_weather"));
+    }
 }

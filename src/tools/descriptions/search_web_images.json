@@ -1,0 +1,36 @@
+{
+  "name": "search_web_images",
+  "display_name": "搜索图片",
+  "description": "搜索网络图片。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "图片搜索关键词。"
+      },
+      "count": {
+        "type": "integer",
+        "description": "必填。最终返回图片的精确数量。必须匹配用户要求的数量，不要把配置上限当默认值。"
+      },
+      "preview": {
+        "type": "boolean",
+        "description": "在终端图片打印启用时，下载并用 chafa 预览图片。"
+      },
+      "preview_count": {
+        "type": "integer",
+        "description": "最多用 chafa 预览几张图片。"
+      },
+      "safe_search": {
+        "type": "boolean",
+        "description": "启用安全搜图。默认使用插件配置。"
+      }
+    },
+    "required": [
+      "query",
+      "count"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

@@ -1,0 +1,23 @@
+{
+  "name": "linux_input_method_diagnose",
+  "display_name": "输入法诊断",
+  "description": "运行 Linux 输入法深度诊断子代理，基于运行时证据、框架识别、显示模式和输入法路径分析输出诊断报告。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "issue": {
+        "type": "string",
+        "description": "输入法问题或现象。"
+      },
+      "target": {
+        "type": "string",
+        "description": "可选目标应用或进程名。"
+      }
+    },
+    "required": [
+      "issue"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

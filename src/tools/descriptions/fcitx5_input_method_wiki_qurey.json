@@ -1,0 +1,45 @@
+{
+  "name": "fcitx5_input_method_wiki_qurey",
+  "display_name": "查询 Fcitx5 Wiki",
+  "description": "查询 Fcitx5 官方 Wiki。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural language question, e.g. XWayland XIM, Electron input method, GTK_IM_MODULE, LC_CTYPE."
+      },
+      "topic": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "home",
+          "for_users",
+          "setup",
+          "wayland",
+          "environment_variables",
+          "xim",
+          "gtk",
+          "qt",
+          "electron_chromium",
+          "locale"
+        ]
+      },
+      "language": {
+        "type": "string",
+        "enum": [
+          "bilingual",
+          "zh",
+          "en"
+        ]
+      },
+      "include_page_excerpt": {
+        "type": "boolean",
+        "description": "Fetch and include a clipped excerpt from the official wiki page. Defaults to true."
+      }
+    },
+    "required": []
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

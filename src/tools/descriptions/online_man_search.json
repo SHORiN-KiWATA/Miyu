@@ -1,0 +1,27 @@
+{
+  "name": "online_man_search",
+  "display_name": "搜索在线手册",
+  "description": "Search online Linux man pages using Arch manual pages.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "section": {
+        "type": "string"
+      },
+      "language": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

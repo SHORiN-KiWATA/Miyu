@@ -1,0 +1,50 @@
+{
+  "name": "add_meme",
+  "display_name": "添加表情包",
+  "description": "把图片加入当前人格的表情库。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "image": {
+        "type": "string",
+        "description": "本地图片路径。"
+      },
+      "library": {
+        "type": "string",
+        "description": "可选表情库覆盖。"
+      },
+      "name_zh": {
+        "type": "string",
+        "description": "中文显示名。"
+      },
+      "name_en": {
+        "type": "string",
+        "description": "英文显示名。"
+      },
+      "description": {
+        "type": "string",
+        "description": "图片可见内容描述。"
+      },
+      "usage": {
+        "type": "string",
+        "description": "什么时候使用该表情。"
+      },
+      "avoid": {
+        "type": "string",
+        "description": "什么场景不要使用。"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "检索标签。"
+      }
+    },
+    "required": [
+      "image"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

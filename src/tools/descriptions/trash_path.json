@@ -1,0 +1,19 @@
+{
+  "name": "trash_path",
+  "display_name": "移入回收站",
+  "description": "把文件、目录或符号链接移入系统回收站，而不是永久删除。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "要移入回收站的文件、目录或符号链接路径。支持绝对路径、工作区相对路径和 ~/ 路径。"
+      }
+    },
+    "required": [
+      "path"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true
+}

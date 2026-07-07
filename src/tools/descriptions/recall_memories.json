@@ -1,0 +1,27 @@
+{
+  "name": "recall_memories",
+  "display_name": "召回记忆",
+  "description": "搜索已记住的事实",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "搜索关键词或问题。"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "可选结果数量限制。"
+      },
+      "include_forgotten": {
+        "type": "boolean",
+        "description": "是否包含已遗忘记忆。"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

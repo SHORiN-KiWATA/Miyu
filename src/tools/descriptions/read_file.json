@@ -1,0 +1,27 @@
+{
+  "name": "read_file",
+  "display_name": "读取文件",
+  "description": "按 1 起始行号分页读取 UTF-8 文本文件，或分页列出目录。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件或目录路径。"
+      },
+      "offset": {
+        "type": "integer",
+        "description": "起始行，1 起始。"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "最多读取行数。"
+      }
+    },
+    "required": [
+      "path"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

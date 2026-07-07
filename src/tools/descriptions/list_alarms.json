@@ -1,0 +1,11 @@
+{
+  "name": "list_alarms",
+  "display_name": "列出闹钟",
+  "description": "列出当前已设定或正在响的本地闹钟。",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

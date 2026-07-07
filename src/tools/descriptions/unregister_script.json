@@ -1,0 +1,23 @@
+{
+  "name": "unregister_script",
+  "display_name": "注销脚本",
+  "description": "从工具索引中移除已注册的脚本。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "要注销的脚本 id。"
+      },
+      "delete_file": {
+        "type": "boolean",
+        "description": "若为 true，同时从磁盘删除脚本文件。仅影响 scripts 目录内的文件。"
+      }
+    },
+    "required": [
+      "id"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

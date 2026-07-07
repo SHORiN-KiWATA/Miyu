@@ -1,0 +1,11 @@
+{
+  "name": "draw_fortune_lot",
+  "display_name": "吉凶占",
+  "description": "随机进行一次吉凶占，返回吉凶等级。",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

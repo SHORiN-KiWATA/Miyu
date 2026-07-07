@@ -1,0 +1,68 @@
+{
+  "name": "check_issue",
+  "display_name": "检查问题",
+  "description": "Collect read-only diagnostic evidence for a concrete local issue. This tool gathers facts only; it does not diagnose, rank root causes, or recommend fixes.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Original user issue. Used for auto area/target inference."
+      },
+      "area": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "system",
+          "app",
+          "input_method",
+          "display",
+          "audio",
+          "package",
+          "gpu",
+          "network",
+          "storage"
+        ]
+      },
+      "target": {
+        "type": "string",
+        "description": "Optional app, process, command, package, or subsystem target."
+      },
+      "symptom": {
+        "type": "string",
+        "description": "Optional symptom label."
+      },
+      "depth": {
+        "type": "string",
+        "enum": [
+          "quick",
+          "normal",
+          "full"
+        ]
+      },
+      "recent_minutes": {
+        "type": "integer",
+        "description": "Recent log window in minutes, clamped to 1..1440."
+      },
+      "platform": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "linux",
+          "macos"
+        ]
+      },
+      "allow_launch_probe": {
+        "type": "boolean",
+        "description": "For app/input_method evidence only: explicitly allow launching target to sample runtime facts. Defaults to false."
+      },
+      "launch_timeout_seconds": {
+        "type": "integer",
+        "description": "Seconds to wait after launch probe before sampling pids. Defaults to 3, max 15."
+      }
+    },
+    "required": []
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

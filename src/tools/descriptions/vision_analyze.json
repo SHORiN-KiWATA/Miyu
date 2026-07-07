@@ -1,0 +1,23 @@
+{
+  "name": "vision_analyze",
+  "display_name": "分析图片",
+  "description": "使用当前多模态模型分析图片。支持本地图片路径和 http(s) 图片 URL。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "image": {
+        "type": "string",
+        "description": "本地图片路径或 http(s) 图片 URL。"
+      },
+      "prompt": {
+        "type": "string",
+        "description": "图片分析问题或指令。默认简洁描述图片。"
+      }
+    },
+    "required": [
+      "image"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

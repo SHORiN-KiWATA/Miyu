@@ -1,0 +1,27 @@
+{
+  "name": "set_alarm",
+  "display_name": "设置闹钟",
+  "description": "设置本地闹钟或倒计时。支持 30s、10m、1h 30m 或 14:30。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "time": {
+        "type": "string",
+        "description": "时长或时钟时间。"
+      },
+      "label": {
+        "type": "string",
+        "description": "可选闹钟标签。"
+      },
+      "audio_file": {
+        "type": "string",
+        "description": "可选本地 .wav 或 .mp3 音频文件，用它替代 Miyu 内置闹钟音。"
+      }
+    },
+    "required": [
+      "time"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

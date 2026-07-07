@@ -1,0 +1,23 @@
+{
+  "name": "run_command",
+  "display_name": "运行命令",
+  "description": "运行 shell 命令。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "要运行的只读命令。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "可选超时时间，单位秒。"
+      }
+    },
+    "required": [
+      "command"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

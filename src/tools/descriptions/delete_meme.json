@@ -1,0 +1,27 @@
+{
+  "name": "delete_meme",
+  "display_name": "删除表情包",
+  "description": "从表情库中删除表情。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "表情 sha256 id。"
+      },
+      "library": {
+        "type": "string",
+        "description": "可选表情库覆盖。"
+      },
+      "hard_delete": {
+        "type": "boolean",
+        "description": "永久删除用户图片，而不是移入回收站。"
+      }
+    },
+    "required": [
+      "id"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false
+}

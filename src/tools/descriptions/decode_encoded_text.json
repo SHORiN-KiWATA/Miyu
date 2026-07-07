@@ -1,0 +1,32 @@
+{
+  "name": "decode_encoded_text",
+  "display_name": "解码文本",
+  "description": "Decode base64, hex, url, html, or rot13 encoded text.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "input_text": {
+        "type": "string"
+      },
+      "input_format": {
+        "type": "string",
+        "enum": [
+          "base64",
+          "hex",
+          "url",
+          "html",
+          "rot13"
+        ]
+      },
+      "text_encoding": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "input_text",
+      "input_format"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

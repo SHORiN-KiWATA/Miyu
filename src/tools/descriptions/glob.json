@@ -1,0 +1,27 @@
+{
+  "name": "glob",
+  "display_name": "查找文件",
+  "description": "在目录下按大小写不敏感 glob 模式查找文件。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "搜索目录，默认工作区；查用户文件用 ~ 或 /home，受保护的全局搜索可用 /。"
+      },
+      "pattern": {
+        "type": "string",
+        "description": "大小写不敏感 Glob 模式，例如 *ai*测试*。"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "最多结果数。"
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true
+}

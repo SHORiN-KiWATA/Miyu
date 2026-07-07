@@ -1,0 +1,18 @@
+{
+  "name": "aur_get_package_info",
+  "display_name": "查看 AUR 包",
+  "description": "Get AUR package information.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "package_name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "package_name"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}

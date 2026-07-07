@@ -1,0 +1,34 @@
+{
+  "name": "edit_file",
+  "display_name": "编辑文件",
+  "description": "按 1 起始的闭区间行号替换现有 UTF-8 文件内容。应先用 read_file 确认准确行号。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "工作区相对路径或绝对文件路径。"
+      },
+      "start_line": {
+        "type": "integer",
+        "description": "要替换的第一行，1 起始。"
+      },
+      "end_line": {
+        "type": "integer",
+        "description": "要替换的最后一行，闭区间。"
+      },
+      "replacement": {
+        "type": "string",
+        "description": "替换文本，可包含多行；空文本会删除指定行范围。"
+      }
+    },
+    "required": [
+      "path",
+      "start_line",
+      "end_line",
+      "replacement"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true
+}

@@ -1,0 +1,11 @@
+{
+  "name": "draw_tarot_card",
+  "display_name": "塔罗牌",
+  "description": "随机抽取一张正位或逆位塔罗牌。",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "permission": "readonly",
+  "always_loaded": false
+}
