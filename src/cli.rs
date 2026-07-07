@@ -3433,11 +3433,9 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
             renderer.tick_spinner()
         }
         AgentEvent::PopStart => {
-            renderer.write_system_message("正在弹出旧上下文...")?;
             renderer.tick_spinner()
         }
-        AgentEvent::PopEnd { popped_count } => {
-            renderer.write_system_message(&format!("已弹出 {} 轮对话", popped_count))?;
+        AgentEvent::PopEnd => {
             renderer.tick_spinner()
         }
     }

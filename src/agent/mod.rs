@@ -129,9 +129,7 @@ pub enum AgentEvent {
     CompactChunk(ChatStreamChunk),
     CompactEnd,
     PopStart,
-    PopEnd {
-        popped_count: usize,
-    },
+    PopEnd,
 }
 
 pub struct Agent {
@@ -476,9 +474,7 @@ impl Agent {
                     })
                     .collect();
                 self.memory.remember_evicted_turns(&evicted_turns)?;
-                on_event(AgentEvent::PopEnd {
-                    popped_count: evicted_turns.len(),
-                })?;
+                on_event(AgentEvent::PopEnd)?;
                 None
             }
             _ => None,
