@@ -12,7 +12,8 @@ use anyhow::{bail, Result};
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use crossterm::cursor::{self, Hide, MoveTo, Show};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType};
@@ -25,6 +26,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const REPL_MAX_VISIBLE_INPUT_ROWS: u16 = 12;
+const REPL_PASTE_PLACEHOLDER_MIN_LINES: usize = 3;
+const REPL_PASTE_PLACEHOLDER_MIN_CHARS: usize = 150;
+
+#[derive(Clone, Debug)]
+struct PastedText {
+    text: String,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "miyu", version, about = "Miyu CLI AI Agent")]
@@ -1295,7 +1303,7 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("image");
-            print!("[Image 1: {}] ", filename);
+            print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
             Ok(())
         }
@@ -1319,7 +1327,7 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 }
                 std::os::unix::fs::symlink(&path, &link_path)?;
             }
-            print!("[Image 1: {}] ", filename);
+            print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
             Ok(())
         }
@@ -1405,7 +1413,7 @@ fn extract_image_placeholders(
         } else {
             images.push(None);
         }
-        clean.push_str(&format!("[Image {}] ", images.len()));
+        clean.push_str(&format!("[Image {}]", images.len()));
         last_end = *end;
     }
     clean.extend(&chars[last_end..]);
@@ -1427,7 +1435,8 @@ async fn run_chat_with_images(
     let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
-    let mut agent = Agent::new(config, paths, state, client, registry, AgentMode::Yolo)?;
+    let show_token_usage = config.display.show_token_usage;
+    let mut agent = Agent::new(config, paths, state.clone(), client, registry, AgentMode::Yolo)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, false, readable_tool_names);
     renderer.start_waiting()?;
@@ -1437,7 +1446,8 @@ async fn run_chat_with_images(
         })
         .await;
     renderer.finish()?;
-    result?;
+    let result = result?;
+    print_chat_token_usage(&result, show_token_usage, state.token_total()?)?;
     Ok(())
 }
 
@@ -1529,7 +1539,8 @@ async fn run_chat_with_options(
         render::ToolCallDisplayMode::from_config(&config.display.tool_calls)
     };
     let readable_tool_names = config.display.readable_tool_names;
-    let mut agent = Agent::new(config, paths, state, client, registry, mode)?;
+    let show_token_usage = config.display.show_token_usage && !plain;
+    let mut agent = Agent::new(config, paths, state.clone(), client, registry, mode)?;
     let mut renderer =
         render::StreamRenderer::new(reasoning_mode, tool_call_mode, plain, readable_tool_names);
     renderer.start_waiting()?;
@@ -1537,7 +1548,22 @@ async fn run_chat_with_options(
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
         .await;
     renderer.finish()?;
-    result?;
+    let result = result?;
+    print_chat_token_usage(&result, show_token_usage, state.token_total()?)?;
+    Ok(())
+}
+
+fn print_chat_token_usage(
+    result: &crate::llm::ChatResult,
+    enabled: bool,
+    session_token_total: u64,
+) -> Result<()> {
+    if enabled {
+        if let Some(usage) = &result.usage {
+            let turn_tokens = render::usage_total(usage);
+            render::print_token_usage(turn_tokens, session_token_total, result.usage_estimated)?;
+        }
+    }
     Ok(())
 }
 
@@ -1554,8 +1580,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     println!(
         "\x1b[2m{}\x1b[0m",
         t(
-            "Tab toggles mode; Enter sends; Ctrl+J inserts newline; Ctrl+V pastes image",
-            "Tab 切换模式；Enter 发送；Ctrl+J 换行；Ctrl+V 粘贴图片",
+            "Tab toggles mode; Enter sends; Ctrl+J inserts newline; Ctrl+V pastes clipboard",
+            "Tab 切换模式；Enter 发送；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
         )
     );
     crate::default_kb::check_update_if_due(paths).ok();
@@ -1645,20 +1671,30 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             let chat = agent.chat_stream_with_images(input, &pasted_images, |event| handle_agent_event(&mut renderer, event));
             tokio::pin!(chat);
             tokio::select! {
-                result = &mut chat => result.map(|_| ()),
+                result = &mut chat => result.map(Some),
                 signal = tokio::signal::ctrl_c() => {
                     signal?;
-                    Ok(())
+                    Ok(None)
                 }
             }
         };
         renderer.finish()?;
-        if let Err(err) = chat_result {
-            eprintln!(
-                "\x1b[31m{}: {err}\x1b[0m",
-                t("error", "错误")
-            );
-            continue;
+        match chat_result {
+            Ok(Some(result)) => {
+                print_chat_token_usage(
+                    &result,
+                    config.display.show_token_usage,
+                    state.token_total()?,
+                )?;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!(
+                    "\x1b[31m{}: {err}\x1b[0m",
+                    t("error", "错误")
+                );
+                continue;
+            }
         }
     }
     Ok(())
@@ -1730,7 +1766,7 @@ fn print_repl_help() {
     println!("  Ctrl+J      {}", t("insert newline", "插入换行"));
     println!(
         "  Ctrl+V      {}",
-        t("paste image from clipboard", "从剪贴板粘贴图片")
+        t("paste image or text from clipboard", "从剪贴板粘贴图片或文本")
     );
     println!(
         "  Ctrl+L      {}",
@@ -1761,11 +1797,14 @@ fn read_repl_input(
         stdout.flush()?;
     }
     terminal::enable_raw_mode()?;
-    execute!(stdout, EnableBracketedPaste)?;
+    execute!(stdout, EnableBracketedPaste, EnableMouseCapture)?;
     let (_, mut input_row) = cursor::position()?;
     let mut rendered_rows = 0u16;
     let mut is_pasted = false;
     let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
+    let mut pasted_texts: Vec<Option<PastedText>> = Vec::new();
+    let mut selection_anchor = None::<usize>;
+    let mut selection_cursor = None::<usize>;
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -1778,8 +1817,7 @@ fn read_repl_input(
     loop {
         match event::read()? {
             Event::Paste(text) => {
-                let text = strip_terminal_control_sequences(&text);
-                insert_str_at_cursor(&mut input, &mut cursor, &text);
+                insert_pasted_text_at_cursor(&mut input, &mut cursor, text, &mut pasted_texts);
                 is_pasted = true;
                 render_repl_input(
                     &mut stdout,
@@ -1823,6 +1861,7 @@ fn read_repl_input(
                     cursor = 0;
                     is_pasted = false;
                     pasted_images.clear();
+                    pasted_texts.clear();
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1896,6 +1935,7 @@ fn read_repl_input(
                         cursor = input.chars().count();
                         is_pasted = false;
                         pasted_images.clear();
+                        pasted_texts.clear();
                         render_repl_input(
                             &mut stdout,
                             &mut input_row,
@@ -1918,6 +1958,7 @@ fn read_repl_input(
                     cursor = input.chars().count();
                     is_pasted = false;
                     pasted_images.clear();
+                    pasted_texts.clear();
                     render_repl_input(
                         &mut stdout,
                         &mut input_row,
@@ -1930,8 +1971,9 @@ fn read_repl_input(
                 }
                 KeyCode::Enter => {
                     input = strip_terminal_control_sequences(&input);
+                    input = expand_pasted_text_placeholders(&input, &pasted_texts);
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
-                    execute!(stdout, DisableBracketedPaste)?;
+                    execute!(stdout, DisableMouseCapture, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(Some((mode, input, pasted_images)));
                 }
@@ -1954,6 +1996,7 @@ fn read_repl_input(
                         cursor = 0;
                         is_pasted = false;
                         pasted_images.clear();
+                        pasted_texts.clear();
                         render_repl_input(
                             &mut stdout,
                             &mut input_row,
@@ -1966,7 +2009,7 @@ fn read_repl_input(
                         continue;
                     }
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
-                    execute!(stdout, DisableBracketedPaste)?;
+                    execute!(stdout, DisableMouseCapture, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
@@ -1974,7 +2017,7 @@ fn read_repl_input(
                     if modifiers.contains(KeyModifiers::CONTROL) && input.is_empty() =>
                 {
                     move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
-                    execute!(stdout, DisableBracketedPaste)?;
+                    execute!(stdout, DisableMouseCapture, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
@@ -1994,12 +2037,14 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    if let Some((start, end)) = placeholder_before_cursor(&input, cursor) {
-                        if let Some(n) = parse_placeholder_index(&input, start, end) {
-                            if n > 0 && n <= pasted_images.len() {
-                                pasted_images[n - 1] = None;
-                            }
-                        }
+                    if let Some((start, end)) = placeholder_before_or_at_cursor(&input, cursor) {
+                        clear_placeholder_payload(
+                            &input,
+                            start,
+                            end,
+                            &mut pasted_images,
+                            &mut pasted_texts,
+                        );
                         remove_range_chars(&mut input, start, end);
                         cursor = start;
                     } else {
@@ -2018,12 +2063,14 @@ fn read_repl_input(
                 }
                 KeyCode::Backspace => {
                     if cursor > 0 {
-                        if let Some((start, end)) = placeholder_before_cursor(&input, cursor) {
-                            if let Some(n) = parse_placeholder_index(&input, start, end) {
-                                if n > 0 && n <= pasted_images.len() {
-                                    pasted_images[n - 1] = None;
-                                }
-                            }
+                        if let Some((start, end)) = placeholder_before_or_at_cursor(&input, cursor) {
+                            clear_placeholder_payload(
+                                &input,
+                                start,
+                                end,
+                                &mut pasted_images,
+                                &mut pasted_texts,
+                            );
                             remove_range_chars(&mut input, start, end);
                             cursor = start;
                         } else {
@@ -2042,12 +2089,14 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Delete => {
-                    if let Some((start, end)) = placeholder_after_cursor(&input, cursor) {
-                        if let Some(n) = parse_placeholder_index(&input, start, end) {
-                            if n > 0 && n <= pasted_images.len() {
-                                pasted_images[n - 1] = None;
-                            }
-                        }
+                    if let Some((start, end)) = placeholder_after_or_at_cursor(&input, cursor) {
+                        clear_placeholder_payload(
+                            &input,
+                            start,
+                            end,
+                            &mut pasted_images,
+                            &mut pasted_texts,
+                        );
                         remove_range_chars(&mut input, start, end);
                     } else {
                         remove_char_at_cursor(&mut input, cursor);
@@ -2063,11 +2112,19 @@ fn read_repl_input(
                         is_pasted,
                     )?;
                 }
+                KeyCode::Char('c' | 'C')
+                    if modifiers.contains(KeyModifiers::CONTROL)
+                        && modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    if let Some(selected) = placeholder_text_near_cursor(&input, cursor, &pasted_texts) {
+                        let _ = crate::clipboard::write_clipboard_text(&selected)?;
+                    }
+                }
                 KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
                     match crate::clipboard::read_clipboard() {
                         Ok(crate::clipboard::ClipboardContent::Image(img)) => {
                             let index = pasted_images.len() + 1;
-                            let placeholder = format!("[Image {}] ", index);
+                            let placeholder = format!("[Image {}]", index);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             pasted_images.push(Some(crate::clipboard::PastedImage::Binary(img)));
                             is_pasted = false;
@@ -2087,7 +2144,7 @@ fn read_repl_input(
                                 .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("image");
-                            let placeholder = format!("[Image {}: {}] ", index, filename);
+                            let placeholder = format!("[Image {}: {}]", index, filename);
                             insert_str_at_cursor(&mut input, &mut cursor, &placeholder);
                             pasted_images.push(Some(crate::clipboard::PastedImage::Path(path)));
                             is_pasted = false;
@@ -2114,7 +2171,26 @@ fn read_repl_input(
                                 is_pasted,
                             )?;
                         }
-                        _ => {}
+                        _ => {
+                            if let Ok(Some(text)) = crate::clipboard::read_clipboard_text() {
+                                insert_pasted_text_at_cursor(
+                                    &mut input,
+                                    &mut cursor,
+                                    text,
+                                    &mut pasted_texts,
+                                );
+                                is_pasted = true;
+                                render_repl_input(
+                                    &mut stdout,
+                                    &mut input_row,
+                                    &mut rendered_rows,
+                                    mode,
+                                    &input,
+                                    cursor,
+                                    is_pasted,
+                                )?;
+                            }
+                        }
                     }
                 }
                 KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2137,6 +2213,66 @@ fn read_repl_input(
                 }
                 _ => {}
             },
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(position) = mouse_position_to_repl_cursor(
+                        &input,
+                        input_row,
+                        mouse.row,
+                        mouse.column,
+                    ) {
+                        selection_anchor = Some(position);
+                        selection_cursor = Some(position);
+                    }
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if selection_anchor.is_some() {
+                        selection_cursor = mouse_position_to_repl_cursor(
+                            &input,
+                            input_row,
+                            mouse.row,
+                            mouse.column,
+                        );
+                        render_repl_input_with_selection(
+                            &mut stdout,
+                            &mut input_row,
+                            &mut rendered_rows,
+                            mode,
+                            &input,
+                            cursor,
+                            is_pasted,
+                            selection_range(selection_anchor, selection_cursor),
+                        )?;
+                    }
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    let mut copied = false;
+                    if let (Some(anchor), Some(current)) = (selection_anchor, selection_cursor) {
+                        let start = anchor.min(current);
+                        let end = anchor.max(current);
+                        if start != end {
+                            let selected = selected_repl_text(&input, start, end, &pasted_texts);
+                            if !selected.is_empty() {
+                                copied = crate::clipboard::write_clipboard_text(&selected)?;
+                            }
+                        }
+                    }
+                    selection_anchor = None;
+                    selection_cursor = None;
+                    if copied {
+                        render_repl_input(
+                            &mut stdout,
+                            &mut input_row,
+                            &mut rendered_rows,
+                            mode,
+                            &input,
+                            cursor,
+                            is_pasted,
+                        )?;
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -2151,16 +2287,35 @@ fn render_repl_input(
     cursor: usize,
     is_pasted: bool,
 ) -> Result<()> {
+    render_repl_input_with_selection(
+        stdout,
+        input_row,
+        rendered_rows,
+        mode,
+        input,
+        cursor,
+        is_pasted,
+        None,
+    )
+}
+
+fn render_repl_input_with_selection(
+    stdout: &mut io::Stdout,
+    input_row: &mut u16,
+    rendered_rows: &mut u16,
+    mode: AgentMode,
+    input: &str,
+    cursor: usize,
+    is_pasted: bool,
+    selection: Option<(usize, usize)>,
+) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
     let prompt_prefix = format!("{} > ", colored_mode_label(mode));
     let plain_prefix = format!("[{}] > ", mode.label());
     let display_lines =
         repl_visible_input_lines(&plain_prefix, &lines, REPL_MAX_VISIBLE_INPUT_ROWS, is_pasted);
-    let display_lines: Vec<String> = display_lines
-        .iter()
-        .map(|line| colorize_image_placeholders(line))
-        .collect();
+    let display_lines = style_repl_input_lines(&lines, display_lines, selection);
     let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
@@ -2209,6 +2364,62 @@ fn render_repl_input(
     stdout.flush()?;
     *rendered_rows = current_rows;
     Ok(())
+}
+
+fn selection_range(start: Option<usize>, end: Option<usize>) -> Option<(usize, usize)> {
+    let start = start?;
+    let end = end?;
+    (start != end).then_some((start.min(end), start.max(end)))
+}
+
+fn style_repl_input_lines(
+    raw_lines: &[String],
+    display_lines: Vec<String>,
+    selection: Option<(usize, usize)>,
+) -> Vec<String> {
+    if selection.is_none() || raw_lines.len() != display_lines.len() {
+        return display_lines
+            .iter()
+            .map(|line| colorize_repl_placeholders(line))
+            .collect();
+    }
+
+    let mut line_start = 0usize;
+    display_lines
+        .iter()
+        .map(|line| {
+            let styled = style_repl_line(line, line_start, selection);
+            line_start += line.chars().count() + 1;
+            styled
+        })
+        .collect()
+}
+
+fn style_repl_line(line: &str, line_start: usize, selection: Option<(usize, usize)>) -> String {
+    let Some((selection_start, selection_end)) = selection else {
+        return colorize_repl_placeholders(line);
+    };
+    let line_end = line_start + line.chars().count();
+    if selection_end <= line_start || selection_start >= line_end {
+        return colorize_repl_placeholders(line);
+    }
+
+    let start = selection_start.saturating_sub(line_start);
+    let end = (selection_end - line_start).min(line.chars().count());
+    let mut result = String::new();
+    for (index, ch) in line.chars().enumerate() {
+        if index == start {
+            result.push_str("\x1b[7m");
+        }
+        if index == end {
+            result.push_str("\x1b[0m");
+        }
+        result.push(ch);
+    }
+    if end == line.chars().count() {
+        result.push_str("\x1b[0m");
+    }
+    result
 }
 
 fn repl_visible_input_lines(
@@ -2320,6 +2531,28 @@ fn repl_cursor_position_for_cols(
     (visible_width(prefix).min(u16::MAX as usize) as u16, 0)
 }
 
+fn mouse_position_to_repl_cursor(
+    input: &str,
+    input_row: u16,
+    mouse_row: u16,
+    mouse_col: u16,
+) -> Option<usize> {
+    let rel_row = mouse_row.checked_sub(input_row)? as usize;
+    let prefix = "[YOLO] > ";
+    let cols = terminal_cols();
+    let input_len = input.chars().count();
+
+    for cursor in 0..=input_len {
+        let (col, row) = repl_cursor_position_for_cols(prefix, input, cursor, cols);
+        let row = row as usize;
+        let col = col as usize;
+        if row > rel_row || (row == rel_row && col >= mouse_col as usize) {
+            return Some(cursor);
+        }
+    }
+    Some(input_len)
+}
+
 fn insert_char_at_cursor(value: &mut String, cursor: &mut usize, ch: char) {
     let byte_index = byte_index_for_char(value, *cursor);
     value.insert(byte_index, ch);
@@ -2378,13 +2611,68 @@ fn byte_index_for_char(value: &str, char_index: usize) -> usize {
         .unwrap_or(value.len())
 }
 
-fn find_image_placeholders(input: &str) -> Vec<(usize, usize)> {
+fn should_summarize_pasted_text(text: &str) -> bool {
+    !text.is_empty()
+        && (pasted_text_line_count(text) >= REPL_PASTE_PLACEHOLDER_MIN_LINES
+            || text.chars().count() > REPL_PASTE_PLACEHOLDER_MIN_CHARS)
+}
+
+fn pasted_text_line_count(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.chars().filter(|ch| *ch == '\n').count() + 1
+    }
+}
+
+fn pasted_text_placeholder(index: usize, line_count: usize) -> String {
+    if is_zh() {
+        format!("[粘贴 {index}: ~{line_count} 行]")
+    } else {
+        format!("[Pasted {index}: ~{line_count} lines]")
+    }
+}
+
+fn insert_pasted_text_at_cursor(
+    input: &mut String,
+    cursor: &mut usize,
+    text: String,
+    pasted_texts: &mut Vec<Option<PastedText>>,
+) {
+    let text = strip_terminal_control_sequences(&text);
+    if should_summarize_pasted_text(&text) {
+        let index = pasted_texts.len() + 1;
+        let placeholder = pasted_text_placeholder(index, pasted_text_line_count(&text));
+        insert_str_at_cursor(input, cursor, &placeholder);
+        pasted_texts.push(Some(PastedText { text }));
+    } else {
+        insert_str_at_cursor(input, cursor, &text);
+    }
+}
+
+fn find_repl_placeholders(input: &str) -> Vec<(usize, usize)> {
     let mut result = Vec::new();
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if i + 7 <= chars.len() && chars[i..i + 7].iter().collect::<String>() == "[Image " {
-            let mut j = i + 7;
+        let prefix_len = if i + 7 <= chars.len()
+            && chars[i..i + 7].iter().collect::<String>() == "[Image "
+        {
+            Some(7)
+        } else if i + 8 <= chars.len()
+            && chars[i..i + 8].iter().collect::<String>() == "[Pasted "
+        {
+            Some(8)
+        } else if i + 4 <= chars.len()
+            && chars[i..i + 4].iter().collect::<String>() == "[粘贴 "
+        {
+            Some(4)
+        } else {
+            None
+        };
+
+        if let Some(prefix_len) = prefix_len {
+            let mut j = i + prefix_len;
             while j < chars.len() && chars[j].is_ascii_digit() {
                 j += 1;
             }
@@ -2409,8 +2697,24 @@ fn find_image_placeholders(input: &str) -> Vec<(usize, usize)> {
     result
 }
 
+fn find_image_placeholders(input: &str) -> Vec<(usize, usize)> {
+    find_repl_placeholders(input)
+        .into_iter()
+        .filter(|(start, end)| parse_image_placeholder_index(input, *start, *end).is_some())
+        .collect()
+}
+
+fn find_pasted_text_placeholders(input: &str) -> Vec<(usize, usize, usize)> {
+    find_repl_placeholders(input)
+        .into_iter()
+        .filter_map(|(start, end)| {
+            parse_pasted_text_placeholder_index(input, start, end).map(|index| (start, end, index))
+        })
+        .collect()
+}
+
 fn placeholder_at_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
-    let placeholders = find_image_placeholders(input);
+    let placeholders = find_repl_placeholders(input);
     for (start, end) in &placeholders {
         if cursor > *start && cursor < *end {
             return Some((*start, *end));
@@ -2420,7 +2724,7 @@ fn placeholder_at_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
 }
 
 fn placeholder_before_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
-    let placeholders = find_image_placeholders(input);
+    let placeholders = find_repl_placeholders(input);
     for (start, end) in &placeholders {
         if *end == cursor {
             return Some((*start, *end));
@@ -2429,8 +2733,12 @@ fn placeholder_before_cursor(input: &str, cursor: usize) -> Option<(usize, usize
     None
 }
 
+fn placeholder_before_or_at_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
+    placeholder_at_cursor(input, cursor).or_else(|| placeholder_before_cursor(input, cursor))
+}
+
 fn placeholder_after_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
-    let placeholders = find_image_placeholders(input);
+    let placeholders = find_repl_placeholders(input);
     for (start, end) in &placeholders {
         if *start == cursor {
             return Some((*start, *end));
@@ -2439,18 +2747,123 @@ fn placeholder_after_cursor(input: &str, cursor: usize) -> Option<(usize, usize)
     None
 }
 
+fn placeholder_after_or_at_cursor(input: &str, cursor: usize) -> Option<(usize, usize)> {
+    placeholder_at_cursor(input, cursor).or_else(|| placeholder_after_cursor(input, cursor))
+}
+
 fn remove_range_chars(value: &mut String, char_start: usize, char_end: usize) {
     let byte_start = byte_index_for_char(value, char_start);
     let byte_end = byte_index_for_char(value, char_end);
     value.replace_range(byte_start..byte_end, "");
 }
 
-fn parse_placeholder_index(input: &str, char_start: usize, char_end: usize) -> Option<usize> {
+fn parse_image_placeholder_index(input: &str, char_start: usize, char_end: usize) -> Option<usize> {
     let chars: Vec<char> = input.chars().collect();
     let segment: String = chars[char_start..char_end].iter().collect();
     let after_prefix = segment.strip_prefix("[Image ")?;
     let num_str: String = after_prefix.chars().take_while(|c| c.is_ascii_digit()).collect();
     num_str.parse::<usize>().ok()
+}
+
+fn parse_pasted_text_placeholder_index(
+    input: &str,
+    char_start: usize,
+    char_end: usize,
+) -> Option<usize> {
+    let chars: Vec<char> = input.chars().collect();
+    let segment: String = chars[char_start..char_end].iter().collect();
+    let after_prefix = segment
+        .strip_prefix("[Pasted ")
+        .or_else(|| segment.strip_prefix("[粘贴 "))?;
+    let num_str: String = after_prefix.chars().take_while(|c| c.is_ascii_digit()).collect();
+    num_str.parse::<usize>().ok()
+}
+
+fn clear_placeholder_payload(
+    input: &str,
+    start: usize,
+    end: usize,
+    pasted_images: &mut [Option<crate::clipboard::PastedImage>],
+    pasted_texts: &mut [Option<PastedText>],
+) {
+    if let Some(n) = parse_image_placeholder_index(input, start, end) {
+        if n > 0 && n <= pasted_images.len() {
+            pasted_images[n - 1] = None;
+        }
+    }
+    if let Some(n) = parse_pasted_text_placeholder_index(input, start, end) {
+        if n > 0 && n <= pasted_texts.len() {
+            pasted_texts[n - 1] = None;
+        }
+    }
+}
+
+fn expand_pasted_text_placeholders(input: &str, pasted_texts: &[Option<PastedText>]) -> String {
+    let placeholders = find_pasted_text_placeholders(input);
+    if placeholders.is_empty() {
+        return input.to_string();
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    let mut expanded = String::new();
+    let mut last_end = 0;
+    for (start, end, index) in placeholders {
+        expanded.extend(&chars[last_end..start]);
+        if index > 0 {
+            if let Some(Some(pasted_text)) = pasted_texts.get(index - 1) {
+                expanded.push_str(&pasted_text.text);
+            } else {
+                expanded.extend(&chars[start..end]);
+            }
+        } else {
+            expanded.extend(&chars[start..end]);
+        }
+        last_end = end;
+    }
+    expanded.extend(&chars[last_end..]);
+    expanded
+}
+
+fn selected_repl_text(input: &str, start: usize, end: usize, pasted_texts: &[Option<PastedText>]) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let end = end.min(chars.len());
+    let mut selected = String::new();
+    let mut cursor = start.min(end);
+
+    for (placeholder_start, placeholder_end, index) in find_pasted_text_placeholders(input) {
+        if placeholder_end <= cursor || placeholder_start >= end {
+            continue;
+        }
+        let plain_end = placeholder_start.max(cursor).min(end);
+        if cursor < plain_end {
+            selected.extend(&chars[cursor..plain_end]);
+        }
+        if let Some(Some(pasted_text)) = index.checked_sub(1).and_then(|i| pasted_texts.get(i)) {
+            selected.push_str(&pasted_text.text);
+        } else {
+            selected.extend(&chars[placeholder_start.max(start)..placeholder_end.min(end)]);
+        }
+        cursor = placeholder_end.min(end);
+    }
+    if cursor < end {
+        selected.extend(&chars[cursor..end]);
+    }
+    selected
+}
+
+fn placeholder_text_near_cursor(
+    input: &str,
+    cursor: usize,
+    pasted_texts: &[Option<PastedText>],
+) -> Option<String> {
+    let (start, end) = placeholder_at_cursor(input, cursor)
+        .or_else(|| placeholder_before_cursor(input, cursor))
+        .or_else(|| placeholder_after_cursor(input, cursor))?;
+    let index = parse_pasted_text_placeholder_index(input, start, end)?;
+    pasted_texts
+        .get(index.checked_sub(1)?)
+        .and_then(Option::as_ref)
+        .map(|pasted_text| pasted_text.text.clone())
 }
 
 fn take_chars(value: &str, count: usize) -> String {
@@ -2527,24 +2940,23 @@ fn visible_width(value: &str) -> usize {
     width
 }
 
-fn colorize_image_placeholders(line: &str) -> String {
-    let mut result = String::new();
-    let mut rest = line;
-    while let Some(start) = rest.find("[Image ") {
-        result.push_str(&rest[..start]);
-        let after = &rest[start..];
-        if let Some(end) = after.find(']') {
-            let placeholder = &after[..=end];
-            result.push_str("\x1b[35m");
-            result.push_str(placeholder);
-            result.push_str("\x1b[0m");
-            rest = &after[end + 1..];
-        } else {
-            result.push_str(after);
-            return result;
-        }
+fn colorize_repl_placeholders(line: &str) -> String {
+    let placeholders = find_repl_placeholders(line);
+    if placeholders.is_empty() {
+        return line.to_string();
     }
-    result.push_str(rest);
+
+    let chars: Vec<char> = line.chars().collect();
+    let mut result = String::new();
+    let mut last_end = 0;
+    for (start, end) in placeholders {
+        result.extend(&chars[last_end..start]);
+        result.push_str("\x1b[35m");
+        result.extend(&chars[start..end]);
+        result.push_str("\x1b[0m");
+        last_end = end;
+    }
+    result.extend(&chars[last_end..]);
     result
 }
 
@@ -2687,6 +3099,105 @@ mod repl_input_tests {
     }
 
     #[test]
+    fn long_paste_is_replaced_with_placeholder_and_expanded() {
+        let text = "alpha\nbeta\ngamma".to_string();
+        let placeholder = pasted_text_placeholder(1, pasted_text_line_count(&text));
+        let input = format!("请分析 {placeholder}谢谢");
+        let pasted_texts = vec![Some(PastedText { text: text.clone() })];
+
+        assert!(should_summarize_pasted_text(&text));
+        assert_eq!(
+            expand_pasted_text_placeholders(&input, &pasted_texts),
+            "请分析 alpha\nbeta\ngamma谢谢"
+        );
+    }
+
+    #[test]
+    fn short_paste_is_not_summarized() {
+        assert!(!should_summarize_pasted_text("short paste"));
+    }
+
+    #[test]
+    fn insert_pasted_text_summarizes_long_clipboard_text() {
+        let mut input = "前后".to_string();
+        let mut cursor = 1;
+        let mut pasted_texts = Vec::new();
+
+        insert_pasted_text_at_cursor(
+            &mut input,
+            &mut cursor,
+            "alpha\nbeta\ngamma".to_string(),
+            &mut pasted_texts,
+        );
+
+        assert!(
+            input == "前[Pasted 1: ~3 lines]后" || input == "前[粘贴 1: ~3 行]后",
+            "unexpected localized placeholder: {input}"
+        );
+        assert_eq!(pasted_texts.len(), 1);
+        assert_eq!(cursor, input.chars().count() - 1);
+    }
+
+    #[test]
+    fn pasted_placeholder_is_treated_as_atomic_token() {
+        let input = "前[Pasted 1: ~3 lines] 后";
+        assert_eq!(placeholder_at_cursor(input, 3), Some((1, 21)));
+        assert_eq!(placeholder_before_cursor(input, 21), Some((1, 21)));
+        assert_eq!(placeholder_after_cursor(input, 1), Some((1, 21)));
+        assert_eq!(placeholder_before_or_at_cursor(input, 3), Some((1, 21)));
+        assert_eq!(placeholder_after_or_at_cursor(input, 3), Some((1, 21)));
+    }
+
+    #[test]
+    fn chinese_pasted_placeholder_is_supported() {
+        let input = "前[粘贴 1: ~3 行] 后";
+        let placeholder = find_pasted_text_placeholders(input);
+
+        assert_eq!(placeholder, vec![(1, 13, 1)]);
+        assert_eq!(placeholder_at_cursor(input, 3), Some((1, 13)));
+        assert_eq!(placeholder_before_cursor(input, 13), Some((1, 13)));
+        assert_eq!(placeholder_after_cursor(input, 1), Some((1, 13)));
+    }
+
+    #[test]
+    fn colorizes_image_and_pasted_placeholders() {
+        let colored = colorize_repl_placeholders("[Image 1] [Pasted 1: ~3 lines]");
+        assert!(colored.contains("\x1b[35m[Image 1]\x1b[0m"));
+        assert!(colored.contains("\x1b[35m[Pasted 1: ~3 lines]\x1b[0m"));
+    }
+
+    #[test]
+    fn styles_selected_repl_line_without_extra_rows() {
+        assert_eq!(style_repl_line("abcdef", 0, Some((1, 4))), "a\x1b[7mbcd\x1b[0mef");
+        assert_eq!(style_repl_line("abcdef", 0, None), "abcdef");
+    }
+
+    #[test]
+    fn selected_text_expands_pasted_placeholder() {
+        let input = "前[Pasted 1: ~3 lines] 后";
+        let pasted_texts = vec![Some(PastedText {
+            text: "alpha\nbeta\ngamma".to_string(),
+        })];
+
+        assert_eq!(selected_repl_text(input, 1, 21, &pasted_texts), "alpha\nbeta\ngamma");
+        assert_eq!(selected_repl_text(input, 0, 23, &pasted_texts), "前alpha\nbeta\ngamma 后");
+        assert_eq!(selected_repl_text(input, 2, 5, &pasted_texts), "alpha\nbeta\ngamma");
+    }
+
+    #[test]
+    fn placeholder_text_near_cursor_expands_pasted_placeholder() {
+        let input = "前[Pasted 1: ~3 lines]后";
+        let pasted_texts = vec![Some(PastedText {
+            text: "alpha\nbeta\ngamma".to_string(),
+        })];
+
+        assert_eq!(
+            placeholder_text_near_cursor(input, 3, &pasted_texts),
+            Some("alpha\nbeta\ngamma".to_string())
+        );
+    }
+
+    #[test]
     fn strips_terminal_control_sequences_from_repl_text() {
         assert_eq!(
             strip_terminal_control_sequences("\x1b[E表情包\x1b[0m\x07 ok"),
@@ -2745,6 +3256,7 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
                     entry.reasoning
                 },
                 usage: None,
+                usage_estimated: false,
                 tool_calls: Vec::new(),
             };
             render::print_assistant_response(&response, !args.no_thinking)?;

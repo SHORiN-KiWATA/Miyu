@@ -1,7 +1,7 @@
 pub(crate) mod wait_spinner;
 
 use crate::i18n::text as t;
-use crate::llm::{ChatResult, ChatStreamChunk, ChatStreamKind};
+use crate::llm::{ChatResult, ChatStreamChunk, ChatStreamKind, Usage};
 use crate::render::wait_spinner::{SpinnerStyle, WaitSpinner, SPINNER_INTERVAL};
 use anyhow::Result;
 use crossterm::cursor::{Hide, MoveToColumn, Show};
@@ -63,6 +63,55 @@ pub fn print_assistant_response(response: &ChatResult, show_reasoning: bool) -> 
 pub fn print_markdown(markdown: &str) {
     let skin = termimad::MadSkin::default();
     println!("{}", skin.term_text(markdown.trim_end()));
+}
+
+pub fn print_token_usage(turn_tokens: u64, session_tokens: u64, estimated: bool) -> Result<()> {
+    let prefix = if estimated {
+        t("Estimated ", "估算")
+    } else {
+        ""
+    };
+    let line = if crate::i18n::is_zh() {
+        format!(
+            "{prefix}本轮 Token 消耗：{}；会话总 Token 消耗：{}",
+            format_compact_count(turn_tokens),
+            format_compact_count(session_tokens)
+        )
+    } else {
+        format!(
+            "{prefix}Turn token cost: {}; session total token cost: {}",
+            format_compact_count(turn_tokens),
+            format_compact_count(session_tokens)
+        )
+    };
+    let mut stdout = io::stdout();
+    writeln!(stdout, "\x1b[2m{line}\x1b[0m")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+pub fn usage_total(usage: &Usage) -> u64 {
+    usage.effective_total_tokens()
+}
+
+fn format_compact_count(value: u64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    if value >= 1_000_000 {
+        format_compact_unit(value as f64 / M, "M")
+    } else if value >= 1_000 {
+        format_compact_unit(value as f64 / K, "k")
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_compact_unit(value: f64, suffix: &str) -> String {
+    if value >= 10.0 || (value.fract() - 0.0).abs() < f64::EPSILON {
+        format!("{value:.0}{suffix}")
+    } else {
+        format!("{value:.1}{suffix}")
+    }
 }
 
 pub struct StreamRenderer {
@@ -833,11 +882,7 @@ impl StreamRenderer {
     }
 
     pub fn set_meme_select_phase(&mut self) -> Result<()> {
-        self.set_waiting_phase(format!(
-            "{} · {}",
-            t("thinking", "思考"),
-            t("picking meme", "挑选表情包")
-        ));
+        self.set_waiting_phase(t("thinking", "思考").to_string());
         Ok(())
     }
 

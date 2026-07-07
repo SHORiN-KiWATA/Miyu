@@ -138,11 +138,22 @@ pub struct Usage {
     pub total_tokens: u64,
 }
 
+impl Usage {
+    pub fn effective_total_tokens(&self) -> u64 {
+        if self.total_tokens > 0 {
+            self.total_tokens
+        } else {
+            self.prompt_tokens.saturating_add(self.completion_tokens)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatResult {
     pub content: String,
     pub reasoning: Option<String>,
     pub usage: Option<Usage>,
+    pub usage_estimated: bool,
     pub tool_calls: Vec<ToolCall>,
 }
 

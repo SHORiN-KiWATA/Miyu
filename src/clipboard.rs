@@ -2,6 +2,7 @@ use anyhow::Result;
 use base64::Engine;
 use sha2::Digest;
 use std::path::{Path, PathBuf};
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 10 * 1024 * 1024;
@@ -170,6 +171,37 @@ pub fn read_clipboard_text() -> Result<Option<String>> {
         return Ok(Some(text));
     }
     Ok(None)
+}
+
+pub fn write_clipboard_text(text: &str) -> Result<bool> {
+    if try_write_text_command("wl-copy", &[], text)? {
+        return Ok(true);
+    }
+    if try_write_text_command("xclip", &["-selection", "clipboard"], text)? {
+        return Ok(true);
+    }
+    if try_write_text_command("xsel", &["--clipboard", "--input"], text)? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn try_write_text_command(cmd: &str, args: &[&str], text: &str) -> Result<bool> {
+    let mut child = match Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return Ok(false),
+    };
+
+    if let Some(stdin) = &mut child.stdin {
+        stdin.write_all(text.as_bytes())?;
+    }
+    Ok(child.wait().map(|status| status.success()).unwrap_or(false))
 }
 
 fn try_text_command(cmd: &str, args: &[&str]) -> Result<Option<String>> {

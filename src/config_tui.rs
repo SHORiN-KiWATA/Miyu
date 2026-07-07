@@ -1790,6 +1790,7 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         Field::new("显示工具调用信息", config.display.tool_calls.clone())
             .choices(&["summary", "full", "hidden"]),
         Field::boolean("工具名可读显示", config.display.readable_tool_names),
+        Field::boolean("显示对话 Token 计数", config.display.show_token_usage),
         Field::new("上下文到达上限后", config.context.on_overflow.clone())
             .choices(&["pop", "compact"]),
     ];
@@ -1802,7 +1803,8 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         config.display.reasoning = fields[5].value.trim().to_string();
         config.display.tool_calls = fields[6].value.trim().to_string();
         config.display.readable_tool_names = parse_bool_field(&fields[7].value)?;
-        config.context.on_overflow = fields[8].value.trim().to_string();
+        config.display.show_token_usage = parse_bool_field(&fields[8].value)?;
+        config.context.on_overflow = fields[9].value.trim().to_string();
     }
     Ok(())
 }

@@ -37,9 +37,20 @@ impl PendingTurnGuard {
         }
     }
 
-    pub fn complete(mut self, content: &str, reasoning: Option<&str>) -> Result<()> {
-        self.state
-            .complete_turn(&self.turn_id, content, reasoning)?;
+    pub fn complete(
+        mut self,
+        content: &str,
+        reasoning: Option<&str>,
+        token_total: Option<u64>,
+        token_usage_estimated: bool,
+    ) -> Result<()> {
+        self.state.complete_turn_with_usage(
+            &self.turn_id,
+            content,
+            reasoning,
+            token_total,
+            token_usage_estimated,
+        )?;
         self.completed = true;
         Ok(())
     }
@@ -355,7 +366,13 @@ impl Agent {
             self.state
                 .append_tool_report_context(&turn_id, &tool_name, &report)?;
         }
-        guard.complete(&result.content, result.reasoning.as_deref())?;
+        let token_total = result.usage.as_ref().map(Usage::effective_total_tokens);
+        guard.complete(
+            &result.content,
+            result.reasoning.as_deref(),
+            token_total,
+            result.usage_estimated,
+        )?;
         self.memory.process_after_turn(&input, &result.content)?;
         if let Some(usage) = &result.usage {
             self.state.add_usage(usage)?;
@@ -490,6 +507,7 @@ impl Agent {
     {
         let mut tool_round = 0usize;
         let mut loaded_tools = loaded_tools_from_messages(messages);
+        let mut usage_accumulator = UsageAccumulator::default();
         loop {
             if self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds {
                 let content = format!(
@@ -500,10 +518,12 @@ impl Agent {
                     kind: ChatStreamKind::Content,
                     text: content.clone(),
                 }))?;
+                let usage = usage_accumulator.usage();
                 return Ok(ChatResult {
                     content,
                     reasoning: None,
-                    usage: None,
+                    usage,
+                    usage_estimated: usage_accumulator.estimated,
                     tool_calls: Vec::new(),
                 });
             }
@@ -527,9 +547,10 @@ impl Agent {
 
             let (chunk_tx, mut chunk_rx) =
                 tokio::sync::mpsc::unbounded_channel::<ChatStreamChunk>();
+            let request_messages = messages.clone();
             let llm_future = self
                 .client
-                .chat_stream(messages.clone(), definitions, move |chunk| {
+                .chat_stream(request_messages.clone(), definitions, move |chunk| {
                     let _ = chunk_tx.send(chunk);
                     Ok(())
                 });
@@ -553,7 +574,13 @@ impl Agent {
             while let Ok(chunk) = chunk_rx.try_recv() {
                 on_event(AgentEvent::Chunk(chunk))?;
             }
+            usage_accumulator.add_result(&result, &request_messages);
             if result.tool_calls.is_empty() || !self.tools_enabled {
+                let mut result = result;
+                if let Some(usage) = usage_accumulator.usage() {
+                    result.usage = Some(usage);
+                    result.usage_estimated = usage_accumulator.estimated;
+                }
                 return Ok(result);
             }
             messages.push(ChatMessage::assistant(
@@ -790,6 +817,72 @@ impl Agent {
         messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
     }
+
+}
+
+#[derive(Default)]
+struct UsageAccumulator {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    has_usage: bool,
+    estimated: bool,
+}
+
+impl UsageAccumulator {
+    fn add_result(&mut self, result: &ChatResult, request_messages: &[ChatMessage]) {
+        if let Some(usage) = &result.usage {
+            self.add_usage(usage, false);
+            return;
+        }
+
+        let prompt_tokens = overflow::estimate_messages_tokens(request_messages) as u64;
+        let completion_tokens = estimate_result_tokens(result) as u64;
+        self.add_usage(
+            &Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            },
+            true,
+        );
+    }
+
+    fn add_usage(&mut self, usage: &Usage, estimated: bool) {
+        self.prompt_tokens = self.prompt_tokens.saturating_add(usage.prompt_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(usage.completion_tokens);
+        let total = if usage.total_tokens > 0 {
+            usage.total_tokens
+        } else {
+            usage.prompt_tokens.saturating_add(usage.completion_tokens)
+        };
+        self.total_tokens = self.total_tokens.saturating_add(total);
+        self.has_usage = true;
+        self.estimated |= estimated;
+    }
+
+    fn usage(&self) -> Option<Usage> {
+        self.has_usage.then_some(Usage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            total_tokens: self.total_tokens,
+        })
+    }
+}
+
+fn estimate_result_tokens(result: &ChatResult) -> usize {
+    let mut text = String::new();
+    text.push_str(&result.content);
+    if let Some(reasoning) = &result.reasoning {
+        text.push_str(reasoning);
+    }
+    for call in &result.tool_calls {
+        text.push_str(&call.function.name);
+        text.push_str(&call.function.arguments);
+    }
+    overflow::estimate_tokens(&text)
 }
 
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {

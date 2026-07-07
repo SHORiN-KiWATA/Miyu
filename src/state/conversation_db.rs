@@ -49,6 +49,8 @@ pub struct Turn {
     pub hidden: bool,
     pub is_summary: bool,
     pub owner_pid: Option<i64>,
+    pub token_total: u64,
+    pub token_usage_estimated: bool,
 }
 
 pub struct ConversationDb {
@@ -91,6 +93,13 @@ impl ConversationDb {
         add_column_if_missing(&conn, "turns", "hidden", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(&conn, "turns", "is_summary", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing(&conn, "turns", "owner_pid", "INTEGER")?;
+        add_column_if_missing(&conn, "turns", "token_total", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(
+            &conn,
+            "turns",
+            "token_usage_estimated",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -108,18 +117,33 @@ impl ConversationDb {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn complete_turn(
         &self,
         turn_id: &str,
         content: &str,
         reasoning: Option<&str>,
     ) -> Result<()> {
+        self.complete_turn_with_usage(turn_id, content, reasoning, None, false)
+    }
+
+    pub fn complete_turn_with_usage(
+        &self,
+        turn_id: &str,
+        content: &str,
+        reasoning: Option<&str>,
+        token_total: Option<u64>,
+        token_usage_estimated: bool,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
+        let token_total = token_total.unwrap_or(0) as i64;
+        let token_usage_estimated = i64::from(token_usage_estimated);
         conn.execute(
-            "UPDATE turns SET assistant_content = ?1, assistant_reasoning = ?2, assistant_timestamp = ?3, status = 'completed'
-             WHERE turn_id = ?4",
-            params![content, reasoning, now, turn_id],
+            "UPDATE turns SET assistant_content = ?1, assistant_reasoning = ?2, assistant_timestamp = ?3,
+                    status = 'completed', token_total = ?4, token_usage_estimated = ?5
+             WHERE turn_id = ?6",
+            params![content, reasoning, now, token_total, token_usage_estimated, turn_id],
         )?;
         Ok(())
     }
@@ -161,7 +185,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -175,7 +200,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns WHERE turn_id != ?1 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -193,7 +219,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns WHERE hidden = 0 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -206,7 +233,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns WHERE hidden = 0 AND turn_id != ?1 ORDER BY seq ASC",
         )?;
         let turns = stmt
@@ -248,7 +276,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns WHERE is_summary = 1 ORDER BY seq DESC LIMIT 1",
         )?;
         let turn = stmt
@@ -276,7 +305,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns WHERE is_summary = 0 ORDER BY seq ASC LIMIT ?1",
         )?;
         let to_remove: Vec<Turn> = stmt
@@ -296,7 +326,8 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
-                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid
+                    assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
+                    token_total, token_usage_estimated
              FROM turns WHERE hidden = 0 AND is_summary = 0 ORDER BY seq ASC LIMIT ?1",
         )?;
         let to_remove: Vec<Turn> = stmt
@@ -316,6 +347,16 @@ impl ConversationDb {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM turns", [])?;
         Ok(())
+    }
+
+    pub fn token_total(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(token_total), 0) FROM turns WHERE status = 'completed' AND is_summary = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(total.max(0) as u64)
     }
 
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
@@ -551,6 +592,8 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
         hidden: hidden != 0,
         is_summary: is_summary != 0,
         owner_pid: row.get(11)?,
+        token_total: row.get::<_, i64>(12)?.max(0) as u64,
+        token_usage_estimated: row.get::<_, i64>(13)? != 0,
     })
 }
 

@@ -1733,6 +1733,7 @@ fn finalize_stream_result(
         content,
         reasoning: reasoning.filter(|text| !text.trim().is_empty()),
         usage,
+        usage_estimated: false,
         tool_calls,
     })
 }

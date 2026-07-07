@@ -63,6 +63,7 @@ impl StateStore {
         self.conv_db.start_turn(turn_id, user_content, owner_pid)
     }
 
+    #[allow(dead_code)]
     pub fn complete_turn(
         &self,
         turn_id: &str,
@@ -74,6 +75,23 @@ impl StateStore {
 
     pub fn interrupt_turn(&self, turn_id: &str) -> Result<()> {
         self.conv_db.interrupt_turn(turn_id)
+    }
+
+    pub fn complete_turn_with_usage(
+        &self,
+        turn_id: &str,
+        content: &str,
+        reasoning: Option<&str>,
+        token_total: Option<u64>,
+        token_usage_estimated: bool,
+    ) -> Result<()> {
+        self.conv_db.complete_turn_with_usage(
+            turn_id,
+            content,
+            reasoning,
+            token_total,
+            token_usage_estimated,
+        )
     }
 
     pub fn append_tool_report_context(&self, turn_id: &str, tool_name: &str, report: &str) -> Result<()> {
@@ -173,6 +191,10 @@ impl StateStore {
     pub fn add_usage(&self, usage: &Usage) -> Result<()> {
         self.init_files()?;
         usage::add_usage(&self.usage_file(), usage)
+    }
+
+    pub fn token_total(&self) -> Result<u64> {
+        self.conv_db.token_total()
     }
 
     #[allow(dead_code)]

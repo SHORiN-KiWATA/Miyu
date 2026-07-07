@@ -40,6 +40,8 @@ pub struct DisplayConfig {
     pub tool_calls: String,
     #[serde(default = "default_true")]
     pub readable_tool_names: bool,
+    #[serde(default)]
+    pub show_token_usage: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +58,8 @@ struct RawDisplayConfig {
     show_tool_details: Option<bool>,
     #[serde(default)]
     readable_tool_names: Option<bool>,
+    #[serde(default)]
+    show_token_usage: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for DisplayConfig {
@@ -82,6 +86,7 @@ impl<'de> Deserialize<'de> for DisplayConfig {
             reasoning,
             tool_calls,
             readable_tool_names: raw.readable_tool_names.unwrap_or_else(default_true),
+            show_token_usage: raw.show_token_usage.unwrap_or(false),
         })
     }
 }
@@ -533,6 +538,7 @@ impl Default for DisplayConfig {
             reasoning: default_reasoning_display(),
             tool_calls: default_tool_call_display(),
             readable_tool_names: default_true(),
+            show_token_usage: false,
         }
     }
 }
@@ -1710,6 +1716,10 @@ mod tests {
     fn display_readable_tool_names_defaults_enabled() {
         let display: DisplayConfig = serde_json::from_str(r#"{"tool_calls":"summary"}"#).unwrap();
         assert!(display.readable_tool_names);
+        assert!(!display.show_token_usage);
+
+        let display: DisplayConfig = serde_json::from_str(r#"{"show_token_usage":true}"#).unwrap();
+        assert!(display.show_token_usage);
     }
 
     #[test]
