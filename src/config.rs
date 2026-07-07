@@ -284,6 +284,8 @@ pub struct LinuxGameCompatibilityConfig {
 pub struct WebPluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: usize,
     #[serde(default)]
     pub tavily_api_keys: Vec<String>,
     #[serde(default)]
@@ -592,6 +594,7 @@ impl Default for WebPluginConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
+            max_results: default_web_search_max_results(),
             tavily_api_keys: Vec::new(),
             firecrawl_api_keys: Vec::new(),
             anysearch_api_keys: Vec::new(),
@@ -1076,6 +1079,9 @@ impl AppConfig {
         {
             bail!("plugins.print_image.height_percent must be between 1 and 100");
         }
+        if self.plugins.web.max_results == 0 {
+            bail!("plugins.web.max_results must be greater than 0");
+        }
         match self.plugins.deep_research.thinking_depth.as_str() {
             "minimal" | "low" | "medium" | "high" | "xhigh" => {}
             value => bail!("plugins.deep_research.thinking_depth is invalid: {value}"),
@@ -1510,6 +1516,10 @@ fn default_memes_auto_send_probability() -> f32 {
 
 fn default_memes_auto_send_min_confidence() -> f32 {
     0.8
+}
+
+fn default_web_search_max_results() -> usize {
+    2
 }
 
 fn default_web_images_max_results() -> usize {

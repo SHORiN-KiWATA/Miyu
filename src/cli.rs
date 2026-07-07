@@ -3432,11 +3432,7 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
             renderer.finish_compact()?;
             renderer.tick_spinner()
         }
-        AgentEvent::PopStart => {
-            renderer.tick_spinner()
-        }
-        AgentEvent::PopEnd => {
-            renderer.tick_spinner()
-        }
+        AgentEvent::PopStart => renderer.tick_spinner(),
+        AgentEvent::PopEnd => renderer.tick_spinner(),
     }
 }

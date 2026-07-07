@@ -254,6 +254,7 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
     match index {
         0 => vec![
             Field::boolean("启用", config.plugins.web.enabled),
+            Field::new("每次返回数量", config.plugins.web.max_results.to_string()),
             Field::textarea(
                 "Tavily API Keys",
                 config.plugins.web.tavily_api_keys.join("\n"),
@@ -564,11 +565,12 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
     match index {
         0 => {
             config.plugins.web.enabled = parse_bool_field(&fields[0].value)?;
-            config.plugins.web.tavily_api_keys = parse_key_list(&fields[1].value);
-            config.plugins.web.firecrawl_api_keys = parse_key_list(&fields[2].value);
-            config.plugins.web.anysearch_api_keys = parse_key_list(&fields[3].value);
+            config.plugins.web.max_results = fields[1].value.trim().parse::<usize>()?.clamp(1, 10);
+            config.plugins.web.tavily_api_keys = parse_key_list(&fields[2].value);
+            config.plugins.web.firecrawl_api_keys = parse_key_list(&fields[3].value);
+            config.plugins.web.anysearch_api_keys = parse_key_list(&fields[4].value);
             config.plugins.web.searxng_base_url =
-                fields[4].value.trim().trim_end_matches('/').to_string();
+                fields[5].value.trim().trim_end_matches('/').to_string();
         }
         1 => {
             config.plugins.deep_research.enabled = parse_bool_field(&fields[0].value)?;

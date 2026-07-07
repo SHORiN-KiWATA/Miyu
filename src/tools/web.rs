@@ -54,7 +54,7 @@ fn register_search_tool(registry: &mut ToolRegistry, name: &'static str, config:
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Search query." },
-                "max_results": { "type": "integer", "description": "Maximum results, default 5." },
+                "max_results": { "type": "integer", "description": "Maximum results; defaults to plugins.web.max_results." },
                 "provider": { "type": "string", "enum": ["auto", "tavily", "firecrawl", "anysearch", "searxng", "script"], "description": "Search provider." }
             },
             "required": ["query"],
@@ -79,7 +79,7 @@ async fn web_search(args: Value, config: WebPluginConfig) -> Result<String> {
     let max_results = args
         .get("max_results")
         .and_then(Value::as_u64)
-        .unwrap_or(5)
+        .unwrap_or(config.max_results as u64)
         .clamp(1, 10) as usize;
     let provider = args
         .get("provider")
