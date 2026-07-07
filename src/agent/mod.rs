@@ -604,6 +604,23 @@ impl Agent {
                             call.function.name
                         );
                     }
+                    if self.config.tools.loading_mode == "lazy"
+                        && call.function.name != "load_tools"
+                        && tools.requires_lazy_load(&call.function.name, &loaded_tools)
+                    {
+                        let output = format!(
+                            "tool error: 工具 `{}` 尚未加载。请先调用 load_tools，参数为 {{\"names\":[\"{}\"]}}。",
+                            call.function.name,
+                            call.function.name,
+                        );
+                        on_event(AgentEvent::ToolResult {
+                            name: event_name.clone(),
+                            ok: false,
+                            output: output.clone(),
+                        })?;
+                        messages.push(ChatMessage::tool(call.id, output));
+                        continue;
+                    }
                 }
                 if call.function.name == "install_aur_package"
                     && used_tools.iter().any(|name| name == "review_aur_package")

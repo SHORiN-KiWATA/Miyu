@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 pub fn register(registry: &mut ToolRegistry) {
     let allowed_tools = registry.tool_names().into_iter().collect::<BTreeSet<_>>();
     let description = format!(
-        "按需加载内置工具的完整说明和参数 schema。加载后的内容会作为工具结果保留在当前对话上下文中\n\n{}",
+        "按需加载内置工具的完整说明和参数 schema。重要：available_tools 列表中的工具在使用前必须先通过 load_tools 加载；未加载前不要直接调用这些工具。如果需要使用列表中的某个工具，请先调用 load_tools，参数为 {{\"names\":[\"工具名\"]}}。加载成功后，后续轮次可以直接调用对应工具。加载后的内容会作为工具结果保留在当前对话上下文中。\n\n{}",
         available_tools_xml(&allowed_tools)
     );
     registry.register(
@@ -19,7 +19,7 @@ pub fn register(registry: &mut ToolRegistry) {
                     "names": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "使用前必须需要先加载的工具的列表。"
+                        "description": "要加载的工具名称列表。available_tools 列表中的工具只有通过 load_tools 加载后才可以使用。"
                     }
                 },
                 "required": ["names"]

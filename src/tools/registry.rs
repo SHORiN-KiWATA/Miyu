@@ -159,6 +159,17 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn requires_lazy_load(&self, name: &str, loaded: &BTreeSet<String>) -> bool {
+        self.tools
+            .get(name)
+            .map(|tool| {
+                !tool.always_loaded
+                    && !loaded.contains(name)
+                    && crate::tools::tool_descriptions::get(name).is_some()
+            })
+            .unwrap_or(false)
+    }
+
     pub fn definitions_except(&self, excluded: &[&str]) -> Vec<ToolDefinition> {
         self.tools
             .values()
@@ -268,5 +279,20 @@ mod tests {
 
         let loaded = BTreeSet::from(["get_weather".to_string()]);
         assert!(names(registry.lazy_definitions(&loaded)).contains("get_weather"));
+    }
+
+    #[test]
+    fn lazy_gate_requires_load_for_on_demand_builtin_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "get_weather",
+            "old",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        ));
+        assert!(registry.requires_lazy_load("get_weather", &BTreeSet::new()));
+
+        let loaded = BTreeSet::from(["get_weather".to_string()]);
+        assert!(!registry.requires_lazy_load("get_weather", &loaded));
     }
 }
