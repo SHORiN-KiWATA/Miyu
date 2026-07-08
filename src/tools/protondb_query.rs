@@ -7,7 +7,7 @@ const PROTONDB_BASE: &str = "https://www.protondb.com";
 const ALGOLIA_URL: &str = "https://94he6yatei-dsn.algolia.net/1/indexes/steamdb/query";
 
 const TOOL_NAME: &str = "protondb_query";
-const TOOL_DESC: &str = "Query ProtonDB game compatibility ratings and user reports. Use when you need to check Linux game compatibility, ProtonDB tiers, or read user reports/comments for a game. Accepts either a Steam App ID (numeric) or a game title (text search). / 查询 ProtonDB 游戏兼容性评级和用户评论。在需要查询 Linux 游戏兼容性信息等场景时使用。支持 Steam App ID（数字）或游戏名称（文本搜索）。";
+const TOOL_DESC: &str = "查询 ProtonDB 游戏兼容性评级和用户评论。在需要查询 Linux 游戏兼容性信息等场景时使用。支持 Steam App ID（数字）或游戏名称（文本搜索）。";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(create_toolspec());
@@ -22,11 +22,11 @@ pub fn create_toolspec() -> ToolSpec {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Steam App ID (e.g. \"1245620\") or game title (e.g. \"Elden Ring\"). / Steam App ID 或游戏名称。"
+                    "description": "Steam App ID 或游戏名称。"
                 },
                 "max_reports": {
                     "type": "integer",
-                    "description": "Maximum number of user reports to return, default 10. / 最多返回的评论数，默认 10。"
+                    "description": "最多返回的评论数，默认 20。"
                 }
             },
             "required": ["query"],
@@ -48,7 +48,7 @@ async fn protondb_query(args: Value) -> Result<String> {
     let max_reports = args
         .get("max_reports")
         .and_then(Value::as_u64)
-        .unwrap_or(10)
+        .unwrap_or(20)
         .min(40) as usize;
 
     let client = reqwest::Client::builder()
