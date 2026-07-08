@@ -19,7 +19,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub struct PendingTurnGuard {
@@ -122,9 +122,7 @@ pub enum AgentEvent {
         name: String,
         message: String,
     },
-    ExternalOutput,
     SpinnerTick,
-    MemeSelectPhase,
     CompactStart,
     CompactChunk(ChatStreamChunk),
     CompactEnd,
@@ -325,38 +323,10 @@ impl Agent {
             }
         }
         let mut on_event = on_event;
-        let meme_future = async {
-            if self.mode == AgentMode::Chat {
-                Ok(None)
-            } else {
-                memes::plan_auto_meme_before_reply(&self.config, &self.paths, &self.client, &input)
-                    .await
+        if self.mode != AgentMode::Plan {
+            if let Some(reminder) = memes::auto_meme_reminder(&self.config, &input) {
+                messages.push(ChatMessage::system(reminder));
             }
-        };
-        tokio::pin!(meme_future);
-        let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
-        spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        spinner_interval.tick().await;
-        let meme_start = Instant::now();
-        let mut meme_phase_switched = false;
-        let auto_meme_plan = loop {
-            tokio::select! {
-                result = &mut meme_future => {
-                    break result?;
-                }
-                _ = spinner_interval.tick() => {
-                    if !meme_phase_switched
-                        && meme_start.elapsed() >= Duration::from_millis(150)
-                    {
-                        on_event(AgentEvent::MemeSelectPhase)?;
-                        meme_phase_switched = true;
-                    }
-                    on_event(AgentEvent::SpinnerTick)?;
-                }
-            }
-        };
-        if let Some(plan) = &auto_meme_plan {
-            messages.push(ChatMessage::system(plan.reminder.clone()));
         }
         let mut used_tools = Vec::new();
         let mut persisted_tool_reports = Vec::new();
@@ -368,11 +338,6 @@ impl Agent {
                 &mut on_event,
             )
             .await?;
-        if let Some(plan) = auto_meme_plan {
-            on_event(AgentEvent::ExternalOutput)?;
-            memes::render_auto_meme(&self.config, &self.paths, &plan.event).await?;
-            memes::record_auto_meme_event(&self.config, &self.paths, &plan.event)?;
-        }
         for (tool_name, report) in persisted_tool_reports {
             self.state
                 .append_tool_report_context(&turn_id, &tool_name, &report)?;
@@ -847,9 +812,6 @@ impl Agent {
         current_input: &str,
     ) -> Result<Vec<ChatMessage>> {
         let mut messages = vec![ChatMessage::system(self.system_prompt.clone())];
-        if let Some(summary) = memes::last_auto_meme_reminder(&self.config, &self.paths)? {
-            messages.push(ChatMessage::system(summary));
-        }
         if let Some(summary) = self.state.load_last_summary()? {
             messages.push(ChatMessage::system(format!(
                 "<conversation-summary>\n{}\n</conversation-summary>",

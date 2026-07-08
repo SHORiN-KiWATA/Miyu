@@ -3425,12 +3425,7 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
             renderer.write_tool_progress(&name, &message)?;
             renderer.tick_spinner()
         }
-        AgentEvent::ExternalOutput => renderer.prepare_for_external_output(),
         AgentEvent::SpinnerTick => renderer.tick_spinner(),
-        AgentEvent::MemeSelectPhase => {
-            renderer.set_meme_select_phase()?;
-            renderer.tick_spinner()
-        }
         AgentEvent::CompactStart => {
             renderer.write_system_message("正在压缩上下文...")?;
             renderer.tick_spinner()
