@@ -1139,14 +1139,14 @@ fn with_current_time(system_prompt: String, mode: AgentMode) -> String {
     let mut prompt = if mode == AgentMode::Chat {
         format!(
             "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\"/>",
-            Local::now().format("%Y年%m月%d日 %H:%M"),
+            Local::now().format("%Y年%m月%d日 %A %H:%M"),
             xml_attr_escape(&cwd),
         )
     } else {
         let runtime = terminal_runtime_context();
         format!(
             "{system_prompt}\n\n<runtime now=\"{}\" cwd=\"{}\" note=\"cwd is workspace context only; do not infer assistant identity from paths or project names\" {runtime}/>",
-            Local::now().format("%Y年%m月%d日 %H:%M"),
+            Local::now().format("%Y年%m月%d日 %A %H:%M"),
             xml_attr_escape(&cwd),
         )
     };
