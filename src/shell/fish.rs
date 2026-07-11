@@ -21,6 +21,7 @@ end
 bind \cv __miyu_paste
 
 function __miyu_insert_newline
+    commandline -f expand-abbr
     commandline -i \n
 end
 
@@ -96,37 +97,32 @@ function __miyu_execute_or_continue
     end
 end
 
-function __miyu_fish_known_command
-    set -l buffer $argv[1]
-    set -l command
-    set -l rest
+function __miyu_buffer_is_multiline
+    test (string split \n -- "$argv[1]" | count) -gt 1
+end
 
+function __miyu_multiline_has_unknown_command
+    set -l buffer $argv[1]
     for line in (string split \n -- "$buffer")
         set -l trimmed (string trim -- "$line")
         if test -z "$trimmed"; or string match -q '#*' -- "$trimmed"
             continue
         end
 
-        set -l tokens (string split -n ' ' -- (string replace -ra '\\s+' ' ' -- "$trimmed"))
+        set -l tokens (string split -n ' ' -- "$trimmed")
         while test (count $tokens) -gt 0
             set -l token $tokens[1]
             if string match -qr '^[A-Za-z_][A-Za-z0-9_]*=' -- "$token"
                 set -e tokens[1]
                 continue
             end
-            set command $token
-            set -e tokens[1]
-            set rest (string join ' ' -- $tokens)
             break
         end
-        break
+        set -l command $tokens[1]
+        test -n "$command"; or continue
+        type -q -- "$command"; or return 0
     end
-
-    test -n "$command"; or return 1
-    if contains -- "$command" time test date which type command history
-        string match -qr '[?？一-龥]' -- "$rest"; and return 1
-    end
-    type -q -- "$command"
+    return 1
 end
 
 function __miyu_accept_line
@@ -140,7 +136,12 @@ function __miyu_accept_line
         return
     end
 
-    if __miyu_fish_known_command "$buffer"
+    if not __miyu_buffer_is_multiline "$buffer"
+        __miyu_execute_or_continue
+        return
+    end
+
+    if not __miyu_multiline_has_unknown_command "$buffer"
         __miyu_execute_or_continue
         return
     end
@@ -148,6 +149,7 @@ function __miyu_accept_line
     set -e __miyu_image_counter
     __miyu_wrap_fish_prompt
     set -g __miyu_cursor_hidden 1
+    history append -- "$buffer"
     set -g __miyu_pending_buffer "$buffer"
     commandline -b -- ""
     printf '\e[?25l'
@@ -248,13 +250,16 @@ mod tests {
         assert!(hook.contains("set -e __miyu_cursor_hidden"));
         assert!(hook.contains("return $miyu_status"));
         assert!(hook.contains("__miyu_execute_or_continue"));
-        assert!(hook.contains("__miyu_fish_known_command"));
-        assert!(hook.contains("type -q -- \"$command\""));
-        assert!(hook.contains("contains -- \"$command\" time test date"));
+        assert!(hook.contains("__miyu_buffer_is_multiline"));
+        assert!(hook.contains("test (string split \\n -- \"$argv[1]\" | count) -gt 1"));
+        assert!(hook.contains("__miyu_multiline_has_unknown_command"));
+        assert!(hook.contains("type -q -- \"$command\"; or return 0"));
         assert!(hook.contains("set -g __miyu_pending_buffer \"$buffer\""));
+        assert!(hook.contains("history append -- \"$buffer\""));
         assert!(hook.contains("commandline -b -- \"\""));
         assert!(hook.contains("commandline -f execute"));
         assert!(hook.contains("commandline -f expand-abbr"));
+        assert!(hook.contains("string match -qr '^[A-Za-z_][A-Za-z0-9_]*='"));
         assert!(!hook.contains("cancel-commandline"));
         assert!(hook.contains("commandline -b | string collect -N"));
         assert!(hook.contains("--shell-intercept --shell fish --stdin"));
