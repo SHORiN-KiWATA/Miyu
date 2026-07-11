@@ -87,6 +87,7 @@ pub enum ClipboardContent {
     Image(ClipboardImage),
     ImagePath(String),
     TextPath(String),
+    Text(String),
 }
 
 pub fn read_clipboard() -> Result<ClipboardContent> {
@@ -97,11 +98,10 @@ pub fn read_clipboard() -> Result<ClipboardContent> {
             || t == "application/glfw+clipboard-32678"
     });
     let has_image = targets.iter().any(|t| t.starts_with("image/"));
-    if has_uri_list
-        || targets
-            .iter()
-            .any(|t| t == "text/plain" || t == "TEXT" || t == "STRING" || t == "UTF8_STRING")
-    {
+    let has_text = targets
+        .iter()
+        .any(|t| t == "text/plain" || t == "TEXT" || t == "STRING" || t == "UTF8_STRING");
+    if has_uri_list || has_text {
         if let Some(text) = read_clipboard_text()? {
             if has_uri_list || text.starts_with("file://") || text.starts_with('/') {
                 if let Some(cp) = parse_clipboard_path(&text) {
@@ -111,6 +111,9 @@ pub fn read_clipboard() -> Result<ClipboardContent> {
                         return Ok(ClipboardContent::TextPath(cp.path));
                     }
                 }
+            }
+            if has_text {
+                return Ok(ClipboardContent::Text(text));
             }
         }
     }

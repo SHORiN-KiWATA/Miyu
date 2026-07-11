@@ -94,8 +94,19 @@ fn detected_text_result(paths: MiyuPaths) -> Result<String> {
         ClipboardContent::Image(img) => image_binary_result(img, &paths),
         ClipboardContent::ImagePath(path) => image_path_result(path),
         ClipboardContent::TextPath(path) => text_path_result(path),
+        ClipboardContent::Text(text) => text_content_result(text),
         ClipboardContent::None => text_result(),
     }
+}
+
+fn text_content_result(text: String) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "ok": true,
+        "kind": "clipboard",
+        "content_type": "text",
+        "text": text,
+        "bytes": text.len(),
+    }))?)
 }
 
 fn text_result() -> Result<String> {

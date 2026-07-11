@@ -188,7 +188,13 @@ pub struct Cli {
     pub shell_intercept: bool,
 
     #[arg(long, hide = true)]
+    pub shell_classify: bool,
+
+    #[arg(long, hide = true)]
     pub shell: Option<String>,
+
+    #[arg(long, hide = true)]
+    pub stdin: bool,
 
     #[arg(long, hide = true)]
     pub clipboard_paste: bool,
@@ -761,6 +767,12 @@ pub enum ConfigCommand {
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
+    if cli.shell_classify {
+        let shell_name = cli.shell.as_deref().unwrap_or("fish");
+        let message = shell_message_from_input(cli.stdin, cli.message)?;
+        return run_shell_classify(shell_name, &message);
+    }
+
     let paths = MiyuPaths::new()?;
     let mode = if cli.plan {
         AgentMode::Plan
@@ -773,7 +785,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     if cli.shell_intercept {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
-        let message = join_message(cli.message);
+        let message = shell_message_from_input(cli.stdin, cli.message)?;
         return run_shell_intercept(&paths, shell_name, message).await;
     }
 
@@ -1534,23 +1546,69 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
             io::stdout().flush()?;
             Ok(())
         }
+        Ok(crate::clipboard::ClipboardContent::Text(text)) => {
+            if should_summarize_pasted_text(&text) {
+                let index = shell_pasted_text_index(&paths.cache_dir, &text)?;
+                let placeholder = pasted_text_placeholder(index, pasted_text_line_count(&text));
+                print!("{}", placeholder);
+            } else {
+                print!("{}", text);
+            }
+            io::stdout().flush()?;
+            Ok(())
+        }
         _ => {
             std::process::exit(1);
         }
     }
 }
 
+fn shell_pasted_text_index(cache_dir: &std::path::Path, text: &str) -> Result<usize> {
+    let dir = cache_dir.join("clipboard_texts");
+    std::fs::create_dir_all(&dir)?;
+    let mut index = 1;
+    loop {
+        let path = dir.join(format!("{index}.txt"));
+        if !path.exists() {
+            std::fs::write(path, text)?;
+            return Ok(index);
+        }
+        index += 1;
+    }
+}
+
+fn shell_message_from_input(use_stdin: bool, message: Vec<String>) -> Result<String> {
+    if use_stdin {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        Ok(input)
+    } else {
+        Ok(join_message(message))
+    }
+}
+
+fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
+    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+        std::process::exit(2);
+    }
+    if shell::is_shell_command(message, shell_name) {
+        std::process::exit(0);
+    }
+    std::process::exit(1);
+}
+
 async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
     if !matches!(shell_name, "fish" | "bash" | "zsh") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
     }
-    if message.is_empty() || !shell::looks_like_natural_language(&message) {
+    if message.trim().is_empty() {
         bail!(
             "{}",
             t("not a natural language command", "不是自然语言命令")
         );
     }
 
+    let message = expand_shell_pasted_text_placeholders(paths, &message)?;
     let (clean_message, pasted_images) = extract_image_placeholders(&message);
 
     let result = if pasted_images.is_empty() {
@@ -1563,6 +1621,29 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
         println!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
     }
     result
+}
+
+fn expand_shell_pasted_text_placeholders(paths: &MiyuPaths, message: &str) -> Result<String> {
+    let placeholders = find_pasted_text_placeholders(message);
+    if placeholders.is_empty() {
+        return Ok(message.to_string());
+    }
+
+    let chars: Vec<char> = message.chars().collect();
+    let mut expanded = String::new();
+    let mut last_end = 0;
+    let dir = paths.cache_dir.join("clipboard_texts");
+    for (start, end, index) in placeholders {
+        expanded.extend(&chars[last_end..start]);
+        let path = dir.join(format!("{index}.txt"));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => expanded.push_str(&text),
+            Err(_) => expanded.extend(&chars[start..end]),
+        }
+        last_end = end;
+    }
+    expanded.extend(&chars[last_end..]);
+    Ok(expanded)
 }
 
 fn extract_image_placeholders(

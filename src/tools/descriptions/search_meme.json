@@ -27,7 +27,7 @@
     }
   },
   "permission": "readonly",
-  "always_loaded": false,
+  "always_loaded": true,
   "load_policy": "summary",
   "groups": [
     "memes"
