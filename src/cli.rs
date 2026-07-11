@@ -1774,18 +1774,12 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     let mut input_history = load_repl_input_history(&state)?;
     let mut prefill = None::<String>;
 
-    println!(
-        "\x1b[2m{}\x1b[0m",
-        t(
-            "Tab cycles NORMAL/PLAN/CHAT; Enter sends; Ctrl+J inserts newline; Ctrl+V pastes clipboard",
-            "Tab 循环切换 普通/计划/闲聊；Enter 发送；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
-        )
-    );
     crate::default_kb::check_update_if_due(paths).ok();
     if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
         println!("\x1b[2m{message}\x1b[0m");
     }
     let mut footer = ReplFooterStatus::from_config(&config, state.token_total()?);
+    let mut show_shortcut_hint = true;
     let initial_registry = build_tool_registry(&config, paths, mode)?;
     let mut agent = Agent::new(
         config.clone(),
@@ -1796,14 +1790,20 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         mode,
     )?;
     loop {
-        let (input, pasted_images) =
-            match read_repl_input(paths, mode, prefill.take(), &input_history, &footer)? {
-                Some((new_mode, input, pasted_images)) => {
-                    mode = new_mode;
-                    (input, pasted_images)
-                }
-                None => break,
-            };
+        let (input, pasted_images) = match read_repl_input(
+            paths,
+            mode,
+            prefill.take(),
+            &input_history,
+            &footer,
+            show_shortcut_hint,
+        )? {
+            Some((new_mode, input, pasted_images)) => {
+                mode = new_mode;
+                (input, pasted_images)
+            }
+            None => break,
+        };
         let input = input.trim();
         if input.eq_ignore_ascii_case("exit")
             || input.eq_ignore_ascii_case("quit")
@@ -1813,21 +1813,6 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         if input.eq_ignore_ascii_case("/help") {
             print_repl_help();
-            continue;
-        }
-        if input.eq_ignore_ascii_case("/plan") {
-            mode = AgentMode::Plan;
-            println!("{}: {}", t("mode", "模式"), mode.label());
-            continue;
-        }
-        if input.eq_ignore_ascii_case("/chat") {
-            mode = AgentMode::Chat;
-            println!("{}: {}", t("mode", "模式"), mode.label());
-            continue;
-        }
-        if input.eq_ignore_ascii_case("/normal") {
-            mode = AgentMode::Normal;
-            println!("{}: {}", t("mode", "模式"), mode.label());
             continue;
         }
         if input.eq_ignore_ascii_case("/providers") {
@@ -1972,6 +1957,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                     eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
                     continue;
                 }
+                show_shortcut_hint = false;
             }
             Ok(None) => {}
             Err(err) => {
@@ -2012,21 +1998,6 @@ fn print_repl_help() {
     println!(
         "  /config     {}",
         t("open configuration UI", "打开配置界面")
-    );
-    println!(
-        "  /plan       {}",
-        t("switch to read-only planning mode", "切换到只读计划模式")
-    );
-    println!(
-        "  /normal     {}",
-        t("switch to normal mode", "切换到普通模式")
-    );
-    println!(
-        "  /chat       {}",
-        t(
-            "switch to lightweight chat mode with web and memes only",
-            "切换到仅开放网络和表情的轻量闲聊模式"
-        )
     );
     println!(
         "  /undo       {}",
@@ -2085,6 +2056,7 @@ fn read_repl_input(
     prefill: Option<String>,
     history: &[String],
     footer: &ReplFooterStatus,
+    show_shortcut_hint: bool,
 ) -> Result<
     Option<(
         AgentMode,
@@ -2124,6 +2096,7 @@ fn read_repl_input(
             cursor,
             is_pasted,
             footer,
+            show_shortcut_hint,
         )
     };
     render_repl_input(
@@ -2569,6 +2542,7 @@ fn render_repl_input_with_footer(
     cursor: usize,
     is_pasted: bool,
     footer: &ReplFooterStatus,
+    show_shortcut_hint: bool,
 ) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
@@ -2585,7 +2559,8 @@ fn render_repl_input_with_footer(
         .map(|line| colorize_repl_placeholders(line))
         .collect();
     let input_rows = repl_prompt_rows(&plain_prefix, &display_lines);
-    let current_rows = input_rows.saturating_add(3);
+    let show_hint = show_shortcut_hint && suggestions.is_empty();
+    let current_rows = input_rows.saturating_add(if show_hint { 4 } else { 3 });
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
     for row_offset in 0..rows_to_clear {
@@ -2612,10 +2587,15 @@ fn render_repl_input_with_footer(
     )?;
     row_offset = row_offset.saturating_add(1);
     if !suggestions.is_empty() {
+        let suggestion_width = cols.saturating_sub(visible_width(&prompt_prefix)).max(1);
         queue!(
             stdout,
             MoveTo(0, (*input_row).saturating_add(row_offset)),
-            Print(format!("\x1b[2m{}\x1b[0m", suggestions.join("  ")))
+            Print(&prompt_prefix),
+            Print(format!(
+                "\x1b[2m{}\x1b[0m",
+                repl_command_suggestions_line(&suggestions, suggestion_width)
+            ))
         )?;
     } else {
         queue!(
@@ -2623,6 +2603,14 @@ fn render_repl_input_with_footer(
             MoveTo(0, (*input_row).saturating_add(row_offset)),
             Print(repl_footer_line(mode, footer, cols))
         )?;
+        if show_hint {
+            row_offset = row_offset.saturating_add(1);
+            queue!(
+                stdout,
+                MoveTo(0, (*input_row).saturating_add(row_offset)),
+                Print(repl_shortcut_hint_line(mode, cols))
+            )?;
+        }
     }
     let (cursor_col, cursor_row_offset) = if display_lines.len() == lines.len() {
         repl_cursor_position(&plain_prefix, input, cursor)
@@ -2763,6 +2751,19 @@ fn submitted_echo_bar(mode: AgentMode) -> String {
 
 fn input_prompt_bar(mode: AgentMode) -> String {
     format!("{} ", submitted_echo_bar(mode))
+}
+
+fn repl_shortcut_hint_line(mode: AgentMode, cols: usize) -> String {
+    let bar = input_prompt_bar(mode);
+    let text = t(
+        "Tab switch mode; Ctrl+J newline; Ctrl+V paste clipboard",
+        "Tab 切换模式；Ctrl+J 换行；Ctrl+V 粘贴剪贴板",
+    );
+    let text_width = cols.saturating_sub(visible_width(&bar)).max(1);
+    format!(
+        "{bar}\x1b[2m{}\x1b[0m",
+        truncate_visible_width(text, text_width)
+    )
 }
 
 fn wrap_visible_width(value: &str, max_width: usize) -> Vec<String> {
@@ -3217,13 +3218,10 @@ fn colorize_repl_placeholders(line: &str) -> String {
     result
 }
 
-fn repl_commands() -> [&'static str; 10] {
+fn repl_commands() -> [&'static str; 7] {
     [
         "/providers",
         "/config",
-        "/plan",
-        "/normal",
-        "/chat",
         "/undo",
         "/compact",
         "/reset",
@@ -3249,6 +3247,35 @@ fn complete_repl_command(input: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn repl_command_suggestions_line(suggestions: &[&str], max_width: usize) -> String {
+    let line = if suggestions.len() == 1 {
+        suggestions[0].to_string()
+    } else {
+        suggestions.join("  ")
+    };
+    truncate_visible_width(&line, max_width)
+}
+
+fn truncate_visible_width(value: &str, max_width: usize) -> String {
+    if visible_width(value) <= max_width {
+        return value.to_string();
+    }
+    let mut output = String::new();
+    let mut width = 0usize;
+    let ellipsis_width = visible_width("...");
+    let budget = max_width.saturating_sub(ellipsis_width);
+    for ch in value.chars() {
+        let ch_width = visible_width(&ch.to_string());
+        if width.saturating_add(ch_width) > budget {
+            break;
+        }
+        output.push(ch);
+        width = width.saturating_add(ch_width);
+    }
+    output.push_str("...");
+    output
 }
 
 #[cfg(test)]
@@ -3305,6 +3332,24 @@ mod repl_input_tests {
     #[test]
     fn compact_is_a_repl_command() {
         assert!(repl_commands().contains(&"/compact"));
+    }
+
+    #[test]
+    fn command_suggestions_are_prefixed_and_truncated() {
+        let suggestions = repl_command_suggestions("/");
+        let line = repl_command_suggestions_line(&suggestions, 24);
+        assert!(line.starts_with("/providers"));
+        assert!(visible_width(&line) <= 24);
+
+        let line = repl_command_suggestions_line(&["/compact"], 40);
+        assert_eq!(line, "/compact");
+    }
+
+    #[test]
+    fn shortcut_hint_line_is_bar_aligned_and_truncated() {
+        let line = repl_shortcut_hint_line(AgentMode::Normal, 24);
+        assert!(strip_terminal_control_sequences(&line).contains("Tab"));
+        assert!(visible_width(&line) <= 24);
     }
 
     #[test]
