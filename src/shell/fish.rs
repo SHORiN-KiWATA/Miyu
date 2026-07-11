@@ -30,30 +30,29 @@ bind \cj __miyu_insert_newline
 bind -M insert ctrl-j __miyu_insert_newline
 bind -M insert \cj __miyu_insert_newline
 
-function __miyu_run_buffer
-    set -l buffer $__miyu_shell_buffer
-    set -e __miyu_shell_buffer
-
-    set -l prompt (fish_prompt | string collect -N)
-    set -l prompt_lines (string split \n -- "$prompt")
-    set -l clear_lines (math (count $prompt_lines) + 1)
-    for index in (seq $clear_lines)
-        printf '\r\e[K'
-        if test $index -lt $clear_lines
-            printf '\e[1A'
-        end
-    end
-
-    printf '%s' "$prompt"
+function __miyu_replay_buffer
+    set -l buffer $argv[1]
     set -l lines (string split \n -- "$buffer")
     if test (count $lines) -gt 0
+        set -l prompt (fish_prompt | string collect -N)
+        set -l prompt_lines (string split \n -- "$prompt")
+        set -l prompt_col (math (string length --visible -- "$prompt_lines[-1]") + 1)
+        printf '\e[1A\e[%sG' $prompt_col
         printf '%s\n' "$lines[1]"
         for line in $lines[2..-1]
             printf '  %s\n' "$line"
         end
-    else
-        printf '\n'
     end
+end
+
+function __miyu_on_prompt --on-event fish_prompt
+    set -q __miyu_pending_buffer; or return
+
+    set -l buffer $__miyu_pending_buffer
+    set -e __miyu_pending_buffer
+    set -e __miyu_image_counter
+
+    __miyu_replay_buffer "$buffer"
     printf '%s' "$buffer" | miyu --shell-intercept --shell fish --stdin
 end
 
@@ -117,19 +116,9 @@ function __miyu_accept_line
         return
     end
 
-    printf '%s' "$buffer" | miyu --shell-classify --shell fish --stdin 2>/dev/null
-    set -l classify_status $status
-    if test $classify_status -eq 0
-        __miyu_execute_or_continue
-        return
-    else if test $classify_status -ne 1
-        __miyu_execute_or_continue
-        return
-    end
-
     set -e __miyu_image_counter
-    set -g __miyu_shell_buffer "$buffer"
-    commandline -b -- " __miyu_run_buffer"
+    set -g __miyu_pending_buffer "$buffer"
+    commandline -b -- ""
     commandline -f execute
 end
 
@@ -211,20 +200,20 @@ mod tests {
     fn fish_hook_defines_enter_binding() {
         let hook = hook();
         assert!(hook.contains("__miyu_accept_line"));
-        assert!(hook.contains("__miyu_run_buffer"));
-        assert!(hook.contains("set -l prompt (fish_prompt | string collect -N)"));
-        assert!(hook.contains("set -l clear_lines (math (count $prompt_lines) + 1)"));
-        assert!(hook.contains("printf '\\r\\e[K'"));
-        assert!(hook.contains("set -l lines (string split \\n -- \"$buffer\")"));
+        assert!(hook.contains("__miyu_replay_buffer"));
+        assert!(hook.contains("__miyu_on_prompt --on-event fish_prompt"));
+        assert!(!hook.contains("        fish_prompt\n"));
+        assert!(hook.contains("string length --visible"));
+        assert!(hook.contains("printf '\\e[1A\\e[%sG' $prompt_col"));
         assert!(hook.contains("__miyu_execute_or_continue"));
         assert!(hook.contains("__miyu_fish_known_command"));
         assert!(hook.contains("type -q -- \"$command\""));
         assert!(hook.contains("contains -- \"$command\" time test date"));
-        assert!(hook.contains("set -g __miyu_shell_buffer \"$buffer\""));
-        assert!(hook.contains("commandline -b -- \" __miyu_run_buffer\""));
+        assert!(hook.contains("set -g __miyu_pending_buffer \"$buffer\""));
+        assert!(hook.contains("commandline -b -- \"\""));
+        assert!(hook.contains("commandline -f execute"));
         assert!(!hook.contains("cancel-commandline"));
         assert!(hook.contains("commandline -b | string collect -N"));
-        assert!(hook.contains("--shell-classify --shell fish --stdin"));
         assert!(hook.contains("--shell-intercept --shell fish --stdin"));
         assert!(hook.contains("bind enter __miyu_accept_line"));
         assert!(hook.contains("bind \\r __miyu_accept_line"));
