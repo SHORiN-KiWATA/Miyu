@@ -1,5 +1,6 @@
 use crate::default_models::{
-    OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_PROVIDER_ID, OPENCODE_ZEN_BASE_URL,
+    OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_DEFAULT_CONTEXT_WINDOW, OPENCODE_PROVIDER_ID,
+    OPENCODE_ZEN_BASE_URL,
 };
 use crate::paths::MiyuPaths;
 use crate::prompts::default_system_prompt;
@@ -836,6 +837,11 @@ impl Default for ContextConfig {
 
 impl ProviderConfig {
     pub fn default_opencodezen() -> Self {
+        let mut model_context_window = HashMap::new();
+        model_context_window.insert(
+            OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
+            OPENCODE_DEFAULT_CONTEXT_WINDOW,
+        );
         Self {
             id: OPENCODE_PROVIDER_ID.to_string(),
             display_name: "opencode Zen".to_string(),
@@ -843,7 +849,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
-            model_context_window: HashMap::new(),
+            model_context_window,
             model_modalities: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
@@ -1262,6 +1268,9 @@ impl AppConfig {
             .filter(|&w| w > 0)
         {
             return Ok(Some(window));
+        }
+        if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
+            return Ok(Some(OPENCODE_DEFAULT_CONTEXT_WINDOW));
         }
         Ok(crate::models_cache::context_window(model).map(|w| w as usize))
     }

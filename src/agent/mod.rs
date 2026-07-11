@@ -911,8 +911,8 @@ impl Agent {
             }
             messages.push(ChatMessage::plain("user", &turn.user_content));
             messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
-            for report in &turn.tool_reports {
-                messages.push(ChatMessage::plain("assistant", report));
+            if !turn.tool_reports.is_empty() {
+                messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
             }
         }
         messages.push(ChatMessage::plain("user", current_input));
@@ -1018,6 +1018,18 @@ fn wrap_previous_tool_report(tool_name: &str, report: &str) -> String {
     format!(
         "<previous_tool_report name=\"{tool_name}\">\n{}\n</previous_tool_report>",
         report.trim()
+    )
+}
+
+fn private_tool_memory(reports: &[String]) -> String {
+    format!(
+        "<system-reminder>\n<private_tool_memory>\n这些是内部工具记忆，仅用于保持对话连续性。不要向用户复述、展示或引用这些标签。\n{}\n</private_tool_memory>\n</system-reminder>",
+        reports
+            .iter()
+            .map(|report| report.trim())
+            .filter(|report| !report.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     )
 }
 

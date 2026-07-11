@@ -27,10 +27,152 @@ use std::time::Duration;
 const REPL_MAX_VISIBLE_INPUT_ROWS: u16 = 12;
 const REPL_PASTE_PLACEHOLDER_MIN_LINES: usize = 3;
 const REPL_PASTE_PLACEHOLDER_MIN_CHARS: usize = 150;
-
 #[derive(Clone, Debug)]
 struct PastedText {
     text: String,
+}
+
+#[derive(Clone, Debug)]
+struct ReplFooterStatus {
+    provider: String,
+    model: String,
+    thinking: Option<String>,
+    token_usage: ReplTokenUsage,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReplTokenUsage {
+    turn_tokens: u64,
+    session_tokens: u64,
+    context_window: Option<usize>,
+}
+
+impl ReplFooterStatus {
+    fn from_config(config: &AppConfig, session_tokens: u64) -> Self {
+        let provider = config.provider(None).ok();
+        let provider_id = provider
+            .map(|provider| provider.id.trim().to_string())
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or_else(|| "-".to_string());
+        let model = provider
+            .map(|provider| provider.default_model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| "-".to_string());
+
+        Self {
+            model: short_model_name(&model, &provider_id),
+            provider: provider_id,
+            thinking: None,
+            token_usage: ReplTokenUsage {
+                turn_tokens: 0,
+                session_tokens,
+                context_window: config.active_context_window().ok().flatten(),
+            },
+        }
+    }
+
+    fn update_token_usage(
+        &mut self,
+        result: &crate::llm::ChatResult,
+        session_tokens: u64,
+        context_window: Option<usize>,
+    ) {
+        if let Some(usage) = &result.usage {
+            self.token_usage = ReplTokenUsage {
+                turn_tokens: render::usage_total(usage),
+                session_tokens,
+                context_window: context_window.or(self.token_usage.context_window),
+            };
+        }
+    }
+
+    fn update_session_tokens(&mut self, session_tokens: u64) {
+        self.token_usage.session_tokens = session_tokens;
+    }
+}
+
+fn short_model_name(model: &str, provider: &str) -> String {
+    model
+        .strip_prefix(&format!("{provider}/"))
+        .unwrap_or(model)
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_string()
+}
+
+fn repl_footer_line(mode: AgentMode, footer: &ReplFooterStatus, cols: usize) -> String {
+    let cols = cols.max(1);
+    let bar = input_prompt_bar(mode);
+    let bar_width = visible_width(&bar);
+    let usage = footer.token_usage;
+    let right_plain = render::format_token_usage_inline(
+        usage.turn_tokens,
+        usage.session_tokens,
+        usage.context_window,
+    );
+    let right = format!("\x1b[2m{right_plain}\x1b[0m");
+    let right_width = visible_width(&right);
+    let left_budget = cols.saturating_sub(bar_width.saturating_add(right_width).saturating_add(1));
+    let left = repl_footer_left(mode, footer, left_budget);
+    let gap = cols
+        .saturating_sub(
+            bar_width
+                .saturating_add(visible_width(&left))
+                .saturating_add(right_width),
+        )
+        .max(1);
+    format!("{bar}{left}{}{right}", " ".repeat(gap))
+}
+
+fn repl_footer_left(mode: AgentMode, footer: &ReplFooterStatus, width: usize) -> String {
+    let thinking = footer.thinking.as_deref().unwrap_or_default();
+    let provider = format!("\x1b[2m{}\x1b[0m", footer.provider);
+    let mode = colored_footer_mode_label(mode);
+    let full = repl_footer_left_parts(&mode, &footer.model, Some(&provider), thinking);
+    if visible_width(&full) <= width {
+        return full;
+    }
+
+    let compact = repl_footer_left_parts(&mode, &footer.model, None, thinking);
+    if visible_width(&compact) <= width {
+        return compact;
+    }
+
+    let fixed_width = visible_width(&mode)
+        .saturating_add(if thinking.is_empty() {
+            0
+        } else {
+            1 + thinking.len()
+        })
+        .saturating_add(1);
+    let model_budget = width.saturating_sub(fixed_width).max(1);
+    let model = truncate_display(&footer.model, model_budget);
+    repl_footer_left_parts(&mode, &model, None, thinking)
+}
+
+fn repl_footer_left_parts(
+    mode: &str,
+    model: &str,
+    provider: Option<&str>,
+    thinking: &str,
+) -> String {
+    let mut parts = vec![mode.to_string(), model.to_string()];
+    if let Some(provider) = provider.filter(|provider| !provider.is_empty()) {
+        parts.push(provider.to_string());
+    }
+    if !thinking.is_empty() {
+        parts.push(thinking.to_string());
+    }
+    parts.join(" ")
+}
+
+fn colored_footer_mode_label(mode: AgentMode) -> String {
+    match mode {
+        AgentMode::Normal => "\x1b[1m\x1b[34mNormal\x1b[0m".to_string(),
+        AgentMode::Plan => "\x1b[1m\x1b[35mPlan\x1b[0m".to_string(),
+        AgentMode::Chat => "\x1b[1m\x1b[32mChat\x1b[0m".to_string(),
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -1643,6 +1785,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     if let Ok(Some(message)) = crate::default_kb::notice_if_update_available(paths) {
         println!("\x1b[2m{message}\x1b[0m");
     }
+    let mut footer = ReplFooterStatus::from_config(&config, state.token_total()?);
     let initial_registry = build_tool_registry(&config, paths, mode)?;
     let mut agent = Agent::new(
         config.clone(),
@@ -1654,7 +1797,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     )?;
     loop {
         let (input, pasted_images) =
-            match read_repl_input(paths, mode, prefill.take(), &input_history)? {
+            match read_repl_input(paths, mode, prefill.take(), &input_history, &footer)? {
                 Some((new_mode, input, pasted_images)) => {
                     mode = new_mode;
                     (input, pasted_images)
@@ -1690,6 +1833,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if input.eq_ignore_ascii_case("/providers") {
             run_providers(paths, ProvidersArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
+            footer = ReplFooterStatus::from_config(&config, state.token_total()?);
             let registry = build_tool_registry(&config, paths, mode)?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
@@ -1699,6 +1843,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if input.eq_ignore_ascii_case("/config") {
             crate::config_tui::run(paths)?;
             reload_repl_config(paths, &mut config, &mut client)?;
+            footer = ReplFooterStatus::from_config(&config, state.token_total()?);
             let registry = build_tool_registry(&config, paths, mode)?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
@@ -1707,6 +1852,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         if input.eq_ignore_ascii_case("/undo") {
             let (removed, prompt) = state.undo_last_turn()?;
+            footer.update_session_tokens(state.token_total()?);
             println!("{}: {removed}", t("undone messages", "已撤销消息数"));
             prefill = prompt;
             continue;
@@ -1714,12 +1860,14 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if input.eq_ignore_ascii_case("/reset") {
             run_reset(paths, None)?;
             input_history.clear();
+            footer.update_session_tokens(state.token_total()?);
             continue;
         }
         if input.eq_ignore_ascii_case("/reset all") {
             run_reset(paths, Some("all"))?;
             input_history.clear();
             agent.reset_memory()?;
+            footer.update_session_tokens(state.token_total()?);
             continue;
         }
         if input.is_empty() {
@@ -1741,27 +1889,37 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         );
         renderer.start_waiting()?;
         let chat_result = {
+            let renderer_cell = std::cell::RefCell::new(&mut renderer);
             let chat = agent.chat_stream_with_images(input, &pasted_images, |event| {
-                handle_agent_event(&mut renderer, event)
+                handle_agent_event(&mut *renderer_cell.borrow_mut(), event)
             });
             tokio::pin!(chat);
-            tokio::select! {
-                result = &mut chat => result.map(Some),
-                signal = tokio::signal::ctrl_c() => {
-                    signal?;
-                    Ok(None)
+            let mut spinner_tick = tokio::time::interval(render::wait_spinner::SPINNER_INTERVAL);
+            spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            spinner_tick.tick().await;
+            loop {
+                tokio::select! {
+                    result = &mut chat => break result.map(Some),
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        break Ok(None);
+                    }
+                    _ = spinner_tick.tick() => {
+                        renderer_cell.borrow_mut().tick_spinner()?;
+                    }
                 }
             }
         };
         renderer.finish()?;
         match chat_result {
             Ok(Some(result)) => {
-                print_chat_token_usage(
-                    &result,
-                    config.display.show_token_usage,
-                    state.token_total()?,
-                    agent.context_window(),
-                )?;
+                if config.display.show_token_usage {
+                    footer.update_token_usage(
+                        &result,
+                        state.token_total()?,
+                        agent.context_window(),
+                    );
+                }
                 if let Err(err) = handle_post_turn_overflow(
                     &agent,
                     &mut renderer,
@@ -1879,6 +2037,7 @@ fn read_repl_input(
     mut mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
+    footer: &ReplFooterStatus,
 ) -> Result<
     Option<(
         AgentMode,
@@ -1902,6 +2061,24 @@ fn read_repl_input(
     let mut is_pasted = false;
     let mut pasted_images: Vec<Option<crate::clipboard::PastedImage>> = Vec::new();
     let mut pasted_texts: Vec<Option<PastedText>> = Vec::new();
+    let render_repl_input = |stdout: &mut io::Stdout,
+                             input_row: &mut u16,
+                             rendered_rows: &mut u16,
+                             mode: AgentMode,
+                             input: &str,
+                             cursor: usize,
+                             is_pasted: bool| {
+        render_repl_input_with_footer(
+            stdout,
+            input_row,
+            rendered_rows,
+            mode,
+            input,
+            cursor,
+            is_pasted,
+            footer,
+        )
+    };
     render_repl_input(
         &mut stdout,
         &mut input_row,
@@ -2067,9 +2244,15 @@ fn read_repl_input(
                     )?;
                 }
                 KeyCode::Enter => {
-                    input = strip_terminal_control_sequences(&input);
-                    input = expand_pasted_text_placeholders(&input, &pasted_texts);
-                    move_after_repl_input(&mut stdout, input_row, rendered_rows)?;
+                    let submitted_echo = strip_terminal_control_sequences(&input);
+                    input = expand_pasted_text_placeholders(&submitted_echo, &pasted_texts);
+                    replace_repl_input_with_user_echo(
+                        &mut stdout,
+                        input_row,
+                        rendered_rows,
+                        mode,
+                        &submitted_echo,
+                    )?;
                     execute!(stdout, DisableBracketedPaste)?;
                     terminal::disable_raw_mode()?;
                     return Ok(Some((mode, input, pasted_images)));
@@ -2330,7 +2513,7 @@ fn read_repl_input(
     }
 }
 
-fn render_repl_input(
+fn render_repl_input_with_footer(
     stdout: &mut io::Stdout,
     input_row: &mut u16,
     rendered_rows: &mut u16,
@@ -2338,11 +2521,12 @@ fn render_repl_input(
     input: &str,
     cursor: usize,
     is_pasted: bool,
+    footer: &ReplFooterStatus,
 ) -> Result<()> {
     let suggestions = repl_command_suggestions(input);
     let lines = repl_input_lines(input);
-    let prompt_prefix = format!("{} > ", colored_mode_label(mode));
-    let plain_prefix = format!("[{}] > ", mode.label());
+    let prompt_prefix = input_prompt_bar(mode);
+    let plain_prefix = "  ";
     let display_lines = repl_visible_input_lines(
         &plain_prefix,
         &lines,
@@ -2353,7 +2537,8 @@ fn render_repl_input(
         .iter()
         .map(|line| colorize_repl_placeholders(line))
         .collect();
-    let current_rows = repl_render_rows(&plain_prefix, &display_lines, !suggestions.is_empty());
+    let input_rows = repl_prompt_rows(&plain_prefix, &display_lines);
+    let current_rows = input_rows.saturating_add(3);
     let rows_to_clear = (*rendered_rows).max(current_rows).max(1);
     ensure_repl_space(stdout, input_row, rows_to_clear)?;
     for row_offset in 0..rows_to_clear {
@@ -2363,25 +2548,36 @@ fn render_repl_input(
             Clear(ClearType::CurrentLine)
         )?;
     }
+    let cols = terminal_cols();
     let mut row_offset = 0u16;
+    queue!(stdout, MoveTo(0, *input_row), Print(&prompt_prefix))?;
+    row_offset = row_offset.saturating_add(1);
     for (index, line) in display_lines.iter().enumerate() {
         let row = (*input_row).saturating_add(row_offset);
         queue!(stdout, MoveTo(0, row))?;
-        if index == 0 {
-            queue!(stdout, Print(&prompt_prefix), Print(line))?;
-            row_offset = row_offset.saturating_add(repl_line_rows(&plain_prefix, line));
-        } else {
-            queue!(stdout, Print(line))?;
-            row_offset = row_offset.saturating_add(repl_line_rows("", line));
-        }
+        queue!(stdout, Print(&prompt_prefix), Print(line))?;
+        row_offset = row_offset.saturating_add(repl_line_rows(
+            if index == 0 { plain_prefix } else { "" },
+            line,
+        ));
     }
+    queue!(
+        stdout,
+        MoveTo(0, (*input_row).saturating_add(row_offset)),
+        Print(&prompt_prefix)
+    )?;
+    row_offset = row_offset.saturating_add(1);
     if !suggestions.is_empty() {
-        let suggestion_row =
-            (*input_row).saturating_add(repl_prompt_rows(&plain_prefix, &display_lines));
         queue!(
             stdout,
-            MoveTo(0, suggestion_row),
+            MoveTo(0, (*input_row).saturating_add(row_offset)),
             Print(format!("\x1b[2m{}\x1b[0m", suggestions.join("  ")))
+        )?;
+    } else {
+        queue!(
+            stdout,
+            MoveTo(0, (*input_row).saturating_add(row_offset)),
+            Print(repl_footer_line(mode, footer, cols))
         )?;
     }
     let (cursor_col, cursor_row_offset) = if display_lines.len() == lines.len() {
@@ -2396,7 +2592,12 @@ fn render_repl_input(
     };
     queue!(
         stdout,
-        MoveTo(cursor_col, (*input_row).saturating_add(cursor_row_offset))
+        MoveTo(
+            cursor_col,
+            (*input_row)
+                .saturating_add(1)
+                .saturating_add(cursor_row_offset)
+        )
     )?;
     stdout.flush()?;
     *rendered_rows = current_rows;
@@ -2453,8 +2654,89 @@ fn move_after_repl_input(
     Ok(())
 }
 
-fn repl_render_rows(prefix: &str, lines: &[String], has_suggestions: bool) -> u16 {
-    repl_prompt_rows_for_cols(prefix, lines, terminal_cols()) + u16::from(has_suggestions)
+fn replace_repl_input_with_user_echo(
+    stdout: &mut io::Stdout,
+    input_row: u16,
+    rendered_rows: u16,
+    mode: AgentMode,
+    input: &str,
+) -> Result<()> {
+    let cols = terminal_cols();
+    let echo_lines = submitted_echo_lines(mode, input.trim_end(), cols);
+    let echo_rows = echo_lines.len().min(u16::MAX as usize) as u16;
+    let rows_to_clear = rendered_rows.max(echo_rows).max(1);
+    for row_offset in 0..rows_to_clear {
+        queue!(
+            stdout,
+            MoveTo(0, input_row.saturating_add(row_offset)),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
+    for (offset, line) in echo_lines.iter().enumerate() {
+        queue!(
+            stdout,
+            MoveTo(
+                0,
+                input_row.saturating_add(offset.min(u16::MAX as usize) as u16)
+            ),
+            Print(line)
+        )?;
+    }
+    queue!(
+        stdout,
+        MoveTo(0, input_row.saturating_add(echo_rows).saturating_add(1))
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn submitted_echo_lines(mode: AgentMode, input: &str, cols: usize) -> Vec<String> {
+    let max_text_width = cols.saturating_sub(3).max(1);
+    let bar = submitted_echo_bar(mode);
+    let mut output = Vec::new();
+    output.push(bar.clone());
+    for line in input.split('\n') {
+        let mut chunks = wrap_visible_width(line, max_text_width);
+        if chunks.is_empty() {
+            chunks.push(String::new());
+        }
+        for chunk in chunks {
+            output.push(format!("{bar} {}", colorize_repl_placeholders(&chunk)));
+        }
+    }
+    output.push(bar);
+    output
+}
+
+fn submitted_echo_bar(mode: AgentMode) -> String {
+    match mode {
+        AgentMode::Normal => "\x1b[1m\x1b[34m┃\x1b[0m".to_string(),
+        AgentMode::Plan => "\x1b[1m\x1b[35m┃\x1b[0m".to_string(),
+        AgentMode::Chat => "\x1b[1m\x1b[32m┃\x1b[0m".to_string(),
+    }
+}
+
+fn input_prompt_bar(mode: AgentMode) -> String {
+    format!("{} ", submitted_echo_bar(mode))
+}
+
+fn wrap_visible_width(value: &str, max_width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut width = 0usize;
+    for ch in value.chars() {
+        let char_width = visible_width(&ch.to_string());
+        if width > 0 && width.saturating_add(char_width) > max_width {
+            lines.push(std::mem::take(&mut current));
+            width = 0;
+        }
+        current.push(ch);
+        width = width.saturating_add(char_width);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn repl_prompt_rows(prefix: &str, lines: &[String]) -> u16 {
@@ -2892,15 +3174,6 @@ fn colorize_repl_placeholders(line: &str) -> String {
     }
     result.extend(&chars[last_end..]);
     result
-}
-
-fn colored_mode_label(mode: AgentMode) -> String {
-    let label = mode.label();
-    match mode {
-        AgentMode::Normal => format!("\x1b[1m\x1b[34m[{label}]\x1b[0m"),
-        AgentMode::Plan => format!("\x1b[1m\x1b[36m[{label}]\x1b[0m"),
-        AgentMode::Chat => format!("\x1b[1m\x1b[32m[{label}]\x1b[0m"),
-    }
 }
 
 fn repl_commands() -> [&'static str; 9] {
@@ -3402,17 +3675,15 @@ fn run_reset(paths: &MiyuPaths, scope: Option<&str>) -> Result<()> {
         memory.clear_pending_events()?;
     }
     tools::clear_aur_review_state(paths)?;
-    println!(
-        "{}",
-        if all {
-            t(
-                "cleared current conversation history and all memory",
-                "已清空当前会话历史与全部记忆",
-            )
-        } else {
-            t("cleared current conversation history", "已清空当前会话历史")
-        }
-    );
+    let message = if all {
+        t(
+            "cleared current conversation history and all memory",
+            "已清空当前会话历史与全部记忆",
+        )
+    } else {
+        t("cleared current conversation history", "已清空当前会话历史")
+    };
+    println!("\x1b[2m{message}\x1b[0m\n");
     Ok(())
 }
 
