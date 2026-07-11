@@ -29,6 +29,20 @@ bind \cj __miyu_insert_newline
 bind -M insert ctrl-j __miyu_insert_newline
 bind -M insert \cj __miyu_insert_newline
 
+function __miyu_wrap_fish_prompt
+    functions -q __miyu_original_fish_prompt; and return
+    functions -q fish_prompt; or fish_prompt >/dev/null 2>/dev/null
+    functions -q fish_prompt; or return
+
+    functions -c fish_prompt __miyu_original_fish_prompt
+    function fish_prompt
+        if set -q __miyu_pending_buffer
+            printf '\e[?25l'
+        end
+        __miyu_original_fish_prompt
+    end
+end
+
 function __miyu_replay_buffer
     set -l buffer $argv[1]
     set -l lines (string split \n -- "$buffer")
@@ -36,12 +50,22 @@ function __miyu_replay_buffer
         set -l prompt (fish_prompt | string collect -N)
         set -l prompt_lines (string split \n -- "$prompt")
         set -l prompt_col (math (string length --visible -- "$prompt_lines[-1]") + 1)
+        printf '\e[?25l'
         printf '\e[1A\e[%sG' $prompt_col
+        if not set -q fish_color_error; or not set_color $fish_color_error 2>/dev/null
+            set_color red
+        end
         printf '%s\n' "$lines[1]"
         for line in $lines[2..-1]
             printf '  %s\n' "$line"
         end
+        set_color normal
     end
+end
+
+function __miyu_restore_cursor
+    printf '\e[?25h'
+    set -e __miyu_cursor_hidden
 end
 
 function __miyu_on_prompt --on-event fish_prompt
@@ -51,8 +75,13 @@ function __miyu_on_prompt --on-event fish_prompt
     set -e __miyu_pending_buffer
     set -e __miyu_image_counter
 
+    trap __miyu_restore_cursor INT TERM EXIT
     __miyu_replay_buffer "$buffer"
     printf '%s' "$buffer" | miyu --shell-intercept --shell fish --stdin
+    set -l miyu_status $status
+    trap - INT TERM EXIT
+    __miyu_restore_cursor
+    return $miyu_status
 end
 
 function __miyu_execute_or_continue
@@ -117,8 +146,11 @@ function __miyu_accept_line
     end
 
     set -e __miyu_image_counter
+    __miyu_wrap_fish_prompt
+    set -g __miyu_cursor_hidden 1
     set -g __miyu_pending_buffer "$buffer"
     commandline -b -- ""
+    printf '\e[?25l'
     commandline -f execute
 end
 
@@ -200,11 +232,21 @@ mod tests {
     fn fish_hook_defines_enter_binding() {
         let hook = hook();
         assert!(hook.contains("__miyu_accept_line"));
+        assert!(hook.contains("__miyu_wrap_fish_prompt"));
+        assert!(hook.contains("functions -c fish_prompt __miyu_original_fish_prompt"));
+        assert!(hook.contains("if set -q __miyu_pending_buffer"));
         assert!(hook.contains("__miyu_replay_buffer"));
         assert!(hook.contains("__miyu_on_prompt --on-event fish_prompt"));
         assert!(!hook.contains("        fish_prompt\n"));
         assert!(hook.contains("string length --visible"));
+        assert!(hook.contains("printf '\\e[?25l'"));
         assert!(hook.contains("printf '\\e[1A\\e[%sG' $prompt_col"));
+        assert!(hook.contains("not set_color $fish_color_error 2>/dev/null"));
+        assert!(hook.contains("set_color normal"));
+        assert!(hook.contains("printf '\\e[?25h'"));
+        assert!(hook.contains("set -g __miyu_cursor_hidden 1"));
+        assert!(hook.contains("set -e __miyu_cursor_hidden"));
+        assert!(hook.contains("return $miyu_status"));
         assert!(hook.contains("__miyu_execute_or_continue"));
         assert!(hook.contains("__miyu_fish_known_command"));
         assert!(hook.contains("type -q -- \"$command\""));
