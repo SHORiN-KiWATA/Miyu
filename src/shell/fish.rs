@@ -104,6 +104,7 @@ end
 function __miyu_accept_line
     status is-interactive; or return
 
+    commandline -f expand-abbr
     set -l buffer (commandline -b | string collect -N)
     set -l trimmed (string trim -- "$buffer")
     if test -z "$trimmed"
@@ -212,6 +213,7 @@ mod tests {
         assert!(hook.contains("set -g __miyu_pending_buffer \"$buffer\""));
         assert!(hook.contains("commandline -b -- \"\""));
         assert!(hook.contains("commandline -f execute"));
+        assert!(hook.contains("commandline -f expand-abbr"));
         assert!(!hook.contains("cancel-commandline"));
         assert!(hook.contains("commandline -b | string collect -N"));
         assert!(hook.contains("--shell-intercept --shell fish --stdin"));
