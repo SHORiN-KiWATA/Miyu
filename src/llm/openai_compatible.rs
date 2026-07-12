@@ -2787,7 +2787,8 @@ mod tests {
         assert_eq!(provider.protocol, "anthropic");
         assert_eq!(provider.base_url, "https://api.anthropic.com/v1");
         assert_eq!(provider.api_key.as_deref(), Some("$env:ANTHROPIC_API_KEY"));
-        assert!(provider.default_model.starts_with("claude-"));
+        assert!(provider.models.is_empty());
+        assert!(provider.default_model.is_empty());
     }
 
     #[test]

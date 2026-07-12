@@ -900,10 +900,10 @@ impl ProviderConfig {
             base_url: "https://api.anthropic.com/v1".to_string(),
             protocol: "anthropic".to_string(),
             api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
-            models: vec!["claude-sonnet-4-5".to_string()],
+            models: Vec::new(),
             model_context_window: HashMap::new(),
             model_modalities: HashMap::new(),
-            default_model: "claude-sonnet-4-5".to_string(),
+            default_model: String::new(),
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
@@ -1000,6 +1000,15 @@ impl ProviderConfig {
     pub fn is_opencode_zen(&self) -> bool {
         matches!(self.id.as_str(), OPENCODE_PROVIDER_ID | "opencodezen")
             && self.base_url.trim_end_matches('/') == OPENCODE_ZEN_BASE_URL
+    }
+
+    fn is_legacy_default_anthropic_model(&self) -> bool {
+        self.id == "anthropic"
+            && self.base_url.trim_end_matches('/') == "https://api.anthropic.com/v1"
+            && self.protocol == "anthropic"
+            && self.api_key.as_deref() == Some("$env:ANTHROPIC_API_KEY")
+            && self.models == ["claude-sonnet-4-5"]
+            && self.default_model == "claude-sonnet-4-5"
     }
 }
 
@@ -1112,6 +1121,12 @@ impl AppConfig {
         }
         if self.active_provider == "opencodezen" {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();
+        }
+        for provider in &mut self.providers {
+            if provider.is_legacy_default_anthropic_model() {
+                provider.models.clear();
+                provider.default_model.clear();
+            }
         }
         if let Some(active_models) = &mut self.active_provider_models {
             for active in active_models {
@@ -2016,8 +2031,45 @@ mod tests {
     fn default_anthropic_provider_uses_family_context_window_fallback() {
         let mut config = AppConfig::default();
         config.active_provider = "anthropic".to_string();
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == "anthropic")
+            .unwrap();
+        provider.models = vec!["claude-sonnet-4-5".to_string()];
+        provider.default_model = "claude-sonnet-4-5".to_string();
 
         assert_eq!(config.active_context_window().unwrap(), Some(200_000));
+    }
+
+    #[test]
+    fn default_anthropic_provider_has_no_implicit_active_model() {
+        let provider = ProviderConfig::default_anthropic();
+
+        assert!(provider.models.is_empty());
+        assert!(provider.default_model.is_empty());
+    }
+
+    #[test]
+    fn normalizes_legacy_anthropic_template_model() {
+        let mut config = AppConfig::default();
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == "anthropic")
+            .unwrap();
+        provider.models = vec!["claude-sonnet-4-5".to_string()];
+        provider.default_model = "claude-sonnet-4-5".to_string();
+
+        config.normalize_builtin_providers();
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == "anthropic")
+            .unwrap();
+
+        assert!(provider.models.is_empty());
+        assert!(provider.default_model.is_empty());
     }
 
     #[test]
