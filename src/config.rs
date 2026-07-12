@@ -879,8 +879,6 @@ impl ProviderConfig {
     }
 
     pub fn default_anthropic() -> Self {
-        let mut model_context_window = HashMap::new();
-        model_context_window.insert("claude-sonnet-4-5".to_string(), 200_000);
         Self {
             id: "anthropic".to_string(),
             display_name: "Anthropic".to_string(),
@@ -888,7 +886,7 @@ impl ProviderConfig {
             protocol: "anthropic".to_string(),
             api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
             models: vec!["claude-sonnet-4-5".to_string()],
-            model_context_window,
+            model_context_window: HashMap::new(),
             model_modalities: HashMap::new(),
             default_model: "claude-sonnet-4-5".to_string(),
             timeout_seconds: default_timeout(),
@@ -1298,7 +1296,9 @@ impl AppConfig {
         if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
             return Ok(Some(OPENCODE_DEFAULT_CONTEXT_WINDOW));
         }
-        Ok(crate::models_cache::context_window(model).map(|w| w as usize))
+        Ok(crate::models_cache::context_window(model)
+            .map(|w| w as usize)
+            .or_else(|| default_context_window_for_provider_model(provider, model)))
     }
 
     pub fn system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
@@ -1535,6 +1535,26 @@ fn default_anthropic_max_tokens() -> u32 {
 
 fn is_default_anthropic_max_tokens(value: &u32) -> bool {
     *value == default_anthropic_max_tokens()
+}
+
+fn default_context_window_for_provider_model(
+    provider: &ProviderConfig,
+    model: &str,
+) -> Option<usize> {
+    let provider_id = provider.id.to_ascii_lowercase();
+    let display_name = provider.display_name.to_ascii_lowercase();
+    let base_url = provider.base_url.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    let is_anthropic = provider_id == "anthropic"
+        || provider_id.contains("anthropic")
+        || display_name.contains("anthropic")
+        || base_url.contains("api.anthropic.com")
+        || base_url.contains("anthropic.com/v1");
+
+    if is_anthropic && model.starts_with("claude-") {
+        return Some(200_000);
+    }
+    None
 }
 
 fn default_provider_protocol() -> String {
@@ -1839,13 +1859,18 @@ mod tests {
     }
 
     #[test]
-    fn default_anthropic_provider_has_context_window() {
+    fn default_anthropic_provider_uses_family_context_window_fallback() {
+        let mut config = AppConfig::default();
+        config.active_provider = "anthropic".to_string();
+
+        assert_eq!(config.active_context_window().unwrap(), Some(200_000));
+    }
+
+    #[test]
+    fn anthropic_template_does_not_hardcode_model_context_window() {
         let provider = ProviderConfig::default_anthropic();
 
-        assert_eq!(
-            provider.model_context_window.get(&provider.default_model),
-            Some(&200_000)
-        );
+        assert!(provider.model_context_window.is_empty());
     }
 
     #[test]
