@@ -5,9 +5,14 @@ use std::cell::OnceCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const CLIPBOARD_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const CLIPBOARD_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+static LAST_CLIPBOARD_CLEANUP: LazyLock<Mutex<Option<Instant>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 pub struct ClipboardImage {
     pub mime: String,
@@ -41,7 +46,7 @@ impl ClipboardImage {
     pub fn write_temp_file(&self, cache_dir: &std::path::Path, _index: usize) -> Result<PathBuf> {
         let dir = cache_dir.join("clipboard_images");
         std::fs::create_dir_all(&dir)?;
-        cleanup_clipboard_images(&dir);
+        cleanup_clipboard_images_throttled(&dir);
         let ext = self
             .mime
             .split('/')
@@ -282,6 +287,25 @@ pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
 
 pub fn cleanup_clipboard_images(dir: &Path) {
     cleanup_clipboard_images_with_max(dir, CLIPBOARD_CACHE_MAX_BYTES);
+}
+
+fn cleanup_clipboard_images_throttled(dir: &Path) {
+    let should_cleanup = LAST_CLIPBOARD_CLEANUP
+        .lock()
+        .map(|mut last| {
+            let now = Instant::now();
+            let due = last
+                .map(|previous| now.duration_since(previous) >= CLIPBOARD_CLEANUP_INTERVAL)
+                .unwrap_or(true);
+            if due {
+                *last = Some(now);
+            }
+            due
+        })
+        .unwrap_or(true);
+    if should_cleanup {
+        cleanup_clipboard_images(dir);
+    }
 }
 
 fn cleanup_clipboard_images_with_max(dir: &Path, max_bytes: u64) {

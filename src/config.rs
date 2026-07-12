@@ -12,8 +12,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub active_provider: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_provider_models: Vec<ActiveProviderModelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_provider_models: Option<Vec<ActiveProviderModelConfig>>,
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub context: ContextConfig,
@@ -530,7 +530,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             active_provider: OPENCODE_PROVIDER_ID.to_string(),
-            active_provider_models: Vec::new(),
+            active_provider_models: None,
             providers: ProviderConfig::default_templates(),
             context: ContextConfig::default(),
             tools: ToolsConfig::default(),
@@ -1113,9 +1113,11 @@ impl AppConfig {
         if self.active_provider == "opencodezen" {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();
         }
-        for active in &mut self.active_provider_models {
-            if active.provider_id == "opencodezen" {
-                active.provider_id = OPENCODE_PROVIDER_ID.to_string();
+        if let Some(active_models) = &mut self.active_provider_models {
+            for active in active_models {
+                if active.provider_id == "opencodezen" {
+                    active.provider_id = OPENCODE_PROVIDER_ID.to_string();
+                }
             }
         }
         if self.plugins.vision.vision_provider_id == "opencodezen" {
@@ -1299,8 +1301,8 @@ impl AppConfig {
     }
 
     pub fn active_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
-        if self.active_provider_models.is_empty() {
-            return self
+        match &self.active_provider_models {
+            None => self
                 .provider(None)
                 .ok()
                 .filter(|provider| !provider.default_model.trim().is_empty())
@@ -1311,32 +1313,32 @@ impl AppConfig {
                         model: provider.default_model.clone(),
                     }]
                 })
-                .unwrap_or_default();
-        }
-        self.active_provider_models
-            .iter()
-            .filter_map(|active| {
-                let provider = self.provider(Some(active.provider_id.trim())).ok()?;
-                let model = active.model.trim();
-                (!model.is_empty()).then(|| ProviderModelChoice {
-                    provider_id: provider.id.clone(),
-                    provider_name: provider.display_name.clone(),
-                    model: model.to_string(),
+                .unwrap_or_default(),
+            Some(active_models) => active_models
+                .iter()
+                .filter_map(|active| {
+                    let provider = self.provider(Some(active.provider_id.trim())).ok()?;
+                    let model = active.model.trim();
+                    (!model.is_empty()).then(|| ProviderModelChoice {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.display_name.clone(),
+                        model: model.to_string(),
+                    })
                 })
-            })
-            .collect()
+                .collect(),
+        }
     }
 
     pub fn is_active_provider_model(&self, provider_id: &str, model: &str) -> bool {
-        if self.active_provider_models.is_empty() {
-            return self
+        match &self.active_provider_models {
+            None => self
                 .provider(None)
                 .map(|provider| provider.id == provider_id && provider.default_model == model)
-                .unwrap_or(false);
+                .unwrap_or(false),
+            Some(active_models) => active_models
+                .iter()
+                .any(|active| active.provider_id == provider_id && active.model == model),
         }
-        self.active_provider_models
-            .iter()
-            .any(|active| active.provider_id == provider_id && active.model == model)
     }
 
     pub fn toggle_active_provider_model(&mut self, provider_id: &str, model: &str) -> Result<bool> {
@@ -1344,25 +1346,26 @@ impl AppConfig {
             bail!("model cannot be empty");
         }
         self.provider(Some(provider_id))?;
-        if self.active_provider_models.is_empty() {
-            if let Ok(provider) = self.provider(None) {
-                if !provider.default_model.trim().is_empty() {
-                    self.active_provider_models.push(ActiveProviderModelConfig {
-                        provider_id: provider.id.clone(),
-                        model: provider.default_model.clone(),
-                    });
-                }
-            }
+        if self.active_provider_models.is_none() {
+            self.active_provider_models = Some(
+                self.active_provider_model_choices()
+                    .into_iter()
+                    .map(|choice| ActiveProviderModelConfig {
+                        provider_id: choice.provider_id,
+                        model: choice.model,
+                    })
+                    .collect(),
+            );
         }
-        if let Some(index) = self
-            .active_provider_models
+        let active_models = self.active_provider_models.get_or_insert_with(Vec::new);
+        if let Some(index) = active_models
             .iter()
             .position(|active| active.provider_id == provider_id && active.model == model)
         {
-            self.active_provider_models.remove(index);
+            active_models.remove(index);
             return Ok(false);
         }
-        self.active_provider_models.push(ActiveProviderModelConfig {
+        active_models.push(ActiveProviderModelConfig {
             provider_id: provider_id.to_string(),
             model: model.to_string(),
         });
@@ -1380,10 +1383,10 @@ impl AppConfig {
         }
         self.active_provider = provider.id.clone();
         provider.default_model = model.to_string();
-        self.active_provider_models = vec![ActiveProviderModelConfig {
+        self.active_provider_models = Some(vec![ActiveProviderModelConfig {
             provider_id: provider.id.clone(),
             model: model.to_string(),
-        }];
+        }]);
         if !provider.models.iter().any(|item| item == model) {
             provider.models.push(model.to_string());
         }
@@ -1402,8 +1405,10 @@ impl AppConfig {
         provider.models.retain(|item| item != model);
         provider.model_context_window.remove(model);
         provider.model_modalities.remove(model);
-        self.active_provider_models
-            .retain(|active| !(active.provider_id == provider_id && active.model == model));
+        if let Some(active_models) = &mut self.active_provider_models {
+            active_models
+                .retain(|active| !(active.provider_id == provider_id && active.model == model));
+        }
         if provider.default_model == model {
             provider.default_model = provider.models.first().cloned().unwrap_or_default();
         }
@@ -1411,22 +1416,35 @@ impl AppConfig {
     }
 
     pub fn active_context_window(&self) -> Result<Option<usize>> {
-        let provider = self.provider(None)?;
-        let model = &provider.default_model;
-        if let Some(window) = provider
-            .model_context_window
-            .get(model)
-            .copied()
-            .filter(|&w| w > 0)
-        {
-            return Ok(Some(window));
+        let choices = self.active_provider_model_choices();
+        if choices.is_empty() {
+            return Ok(None);
         }
-        if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
-            return Ok(Some(OPENCODE_DEFAULT_CONTEXT_WINDOW));
+        let mut windows = Vec::new();
+        for choice in choices {
+            let provider = self.provider(Some(&choice.provider_id))?;
+            let model = &choice.model;
+            if let Some(window) = provider
+                .model_context_window
+                .get(model)
+                .copied()
+                .filter(|&w| w > 0)
+            {
+                windows.push(window);
+                continue;
+            }
+            if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
+                windows.push(OPENCODE_DEFAULT_CONTEXT_WINDOW);
+                continue;
+            }
+            if let Some(window) = crate::models_cache::context_window(model)
+                .map(|w| w as usize)
+                .or_else(|| default_context_window_for_provider_model(provider, model))
+            {
+                windows.push(window);
+            }
         }
-        Ok(crate::models_cache::context_window(model)
-            .map(|w| w as usize)
-            .or_else(|| default_context_window_for_provider_model(provider, model)))
+        Ok(windows.into_iter().min())
     }
 
     pub fn system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
@@ -1575,12 +1593,12 @@ impl AppConfig {
     pub fn upsert_provider(&mut self, provider: ProviderConfig) {
         self.active_provider = provider.id.clone();
         self.active_provider_models = if provider.default_model.trim().is_empty() {
-            Vec::new()
+            Some(Vec::new())
         } else {
-            vec![ActiveProviderModelConfig {
+            Some(vec![ActiveProviderModelConfig {
                 provider_id: provider.id.clone(),
                 model: provider.default_model.clone(),
-            }]
+            }])
         };
         match self
             .providers

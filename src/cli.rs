@@ -49,18 +49,19 @@ struct ReplTokenUsage {
 
 impl ReplFooterStatus {
     fn from_config(config: &AppConfig, session_tokens: u64) -> Self {
-        let provider = config.provider(None).ok();
-        let provider_id = provider
-            .map(|provider| provider.id.trim().to_string())
-            .filter(|provider| !provider.is_empty())
-            .unwrap_or_else(|| "-".to_string());
-        let model = provider
-            .map(|provider| provider.default_model.trim().to_string())
-            .filter(|model| !model.is_empty())
-            .unwrap_or_else(|| "-".to_string());
+        let active = config.active_provider_model_choices();
+        let (provider_id, model) = match active.as_slice() {
+            [] => ("-".to_string(), "None".to_string()),
+            [choice] => (choice.provider_id.clone(), choice.model.clone()),
+            _ => ("Mixed".to_string(), "Mixed".to_string()),
+        };
 
         Self {
-            model: short_model_name(&model, &provider_id),
+            model: if model == "Mixed" || model == "None" {
+                model
+            } else {
+                short_model_name(&model, &provider_id)
+            },
             provider: provider_id,
             thinking: None,
             token_usage: ReplTokenUsage {

@@ -1655,9 +1655,9 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
             .map(|choice| {
                 let marker = if config.is_active_provider_model(&choice.provider_id, &choice.model)
                 {
-                    "[active] "
+                    "[*] "
                 } else {
-                    ""
+                    "[ ] "
                 };
                 format!("{marker}{}", choice.label())
             })
@@ -1667,19 +1667,13 @@ fn select_active_provider(stdout: &mut io::Stdout, config: &mut AppConfig) -> Re
             " SELECT PROVIDER/MODEL ",
             &options,
             selected,
-            "[Enter]设为唯一当前 [Tab]激活/取消 [d]移除 [q]返回",
+            "[Tab]激活/取消 [Enter/q]确认 [d]移除",
         )?;
         match read_key()? {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter => {
-                config.set_active_provider_model(
-                    &choices[selected].provider_id,
-                    &choices[selected].model,
-                )?;
-                return Ok(());
-            }
+            KeyCode::Enter => return Ok(()),
             KeyCode::Tab => {
                 let choice = choices[selected].clone();
                 config.toggle_active_provider_model(&choice.provider_id, &choice.model)?;
