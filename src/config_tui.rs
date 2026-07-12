@@ -1867,21 +1867,19 @@ fn edit_settings(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> 
         Field::new("上下文到达上限后", config.context.on_overflow.clone())
             .choices(&["pop", "compact"]),
     ];
-    if run_form(stdout, " GLOBAL SETTINGS ", &mut fields)? {
-        config.tools.enabled = parse_bool_field(&fields[0].value)?;
-        config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
-        config.tools.loading_mode = normalize_tools_loading_mode(&fields[2].value);
-        config.tools.persist_loaded_tools = parse_bool_field(&fields[3].value)?;
-        config.skills.enabled = parse_bool_field(&fields[4].value)?;
-        config.skills.allow_command_execution = parse_bool_field(&fields[5].value)?;
-        config.display.reasoning = fields[6].value.trim().to_string();
-        config.display.tool_calls = fields[7].value.trim().to_string();
-        config.display.readable_tool_names = parse_bool_field(&fields[8].value)?;
-        config.display.show_token_usage = parse_bool_field(&fields[9].value)?;
-        config.display.mixed_model_endpoint_display =
-            parse_mixed_endpoint_display(&fields[10].value);
-        config.context.on_overflow = fields[11].value.trim().to_string();
-    }
+    run_form_without_buttons(stdout, " GLOBAL SETTINGS ", &mut fields)?;
+    config.tools.enabled = parse_bool_field(&fields[0].value)?;
+    config.tools.max_rounds = fields[1].value.trim().parse::<usize>()?;
+    config.tools.loading_mode = normalize_tools_loading_mode(&fields[2].value);
+    config.tools.persist_loaded_tools = parse_bool_field(&fields[3].value)?;
+    config.skills.enabled = parse_bool_field(&fields[4].value)?;
+    config.skills.allow_command_execution = parse_bool_field(&fields[5].value)?;
+    config.display.reasoning = fields[6].value.trim().to_string();
+    config.display.tool_calls = fields[7].value.trim().to_string();
+    config.display.readable_tool_names = parse_bool_field(&fields[8].value)?;
+    config.display.show_token_usage = parse_bool_field(&fields[9].value)?;
+    config.display.mixed_model_endpoint_display = parse_mixed_endpoint_display(&fields[10].value);
+    config.context.on_overflow = fields[11].value.trim().to_string();
     Ok(())
 }
 
@@ -1958,7 +1956,7 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
         .map(|field| field.value.chars().count())
         .collect::<Vec<_>>();
     loop {
-        draw_form(stdout, title, fields, selected, editing, &cursors)?;
+        draw_form(stdout, title, fields, selected, editing, &cursors, true)?;
         match read_key()? {
             KeyCode::Esc if editing => {
                 fcitx.leave_editing();
@@ -2022,6 +2020,98 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
             }
             KeyCode::Right | KeyCode::Char('l') if !editing && selected == fields.len() => {
                 selected = fields.len() + 1
+            }
+            KeyCode::Left if editing => cursors[selected] = cursors[selected].saturating_sub(1),
+            KeyCode::Right if editing => {
+                cursors[selected] =
+                    (cursors[selected] + 1).min(fields[selected].value.chars().count())
+            }
+            KeyCode::Home if editing => cursors[selected] = 0,
+            KeyCode::End if editing => cursors[selected] = fields[selected].value.chars().count(),
+            KeyCode::Backspace if editing => {
+                if cursors[selected] > 0 {
+                    remove_char_before_cursor(&mut fields[selected].value, &mut cursors[selected]);
+                }
+            }
+            KeyCode::Delete if editing => {
+                remove_char_at_cursor(&mut fields[selected].value, cursors[selected])
+            }
+            KeyCode::Char(char) if editing => {
+                insert_char_at_cursor(&mut fields[selected].value, &mut cursors[selected], char)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn run_form_without_buttons(
+    stdout: &mut io::Stdout,
+    title: &str,
+    fields: &mut [Field],
+) -> Result<()> {
+    let mut selected = 0usize;
+    let mut editing = false;
+    let mut fcitx = FcitxState::new();
+    let mut cursors = fields
+        .iter()
+        .map(|field| field.value.chars().count())
+        .collect::<Vec<_>>();
+    loop {
+        draw_form(stdout, title, fields, selected, editing, &cursors, false)?;
+        match read_key()? {
+            KeyCode::Esc if editing => {
+                fcitx.leave_editing();
+                editing = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') if !editing => return Ok(()),
+            KeyCode::Enter if editing => {
+                fcitx.leave_editing();
+                editing = false;
+            }
+            KeyCode::Enter if !editing && fields[selected].boolean => {
+                let value = select_bool(
+                    stdout,
+                    fields[selected].label,
+                    parse_bool_field(&fields[selected].value)?,
+                )?;
+                fields[selected].value = value.to_string();
+                cursors[selected] = fields[selected].value.chars().count();
+            }
+            KeyCode::Enter if !editing && fields[selected].modalities => {
+                fields[selected].value = select_multi_choice(
+                    stdout,
+                    fields[selected].label,
+                    &fields[selected].value,
+                    &["text", "image", "audio", "video", "pdf"]
+                        .iter()
+                        .map(|item| item.to_string())
+                        .collect::<Vec<_>>(),
+                )?;
+                cursors[selected] = fields[selected].value.chars().count();
+            }
+            KeyCode::Enter if !editing && !fields[selected].choices.is_empty() => {
+                fields[selected].value = select_choice(
+                    stdout,
+                    fields[selected].label,
+                    &fields[selected].value,
+                    &fields[selected].choices,
+                    fields[selected].empty_choice_label,
+                )?;
+                cursors[selected] = fields[selected].value.chars().count();
+            }
+            KeyCode::Enter if !editing && fields[selected].textarea => {
+                edit_textarea(stdout, &mut fields[selected].value)?;
+                return Ok(());
+            }
+            KeyCode::Enter if !editing => {
+                if !fields[selected].boolean {
+                    fcitx.enter_editing();
+                    editing = true;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if !editing => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') if !editing => {
+                selected = (selected + 1).min(fields.len().saturating_sub(1))
             }
             KeyCode::Left if editing => cursors[selected] = cursors[selected].saturating_sub(1),
             KeyCode::Right if editing => {
@@ -2482,6 +2572,7 @@ fn draw_form(
     selected: usize,
     editing: bool,
     cursors: &[usize],
+    show_buttons: bool,
 ) -> Result<()> {
     let (cols, rows) = terminal::size()?;
     let width = cols.saturating_sub(8).min(96).max(48);
@@ -2495,7 +2586,11 @@ fn draw_form(
     queue!(
         stdout,
         MoveTo(x + 2, y + 1),
-        Print("[j/k]移动 [Enter]编辑/打开编辑器 [s]确认 [q]取消")
+        Print(if show_buttons {
+            "[j/k]移动 [Enter]编辑/打开编辑器 [s]确认 [q]返回"
+        } else {
+            "[j/k]移动 [Enter]编辑/打开编辑器 [q]返回"
+        })
     )?;
     let mut cursor = None;
     for (index, field) in fields.iter().enumerate() {
@@ -2535,26 +2630,30 @@ fn draw_form(
             cursor = Some((cursor_x.min(x + width.saturating_sub(3)), row_y));
         }
     }
-    let button_y = y + fields.len() as u16 + 4;
-    draw_form_button(
-        stdout,
-        x + 2,
-        button_y,
-        " 保存 ",
-        selected == fields.len() && !editing,
-    )?;
-    draw_form_button(
-        stdout,
-        x + 14,
-        button_y,
-        " 取消 ",
-        selected == fields.len() + 1 && !editing,
-    )?;
+    if show_buttons {
+        let button_y = y + fields.len() as u16 + 4;
+        draw_form_button(
+            stdout,
+            x + 2,
+            button_y,
+            " 保存 ",
+            selected == fields.len() && !editing,
+        )?;
+        draw_form_button(
+            stdout,
+            x + 14,
+            button_y,
+            " 返回 ",
+            selected == fields.len() + 1 && !editing,
+        )?;
+    }
 
     let mode = if editing {
         "编辑中，Enter/Esc 结束编辑"
-    } else {
+    } else if show_buttons {
         "导航中，Enter 选择当前项"
+    } else {
+        "导航中，Enter 选择当前项，[q]返回"
     };
     queue!(
         stdout,
