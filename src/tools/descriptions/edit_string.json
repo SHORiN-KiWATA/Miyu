@@ -1,7 +1,7 @@
 {
   "name": "edit_string",
   "display_name": "精确编辑",
-  "description": "通过精确字符串匹配替换编辑文件。",
+  "description": "通过精确字符串匹配替换编辑文件。适合小范围单点修改；复杂编辑、多处修改或同一文件多处修改时优先使用 apply_patch。不要并行多次调用本工具修改同一文件。",
   "parameters": {
     "type": "object",
     "properties": {

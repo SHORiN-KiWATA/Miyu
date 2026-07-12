@@ -1,4 +1,5 @@
 mod alarm;
+mod apply_patch;
 mod archlinux;
 mod calculator;
 mod caniplayonlinux_query;
@@ -22,6 +23,7 @@ pub(crate) mod memes;
 mod memory;
 mod moegirl;
 mod package_advisor;
+mod patch_preview;
 mod protondb_query;
 mod registry;
 mod scripts;
@@ -102,6 +104,7 @@ fn readable_load_target_name(name: &str) -> String {
 fn builtin_readable_tool_name(name: &str) -> String {
     let result: &str = match name {
         "run_command" => "运行命令",
+        "apply_patch" => "应用补丁",
         "task" => "子代理任务",
         "read_file" => "读取文件",
         "write_file" => "写入文件",
@@ -197,6 +200,7 @@ pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
 pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     default_tools::register(&mut registry, true);
+    apply_patch::register(&mut registry);
     write::register(&mut registry);
     edit_replace::register(&mut registry);
     todowrite::register(&mut registry);

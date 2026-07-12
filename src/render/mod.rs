@@ -375,6 +375,33 @@ impl StreamRenderer {
     }
 
     pub fn write_tool_progress(&mut self, name: &str, message: &str) -> Result<()> {
+        if let Some(phase) = message.strip_prefix("__tool_phase__") {
+            if self.plain {
+                let mut stdout = io::stdout();
+                writeln!(stdout, "{phase}")?;
+                stdout.flush()?;
+            } else if self.wait_spinner.is_some() {
+                self.set_waiting_phase(phase.to_string());
+                self.tick_spinner()?;
+            } else {
+                self.render_summary_line(phase, SummaryStyle::Tool)?;
+            }
+            return Ok(());
+        }
+        if let Some(json) = message.strip_prefix("__patch_preview__") {
+            self.stop_waiting()?;
+            self.end_subagent_stream_line()?;
+            self.end_active_stream_line()?;
+            self.finalize_reasoning_summary()?;
+            if self.summary_line_active {
+                self.clear_summary_lines()?;
+            }
+            let mut stdout = io::stdout();
+            if write_patch_result(&mut stdout, json)? {
+                stdout.flush()?;
+            }
+            return Ok(());
+        }
         if self.plain {
             return Ok(());
         }
@@ -612,7 +639,6 @@ impl StreamRenderer {
                     writeln!(stdout)?;
                 }
                 execute!(stdout, SetForegroundColor(Color::Green))?;
-                writeln!(stdout)?;
             }
             ChatStreamKind::Content => {
                 if self.mode == Some(ChatStreamKind::Reasoning) {
@@ -856,7 +882,7 @@ impl StreamRenderer {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("{}: {parts}", t("tools", "工具"))
+        self.tool_summary_with_prefix(parts)
     }
 
     fn tool_summary_header(&self) -> String {
@@ -869,7 +895,21 @@ impl StreamRenderer {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("{}: {parts}", t("tools", "工具"))
+        self.tool_summary_with_prefix(parts)
+    }
+
+    fn tool_summary_with_prefix(&self, parts: String) -> String {
+        if self.tool_stats.len() == 1
+            && self
+                .tool_stats
+                .keys()
+                .next()
+                .is_some_and(|name| is_subagent_tool(name))
+        {
+            parts
+        } else {
+            format!("~ {parts}")
+        }
     }
 
     fn tool_summary_progress(&self) -> Option<String> {
@@ -2058,6 +2098,83 @@ fn write_tool_payload(stdout: &mut io::Stdout, label: &str, payload: &str) -> Re
     Ok(())
 }
 
+fn write_patch_result(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
+    let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
+        return Ok(false);
+    };
+    let path = value.get("path").and_then(Value::as_str).unwrap_or("file");
+    let diff = value.get("diff").and_then(Value::as_str).unwrap_or("");
+    if diff.trim().is_empty() {
+        return Ok(false);
+    }
+    write!(stdout, "{}", render_patch_diff(path, diff))?;
+    Ok(true)
+}
+
+fn render_patch_diff(path: &str, diff: &str) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "\x1b[2m{}  \x1b[38;5;250m{path}\x1b[0m\n\n",
+        t("Modified", "已修改")
+    ));
+
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    for raw_line in diff.lines() {
+        if raw_line.starts_with("--- ") || raw_line.starts_with("+++ ") {
+            continue;
+        }
+        if raw_line.starts_with("@@") {
+            if let Some((old_start, new_start)) = parse_diff_hunk_header(raw_line) {
+                old_line = old_start;
+                new_line = new_start;
+            }
+            if !output.ends_with("\n\n") {
+                output.push('\n');
+            }
+            continue;
+        }
+
+        let (line_no, sign, body, style) = if let Some(body) = raw_line.strip_prefix('-') {
+            let line_no = old_line;
+            old_line += 1;
+            (line_no, '-', body, "\x1b[48;5;52m\x1b[38;5;210m")
+        } else if let Some(body) = raw_line.strip_prefix('+') {
+            let line_no = new_line;
+            new_line += 1;
+            (line_no, '+', body, "\x1b[48;5;22m\x1b[38;5;157m")
+        } else if let Some(body) = raw_line.strip_prefix(' ') {
+            let line_no = new_line;
+            old_line += 1;
+            new_line += 1;
+            (line_no, ' ', body, "\x1b[38;5;245m")
+        } else {
+            (new_line, ' ', raw_line, "\x1b[38;5;245m")
+        };
+
+        output.push_str(&format!(
+            "\x1b[38;5;102m{line_no:>5}\x1b[0m {style}{sign} │ {body}\x1b[0m\n"
+        ));
+    }
+    output.push('\n');
+    output
+}
+
+fn parse_diff_hunk_header(header: &str) -> Option<(usize, usize)> {
+    let mut parts = header.split_whitespace();
+    parts.next()?;
+    let old_part = parts.next()?.trim_start_matches('-');
+    let new_part = parts.next()?.trim_start_matches('+');
+    Some((
+        parse_diff_range_start(old_part)?,
+        parse_diff_range_start(new_part)?,
+    ))
+}
+
+fn parse_diff_range_start(value: &str) -> Option<usize> {
+    value.split(',').next()?.parse().ok()
+}
+
 fn write_todo_table(stdout: &mut io::Stdout, output: &str) -> Result<bool> {
     let Ok(value) = serde_json::from_str::<Value>(output.trim()) else {
         return Ok(false);
@@ -2127,10 +2244,82 @@ fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or(arguments)
         .trim();
-    writeln!(stdout, "\x1b[2m,-- {}\x1b[0m", t("command", "命令"))?;
-    writeln!(stdout, "\x1b[33m$ {command}\x1b[0m")?;
-    writeln!(stdout, "\x1b[2m`--\x1b[0m")?;
+    let total_lines = command.lines().count();
+    let total_chars = command.chars().count();
+    if total_lines > 1 {
+        if let Some(preview) = script_command_preview(command, 80) {
+            writeln!(
+                stdout,
+                "\x1b[2m~ {}\x1b[0m \x1b[33m{preview}\x1b[0m",
+                t("run script", "运行脚本")
+            )?;
+        } else {
+            writeln!(stdout, "\x1b[2m~ {}\x1b[0m", t("run script", "运行脚本"))?;
+        }
+        writeln!(
+            stdout,
+            "\x1b[2m  ↳ {total_lines} {} · {total_chars} {}\x1b[0m",
+            t("lines", "行"),
+            t("chars", "字符")
+        )?;
+    } else {
+        let preview = command_preview(command, 120);
+        writeln!(
+            stdout,
+            "\x1b[2m~ {}\x1b[0m \x1b[33m{preview}\x1b[0m",
+            t("run command", "运行命令")
+        )?;
+        if total_chars > 120 {
+            writeln!(
+                stdout,
+                "\x1b[2m  ↳ {total_chars} {}\x1b[0m",
+                t("chars", "字符")
+            )?;
+        }
+    }
     Ok(())
+}
+
+fn script_command_preview(command: &str, max_chars: usize) -> Option<String> {
+    command
+        .lines()
+        .map(str::trim)
+        .find(|line| is_meaningful_script_preview_line(line))
+        .map(|line| command_preview(line, max_chars))
+}
+
+fn is_meaningful_script_preview_line(line: &str) -> bool {
+    if line.is_empty() || line.starts_with('#') {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("echo ") || lower.starts_with("printf ") {
+        let text = lower
+            .trim_start_matches("echo")
+            .trim_start_matches("printf")
+            .trim()
+            .trim_matches(';')
+            .trim_matches('"')
+            .trim_matches('\'');
+        return !text
+            .chars()
+            .all(|ch| matches!(ch, '=' | '-' | '*' | '_' | '─' | '━' | '═'));
+    }
+    true
+}
+
+fn command_preview(command: &str, max_chars: usize) -> String {
+    let first_line = command.lines().next().unwrap_or(command).trim();
+    if first_line.chars().count() <= max_chars {
+        return first_line.to_string();
+    }
+    format!(
+        "{}...",
+        first_line
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect::<String>()
+    )
 }
 
 fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<()> {
@@ -2686,8 +2875,77 @@ mod tests {
 
         assert_eq!(
             renderer.tool_summary_text(),
-            "工具: Linux 游戏兼容性调查 ok\n✓ 工具调用 1 次　消耗 Token 2.3K"
+            "Linux 游戏兼容性调查 ok\n✓ 工具调用 1 次　消耗 Token 2.3K"
         );
+    }
+
+    #[test]
+    fn script_preview_skips_decorative_echo_lines() {
+        let command = "echo \"════════════════════════════════\"\ncargo test\necho done";
+        assert_eq!(
+            script_command_preview(command, 120).as_deref(),
+            Some("cargo test")
+        );
+    }
+
+    #[test]
+    fn script_preview_omits_all_decorative_scripts() {
+        let command = "echo \"════════\"\nprintf \"----\"";
+        assert!(script_command_preview(command, 120).is_none());
+    }
+
+    #[test]
+    fn task_summary_omits_tool_prefix() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+        );
+        renderer.tool_stats.insert(
+            "task".to_string(),
+            ToolStats {
+                calls: 1,
+                ok: 0,
+                error: 0,
+                progress: None,
+                final_progress: None,
+            },
+        );
+
+        assert_eq!(renderer.tool_summary_header(), "子代理任务 运行中");
+    }
+
+    #[test]
+    fn all_subagent_summaries_omit_tool_prefix() {
+        for (name, display) in [
+            ("task", "子代理任务"),
+            ("deep_research", "深度研究"),
+            (
+                "deep_research_linux_game_compatibility",
+                "Linux 游戏兼容性调查",
+            ),
+            ("linux_input_method_diagnose", "输入法诊断"),
+        ] {
+            let mut renderer = StreamRenderer::new(
+                ReasoningDisplayMode::Summary,
+                ToolCallDisplayMode::Summary,
+                true,
+                true,
+            );
+            renderer.tool_stats.insert(
+                name.to_string(),
+                ToolStats {
+                    calls: 1,
+                    ok: 0,
+                    error: 0,
+                    progress: None,
+                    final_progress: None,
+                },
+            );
+
+            assert_eq!(renderer.tool_summary_header(), format!("{display} 运行中"));
+        }
     }
 
     #[test]

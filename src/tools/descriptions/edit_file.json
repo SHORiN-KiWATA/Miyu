@@ -1,7 +1,7 @@
 {
   "name": "edit_file",
   "display_name": "编辑文件",
-  "description": "按 1 起始的闭区间行号替换现有 UTF-8 文件内容。应先用 read_file 确认准确行号。",
+  "description": "按 1 起始的闭区间行号替换现有 UTF-8 文件内容。应先用 read_file 确认准确行号。复杂编辑、多处修改或同一文件多处修改时优先使用 apply_patch。",
   "parameters": {
     "type": "object",
     "properties": {

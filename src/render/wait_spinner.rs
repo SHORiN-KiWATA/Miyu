@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn render_frame_braille_has_phase() {
-        let spinner = make_spinner("工具: 输入法诊断×1 运行中", None, SpinnerStyle::Braille);
+        let spinner = make_spinner("~ 输入法诊断×1 运行中", None, SpinnerStyle::Braille);
 
         let (frame, lines) = render_frame(0, &spinner);
 
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn render_frame_with_sub_phase_produces_two_lines() {
         let spinner = make_spinner(
-            "工具: 输入法诊断×1 运行中",
+            "~ 输入法诊断×1 运行中",
             Some("第 1 轮：诊断中"),
             SpinnerStyle::Scanner,
         );

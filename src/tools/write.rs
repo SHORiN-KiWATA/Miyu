@@ -1,11 +1,12 @@
-use super::{ToolRegistry, ToolSpec};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::i18n::text as t;
+use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "write_file",
         t(
             "Write content to a file, creating it if it does not exist or overwriting if it does. Supports absolute, workspace-relative, and ~/ paths.",
@@ -26,11 +27,11 @@ pub fn register(registry: &mut ToolRegistry) {
             "required": ["path", "content"],
             "additionalProperties": false
         }),
-        |args| async move { write_file(args) },
+        |args, progress| async move { write_file(args, progress) },
     ).writes());
 }
 
-fn write_file(args: Value) -> Result<String> {
+fn write_file(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
     let content = args
         .get("content")
@@ -39,19 +40,21 @@ fn write_file(args: Value) -> Result<String> {
     let content = content.to_string();
 
     let existed = path.exists();
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    std::fs::create_dir_all(parent)?;
-
-    let temp = tempfile::NamedTempFile::new_in(parent)?;
-    std::fs::write(temp.path(), content.as_bytes())?;
-    temp.persist(&path)?;
-
-    Ok(serde_json::to_string_pretty(&json!({
-        "ok": true,
-        "path": path.display().to_string(),
-        "created": !existed,
-        "overwritten": existed,
-    }))?)
+    let original = if existed {
+        std::fs::read_to_string(&path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    write_with_patch_preview(
+        &path,
+        &original,
+        &content,
+        &progress,
+        serde_json::Map::from_iter([
+            ("created".to_string(), json!(!existed)),
+            ("overwritten".to_string(), json!(existed)),
+        ]),
+    )
 }
 
 fn path_arg(args: &Value, key: &str) -> Result<PathBuf> {
@@ -91,14 +94,18 @@ mod tests {
     fn write_creates_new_file() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("new.txt");
-        let result = write_file(json!({
-            "path": path.display().to_string(),
-            "content": "hello world\n"
-        }))
+        let result = write_file(
+            json!({
+                "path": path.display().to_string(),
+                "content": "hello world\n"
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["ok"], true);
         assert_eq!(data["created"], true);
+        assert!(data.get("diff").is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world\n");
     }
 
@@ -107,10 +114,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("existing.txt");
         std::fs::write(&path, "old content\n").unwrap();
-        let result = write_file(json!({
-            "path": path.display().to_string(),
-            "content": "new content\n"
-        }))
+        let result = write_file(
+            json!({
+                "path": path.display().to_string(),
+                "content": "new content\n"
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["ok"], true);
@@ -122,10 +132,13 @@ mod tests {
     fn write_creates_parent_dirs() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("a/b/c/file.txt");
-        let result = write_file(json!({
-            "path": path.display().to_string(),
-            "content": "nested\n"
-        }))
+        let result = write_file(
+            json!({
+                "path": path.display().to_string(),
+                "content": "nested\n"
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["ok"], true);

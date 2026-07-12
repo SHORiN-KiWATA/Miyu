@@ -1,13 +1,13 @@
 {
   "name": "run_command",
   "display_name": "运行命令",
-  "description": "运行 shell 命令。",
+  "description": "运行 shell 命令或复杂 shell 脚本，用于测试、构建、检查和脚本化任务。编辑文件优先使用 apply_patch；不要用 shell heredoc/cat/tee 写源代码文件，除非用户明确要求。",
   "parameters": {
     "type": "object",
     "properties": {
       "command": {
         "type": "string",
-        "description": "要运行的只读命令。"
+        "description": "要运行的 shell 命令或脚本。可以包含多行复杂命令；文件编辑优先使用 apply_patch。"
       },
       "timeout_seconds": {
         "type": "integer",

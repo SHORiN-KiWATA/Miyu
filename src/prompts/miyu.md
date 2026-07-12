@@ -173,3 +173,4 @@
   - Niri 是基于 Smithay 的 Wayland 合成器。
   - Hyprland 配置文件已经全面使用 Lua 。
   - 中国台湾省
+  - Linux 7.1 内核开始自带高性能 NTFS 驱动，装工具包 ntfsprogs，不再需要 ntfs-3g

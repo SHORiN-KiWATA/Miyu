@@ -1,11 +1,12 @@
-use super::{ToolRegistry, ToolSpec};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::i18n::text as t;
+use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "edit_string",
         t(
             "Edit a file by replacing an exact string match. Fails if oldString is not found or found multiple times (unless replaceAll). Must differ from newString.",
@@ -35,11 +36,11 @@ pub fn register(registry: &mut ToolRegistry) {
             "required": ["path", "old_string", "new_string"],
             "additionalProperties": false
         }),
-        |args| async move { edit_string(args) },
+        |args, progress| async move { edit_string(args, progress) },
     ).writes());
 }
 
-fn edit_string(args: Value) -> Result<String> {
+fn edit_string(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
     let old_string = args
         .get("old_string")
@@ -82,16 +83,16 @@ fn edit_string(args: Value) -> Result<String> {
         original.replacen(old_string, new_string, 1)
     };
 
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let temp = tempfile::NamedTempFile::new_in(parent)?;
-    std::fs::write(temp.path(), updated.as_bytes())?;
-    temp.persist(&path)?;
-
-    Ok(serde_json::to_string_pretty(&json!({
-        "ok": true,
-        "path": path.display().to_string(),
-        "replacements": if replace_all { count } else { 1 },
-    }))?)
+    write_with_patch_preview(
+        &path,
+        &original,
+        &updated,
+        &progress,
+        serde_json::Map::from_iter([(
+            "replacements".to_string(),
+            json!(if replace_all { count } else { 1 }),
+        )]),
+    )
 }
 
 fn count_occurrences(content: &str, search: &str) -> usize {
@@ -145,14 +146,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "foo bar baz\n").unwrap();
-        let result = edit_string(json!({
-            "path": path.display().to_string(),
-            "old_string": "bar",
-            "new_string": "BAR"
-        }))
+        let result = edit_string(
+            json!({
+                "path": path.display().to_string(),
+                "old_string": "bar",
+                "new_string": "BAR"
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["replacements"], 1);
+        assert!(data.get("diff").is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo BAR baz\n");
     }
 
@@ -161,12 +166,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "foo foo foo\n").unwrap();
-        let result = edit_string(json!({
-            "path": path.display().to_string(),
-            "old_string": "foo",
-            "new_string": "qux",
-            "replace_all": true
-        }))
+        let result = edit_string(
+            json!({
+                "path": path.display().to_string(),
+                "old_string": "foo",
+                "new_string": "qux",
+                "replace_all": true
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["replacements"], 3);
@@ -178,11 +186,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "hello world\n").unwrap();
-        let result = edit_string(json!({
-            "path": path.display().to_string(),
-            "old_string": "nonexistent",
-            "new_string": "found"
-        }));
+        let result = edit_string(
+            json!({
+                "path": path.display().to_string(),
+                "old_string": "nonexistent",
+                "new_string": "found"
+            }),
+            ToolProgress::default(),
+        );
         assert!(result.is_err());
     }
 
@@ -191,11 +202,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "a a a\n").unwrap();
-        let result = edit_string(json!({
-            "path": path.display().to_string(),
-            "old_string": "a",
-            "new_string": "b"
-        }));
+        let result = edit_string(
+            json!({
+                "path": path.display().to_string(),
+                "old_string": "a",
+                "new_string": "b"
+            }),
+            ToolProgress::default(),
+        );
         assert!(result.is_err());
     }
 
@@ -204,11 +218,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "same\n").unwrap();
-        let result = edit_string(json!({
-            "path": path.display().to_string(),
-            "old_string": "same",
-            "new_string": "same"
-        }));
+        let result = edit_string(
+            json!({
+                "path": path.display().to_string(),
+                "old_string": "same",
+                "new_string": "same"
+            }),
+            ToolProgress::default(),
+        );
         assert!(result.is_err());
     }
 
@@ -217,11 +234,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "line1\nline2\nline3\n").unwrap();
-        let _result = edit_string(json!({
-            "path": path.display().to_string(),
-            "old_string": "line2",
-            "new_string": "LINE TWO\nEXTRA"
-        }))
+        let _result = edit_string(
+            json!({
+                "path": path.display().to_string(),
+                "old_string": "line2",
+                "new_string": "LINE TWO\nEXTRA"
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),

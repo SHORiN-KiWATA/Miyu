@@ -1,5 +1,6 @@
-use super::{ToolRegistry, ToolSpec};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::i18n::text as t;
+use crate::tools::patch_preview::write_with_patch_preview;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -23,11 +24,11 @@ pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool) {
         json!({"type":"object","properties":{"command":{"type":"string","description": t("Command to run.", "要运行的命令。")},"timeout_seconds":{"type":"integer","description": t("Optional timeout in seconds.", "可选超时时间，单位秒。")}},"required":["command"],"additionalProperties":false}),
         move |args| async move { run_command(args, allow_command_execution).await },
     ).writes());
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "edit_file",
         t("Edit an existing UTF-8 file by replacing an inclusive 1-based line range. Use after read_file identifies exact line numbers.", "按 1 起始的闭区间行号替换现有 UTF-8 文件内容。应先用 read_file 确认准确行号。"),
         json!({"type":"object","properties":{"path":{"type":"string","description": t("Workspace-relative or absolute file path.", "工作区相对路径或绝对文件路径。")},"start_line":{"type":"integer","description": t("1-based first line to replace.", "要替换的第一行，1 起始。")},"end_line":{"type":"integer","description": t("1-based last line to replace, inclusive.", "要替换的最后一行，闭区间。")},"replacement":{"type":"string","description": t("Replacement text. May contain multiple lines. Empty text deletes the line range.", "替换文本，可包含多行；空文本会删除指定行范围。")}},"required":["path","start_line","end_line","replacement"],"additionalProperties":false}),
-        |args| async move { edit_file(args) },
+        |args, progress| async move { edit_file(args, progress) },
     ).writes());
     registry.register(ToolSpec::new(
         "trash_path",
@@ -293,7 +294,7 @@ fn read_file(args: Value) -> Result<String> {
     }))?)
 }
 
-fn edit_file(args: Value) -> Result<String> {
+fn edit_file(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
     ensure_editable_file_path(&path)?;
     let start_line = args
@@ -332,16 +333,16 @@ fn edit_file(args: Value) -> Result<String> {
     if had_trailing_newline && !updated.is_empty() {
         updated.push('\n');
     }
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temp = tempfile::NamedTempFile::new_in(parent)?;
-    std::fs::write(temp.path(), updated.as_bytes())?;
-    temp.persist(&path)?;
-    Ok(serde_json::to_string_pretty(&json!({
-        "ok": true,
-        "path": path.display().to_string(),
-        "old_line_count": old_line_count,
-        "new_line_count": lines.len()
-    }))?)
+    write_with_patch_preview(
+        &path,
+        &original,
+        &updated,
+        &progress,
+        serde_json::Map::from_iter([
+            ("old_line_count".to_string(), json!(old_line_count)),
+            ("new_line_count".to_string(), json!(lines.len())),
+        ]),
+    )
 }
 
 fn trash_path(args: Value) -> Result<String> {
@@ -547,11 +548,54 @@ fn ensure_readonly_command(command: &str) -> Result<()> {
 }
 
 fn command_output(output: std::process::Output) -> Result<String> {
-    let stdout = clip_output(&String::from_utf8_lossy(&output.stdout));
-    let stderr = clip_output(&String::from_utf8_lossy(&output.stderr));
-    Ok(serde_json::to_string_pretty(
-        &json!({"success": output.status.success(), "exit_code": output.status.code(), "stdout": stdout, "stderr": stderr}),
-    )?)
+    let stdout = clip_output_with_meta(&String::from_utf8_lossy(&output.stdout));
+    let stderr = clip_output_with_meta(&String::from_utf8_lossy(&output.stderr));
+    Ok(serde_json::to_string_pretty(&json!({
+        "success": output.status.success(),
+        "exit_code": output.status.code(),
+        "stdout": stdout.text,
+        "stderr": stderr.text,
+        "truncated": stdout.truncated || stderr.truncated,
+        "stdout_truncated": stdout.truncated,
+        "stderr_truncated": stderr.truncated,
+        "stdout_omitted_chars": stdout.omitted_chars,
+        "stderr_omitted_chars": stderr.omitted_chars,
+    }))?)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ClippedOutput {
+    text: String,
+    truncated: bool,
+    omitted_chars: usize,
+}
+
+fn clip_output_with_meta(value: &str) -> ClippedOutput {
+    let value = value.trim();
+    let total = value.chars().count();
+    if total <= MAX_COMMAND_OUTPUT_CHARS {
+        return ClippedOutput {
+            text: value.to_string(),
+            truncated: false,
+            omitted_chars: 0,
+        };
+    }
+    let omitted = total - MAX_COMMAND_OUTPUT_CHARS;
+    let tail = value
+        .chars()
+        .skip(omitted)
+        .collect::<String>()
+        .trim_start_matches('\n')
+        .to_string();
+    ClippedOutput {
+        text: format!(
+            "...[{} {omitted} {}]\n{tail}",
+            t("omitted", "已省略"),
+            t("chars, showing tail", "字符，显示尾部")
+        ),
+        truncated: true,
+        omitted_chars: omitted,
+    }
 }
 
 fn command_output_limited(output: std::process::Output, max_lines: usize) -> Result<String> {
@@ -561,26 +605,36 @@ fn command_output_limited(output: std::process::Output, max_lines: usize) -> Res
         .take(max_lines)
         .collect::<Vec<_>>()
         .join("\n");
-    let stderr = clip_output(&String::from_utf8_lossy(&output.stderr));
-    let truncated = stdout_raw.lines().nth(max_lines).is_some();
+    let stdout = clip_output_with_meta(&stdout);
+    let stderr = clip_output_with_meta(&String::from_utf8_lossy(&output.stderr));
+    let line_truncated = stdout_raw.lines().nth(max_lines).is_some();
     Ok(serde_json::to_string_pretty(&json!({
         "success": output.status.success(),
         "exit_code": output.status.code(),
-        "stdout": clip_output(&stdout),
-        "stderr": stderr,
-        "truncated": truncated,
+        "stdout": stdout.text,
+        "stderr": stderr.text,
+        "truncated": line_truncated || stdout.truncated || stderr.truncated,
+        "stdout_truncated": line_truncated || stdout.truncated,
+        "stderr_truncated": stderr.truncated,
+        "stdout_omitted_chars": stdout.omitted_chars,
+        "stderr_omitted_chars": stderr.omitted_chars,
         "max_results": max_lines
     }))?)
 }
 
 fn search_output_limited(output: std::process::Output, max_lines: usize) -> Result<String> {
     if output.status.code() == Some(1) && output.stdout.is_empty() {
+        let stderr = clip_output_with_meta(&String::from_utf8_lossy(&output.stderr));
         return Ok(serde_json::to_string_pretty(&json!({
             "success": true,
             "exit_code": 0,
             "stdout": "",
-            "stderr": clip_output(&String::from_utf8_lossy(&output.stderr)),
-            "truncated": false,
+            "stderr": stderr.text,
+            "truncated": stderr.truncated,
+            "stdout_truncated": false,
+            "stderr_truncated": stderr.truncated,
+            "stdout_omitted_chars": 0,
+            "stderr_omitted_chars": stderr.omitted_chars,
             "max_results": max_lines,
             "matches": 0,
             "note": "no matches"
@@ -773,23 +827,6 @@ fn max_results(args: &Value) -> usize {
         .clamp(1, 500) as usize
 }
 
-fn clip_output(value: &str) -> String {
-    let value = value.trim();
-    if value.chars().count() <= MAX_COMMAND_OUTPUT_CHARS {
-        value.to_string()
-    } else {
-        format!(
-            "{}\n...[{} {MAX_COMMAND_OUTPUT_CHARS} {}]",
-            value
-                .chars()
-                .take(MAX_COMMAND_OUTPUT_CHARS)
-                .collect::<String>(),
-            t("truncated to", "已截断到"),
-            t("chars", "字符")
-        )
-    }
-}
-
 fn path_arg(args: &Value, key: &str) -> Result<PathBuf> {
     let value = required(args, key)?;
     Ok(expand_path(&value))
@@ -855,13 +892,17 @@ mod tests {
         let temp = tempfile::tempdir_in(cwd).unwrap();
         let path = temp.path().join("sample.txt");
         std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
-        let result = edit_file(json!({
-            "path": path.display().to_string(),
-            "start_line": 2,
-            "end_line": 2,
-            "replacement": "TWO\nTWO-B"
-        }));
-        result.unwrap();
+        let result = edit_file(
+            json!({
+                "path": path.display().to_string(),
+                "start_line": 2,
+                "end_line": 2,
+                "replacement": "TWO\nTWO-B"
+            }),
+            ToolProgress::default(),
+        );
+        let data: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(data.get("diff").is_none());
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             "one\nTWO\nTWO-B\nthree\n"
@@ -873,12 +914,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("sample.txt");
         std::fs::write(&path, "one\ntwo\n").unwrap();
-        edit_file(json!({
-            "path": path.display().to_string(),
-            "start_line": 1,
-            "end_line": 2,
-            "replacement": "table"
-        }))
+        edit_file(
+            json!({
+                "path": path.display().to_string(),
+                "start_line": 1,
+                "end_line": 2,
+                "replacement": "table"
+            }),
+            ToolProgress::default(),
+        )
         .unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "table\n");
     }
