@@ -1309,6 +1309,13 @@ fn draw_inline_fuzzy(
     let bar = inline_fuzzy_bar();
     let width = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
     let visible = matches.len().min(menu_lines.saturating_sub(2) as usize);
+    let scroll = if visible == 0 {
+        0
+    } else if selected >= visible {
+        selected + 1 - visible
+    } else {
+        0
+    };
     queue!(stdout, Hide)?;
     for row in 0..menu_lines {
         queue!(
@@ -1331,14 +1338,14 @@ fn draw_inline_fuzzy(
             Print(format!("\x1b[2m{}\x1b[0m", t("no matches", "没有匹配项")))
         )?;
     } else {
-        for (row, (_, item_index)) in matches.iter().take(visible).enumerate() {
+        for (row, (_, item_index)) in matches.iter().skip(scroll).take(visible).enumerate() {
             queue!(
                 stdout,
                 MoveTo(0, anchor_y + row as u16 + 1),
                 Print(&bar),
                 Print(inline_fuzzy_item_line(
                     items[*item_index].as_str(),
-                    row == selected,
+                    scroll + row == selected,
                     active.get(*item_index).copied().unwrap_or(false),
                     width
                 ))
