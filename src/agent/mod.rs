@@ -204,6 +204,24 @@ impl Agent {
         self.context_window
     }
 
+    pub fn effective_context_tokens(&self) -> Result<u64> {
+        let messages = self.chat_messages("", "")?;
+        let mut tokens = overflow::estimate_messages_tokens(&messages) as u64;
+        if self.tools_enabled {
+            let loaded_tools = self.initial_loaded_tools(&messages)?;
+            let definitions = {
+                let tools = self.tools.lock().unwrap();
+                if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
+                    tools.lazy_definitions(&loaded_tools)
+                } else {
+                    tools.definitions()
+                }
+            };
+            tokens = tokens.saturating_add(estimate_tool_definition_tokens(&definitions) as u64);
+        }
+        Ok(tokens)
+    }
+
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
         self.mode = mode;
         self.tools = Arc::new(Mutex::new(tools));
@@ -1033,6 +1051,14 @@ fn estimate_result_tokens(result: &ChatResult) -> usize {
     tokens.max(1)
 }
 
+fn estimate_tool_definition_tokens(definitions: &[crate::llm::ToolDefinition]) -> usize {
+    definitions
+        .iter()
+        .filter_map(|definition| serde_json::to_string(definition).ok())
+        .map(|text| crate::token_estimate::estimate_tokens(&text))
+        .sum()
+}
+
 fn extract_persistable_tool_report(tool_name: &str, output: &str) -> Option<String> {
     let field = match tool_name {
         "load_tools" => {
@@ -1482,7 +1508,11 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
     use crate::llm::Usage;
+    use crate::paths::MiyuPaths;
+    use crate::tools::{empty_parameters, ToolSpec};
+    use std::path::PathBuf;
 
     #[test]
     fn strips_pasted_system_reminder_from_user_input() {
@@ -1600,6 +1630,53 @@ mod tests {
     }
 
     #[test]
+    fn effective_context_tokens_include_tool_definitions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let mut tools = ToolRegistry::new();
+        tools.register(ToolSpec::new(
+            "heavy_context_tool",
+            "This tool has a deliberately long description so effective context includes tool definitions.",
+            empty_parameters(),
+            |_| async { Ok(String::new()) },
+        ));
+        let with_tools = Agent::new(
+            config.clone(),
+            &paths,
+            state.clone(),
+            client.clone(),
+            tools,
+            AgentMode::Normal,
+        )
+        .unwrap();
+        let without_tools = Agent::new(
+            AppConfig {
+                tools: crate::config::ToolsConfig {
+                    enabled: false,
+                    ..config.tools.clone()
+                },
+                ..config
+            },
+            &paths,
+            state,
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+
+        assert!(
+            with_tools.effective_context_tokens().unwrap()
+                > without_tools.effective_context_tokens().unwrap()
+        );
+    }
+
+    #[test]
     fn overflow_check_usage_triggers_at_threshold() {
         let check = overflow::OverflowCheck::new(Some(100_000), 0.9, None);
         assert!(!check.check_usage(&Usage {
@@ -1632,5 +1709,23 @@ mod tests {
         let small_msg = ChatMessage::plain("user", "hi");
         assert!(check.check_estimate(&[big_msg]));
         assert!(!check.check_estimate(&[small_msg]));
+    }
+
+    fn test_paths(root: &std::path::Path) -> MiyuPaths {
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            secrets_file: root.join("config/secrets.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/miyu.fish"),
+            bash_hook_file: root.join("shell/bash-hook.sh"),
+            zsh_hook_file: root.join("shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        }
     }
 }

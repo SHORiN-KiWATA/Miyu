@@ -1808,7 +1808,7 @@ async fn run_chat_with_images(
     let result = result?;
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
     let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
-    let context_tokens = state.visible_context_tokens()?;
+    let context_tokens = agent.effective_context_tokens()?;
     print_chat_token_usage(
         &result,
         show_token_usage,
@@ -1821,11 +1821,10 @@ async fn run_chat_with_images(
         &mut renderer,
         &result,
         show_token_usage,
-        &state,
         Some(&mut cumulative_tokens),
     )
     .await?;
-    let updated_context_tokens = state.visible_context_tokens()?;
+    let updated_context_tokens = agent.effective_context_tokens()?;
     if overflow_result.is_none() && updated_context_tokens != context_tokens {
         print_chat_token_usage(
             &result,
@@ -1940,7 +1939,7 @@ async fn run_chat_with_options(
     let result = result?;
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
     let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
-    let context_tokens = state.visible_context_tokens()?;
+    let context_tokens = agent.effective_context_tokens()?;
     print_chat_token_usage(
         &result,
         show_token_usage,
@@ -1953,11 +1952,10 @@ async fn run_chat_with_options(
         &mut renderer,
         &result,
         show_token_usage,
-        &state,
         Some(&mut cumulative_tokens),
     )
     .await?;
-    let updated_context_tokens = state.visible_context_tokens()?;
+    let updated_context_tokens = agent.effective_context_tokens()?;
     if overflow_result.is_none() && updated_context_tokens != context_tokens {
         print_chat_token_usage(
             &result,
@@ -2006,7 +2004,6 @@ async fn handle_post_turn_overflow(
     renderer: &mut render::StreamRenderer,
     result: &crate::llm::ChatResult,
     show_token_usage: bool,
-    state: &StateStore,
     cumulative_tokens: Option<&mut u64>,
 ) -> Result<Option<crate::llm::ChatResult>> {
     let Some(usage) = result.usage.as_ref() else {
@@ -2027,7 +2024,7 @@ async fn handle_post_turn_overflow(
         print_chat_token_usage(
             &compact_result,
             show_token_usage,
-            state.visible_context_tokens()?,
+            agent.effective_context_tokens()?,
             agent.context_window(),
             cumulative_display,
         )?;
@@ -2051,7 +2048,6 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         println!("\x1b[2m{message}\x1b[0m");
     }
     let mut cumulative_tokens = 0u64;
-    let mut footer = ReplFooterStatus::from_config(&config, state.visible_context_tokens()?, None);
     let mut show_shortcut_hint = true;
     let initial_registry = build_tool_registry(&config, paths, mode)?;
     let mut agent = Agent::new(
@@ -2062,6 +2058,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         initial_registry,
         mode,
     )?;
+    let mut footer =
+        ReplFooterStatus::from_config(&config, agent.effective_context_tokens()?, None);
     loop {
         let (input, pasted_images) = match read_repl_input(
             paths,
@@ -2094,7 +2092,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             reload_repl_config(paths, &mut config, &mut client)?;
             footer = ReplFooterStatus::from_config(
                 &config,
-                state.visible_context_tokens()?,
+                agent.effective_context_tokens()?,
                 (cumulative_tokens > 0).then_some(cumulative_tokens),
             );
             let registry = build_tool_registry(&config, paths, mode)?;
@@ -2109,7 +2107,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             reload_repl_config(paths, &mut config, &mut client)?;
             footer = ReplFooterStatus::from_config(
                 &config,
-                state.visible_context_tokens()?,
+                agent.effective_context_tokens()?,
                 (cumulative_tokens > 0).then_some(cumulative_tokens),
             );
             let registry = build_tool_registry(&config, paths, mode)?;
@@ -2121,7 +2119,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         if command.eq_ignore_ascii_case("/undo") {
             let (removed, prompt) = state.undo_last_turn()?;
-            footer.update_session_tokens(state.visible_context_tokens()?);
+            footer.update_session_tokens(agent.effective_context_tokens()?);
             println!("{}: {removed}", t("undone messages", "已撤销消息数"));
             prefill = prompt;
             continue;
@@ -2149,7 +2147,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                     }
                     footer.update_token_usage(
                         &result,
-                        state.visible_context_tokens()?,
+                        agent.effective_context_tokens()?,
                         agent.context_window(),
                         (cumulative_tokens > 0).then_some(cumulative_tokens),
                     );
@@ -2157,7 +2155,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                         print_chat_token_usage(
                             &result,
                             true,
-                            state.visible_context_tokens()?,
+                            agent.effective_context_tokens()?,
                             agent.context_window(),
                             (cumulative_tokens > 0).then_some(cumulative_tokens),
                         )?;
@@ -2169,7 +2167,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                         "\x1b[2m{}\x1b[0m",
                         t("nothing to compact", "没有可压缩的上下文")
                     );
-                    footer.update_session_tokens(state.visible_context_tokens()?);
+                    footer.update_session_tokens(agent.effective_context_tokens()?);
                 }
                 Err(err) => {
                     renderer.finish()?;
@@ -2182,7 +2180,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             run_reset(paths, None)?;
             input_history.clear();
             cumulative_tokens = 0;
-            footer.reset_token_usage(state.visible_context_tokens()?, agent.context_window());
+            footer.reset_token_usage(agent.effective_context_tokens()?, agent.context_window());
             continue;
         }
         if command.eq_ignore_ascii_case("/reset all") {
@@ -2190,7 +2188,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             input_history.clear();
             agent.reset_memory()?;
             cumulative_tokens = 0;
-            footer.reset_token_usage(state.visible_context_tokens()?, agent.context_window());
+            footer.reset_token_usage(agent.effective_context_tokens()?, agent.context_window());
             continue;
         }
         if input.is_empty() {
@@ -2245,7 +2243,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 }
                 footer.update_token_usage(
                     &result,
-                    state.visible_context_tokens()?,
+                    agent.effective_context_tokens()?,
                     context_window,
                     (cumulative_tokens > 0).then_some(cumulative_tokens),
                 );
@@ -2255,7 +2253,6 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                     &mut renderer,
                     &result,
                     config.display.show_token_usage,
-                    &state,
                     Some(&mut cumulative_tokens),
                 )
                 .await
@@ -2266,13 +2263,13 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                         }
                         footer.set_token_usage(
                             turn_tokens,
-                            state.visible_context_tokens()?,
+                            agent.effective_context_tokens()?,
                             agent.context_window(),
                             (cumulative_tokens > 0).then_some(cumulative_tokens),
                         );
                     }
                     Ok(None) => {
-                        footer.update_session_tokens(state.visible_context_tokens()?);
+                        footer.update_session_tokens(agent.effective_context_tokens()?);
                     }
                     Err(err) => {
                         eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
