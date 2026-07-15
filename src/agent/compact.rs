@@ -1,7 +1,7 @@
 use crate::llm::{ChatMessage, ChatResult, ChatStreamChunk, OpenAiCompatibleClient, Usage};
 use crate::prompts::COMPACT_SYSTEM_PROMPT;
 use crate::state::{StateStore, Turn};
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use super::overflow::estimate_tokens;
 
@@ -48,6 +48,12 @@ impl Compactor {
         let turns = self.state.load_visible_turns()?;
         if turns.is_empty() {
             return Ok(None);
+        }
+        if turns
+            .iter()
+            .any(|turn| turn.status == crate::state::TurnStatus::Running)
+        {
+            bail!("cannot compact while another conversation turn is running");
         }
 
         let head: Vec<&Turn> = turns.iter().filter(|turn| !turn.is_summary).collect();
@@ -102,9 +108,13 @@ impl Compactor {
         };
 
         let last_seq = turns.last().unwrap().seq;
-        self.state.hide_turns_before_seq(last_seq)?;
-        self.state.delete_hidden_turns()?;
-        self.state.insert_summary_turn(
+        let visible_turn_ids = turns
+            .iter()
+            .map(|turn| turn.turn_id.clone())
+            .collect::<Vec<_>>();
+        self.state.replace_visible_with_summary(
+            last_seq,
+            &visible_turn_ids,
             &summary,
             Some(compact_usage.effective_total_tokens()),
             usage_estimated,

@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -271,6 +271,45 @@ impl OpenAiCompatibleClient {
             key_index: key.index,
             endpoints: Arc::new(vec![endpoint]),
         })
+    }
+
+    pub fn context_window(&self, config: &AppConfig) -> Result<Option<usize>> {
+        let choices = self.endpoint_model_choices();
+        let mut windows = Vec::with_capacity(choices.len());
+        for (provider_id, model) in choices {
+            let Some(window) = config.context_window_for_provider_model(&provider_id, &model)?
+            else {
+                return Ok(None);
+            };
+            windows.push(window);
+        }
+        Ok(windows.into_iter().min())
+    }
+
+    pub fn models_without_context_window(&self, config: &AppConfig) -> Vec<String> {
+        self.endpoint_model_choices()
+            .into_iter()
+            .filter(|(provider_id, model)| {
+                config
+                    .context_window_for_provider_model(provider_id, model)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            })
+            .map(|(provider_id, model)| format!("{provider_id} / {model}"))
+            .collect()
+    }
+
+    fn endpoint_model_choices(&self) -> BTreeSet<(String, String)> {
+        self.endpoints
+            .iter()
+            .map(|endpoint| {
+                (
+                    endpoint.provider.id.clone(),
+                    endpoint.provider.default_model.clone(),
+                )
+            })
+            .collect()
     }
 
     fn with_endpoint(&self, endpoint: &LlmEndpoint) -> Result<Self> {

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -37,12 +38,14 @@ fn build_o200k_vocab() {
     let source =
         fs::read_to_string("assets/o200k_base.tiktoken").expect("read o200k_base vocabulary");
     let mut output = Vec::with_capacity(source.len() / 2);
+    let mut tokens = HashSet::with_capacity(199_998);
     let mut count = 0usize;
     for (expected_rank, line) in source.lines().enumerate() {
         let mut parts = line.split(' ');
         let token = general_purpose::STANDARD
             .decode(parts.next().expect("vocabulary token"))
             .expect("decode vocabulary token");
+        assert!(tokens.insert(token.clone()), "duplicate o200k token");
         let rank = parts
             .next()
             .expect("vocabulary rank")
@@ -55,6 +58,7 @@ fn build_o200k_vocab() {
         count += 1;
     }
     assert_eq!(count, 199_998, "unexpected o200k vocabulary size");
+    assert_eq!(tokens.len(), count, "o200k tokens must be unique");
 
     let destination =
         PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("o200k_base.bin");

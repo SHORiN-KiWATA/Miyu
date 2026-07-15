@@ -18,6 +18,7 @@ pub struct MemoryStore {
 
 #[derive(Debug, Clone)]
 pub struct EvictedTurn {
+    pub source_id: String,
     pub timestamp: String,
     pub role: String,
     pub content: String,
@@ -73,8 +74,9 @@ impl MemoryStore {
         let tx = conn.transaction()?;
         for turn in turns {
             tx.execute(
-                "INSERT INTO evicted_turns (timestamp, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params![turn.timestamp, turn.role, turn.content, now()],
+                "INSERT OR IGNORE INTO evicted_turns (source_id, timestamp, role, content, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![turn.source_id, turn.timestamp, turn.role, turn.content, now()],
             )?;
         }
         tx.commit()?;
@@ -553,11 +555,18 @@ fn init_state_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS evicted_turns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT,
             timestamp TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL
         );",
+    )?;
+    add_column_if_missing(conn, "evicted_turns", "source_id", "TEXT")?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_evicted_turns_source_id
+         ON evicted_turns(source_id) WHERE source_id IS NOT NULL",
+        [],
     )?;
     Ok(())
 }
@@ -797,11 +806,27 @@ mod tests {
         let store = MemoryStore::new(&config, &paths);
         store
             .remember_evicted_turns(&[EvictedTurn {
+                source_id: "turn-1:user".to_string(),
                 timestamp: "now".to_string(),
                 role: "user".to_string(),
                 content: "旧上下文 输入法".to_string(),
             }])
             .unwrap();
+        store
+            .remember_evicted_turns(&[EvictedTurn {
+                source_id: "turn-1:user".to_string(),
+                timestamp: "now".to_string(),
+                role: "user".to_string(),
+                content: "旧上下文 输入法".to_string(),
+            }])
+            .unwrap();
+        assert_eq!(
+            store.search_evicted_context("输入法", 5).unwrap()["results"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(store
             .search_evicted_context("输入法", 5)
             .unwrap()

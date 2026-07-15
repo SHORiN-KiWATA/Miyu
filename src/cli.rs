@@ -105,7 +105,7 @@ impl ReplFooterStatus {
         self.token_usage = ReplTokenUsage {
             turn_tokens,
             session_tokens,
-            context_window: context_window.or(self.token_usage.context_window),
+            context_window,
             cumulative_tokens,
         };
     }
@@ -114,11 +114,15 @@ impl ReplFooterStatus {
         self.token_usage.session_tokens = session_tokens;
     }
 
+    fn update_context_window(&mut self, context_window: Option<usize>) {
+        self.token_usage.context_window = context_window;
+    }
+
     fn reset_token_usage(&mut self, session_tokens: u64, context_window: Option<usize>) {
         self.token_usage = ReplTokenUsage {
             turn_tokens: 0,
             session_tokens,
-            context_window: context_window.or(self.token_usage.context_window),
+            context_window,
             cumulative_tokens: None,
         };
     }
@@ -1990,6 +1994,9 @@ fn print_chat_token_usage(
 }
 
 fn result_context_window(config: &AppConfig, result: &crate::llm::ChatResult) -> Option<usize> {
+    if config.active_provider_model_choices().len() > 1 {
+        return None;
+    }
     let provider = result.provider_id.as_deref()?;
     let model = result.model.as_deref()?;
     config
@@ -2056,6 +2063,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     )?;
     let mut footer =
         ReplFooterStatus::from_config(&config, agent.effective_context_tokens()?, None);
+    footer.update_context_window(agent.context_window());
     loop {
         let (input, pasted_images) = match read_repl_input(
             paths,
@@ -2094,6 +2102,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             let registry = build_tool_registry(&config, paths, mode)?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
+            footer.update_context_window(agent.context_window());
             println!("{}", t("configuration reloaded", "配置已重新加载"));
             println!();
             continue;
@@ -2109,6 +2118,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             let registry = build_tool_registry(&config, paths, mode)?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
+            footer.update_context_window(agent.context_window());
             println!("{}", t("configuration reloaded", "配置已重新加载"));
             println!();
             continue;
@@ -2116,7 +2126,11 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         if command.eq_ignore_ascii_case("/undo") {
             let (removed, prompt) = state.undo_last_turn()?;
             footer.update_session_tokens(agent.effective_context_tokens()?);
-            println!("{}: {removed}", t("undone messages", "已撤销消息数"));
+            if removed > 0 && prompt.is_none() {
+                println!("{}", t("context compaction undone", "已撤销上下文压缩"));
+            } else {
+                println!("{}: {removed}", t("undone messages", "已撤销消息数"));
+            }
             prefill = prompt;
             continue;
         }
@@ -2318,8 +2332,8 @@ fn print_repl_help() {
     println!(
         "  /undo       {}",
         t(
-            "remove last turn and restore prompt",
-            "撤销上一轮并恢复输入"
+            "undo the last turn or context compaction",
+            "撤销上一轮或上下文压缩"
         )
     );
     println!(
@@ -3801,6 +3815,9 @@ mod repl_input_tests {
         assert_eq!(footer.token_usage.session_tokens, 0);
         assert_eq!(footer.token_usage.context_window, Some(200_000));
         assert_eq!(footer.token_usage.cumulative_tokens, None);
+
+        footer.reset_token_usage(0, None);
+        assert_eq!(footer.token_usage.context_window, None);
     }
 
     #[test]

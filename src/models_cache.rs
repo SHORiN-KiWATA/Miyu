@@ -3,10 +3,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 const API_URL: &str = "https://models.dev/api.json";
-const TTL_SECS: u64 = 300;
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse(HashMap<String, ApiProvider>);
@@ -48,33 +47,31 @@ struct Cache {
 }
 
 static CACHE: OnceLock<Mutex<Option<Cache>>> = OnceLock::new();
+static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn cache_lock() -> &'static Mutex<Option<Cache>> {
     CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn refresh_lock() -> &'static Mutex<()> {
+    REFRESH_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+pub fn is_loaded() -> bool {
+    cache_lock().lock().unwrap().is_some()
 }
 
 fn cache_file(paths: &crate::paths::MiyuPaths) -> PathBuf {
     paths.cache_dir.join("models_cache.json")
 }
 
-fn is_fresh(path: &PathBuf) -> bool {
-    let metadata = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let mtime = match metadata.modified() {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    let elapsed = SystemTime::now()
-        .duration_since(mtime)
-        .unwrap_or(Duration::ZERO);
-    elapsed.as_secs() < TTL_SECS
-}
-
 fn load_from_disk(path: &PathBuf) -> Result<HashMap<String, HashMap<String, ModelInfo>>> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read models cache: {}", path.display()))?;
+    parse_api_response(&text)
+}
+
+fn parse_api_response(text: &str) -> Result<HashMap<String, HashMap<String, ModelInfo>>> {
     let api: ApiResponse = serde_json::from_str(&text).context("failed to parse models cache")?;
     let mut result = HashMap::new();
     for (provider_id, provider) in api.0 {
@@ -103,26 +100,26 @@ fn fetch_and_cache(path: &PathBuf) -> Result<HashMap<String, HashMap<String, Mod
         .get(API_URL)
         .header("User-Agent", "Mozilla/5.0 Miyu/0.1")
         .send()?
+        .error_for_status()?
         .text()?;
     if text.trim().is_empty() {
         anyhow::bail!("models.dev returned empty response");
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, &text)?;
-    std::fs::rename(&temp, path)?;
-    load_from_disk(path)
+    let data = parse_api_response(&text)?;
+    let parent = path.parent().context("models cache path has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    use std::io::Write;
+    temp.write_all(text.as_bytes())?;
+    temp.persist(path)
+        .map_err(|error| error.error)
+        .context("failed to replace models cache")?;
+    Ok(data)
 }
 
 pub fn try_load(paths: &crate::paths::MiyuPaths) {
     let path = cache_file(paths);
-    let data = if is_fresh(&path) {
-        load_from_disk(&path).ok()
-    } else {
-        None
-    };
+    let data = load_from_disk(&path).ok();
     if let Some(data) = data {
         let mut lock = cache_lock().lock().unwrap();
         *lock = Some(Cache { data });
@@ -132,6 +129,7 @@ pub fn try_load(paths: &crate::paths::MiyuPaths) {
 pub fn spawn_background_refresh(paths: crate::paths::MiyuPaths) {
     let path = cache_file(&paths);
     std::thread::spawn(move || {
+        let _refresh = refresh_lock().lock().unwrap();
         let fetched = fetch_and_cache(&path).ok();
         if let Some(data) = fetched {
             let mut lock = cache_lock().lock().unwrap();
@@ -186,22 +184,103 @@ fn lookup_input_modalities(
     }
 }
 
-pub fn context_window(model_id: &str) -> Option<u64> {
+pub fn context_window(provider_id: &str, model_id: &str) -> Option<u64> {
     let lock = cache_lock().lock().unwrap();
     let cache = lock.as_ref()?;
-    for provider in cache.data.values() {
-        if let Some(info) = provider.get(model_id) {
-            return info.context_window;
-        }
+    lookup_context_window(&cache.data, provider_id, model_id)
+}
+
+fn lookup_context_window(
+    data: &HashMap<String, HashMap<String, ModelInfo>>,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<u64> {
+    if let Some(window) = data
+        .get(provider_id)
+        .and_then(|provider| provider.get(model_id))
+        .and_then(|info| info.context_window)
+    {
+        return Some(window);
     }
-    None
+
+    let mut matches = data
+        .values()
+        .filter_map(|provider| provider.get(model_id))
+        .filter_map(|info| info.context_window)
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    matches.dedup();
+    (matches.len() == 1).then(|| matches[0])
 }
 
 #[allow(dead_code)]
 pub fn refresh_blocking(paths: &crate::paths::MiyuPaths) -> Result<()> {
+    let _refresh = refresh_lock().lock().unwrap();
+    if is_loaded() {
+        return Ok(());
+    }
     let path = cache_file(paths);
     let data = fetch_and_cache(&path)?;
     let mut lock = cache_lock().lock().unwrap();
     *lock = Some(Cache { data });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(window: u64) -> ModelInfo {
+        ModelInfo {
+            input_modalities: Vec::new(),
+            context_window: Some(window),
+        }
+    }
+
+    #[test]
+    fn context_window_prefers_exact_provider() {
+        let data = HashMap::from([
+            (
+                "provider-a".to_string(),
+                HashMap::from([("shared-model".to_string(), model(128_000))]),
+            ),
+            (
+                "provider-b".to_string(),
+                HashMap::from([("shared-model".to_string(), model(200_000))]),
+            ),
+        ]);
+
+        assert_eq!(
+            lookup_context_window(&data, "provider-a", "shared-model"),
+            Some(128_000)
+        );
+    }
+
+    #[test]
+    fn context_window_fallback_requires_one_unique_value() {
+        let same = HashMap::from([
+            (
+                "provider-a".to_string(),
+                HashMap::from([("shared-model".to_string(), model(200_000))]),
+            ),
+            (
+                "provider-b".to_string(),
+                HashMap::from([("shared-model".to_string(), model(200_000))]),
+            ),
+        ]);
+        assert_eq!(
+            lookup_context_window(&same, "custom", "shared-model"),
+            Some(200_000)
+        );
+
+        let mut conflicting = same;
+        conflicting
+            .get_mut("provider-b")
+            .unwrap()
+            .insert("shared-model".to_string(), model(128_000));
+        assert_eq!(
+            lookup_context_window(&conflicting, "custom", "shared-model"),
+            None
+        );
+    }
 }

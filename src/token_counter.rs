@@ -55,6 +55,7 @@ impl CoreBpeCounter {
             rank += 1;
         }
         ensure!(rank == 199_998, "unexpected o200k vocabulary size");
+        ensure!(encoder.len() == rank as usize, "duplicate o200k token");
 
         let regex = Regex::new(O200K_PATTERN)?;
         Ok(Self {

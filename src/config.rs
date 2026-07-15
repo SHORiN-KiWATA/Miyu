@@ -1649,11 +1649,12 @@ impl AppConfig {
         }
         let mut windows = Vec::new();
         for choice in choices {
-            if let Some(window) =
+            let Some(window) =
                 self.context_window_for_provider_model(&choice.provider_id, &choice.model)?
-            {
-                windows.push(window);
-            }
+            else {
+                return Ok(None);
+            };
+            windows.push(window);
         }
         Ok(windows.into_iter().min())
     }
@@ -1675,7 +1676,7 @@ impl AppConfig {
         if provider.id == OPENCODE_PROVIDER_ID && model == OPENCODE_DEFAULT_CHAT_MODEL {
             return Ok(Some(OPENCODE_DEFAULT_CONTEXT_WINDOW));
         }
-        Ok(crate::models_cache::context_window(model)
+        Ok(crate::models_cache::context_window(provider_id, model)
             .map(|w| w as usize)
             .or_else(|| default_context_window_for_provider_model(provider, model)))
     }
@@ -2376,6 +2377,37 @@ mod tests {
         provider.default_model = "claude-sonnet-4-5".to_string();
 
         assert_eq!(config.active_context_window().unwrap(), Some(200_000));
+    }
+
+    #[test]
+    fn mixed_context_window_requires_every_active_model() {
+        let mut config = AppConfig::default();
+        let provider = &mut config.providers[0];
+        let provider_id = provider.id.clone();
+        provider.models = vec![
+            "miyu-known-window-model".to_string(),
+            "miyu-unknown-window-model".to_string(),
+        ];
+        provider.default_model = provider.models[0].clone();
+        provider
+            .model_context_window
+            .insert(provider.models[0].clone(), 200_000);
+        config.active_provider_models = Some(vec![
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: provider.models[0].clone(),
+            },
+            ActiveProviderModelConfig {
+                provider_id,
+                model: provider.models[1].clone(),
+            },
+        ]);
+
+        assert_eq!(config.active_context_window().unwrap(), None);
+        config.providers[0]
+            .model_context_window
+            .insert("miyu-unknown-window-model".to_string(), 128_000);
+        assert_eq!(config.active_context_window().unwrap(), Some(128_000));
     }
 
     #[test]

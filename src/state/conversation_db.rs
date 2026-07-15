@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -111,6 +111,18 @@ impl ConversationDb {
             "turns",
             "token_usage_estimated",
             "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "turns",
+            "compact_reversible",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(&conn, "turns", "compact_parent_summary_seq", "INTEGER")?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_turns_visible_seq ON turns(hidden, seq);
+             CREATE INDEX IF NOT EXISTS idx_turns_visible_summary_seq
+                 ON turns(is_summary, hidden, seq);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -294,18 +306,14 @@ impl ConversationDb {
         Ok(turns)
     }
 
+    #[allow(dead_code)]
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let affected = conn.execute("UPDATE turns SET hidden = 1 WHERE seq <= ?1", params![seq])?;
         Ok(affected)
     }
 
-    pub fn delete_hidden_turns(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let affected = conn.execute("DELETE FROM turns WHERE hidden = 1 AND is_summary = 0", [])?;
-        Ok(affected)
-    }
-
+    #[allow(dead_code)]
     pub fn insert_summary_turn(
         &self,
         summary: &str,
@@ -339,7 +347,7 @@ impl ConversationDb {
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE is_summary = 1 ORDER BY seq DESC LIMIT 1",
+             FROM turns WHERE is_summary = 1 AND hidden = 0 ORDER BY seq DESC LIMIT 1",
         )?;
         let turn = stmt.query_map([], map_turn_row)?.next().transpose()?;
         Ok(turn)
@@ -380,25 +388,105 @@ impl ConversationDb {
         Ok(to_remove)
     }
 
-    pub fn trim_oldest_visible_turns(&self, count: usize) -> Result<Vec<Turn>> {
+    pub fn oldest_evictable_visible_turns(&self, count: usize) -> Result<Vec<Turn>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT turn_id, seq, user_content, user_timestamp, assistant_content,
                     assistant_reasoning, assistant_timestamp, status, tool_reports, hidden, is_summary, owner_pid,
                     token_total, token_usage_estimated
-             FROM turns WHERE hidden = 0 AND is_summary = 0 ORDER BY seq ASC LIMIT ?1",
+             FROM turns
+             WHERE hidden = 0 AND is_summary = 0 AND status != 'running'
+             ORDER BY seq ASC LIMIT ?1",
         )?;
-        let to_remove: Vec<Turn> = stmt
+        let turns = stmt
             .query_map(params![count as i64], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        drop(stmt);
-        for turn in &to_remove {
-            conn.execute(
-                "DELETE FROM turns WHERE turn_id = ?1",
-                params![turn.turn_id],
+        Ok(turns)
+    }
+
+    pub fn delete_visible_turns(&self, turn_ids: &[String]) -> Result<usize> {
+        if turn_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut affected = 0usize;
+        for turn_id in turn_ids {
+            affected += tx.execute(
+                "DELETE FROM turns
+                 WHERE turn_id = ?1 AND hidden = 0 AND is_summary = 0 AND status != 'running'",
+                params![turn_id],
             )?;
         }
-        Ok(to_remove)
+        if affected != turn_ids.len() {
+            bail!("conversation changed before evicted turns could be deleted");
+        }
+        tx.commit()?;
+        Ok(affected)
+    }
+
+    pub fn replace_visible_with_summary(
+        &self,
+        last_seq: i64,
+        visible_turn_ids: &[String],
+        summary: &str,
+        token_total: Option<u64>,
+        token_usage_estimated: bool,
+    ) -> Result<()> {
+        if summary.trim().is_empty() {
+            bail!("compact returned an empty summary");
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let current_turn_ids = {
+            let mut stmt = tx.prepare(
+                "SELECT turn_id FROM turns
+                 WHERE hidden = 0 ORDER BY seq ASC",
+            )?;
+            let turn_ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            turn_ids
+        };
+        if current_turn_ids != visible_turn_ids {
+            bail!("conversation changed while compact was running");
+        }
+        let parent_summary_seq: Option<i64> = tx.query_row(
+            "SELECT MAX(seq) FROM turns
+                 WHERE hidden = 0 AND is_summary = 1 AND seq <= ?1",
+            params![last_seq],
+            |row| row.get(0),
+        )?;
+        let hidden = tx.execute(
+            "UPDATE turns SET hidden = 1 WHERE hidden = 0 AND seq <= ?1",
+            params![last_seq],
+        )?;
+        if hidden == 0 {
+            bail!("conversation changed before compact could be saved");
+        }
+
+        let turn_id = format!(
+            "summary_{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            rand::random::<u16>()
+        );
+        let seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM turns", [], |row| {
+            row.get(0)
+        })?;
+        let now = Utc::now().to_rfc3339();
+        let token_total = token_total.unwrap_or(0) as i64;
+        let token_usage_estimated = i64::from(token_usage_estimated);
+        tx.execute(
+            "INSERT INTO turns (turn_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, compact_reversible, compact_parent_summary_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', '[]', 0, 1, ?7, ?8, 1, ?9)",
+            params![turn_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, parent_summary_seq],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn reset(&self) -> Result<()> {
@@ -409,18 +497,86 @@ impl ConversationDb {
     }
 
     pub fn undo_last_turn(&self) -> Result<(usize, Option<String>)> {
-        let conn = self.conn.lock().unwrap();
-        let last: Option<(String, String)> = conn
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let running: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM turns WHERE hidden = 0 AND status = 'running'",
+            [],
+            |row| row.get(0),
+        )?;
+        if running > 0 {
+            tx.rollback()?;
+            return Ok((0, None));
+        }
+        let last: Option<(String, i64, String, bool, bool, Option<i64>)> = tx
             .query_row(
-                "SELECT turn_id, user_content FROM turns ORDER BY seq DESC LIMIT 1",
+                "SELECT turn_id, seq, user_content, is_summary,
+                        compact_reversible, compact_parent_summary_seq
+                 FROM turns WHERE hidden = 0 ORDER BY seq DESC LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                        row.get::<_, i64>(4)? != 0,
+                        row.get(5)?,
+                    ))
+                },
             )
             .optional()?;
         match last {
-            Some((turn_id, user_content)) => {
-                conn.execute("DELETE FROM turns WHERE turn_id = ?1", params![turn_id])?;
+            Some((turn_id, _, user_content, false, _, _)) => {
+                tx.execute("DELETE FROM turns WHERE turn_id = ?1", params![turn_id])?;
+                tx.commit()?;
                 Ok((1, Some(user_content)))
+            }
+            Some((_, _, _, true, false, _)) => {
+                tx.rollback()?;
+                Ok((0, None))
+            }
+            Some((turn_id, summary_seq, _, true, true, parent_summary_seq)) => {
+                let restorable: i64 = match parent_summary_seq {
+                    Some(previous_seq) => tx.query_row(
+                        "SELECT COUNT(*) FROM turns
+                         WHERE hidden = 1 AND seq < ?1
+                           AND (seq = ?2 OR (is_summary = 0 AND seq > ?2))",
+                        params![summary_seq, previous_seq],
+                        |row| row.get(0),
+                    )?,
+                    None => tx.query_row(
+                        "SELECT COUNT(*) FROM turns
+                         WHERE hidden = 1 AND is_summary = 0 AND seq < ?1",
+                        params![summary_seq],
+                        |row| row.get(0),
+                    )?,
+                };
+                if restorable == 0 {
+                    tx.rollback()?;
+                    return Ok((0, None));
+                }
+
+                tx.execute("DELETE FROM turns WHERE turn_id = ?1", params![turn_id])?;
+                match parent_summary_seq {
+                    Some(previous_seq) => {
+                        tx.execute(
+                            "UPDATE turns SET hidden = 0
+                             WHERE hidden = 1 AND seq < ?1
+                               AND (seq = ?2 OR (is_summary = 0 AND seq > ?2))",
+                            params![summary_seq, previous_seq],
+                        )?;
+                    }
+                    None => {
+                        tx.execute(
+                            "UPDATE turns SET hidden = 0
+                             WHERE hidden = 1 AND is_summary = 0 AND seq < ?1",
+                            params![summary_seq],
+                        )?;
+                    }
+                }
+                tx.commit()?;
+                Ok((1, None))
             }
             None => Ok((0, None)),
         }
@@ -457,17 +613,6 @@ impl ConversationDb {
             .query_map(params![exclude_turn_id], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(summaries)
-    }
-
-    pub fn mark_interrupted_running_turns(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
-        let affected = conn.execute(
-            "UPDATE turns SET assistant_content = ?1, assistant_timestamp = ?2, status = 'interrupted'
-             WHERE status = 'running'",
-            params![INTERRUPTED_TEXT, now],
-        )?;
-        Ok(affected > 0)
     }
 
     pub fn recover_stale_running_turns(&self) -> Result<usize> {

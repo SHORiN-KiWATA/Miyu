@@ -125,23 +125,29 @@ impl StateStore {
         Ok(())
     }
 
-    pub fn mark_interrupted_turn_if_needed(&self) -> Result<bool> {
-        self.conv_db.mark_interrupted_running_turns()
-    }
-
     pub fn recover_stale_turns(&self) -> Result<usize> {
         self.conv_db.recover_stale_running_turns()
     }
 
     pub fn history(&self, limit: usize) -> Result<Vec<StoredConversationEntry>> {
-        let turns = self.conv_db.load_turns()?;
+        let turns = self
+            .conv_db
+            .load_turns()?
+            .into_iter()
+            .filter(|turn| !turn.is_summary)
+            .collect();
         let mut entries = turns_to_entries(turns);
         let start = entries.len().saturating_sub(limit);
         Ok(entries.split_off(start))
     }
 
     pub fn load_conversation(&self) -> Result<Vec<StoredConversationEntry>> {
-        let turns = self.conv_db.load_turns()?;
+        let turns = self
+            .conv_db
+            .load_turns()?
+            .into_iter()
+            .filter(|turn| !turn.is_summary)
+            .collect();
         Ok(turns_to_entries(turns))
     }
 
@@ -163,14 +169,12 @@ impl StateStore {
         self.conv_db.load_visible_turns_excluding(exclude_turn_id)
     }
 
+    #[allow(dead_code)]
     pub fn hide_turns_before_seq(&self, seq: i64) -> Result<usize> {
         self.conv_db.hide_turns_before_seq(seq)
     }
 
-    pub fn delete_hidden_turns(&self) -> Result<usize> {
-        self.conv_db.delete_hidden_turns()
-    }
-
+    #[allow(dead_code)]
     pub fn insert_summary_turn(
         &self,
         summary: &str,
@@ -185,12 +189,29 @@ impl StateStore {
         self.conv_db.load_last_summary()
     }
 
-    pub fn trim_oldest_visible_turns(&self, count: usize) -> Result<Vec<StoredConversationEntry>> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let evicted = turns_to_entries(self.conv_db.trim_oldest_visible_turns(count)?);
-        Ok(evicted)
+    pub fn replace_visible_with_summary(
+        &self,
+        last_seq: i64,
+        visible_turn_ids: &[String],
+        summary: &str,
+        token_total: Option<u64>,
+        token_usage_estimated: bool,
+    ) -> Result<()> {
+        self.conv_db.replace_visible_with_summary(
+            last_seq,
+            visible_turn_ids,
+            summary,
+            token_total,
+            token_usage_estimated,
+        )
+    }
+
+    pub fn oldest_evictable_visible_turns(&self, count: usize) -> Result<Vec<Turn>> {
+        self.conv_db.oldest_evictable_visible_turns(count)
+    }
+
+    pub fn delete_visible_turns(&self, turn_ids: &[String]) -> Result<usize> {
+        self.conv_db.delete_visible_turns(turn_ids)
     }
 
     pub fn reset_conversation(&self) -> Result<()> {
@@ -496,6 +517,13 @@ mod tests {
         (temp, store)
     }
 
+    fn visible_snapshot(store: &StateStore) -> (i64, Vec<String>) {
+        let turns = store.load_visible_turns().unwrap();
+        let last_seq = turns.last().unwrap().seq;
+        let turn_ids = turns.into_iter().map(|turn| turn.turn_id).collect();
+        (last_seq, turn_ids)
+    }
+
     #[test]
     fn hidden_turns_excluded_from_visible() {
         let (_temp, store) = test_store();
@@ -585,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn trim_oldest_visible_turns_pops_oldest() {
+    fn evictable_turns_are_deleted_only_after_explicit_commit() {
         let (_temp, store) = test_store();
         for i in 0..10 {
             let id = format!("t{i}");
@@ -594,28 +622,48 @@ mod tests {
             store.complete_turn(&id, &content, None).unwrap();
         }
 
-        let evicted = store.trim_oldest_visible_turns(3).unwrap();
-        assert!(!evicted.is_empty(), "should have evicted some turns");
+        let evicted = store.oldest_evictable_visible_turns(3).unwrap();
+        assert_eq!(evicted.len(), 3);
+        assert_eq!(store.load_visible_turns().unwrap().len(), 10);
+
+        let ids = evicted
+            .iter()
+            .map(|turn| turn.turn_id.clone())
+            .collect::<Vec<_>>();
+        store.delete_visible_turns(&ids).unwrap();
 
         let visible = store.load_visible_turns().unwrap();
         assert_eq!(visible.len(), 7);
     }
 
     #[test]
-    fn trim_oldest_visible_turns_noop_for_zero() {
+    fn deleting_no_visible_turns_is_a_noop() {
         let (_temp, store) = test_store();
         store.start_turn("t1", "short", 999999).unwrap();
         store.complete_turn("t1", "reply", None).unwrap();
 
-        let evicted = store.trim_oldest_visible_turns(0).unwrap();
-        assert!(evicted.is_empty());
+        assert_eq!(store.delete_visible_turns(&[]).unwrap(), 0);
 
         let visible = store.load_visible_turns().unwrap();
         assert_eq!(visible.len(), 1);
     }
 
     #[test]
-    fn trim_oldest_visible_turns_does_not_count_summary() {
+    fn deleting_visible_turns_rolls_back_when_any_id_changed() {
+        let (_temp, store) = test_store();
+        for id in ["t1", "t2"] {
+            store.start_turn(id, id, 999999).unwrap();
+            store.complete_turn(id, "reply", None).unwrap();
+        }
+
+        assert!(store
+            .delete_visible_turns(&["t1".to_string(), "missing".to_string()])
+            .is_err());
+        assert_eq!(store.load_visible_turns().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn evictable_turns_do_not_include_summary_or_running_turn() {
         let (_temp, store) = test_store();
         store
             .insert_summary_turn("summary", Some(1), false)
@@ -624,12 +672,224 @@ mod tests {
             store.start_turn(id, id, 999999).unwrap();
             store.complete_turn(id, "reply", None).unwrap();
         }
+        store
+            .start_turn("running", "pending", std::process::id())
+            .unwrap();
 
-        store.trim_oldest_visible_turns(1).unwrap();
+        let evicted = store.oldest_evictable_visible_turns(10).unwrap();
+        assert_eq!(
+            evicted
+                .iter()
+                .map(|turn| turn.turn_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t1", "t2"]
+        );
+    }
 
+    #[test]
+    fn compact_is_reversible_with_undo() {
+        let (_temp, store) = test_store();
+        for id in ["t1", "t2"] {
+            store.start_turn(id, id, 999999).unwrap();
+            store.complete_turn(id, "reply", None).unwrap();
+        }
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+
+        store
+            .replace_visible_with_summary(last_seq, &turn_ids, "summary", Some(10), true)
+            .unwrap();
+
+        let all = store.load_turns().unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all[0].hidden && all[1].hidden);
+        assert_eq!(store.load_visible_turns().unwrap().len(), 1);
+        assert_eq!(
+            store
+                .load_conversation()
+                .unwrap()
+                .into_iter()
+                .filter(|entry| entry.role == "user")
+                .map(|entry| entry.content)
+                .collect::<Vec<_>>(),
+            vec!["t1", "t2"]
+        );
+
+        let (removed, prompt) = store.undo_last_turn().unwrap();
+        assert_eq!(removed, 1);
+        assert!(prompt.is_none());
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(
+            visible
+                .iter()
+                .map(|turn| turn.turn_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t1", "t2"]
+        );
+    }
+
+    #[test]
+    fn nested_compact_undo_restores_one_layer_at_a_time() {
+        let (_temp, store) = test_store();
+        for id in ["t1", "t2"] {
+            store.start_turn(id, id, 999999).unwrap();
+            store.complete_turn(id, "reply", None).unwrap();
+        }
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+        store
+            .replace_visible_with_summary(last_seq, &turn_ids, "summary one", None, false)
+            .unwrap();
+        store.start_turn("t3", "third", 999999).unwrap();
+        store.complete_turn("t3", "reply", None).unwrap();
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+        store
+            .replace_visible_with_summary(last_seq, &turn_ids, "summary two", None, false)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .load_last_summary()
+                .unwrap()
+                .unwrap()
+                .assistant_content,
+            "summary two"
+        );
+        assert_eq!(store.undo_last_turn().unwrap(), (1, None));
         let visible = store.load_visible_turns().unwrap();
         assert_eq!(visible.len(), 2);
-        assert!(visible[0].is_summary);
-        assert_eq!(visible[1].turn_id, "t2");
+        assert_eq!(visible[0].assistant_content, "summary one");
+        assert_eq!(visible[1].turn_id, "t3");
+
+        assert_eq!(store.undo_last_turn().unwrap().1.as_deref(), Some("third"));
+        assert_eq!(store.undo_last_turn().unwrap(), (1, None));
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(
+            visible
+                .iter()
+                .map(|turn| turn.turn_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t1", "t2"]
+        );
+    }
+
+    #[test]
+    fn empty_summary_leaves_visible_turns_unchanged() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "hello", 999999).unwrap();
+        store.complete_turn("t1", "reply", None).unwrap();
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+
+        assert!(store
+            .replace_visible_with_summary(last_seq, &turn_ids, "  ", None, false)
+            .is_err());
+
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].turn_id, "t1");
+    }
+
+    #[test]
+    fn compact_insert_failure_rolls_back_hidden_turns() {
+        let (temp, store) = test_store();
+        store.start_turn("t1", "hello", 999999).unwrap();
+        store.complete_turn("t1", "reply", None).unwrap();
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+        let conn = rusqlite::Connection::open(temp.path().join("state/conversation.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_summary_insert
+             BEFORE INSERT ON turns WHEN NEW.is_summary = 1
+             BEGIN SELECT RAISE(ABORT, 'injected summary failure'); END;",
+        )
+        .unwrap();
+
+        assert!(store
+            .replace_visible_with_summary(last_seq, &turn_ids, "summary", None, false)
+            .is_err());
+        let visible = store.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].turn_id, "t1");
+        assert!(!visible[0].hidden);
+    }
+
+    #[test]
+    fn irreversible_legacy_summary_is_not_deleted_by_undo() {
+        let (_temp, store) = test_store();
+        store
+            .insert_summary_turn("legacy summary", None, false)
+            .unwrap();
+
+        assert_eq!(store.undo_last_turn().unwrap(), (0, None));
+        assert_eq!(
+            store
+                .load_last_summary()
+                .unwrap()
+                .unwrap()
+                .assistant_content,
+            "legacy summary"
+        );
+    }
+
+    #[test]
+    fn irreversible_nested_legacy_summary_is_not_downgraded_by_undo() {
+        let (_temp, store) = test_store();
+        store
+            .insert_summary_turn("legacy summary one", None, false)
+            .unwrap();
+        let first_seq = store.load_visible_turns().unwrap()[0].seq;
+        store.hide_turns_before_seq(first_seq).unwrap();
+        store
+            .insert_summary_turn("legacy summary two", None, false)
+            .unwrap();
+
+        assert_eq!(store.undo_last_turn().unwrap(), (0, None));
+        assert_eq!(
+            store
+                .load_last_summary()
+                .unwrap()
+                .unwrap()
+                .assistant_content,
+            "legacy summary two"
+        );
+    }
+
+    #[test]
+    fn undo_does_not_remove_a_running_turn() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "completed", 999999).unwrap();
+        store.complete_turn("t1", "reply", None).unwrap();
+        store
+            .start_turn("running", "active", std::process::id())
+            .unwrap();
+
+        assert_eq!(store.undo_last_turn().unwrap(), (0, None));
+        assert_eq!(store.load_visible_turns().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn compact_rejects_a_changed_snapshot() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "first", 999999).unwrap();
+        store.complete_turn("t1", "reply", None).unwrap();
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+        store.undo_last_turn().unwrap();
+
+        assert!(store
+            .replace_visible_with_summary(last_seq, &turn_ids, "stale", None, false)
+            .is_err());
+        assert!(store.load_visible_turns().unwrap().is_empty());
+    }
+
+    #[test]
+    fn compact_rejects_a_new_turn_after_snapshot() {
+        let (_temp, store) = test_store();
+        store.start_turn("t1", "first", 999999).unwrap();
+        store.complete_turn("t1", "reply", None).unwrap();
+        let (last_seq, turn_ids) = visible_snapshot(&store);
+        store.start_turn("t2", "second", 999999).unwrap();
+        store.complete_turn("t2", "reply", None).unwrap();
+
+        assert!(store
+            .replace_visible_with_summary(last_seq, &turn_ids, "stale", None, false)
+            .is_err());
+        assert_eq!(store.load_visible_turns().unwrap().len(), 2);
     }
 }

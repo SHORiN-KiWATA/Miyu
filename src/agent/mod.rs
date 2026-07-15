@@ -143,7 +143,6 @@ pub struct Agent {
     mode: AgentMode,
     config: AppConfig,
     paths: MiyuPaths,
-    context_window: Option<usize>,
     on_overflow: String,
 }
 
@@ -166,7 +165,6 @@ impl Agent {
         let max_tool_rounds = config.tools.max_rounds;
         let memory = MemoryStore::new(&config, paths);
         memory.init()?;
-        let context_window = config.active_context_window()?;
         let on_overflow = config.context.on_overflow.clone();
         Ok(Self {
             state,
@@ -181,7 +179,6 @@ impl Agent {
             mode,
             config,
             paths: paths.clone(),
-            context_window,
             on_overflow,
         })
     }
@@ -201,7 +198,7 @@ impl Agent {
     }
 
     pub fn context_window(&self) -> Option<usize> {
-        self.context_window
+        self.client.context_window(&self.config).ok().flatten()
     }
 
     pub fn effective_context_tokens(&self) -> Result<u64> {
@@ -232,7 +229,7 @@ impl Agent {
         &self,
         mut total: usize,
     ) -> Result<Vec<crate::state::StoredConversationEntry>> {
-        let Some(context_window) = self.context_window else {
+        let Some(context_window) = self.context_window() else {
             return Ok(Vec::new());
         };
         let trigger = (context_window as f32 * self.trim_at_ratio).max(1.0) as usize;
@@ -243,14 +240,25 @@ impl Agent {
         let target = (context_window as f32 * (1.0 - self.trim_batch_ratio)).max(1.0) as usize;
         let turns = self.state.load_visible_turns()?;
         let mut count = 0usize;
-        for turn in turns.iter().filter(|turn| !turn.is_summary) {
+        for turn in turns
+            .iter()
+            .filter(|turn| !turn.is_summary && turn.status != crate::state::TurnStatus::Running)
+        {
             if total <= target {
                 break;
             }
             total = total.saturating_sub(turn_context_tokens(turn));
             count += 1;
         }
-        self.state.trim_oldest_visible_turns(count)
+        let turns = self.state.oldest_evictable_visible_turns(count)?;
+        let (entries, evicted) = evicted_turn_entries(&turns);
+        self.memory.remember_evicted_turns(&evicted)?;
+        let turn_ids = turns
+            .iter()
+            .map(|turn| turn.turn_id.clone())
+            .collect::<Vec<_>>();
+        self.state.delete_visible_turns(&turn_ids)?;
+        Ok(entries)
     }
 
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
@@ -269,7 +277,6 @@ impl Agent {
         self.max_tool_rounds = self.config.tools.max_rounds;
         self.trim_at_ratio = self.config.context.trim_at_ratio;
         self.trim_batch_ratio = self.config.context.trim_batch_ratio;
-        self.context_window = self.config.active_context_window()?;
         self.on_overflow = self.config.context.on_overflow.clone();
         self.memory = MemoryStore::new(&self.config, &self.paths);
         self.memory.init()?;
@@ -298,17 +305,8 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
-        self.state.mark_interrupted_turn_if_needed()?;
-        let evicted = self.trim_visible_context()?;
-        let evicted = evicted
-            .into_iter()
-            .map(|entry| EvictedTurn {
-                timestamp: entry.timestamp,
-                role: entry.role,
-                content: entry.content,
-            })
-            .collect::<Vec<_>>();
-        self.memory.remember_evicted_turns(&evicted)?;
+        self.state.recover_stale_turns()?;
+        self.trim_visible_context()?;
         let input = clean_user_visible_text(input);
         let binary_images: Vec<&ClipboardImage> = images
             .iter()
@@ -473,14 +471,28 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let mut on_event = on_event;
-        let Some(context_window) = self.context_window else {
-            bail!("当前模型未配置上下文窗口，无法压缩上下文");
+        let context_window = self.context_window().or_else(|| {
+            if crate::models_cache::is_loaded() {
+                return None;
+            }
+            crate::models_cache::refresh_blocking(&self.paths).ok()?;
+            self.context_window()
+        });
+        let Some(context_window) = context_window else {
+            let missing = self.client.models_without_context_window(&self.config);
+            if missing.is_empty() {
+                bail!("当前模型的上下文窗口尚未加载或未配置，无法压缩上下文");
+            }
+            bail!(
+                "以下活动模型的上下文窗口尚未加载或未配置，无法压缩上下文：{}",
+                missing.join(", ")
+            );
         };
         let visible_count = self.state.load_visible_turns()?.len();
         if visible_count == 0 {
             return Ok(None);
         }
-        let check = overflow::OverflowCheck::new(self.context_window, self.trim_at_ratio, None);
+        let check = overflow::OverflowCheck::new(Some(context_window), self.trim_at_ratio, None);
         on_event(AgentEvent::CompactStart)?;
         let compactor = compact::Compactor::new(
             self.client.clone(),
@@ -522,7 +534,8 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
-        let check = overflow::OverflowCheck::new(self.context_window, self.trim_at_ratio, None);
+        let context_window = self.context_window();
+        let check = overflow::OverflowCheck::new(context_window, self.trim_at_ratio, None);
         let context_tokens = usize::try_from(context_tokens).unwrap_or(usize::MAX);
         if !check.is_enabled() || !check.check_tokens(context_tokens) {
             return Ok(None);
@@ -537,7 +550,7 @@ impl Agent {
                 let compactor = compact::Compactor::new(
                     self.client.clone(),
                     self.state.clone(),
-                    self.context_window.unwrap(),
+                    context_window.unwrap(),
                     check.reserved_tokens,
                 );
                 let mut on_chunk =
@@ -555,16 +568,7 @@ impl Agent {
             }
             "pop" => {
                 on_event(AgentEvent::PopStart)?;
-                let evicted = self.trim_visible_context_from(context_tokens)?;
-                let evicted_turns: Vec<EvictedTurn> = evicted
-                    .into_iter()
-                    .map(|entry| EvictedTurn {
-                        timestamp: entry.timestamp,
-                        role: entry.role,
-                        content: entry.content,
-                    })
-                    .collect();
-                self.memory.remember_evicted_turns(&evicted_turns)?;
+                self.trim_visible_context_from(context_tokens)?;
                 on_event(AgentEvent::PopEnd)?;
                 None
             }
@@ -1144,6 +1148,57 @@ fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
         messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
     }
     overflow::estimate_messages_tokens(&messages)
+}
+
+fn evicted_turn_entries(
+    turns: &[crate::state::Turn],
+) -> (Vec<crate::state::StoredConversationEntry>, Vec<EvictedTurn>) {
+    let mut entries = Vec::new();
+    let mut evicted = Vec::new();
+    for turn in turns {
+        entries.push(crate::state::StoredConversationEntry {
+            timestamp: turn.user_timestamp.clone(),
+            role: "user".to_string(),
+            content: turn.user_content.clone(),
+            reasoning: None,
+        });
+        evicted.push(EvictedTurn {
+            source_id: format!("{}:user", turn.turn_id),
+            timestamp: turn.user_timestamp.clone(),
+            role: "user".to_string(),
+            content: turn.user_content.clone(),
+        });
+
+        let timestamp = turn.assistant_timestamp.clone().unwrap_or_default();
+        entries.push(crate::state::StoredConversationEntry {
+            timestamp: timestamp.clone(),
+            role: "assistant".to_string(),
+            content: turn.assistant_content.clone(),
+            reasoning: turn.assistant_reasoning.clone(),
+        });
+        evicted.push(EvictedTurn {
+            source_id: format!("{}:assistant", turn.turn_id),
+            timestamp: timestamp.clone(),
+            role: "assistant".to_string(),
+            content: turn.assistant_content.clone(),
+        });
+
+        for (index, report) in turn.tool_reports.iter().enumerate() {
+            entries.push(crate::state::StoredConversationEntry {
+                timestamp: timestamp.clone(),
+                role: "assistant".to_string(),
+                content: report.clone(),
+                reasoning: None,
+            });
+            evicted.push(EvictedTurn {
+                source_id: format!("{}:tool:{index}", turn.turn_id),
+                timestamp: timestamp.clone(),
+                role: "assistant".to_string(),
+                content: report.clone(),
+            });
+        }
+    }
+    (entries, evicted)
 }
 
 fn compact_remembered_fact_report(output: &str) -> Option<String> {
@@ -1799,7 +1854,17 @@ mod tests {
                 .unwrap();
         }
         agent.trim_at_ratio = 1.0;
-        agent.context_window = Some(agent.effective_context_tokens().unwrap() as usize);
+        let context_window = agent.effective_context_tokens().unwrap() as usize;
+        let choice = agent.config.active_provider_model_choices().remove(0);
+        agent
+            .config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == choice.provider_id)
+            .unwrap()
+            .model_context_window
+            .insert(choice.model, context_window);
+        assert_eq!(agent.context_window(), Some(context_window));
 
         let evicted = agent.trim_visible_context().unwrap();
 
