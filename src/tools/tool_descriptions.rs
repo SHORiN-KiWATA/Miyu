@@ -45,6 +45,7 @@ macro_rules! tool_description_files {
         [
             include_str!("descriptions/add_meme.json"),
             include_str!("descriptions/apply_patch.json"),
+            include_str!("descriptions/ask_question.json"),
             include_str!("descriptions/archlinux_news.json"),
             include_str!("descriptions/archlinux_official_package_query.json"),
             include_str!("descriptions/archwiki_query.json"),

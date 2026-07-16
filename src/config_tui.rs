@@ -263,15 +263,18 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             Field::textarea(
                 "Tavily API Keys",
                 config.plugins.web.tavily_api_keys.join("\n"),
-            ),
+            )
+            .sensitive(),
             Field::textarea(
                 "Firecrawl API Keys",
                 config.plugins.web.firecrawl_api_keys.join("\n"),
-            ),
+            )
+            .sensitive(),
             Field::textarea(
                 "AnySearch API Keys",
                 config.plugins.web.anysearch_api_keys.join("\n"),
-            ),
+            )
+            .sensitive(),
             Field::new("SearXNG URL", config.plugins.web.searxng_base_url.clone()),
         ],
         1 => vec![
@@ -336,7 +339,8 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
             Field::textarea(
                 "API Keys",
                 config.plugins.image_generation.api_keys.join("\n"),
-            ),
+            )
+            .sensitive(),
             Field::new("模型", config.plugins.image_generation.model.clone()),
             Field::new(
                 "默认宽高比",
@@ -1779,7 +1783,8 @@ fn edit_provider_form(
         Field::new(
             "API Key 或 $env:NAME",
             provider.api_key.clone().unwrap_or_default(),
-        ),
+        )
+        .sensitive(),
         Field::new("当前模型", provider.default_model.clone()),
         Field::new(
             "模型上下文窗口 (tokens, 0=自动)",
@@ -2028,7 +2033,10 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
                 edit_textarea(stdout, &mut fields[selected].value)?;
-                return Ok(true);
+                cursors[selected] = fields[selected].value.chars().count();
+                if !fields[selected].sensitive {
+                    return Ok(true);
+                }
             }
             KeyCode::Enter if !editing => {
                 if !fields[selected].boolean {
@@ -2127,7 +2135,10 @@ fn run_form_without_buttons(
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
                 edit_textarea(stdout, &mut fields[selected].value)?;
-                return Ok(());
+                cursors[selected] = fields[selected].value.chars().count();
+                if !fields[selected].sensitive {
+                    return Ok(());
+                }
             }
             KeyCode::Enter if !editing => {
                 if !fields[selected].boolean {
@@ -2623,15 +2634,7 @@ fn draw_form(
         let row_y = y + index as u16 + 3;
         queue!(stdout, MoveTo(x + 2, row_y))?;
         let marker = if index == selected { ">" } else { " " };
-        let value = if field.textarea && field.value.is_empty() {
-            "(Enter 打开 $EDITOR)".to_string()
-        } else if !field.choices.is_empty() && field.value.is_empty() {
-            field.empty_choice_label.to_string()
-        } else if !field.choices.is_empty() {
-            choice_label(&field.value, field.empty_choice_label)
-        } else {
-            truncate(&field.value.replace('\n', " "), 70)
-        };
+        let value = field_display_value(field, index == selected && editing);
         let prefix = format!("{marker} {}: ", field.label);
         let line = truncate(
             &format!("{prefix}{value}"),
@@ -2693,6 +2696,24 @@ fn draw_form(
     }
     stdout.flush()?;
     Ok(())
+}
+
+fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
+    if field.textarea && field.value.is_empty() {
+        "(Enter 打开 $EDITOR)".to_string()
+    } else if field.sensitive && !field.value.is_empty() && !reveal_sensitive {
+        if field.textarea {
+            format!("[已配置 {} 项]", parse_key_list(&field.value).len())
+        } else {
+            "********".to_string()
+        }
+    } else if !field.choices.is_empty() && field.value.is_empty() {
+        field.empty_choice_label.to_string()
+    } else if !field.choices.is_empty() {
+        choice_label(&field.value, field.empty_choice_label)
+    } else {
+        truncate(&field.value.replace('\n', " "), 70)
+    }
 }
 
 fn draw_form_button(
@@ -2848,6 +2869,7 @@ struct Field {
     label: &'static str,
     value: String,
     textarea: bool,
+    sensitive: bool,
     boolean: bool,
     modalities: bool,
     choices: Vec<String>,
@@ -2860,6 +2882,7 @@ impl Field {
             label,
             value,
             textarea: false,
+            sensitive: false,
             boolean: false,
             modalities: false,
             choices: Vec::new(),
@@ -2872,6 +2895,7 @@ impl Field {
             label,
             value: value.to_string(),
             textarea: false,
+            sensitive: false,
             boolean: true,
             modalities: false,
             choices: Vec::new(),
@@ -2884,6 +2908,7 @@ impl Field {
             label,
             value,
             textarea: true,
+            sensitive: false,
             boolean: false,
             modalities: false,
             choices: Vec::new(),
@@ -2896,11 +2921,17 @@ impl Field {
         self
     }
 
+    fn sensitive(mut self) -> Self {
+        self.sensitive = true;
+        self
+    }
+
     fn modalities(label: &'static str, value: String) -> Self {
         Self {
             label,
             value,
             textarea: false,
+            sensitive: false,
             boolean: false,
             modalities: true,
             choices: Vec::new(),
@@ -2916,5 +2947,39 @@ impl Field {
     fn empty_choice_label(mut self, label: &'static str) -> Self {
         self.empty_choice_label = label;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{field_display_value, Field};
+
+    #[test]
+    fn sensitive_field_is_masked_until_actively_edited() {
+        let field = Field::new("API Key", "secret-key".to_string()).sensitive();
+
+        assert_eq!(field_display_value(&field, false), "********");
+        assert_eq!(field_display_value(&field, true), "secret-key");
+    }
+
+    #[test]
+    fn empty_sensitive_field_remains_empty() {
+        let field = Field::new("API Key", String::new()).sensitive();
+
+        assert_eq!(field_display_value(&field, false), "");
+    }
+
+    #[test]
+    fn sensitive_textarea_displays_configured_item_count() {
+        let field = Field::textarea("API Keys", "first\n\nsecond, third".to_string()).sensitive();
+
+        assert_eq!(field_display_value(&field, false), "[已配置 3 项]");
+    }
+
+    #[test]
+    fn empty_sensitive_textarea_keeps_editor_placeholder() {
+        let field = Field::textarea("API Keys", String::new()).sensitive();
+
+        assert_eq!(field_display_value(&field, false), "(Enter 打开 $EDITOR)");
     }
 }

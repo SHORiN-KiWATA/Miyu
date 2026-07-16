@@ -101,6 +101,14 @@ impl StateStore {
         self.conv_db.append_tool_report(turn_id, report.trim())
     }
 
+    pub fn append_question_exchange(
+        &self,
+        turn_id: &str,
+        exchange: &crate::question::QuestionExchange,
+    ) -> Result<()> {
+        self.conv_db.append_question_exchange(turn_id, exchange)
+    }
+
     pub fn load_session_loaded_tools(&self) -> Result<BTreeSet<String>> {
         self.conv_db.load_session_loaded_items("tool")
     }
@@ -306,6 +314,12 @@ fn turn_chars(turn: &Turn) -> usize {
             .iter()
             .map(|r| r.chars().count())
             .sum::<usize>()
+        + turn
+            .question_exchanges
+            .iter()
+            .filter_map(|exchange| serde_json::to_string(exchange).ok())
+            .map(|exchange| exchange.chars().count())
+            .sum::<usize>()
 }
 
 fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
@@ -318,6 +332,20 @@ fn turns_to_entries(turns: Vec<Turn>) -> Vec<StoredConversationEntry> {
             content: turn.user_content,
             reasoning: None,
         });
+        for exchange in &turn.question_exchanges {
+            entries.push(StoredConversationEntry {
+                timestamp: exchange.answered_at.clone(),
+                role: "assistant_clarification".to_string(),
+                content: crate::question::assistant_exchange_text(exchange),
+                reasoning: None,
+            });
+            entries.push(StoredConversationEntry {
+                timestamp: exchange.answered_at.clone(),
+                role: "user_clarification".to_string(),
+                content: crate::question::user_exchange_text(exchange),
+                reasoning: None,
+            });
+        }
         entries.push(StoredConversationEntry {
             timestamp: ts.clone(),
             role: "assistant".to_string(),
@@ -383,6 +411,51 @@ mod tests {
         let turns = store.load_turns().unwrap();
         assert_eq!(turns[0].status, TurnStatus::Completed);
         assert_eq!(turns[0].assistant_content, "hi there");
+    }
+
+    #[test]
+    fn question_exchange_persists_with_user_role_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::new(&MiyuPaths {
+            config_dir: temp.path().join("config"),
+            config_file: temp.path().join("config/config.jsonc"),
+            skills_dir: temp.path().join("config/skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish/miyu.fish"),
+            bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+            zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+            scripts_dir: temp.path().join("config/scripts"),
+            system_scripts_dir: PathBuf::new(),
+        })
+        .unwrap();
+        store.start_turn("turn_1", "配置它", 999999).unwrap();
+        let request = crate::question::QuestionRequest {
+            questions: vec![crate::question::QuestionPrompt {
+                header: "范围".to_string(),
+                question: "修改哪些部分？".to_string(),
+                options: vec![crate::question::QuestionOption {
+                    label: "全部".to_string(),
+                    description: String::new(),
+                }],
+                multiple: false,
+                custom: true,
+            }],
+        };
+        let exchange =
+            crate::question::QuestionExchange::new(request, vec![vec!["全部".to_string()]])
+                .unwrap();
+        store.append_question_exchange("turn_1", &exchange).unwrap();
+        store.complete_turn("turn_1", "已经配置。", None).unwrap();
+
+        let turns = store.load_turns().unwrap();
+        assert_eq!(turns[0].question_exchanges, vec![exchange]);
+        let history = store.load_conversation().unwrap();
+        assert_eq!(history[1].role, "assistant_clarification");
+        assert_eq!(history[2].role, "user_clarification");
+        assert!(history[2].content.contains("全部"));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::question::QuestionExchange;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -46,6 +47,7 @@ pub struct Turn {
     pub assistant_timestamp: Option<String>,
     pub status: TurnStatus,
     pub tool_reports: Vec<String>,
+    pub question_exchanges: Vec<QuestionExchange>,
     pub hidden: bool,
     pub is_summary: bool,
     pub owner_pid: Option<i64>,
@@ -74,6 +76,17 @@ impl ConversationDb {
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;
              PRAGMA foreign_keys = ON;",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS question_exchanges (
+                turn_id         TEXT NOT NULL,
+                exchange_index  INTEGER NOT NULL,
+                payload         TEXT NOT NULL,
+                PRIMARY KEY (turn_id, exchange_index),
+                FOREIGN KEY (turn_id) REFERENCES turns(turn_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_question_exchanges_turn
+                ON question_exchanges(turn_id, exchange_index);",
         )?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS turns (
@@ -205,6 +218,26 @@ impl ConversationDb {
         Ok(())
     }
 
+    pub fn append_question_exchange(
+        &self,
+        turn_id: &str,
+        exchange: &QuestionExchange,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let next_index: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(exchange_index), -1) + 1
+             FROM question_exchanges WHERE turn_id = ?1",
+            params![turn_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO question_exchanges (turn_id, exchange_index, payload)
+             VALUES (?1, ?2, ?3)",
+            params![turn_id, next_index, serde_json::to_string(exchange)?],
+        )?;
+        Ok(())
+    }
+
     pub fn load_session_loaded_items(
         &self,
         kind: &str,
@@ -252,9 +285,10 @@ impl ConversationDb {
                     token_total, token_usage_estimated
              FROM turns ORDER BY seq ASC",
         )?;
-        let turns = stmt
+        let mut turns = stmt
             .query_map([], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_question_exchanges_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
@@ -267,9 +301,10 @@ impl ConversationDb {
                     token_total, token_usage_estimated
              FROM turns WHERE turn_id != ?1 ORDER BY seq ASC",
         )?;
-        let turns = stmt
+        let mut turns = stmt
             .query_map(params![exclude_turn_id], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_question_exchanges_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
@@ -286,9 +321,10 @@ impl ConversationDb {
                     token_total, token_usage_estimated
              FROM turns WHERE hidden = 0 ORDER BY seq ASC",
         )?;
-        let turns = stmt
+        let mut turns = stmt
             .query_map([], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_question_exchanges_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
@@ -300,9 +336,10 @@ impl ConversationDb {
                     token_total, token_usage_estimated
              FROM turns WHERE hidden = 0 AND turn_id != ?1 ORDER BY seq ASC",
         )?;
-        let turns = stmt
+        let mut turns = stmt
             .query_map(params![exclude_turn_id], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_question_exchanges_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
@@ -375,10 +412,11 @@ impl ConversationDb {
                     token_total, token_usage_estimated
              FROM turns WHERE is_summary = 0 ORDER BY seq ASC LIMIT ?1",
         )?;
-        let to_remove: Vec<Turn> = stmt
+        let mut to_remove: Vec<Turn> = stmt
             .query_map(params![count as i64], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(stmt);
+        attach_question_exchanges_locked(&conn, &mut to_remove)?;
         for turn in &to_remove {
             conn.execute(
                 "DELETE FROM turns WHERE turn_id = ?1",
@@ -398,9 +436,10 @@ impl ConversationDb {
              WHERE hidden = 0 AND is_summary = 0 AND status != 'running'
              ORDER BY seq ASC LIMIT ?1",
         )?;
-        let turns = stmt
+        let mut turns = stmt
             .query_map(params![count as i64], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        attach_question_exchanges_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
@@ -762,6 +801,12 @@ fn turn_chars(turn: &Turn) -> usize {
             .iter()
             .map(|r| r.chars().count())
             .sum::<usize>()
+        + turn
+            .question_exchanges
+            .iter()
+            .filter_map(|exchange| serde_json::to_string(exchange).ok())
+            .map(|exchange| exchange.chars().count())
+            .sum::<usize>()
 }
 
 #[allow(dead_code)]
@@ -789,12 +834,48 @@ fn map_turn_row(row: &rusqlite::Row) -> rusqlite::Result<Turn> {
         assistant_timestamp: row.get(6)?,
         status: TurnStatus::from_str(row.get::<_, String>(7)?.as_str()),
         tool_reports,
+        question_exchanges: Vec::new(),
         hidden: hidden != 0,
         is_summary: is_summary != 0,
         owner_pid: row.get(11)?,
         token_total: row.get::<_, i64>(12)?.max(0) as u64,
         token_usage_estimated: row.get::<_, i64>(13)? != 0,
     })
+}
+
+fn attach_question_exchanges_locked(conn: &Connection, turns: &mut [Turn]) -> Result<()> {
+    if turns.is_empty() {
+        return Ok(());
+    }
+    let indexes = turns
+        .iter()
+        .enumerate()
+        .map(|(index, turn)| (turn.turn_id.clone(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    let turn_ids = indexes.keys().collect::<Vec<_>>();
+    for chunk in turn_ids.chunks(900) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT turn_id, payload FROM question_exchanges
+             WHERE turn_id IN ({placeholders}) ORDER BY turn_id, exchange_index"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (turn_id, payload) = row?;
+            let Some(index) = indexes.get(&turn_id).copied() else {
+                continue;
+            };
+            let exchange = serde_json::from_str::<QuestionExchange>(&payload)
+                .with_context(|| format!("invalid question exchange for turn {turn_id}"))?;
+            turns[index].question_exchanges.push(exchange);
+        }
+    }
+    Ok(())
 }
 
 fn add_column_if_missing(

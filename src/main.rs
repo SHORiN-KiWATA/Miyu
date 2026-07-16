@@ -12,6 +12,8 @@ mod memory;
 mod models_cache;
 mod paths;
 mod prompts;
+mod question;
+mod question_tui;
 mod render;
 mod shell;
 mod state;

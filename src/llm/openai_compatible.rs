@@ -1540,7 +1540,7 @@ struct AnthropicToolAccumulator {
 }
 
 impl AnthropicToolAccumulator {
-    fn start(&mut self, index: usize, block: AnthropicStreamBlock) {
+    fn start(&mut self, index: usize, block: AnthropicStreamBlock) -> Option<String> {
         while self.calls.len() <= index {
             self.calls.push(PartialToolCall::default());
         }
@@ -1548,6 +1548,7 @@ impl AnthropicToolAccumulator {
         call.id = block.id.unwrap_or_else(|| format!("tool-{index}"));
         call.kind = "function".to_string();
         call.name = block.name.unwrap_or_default();
+        (!call.name.is_empty()).then(|| call.name.clone())
     }
 
     fn append_arguments(&mut self, index: usize, text: String) {
@@ -1590,16 +1591,18 @@ struct ResponsesToolAccumulator {
 }
 
 impl ResponsesToolAccumulator {
-    fn start(&mut self, item: ResponsesStreamItem) {
+    fn start(&mut self, item: ResponsesStreamItem) -> Option<String> {
         if item.kind != "function_call" {
-            return;
+            return None;
         }
+        let name = item.name.unwrap_or_default();
         self.calls.push(PartialToolCall {
             id: item.call_id.or(item.id).unwrap_or_default(),
             kind: "function".to_string(),
-            name: item.name.unwrap_or_default(),
+            name: name.clone(),
             arguments: item.arguments.unwrap_or_default(),
         });
+        (!name.is_empty()).then_some(name)
     }
 
     fn append_arguments(&mut self, item_id: Option<String>, delta: String) {
@@ -1631,7 +1634,7 @@ impl ResponsesToolAccumulator {
                 call.arguments = arguments;
             }
         } else {
-            self.start(ResponsesStreamItem {
+            let _ = self.start(ResponsesStreamItem {
                 kind: "function_call".to_string(),
                 id: None,
                 call_id: Some(id),
@@ -1678,11 +1681,12 @@ struct PartialToolCall {
 }
 
 impl ToolCallAccumulator {
-    fn push(&mut self, delta: ToolCallDelta) {
+    fn push(&mut self, delta: ToolCallDelta) -> Option<String> {
         while self.calls.len() <= delta.index {
             self.calls.push(PartialToolCall::default());
         }
         let call = &mut self.calls[delta.index];
+        let name_updated = delta.function.name.is_some();
         if let Some(id) = delta.id {
             call.id = id;
         }
@@ -1695,6 +1699,7 @@ impl ToolCallAccumulator {
         if let Some(arguments) = delta.function.arguments {
             call.arguments.push_str(&arguments);
         }
+        (name_updated && !call.name.is_empty()).then(|| call.name.clone())
     }
 
     fn finish(self) -> Vec<ToolCall> {
@@ -1909,7 +1914,12 @@ where
             )?;
         }
         for tool_call in delta.tool_calls {
-            tool_calls.push(tool_call);
+            if let Some(name) = tool_calls.push(tool_call) {
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ToolCall,
+                    text: name,
+                })?;
+            }
         }
     }
     Ok(Some(false))
@@ -2005,7 +2015,12 @@ where
         }
         "response.output_item.added" => {
             if let Some(item) = event.item {
-                tool_calls.start(item);
+                if let Some(name) = tool_calls.start(item) {
+                    on_chunk(ChatStreamChunk {
+                        kind: ChatStreamKind::ToolCall,
+                        text: name,
+                    })?;
+                }
             }
         }
         "response.function_call_arguments.delta" => {
@@ -2093,7 +2108,12 @@ where
                 match block.kind.as_str() {
                     "tool_use" | "server_tool_use" => {
                         if let Some(index) = event.index {
-                            state.tool_calls.start(index, block);
+                            if let Some(name) = state.tool_calls.start(index, block) {
+                                on_chunk(ChatStreamChunk {
+                                    kind: ChatStreamKind::ToolCall,
+                                    text: name,
+                                })?;
+                            }
                         }
                     }
                     "text" => {
@@ -2628,6 +2648,37 @@ mod tests {
     }
 
     #[test]
+    fn chat_stream_announces_question_tool_before_arguments() {
+        let mut content = String::new();
+        let mut content_emitted = 0usize;
+        let mut reasoning = String::new();
+        let mut reasoning_emitted = 0usize;
+        let mut usage = None;
+        let mut tool_calls = ToolCallAccumulator::default();
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        handle_sse_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ask_question","arguments":""}}]}}]}"#,
+            &mut content,
+            &mut content_emitted,
+            &mut reasoning,
+            &mut reasoning_emitted,
+            &mut usage,
+            &mut tool_calls,
+            &mut on_chunk,
+        )
+        .unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ToolCall);
+        assert_eq!(chunks[0].text, "ask_question");
+    }
+
+    #[test]
     fn sse_buffer_preserves_utf8_split_across_byte_chunks() {
         let line = r#"data: {"choices":[{"delta":{"content":"等","tool_calls":null}}]}"#;
         let split = line.find("等").unwrap() + 1;
@@ -2971,6 +3022,39 @@ mod tests {
     }
 
     #[test]
+    fn responses_stream_announces_question_tool_when_item_starts() {
+        let mut content = String::new();
+        let mut content_emitted = 0usize;
+        let mut reasoning = String::new();
+        let mut reasoning_emitted = 0usize;
+        let mut usage = None;
+        let mut content_started = false;
+        let mut tool_calls = ResponsesToolAccumulator::default();
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        handle_responses_sse_line(
+            r#"data: {"type":"response.output_item.added","item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"ask_question","arguments":""}}"#,
+            &mut content,
+            &mut content_emitted,
+            &mut reasoning,
+            &mut reasoning_emitted,
+            &mut usage,
+            &mut content_started,
+            &mut tool_calls,
+            &mut on_chunk,
+        )
+        .unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ToolCall);
+        assert_eq!(chunks[0].text, "ask_question");
+    }
+
+    #[test]
     fn protocol_config_accepts_explicit_anthropic() {
         let mut provider = test_provider("anthropic", "https://api.anthropic.com/v1");
         provider.protocol = "anthropic".to_string();
@@ -3156,6 +3240,27 @@ mod tests {
         assert_eq!(calls[0].id, "toolu_1");
         assert_eq!(calls[0].function.name, "calc");
         assert_eq!(calls[0].function.arguments, r#"{"x":1}"#);
+    }
+
+    #[test]
+    fn anthropic_stream_announces_question_tool_when_block_starts() {
+        let mut state = AnthropicStreamState::default();
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        handle_anthropic_sse_data(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"ask_question","input":{}}}"#,
+            &mut state,
+            &mut on_chunk,
+        )
+        .unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ToolCall);
+        assert_eq!(chunks[0].text, "ask_question");
     }
 
     fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {

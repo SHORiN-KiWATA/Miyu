@@ -1,6 +1,7 @@
 mod alarm;
 mod apply_patch;
 mod archlinux;
+mod ask_question;
 mod calculator;
 mod caniplayonlinux_query;
 mod clipboard;
@@ -51,6 +52,10 @@ pub use registry::{
 };
 pub(crate) use scripts::rescan_scripts;
 pub use skills::register_skills;
+
+pub fn register_ask_question(registry: &mut ToolRegistry) {
+    ask_question::register(registry);
+}
 
 static SCRIPT_DISPLAY_NAMES: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 
@@ -108,6 +113,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
     let result: &str = match name {
         "run_command" => "运行命令",
         "apply_patch" => "应用补丁",
+        "ask_question" => "询问用户",
         "task" => "子代理任务",
         "read_file" => "读取文件",
         "write_file" => "写入文件",

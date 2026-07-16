@@ -160,6 +160,7 @@ pub struct ChatResult {
 pub enum ChatStreamKind {
     Content,
     Reasoning,
+    ToolCall,
 }
 
 #[derive(Debug, Clone)]

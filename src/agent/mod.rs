@@ -10,6 +10,10 @@ use crate::llm::{
 };
 use crate::memory::{EvictedTurn, MemoryStore};
 use crate::paths::MiyuPaths;
+use crate::question::{
+    answered_tool_output, unavailable_tool_output, QuestionCancelled, QuestionExchange,
+    QuestionRequest, QuestionResponse,
+};
 use crate::render::wait_spinner::SPINNER_INTERVAL;
 use crate::state::StateStore;
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
@@ -20,7 +24,9 @@ use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+
+const MAX_QUESTION_ROUNDS_PER_TURN: usize = 8;
 
 pub struct PendingTurnGuard {
     state: StateStore,
@@ -106,7 +112,7 @@ impl AgentMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AgentEvent {
     Chunk(ChatStreamChunk),
     ToolCall {
@@ -126,6 +132,10 @@ pub enum AgentEvent {
         name: String,
         stream: tools::CommandOutputStream,
         chunk: Vec<u8>,
+    },
+    AskQuestion {
+        request: QuestionRequest,
+        responder: oneshot::Sender<QuestionResponse>,
     },
     SpinnerTick,
     CompactStart,
@@ -668,30 +678,11 @@ impl Agent {
         F: FnMut(AgentEvent) -> Result<()>,
     {
         let mut tool_round = 0usize;
+        let mut question_rounds = 0usize;
         let mut loaded_tools = self.initial_loaded_tools(messages)?;
         let mut usage_accumulator = UsageAccumulator::default();
         loop {
-            if self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds {
-                let content = format!(
-                    "工具调用已达到上限 {} 轮，已停止继续调用。可将 `tools.max_rounds` 设为 0 以允许无限工具调用。",
-                    self.max_tool_rounds
-                );
-                on_event(AgentEvent::Chunk(ChatStreamChunk {
-                    kind: ChatStreamKind::Content,
-                    text: content.clone(),
-                }))?;
-                let usage = usage_accumulator.usage();
-                return Ok(ChatResult {
-                    content,
-                    reasoning: None,
-                    usage,
-                    usage_estimated: usage_accumulator.estimated,
-                    tool_calls: Vec::new(),
-                    provider_id: None,
-                    model: None,
-                });
-            }
-            tool_round += 1;
+            let tool_limit_reached = self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds;
 
             if self.mode == AgentMode::Normal {
                 let mut tools = self.tools.lock().unwrap();
@@ -699,7 +690,7 @@ impl Agent {
                 tools::register_script_display_names(&tools);
             }
 
-            let definitions = if self.tools_enabled {
+            let definitions = if self.tools_enabled && !tool_limit_reached {
                 let tools = self.tools.lock().unwrap();
                 if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
                     tools.lazy_definitions(&loaded_tools)
@@ -748,17 +739,129 @@ impl Agent {
                 }
                 return Ok(result);
             }
+            if tool_limit_reached {
+                let mut result = result;
+                let warning = format!(
+                    "工具调用已达到上限 {} 轮，未执行后续工具调用。可将 `tools.max_rounds` 设为 0 以允许无限工具调用。",
+                    self.max_tool_rounds
+                );
+                let warning_chunk = if result.content.trim().is_empty() {
+                    warning.clone()
+                } else {
+                    format!("\n\n{warning}")
+                };
+                result.content.push_str(&warning_chunk);
+                on_event(AgentEvent::Chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::Content,
+                    text: warning_chunk,
+                }))?;
+                result.tool_calls.clear();
+                if let Some(usage) = usage_accumulator.usage() {
+                    result.usage = Some(usage);
+                    result.usage_estimated = usage_accumulator.estimated;
+                }
+                return Ok(result);
+            }
+            tool_round += 1;
             messages.push(ChatMessage::assistant(
                 result.content.clone(),
                 Some(result.tool_calls.clone()),
             ));
+            let ask_question_enabled = self
+                .tools
+                .lock()
+                .unwrap()
+                .tool_names()
+                .iter()
+                .any(|name| name == "ask_question");
+            let question_call_count = result
+                .tool_calls
+                .iter()
+                .filter(|call| ask_question_enabled && call.function.name == "ask_question")
+                .count();
+            if question_call_count == 1 {
+                question_rounds += 1;
+            }
+            let question_round_allowed =
+                question_call_count == 1 && question_rounds <= MAX_QUESTION_ROUNDS_PER_TURN;
+            let defer_sibling_tools = question_call_count == 1 && result.tool_calls.len() > 1;
             for call in result.tool_calls {
                 let event_name = tool_event_name(&call.function.name, &call.function.arguments);
-                used_tools.push(call.function.name.clone());
                 on_event(AgentEvent::ToolCall {
                     name: event_name.clone(),
                     arguments: call.function.arguments.clone(),
                 })?;
+                if question_call_count > 1 {
+                    let output = "tool error: only one ask_question call is allowed per tool batch; combine all questions into one call".to_string();
+                    on_event(AgentEvent::ToolResult {
+                        name: event_name.clone(),
+                        ok: false,
+                        output: output.clone(),
+                    })?;
+                    messages.push(ChatMessage::tool(call.id, output));
+                    continue;
+                }
+                if defer_sibling_tools && call.function.name != "ask_question" {
+                    let output = "tool error: deferred until the user answers ask_question; reissue this tool call after receiving the answer".to_string();
+                    on_event(AgentEvent::ToolResult {
+                        name: event_name.clone(),
+                        ok: false,
+                        output: output.clone(),
+                    })?;
+                    messages.push(ChatMessage::tool(call.id, output));
+                    continue;
+                }
+                if ask_question_enabled && call.function.name == "ask_question" {
+                    if !question_round_allowed {
+                        let output = format!(
+                            "tool error: ask_question exceeded the per-turn limit of {MAX_QUESTION_ROUNDS_PER_TURN}"
+                        );
+                        on_event(AgentEvent::ToolResult {
+                            name: event_name.clone(),
+                            ok: false,
+                            output: output.clone(),
+                        })?;
+                        messages.push(ChatMessage::tool(call.id, output));
+                        continue;
+                    }
+                    let request = match QuestionRequest::parse(&call.function.arguments) {
+                        Ok(request) => request,
+                        Err(err) => {
+                            let output = format!("tool error: invalid ask_question request: {err}");
+                            on_event(AgentEvent::ToolResult {
+                                name: event_name.clone(),
+                                ok: false,
+                                output: output.clone(),
+                            })?;
+                            messages.push(ChatMessage::tool(call.id, output));
+                            continue;
+                        }
+                    };
+                    let (response_tx, response_rx) = oneshot::channel();
+                    on_event(AgentEvent::AskQuestion {
+                        request: request.clone(),
+                        responder: response_tx,
+                    })?;
+                    let response = response_rx.await.unwrap_or(QuestionResponse::Cancelled);
+                    let output = match response {
+                        QuestionResponse::Answered(answers) => {
+                            let exchange = QuestionExchange::new(request, answers)?;
+                            self.state
+                                .append_question_exchange(current_turn_id, &exchange)?;
+                            answered_tool_output(&exchange)
+                        }
+                        QuestionResponse::Cancelled => return Err(QuestionCancelled.into()),
+                        QuestionResponse::Unavailable(reason) => unavailable_tool_output(&reason),
+                    };
+                    messages.push(ChatMessage::tool(call.id, output.clone()));
+                    on_event(AgentEvent::ToolResult {
+                        name: event_name,
+                        ok: true,
+                        output,
+                    })?;
+                    continue;
+                }
+                used_tools.push(call.function.name.clone());
                 {
                     let tools = self.tools.lock().unwrap();
                     if matches!(self.mode, AgentMode::Plan | AgentMode::Chat)
@@ -964,6 +1067,9 @@ impl Agent {
                     }
                 }
             }
+            if question_round_allowed {
+                tool_round = tool_round.saturating_sub(1);
+            }
         }
     }
 
@@ -1029,6 +1135,16 @@ impl Agent {
                 continue;
             }
             messages.push(ChatMessage::plain("user", &turn.user_content));
+            for exchange in &turn.question_exchanges {
+                messages.push(ChatMessage::plain(
+                    "assistant",
+                    crate::question::assistant_exchange_text(exchange),
+                ));
+                messages.push(ChatMessage::plain(
+                    "user",
+                    crate::question::user_exchange_text(exchange),
+                ));
+            }
             messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
             if !turn.tool_reports.is_empty() {
                 messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
@@ -1159,10 +1275,18 @@ fn private_tool_memory(reports: &[String]) -> String {
 }
 
 fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
-    let mut messages = vec![
-        ChatMessage::plain("user", &turn.user_content),
-        ChatMessage::plain("assistant", &turn.assistant_content),
-    ];
+    let mut messages = vec![ChatMessage::plain("user", &turn.user_content)];
+    for exchange in &turn.question_exchanges {
+        messages.push(ChatMessage::plain(
+            "assistant",
+            crate::question::assistant_exchange_text(exchange),
+        ));
+        messages.push(ChatMessage::plain(
+            "user",
+            crate::question::user_exchange_text(exchange),
+        ));
+    }
+    messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
     if !turn.tool_reports.is_empty() {
         messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
     }
@@ -1187,6 +1311,36 @@ fn evicted_turn_entries(
             role: "user".to_string(),
             content: turn.user_content.clone(),
         });
+
+        for (index, exchange) in turn.question_exchanges.iter().enumerate() {
+            let timestamp = exchange.answered_at.clone();
+            let assistant_content = crate::question::assistant_exchange_text(exchange);
+            entries.push(crate::state::StoredConversationEntry {
+                timestamp: timestamp.clone(),
+                role: "assistant_clarification".to_string(),
+                content: assistant_content.clone(),
+                reasoning: None,
+            });
+            evicted.push(EvictedTurn {
+                source_id: format!("{}:question:{index}", turn.turn_id),
+                timestamp: timestamp.clone(),
+                role: "assistant".to_string(),
+                content: assistant_content,
+            });
+            let user_content = crate::question::user_exchange_text(exchange);
+            entries.push(crate::state::StoredConversationEntry {
+                timestamp: timestamp.clone(),
+                role: "user_clarification".to_string(),
+                content: user_content.clone(),
+                reasoning: None,
+            });
+            evicted.push(EvictedTurn {
+                source_id: format!("{}:answer:{index}", turn.turn_id),
+                timestamp,
+                role: "user".to_string(),
+                content: user_content,
+            });
+        }
 
         let timestamp = turn.assistant_timestamp.clone().unwrap_or_default();
         entries.push(crate::state::StoredConversationEntry {
@@ -1823,6 +1977,7 @@ mod tests {
             assistant_timestamp: None,
             status: crate::state::TurnStatus::Completed,
             tool_reports: Vec::new(),
+            question_exchanges: Vec::new(),
             hidden: false,
             is_summary: false,
             owner_pid: None,

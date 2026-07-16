@@ -899,7 +899,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
 async fn run_tool(paths: &MiyuPaths, mode: AgentMode, args: ToolArgs) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
-    let registry = build_tool_registry(&config, paths, mode)?;
+    let registry = build_tool_registry(&config, paths, mode, false)?;
     let output = registry
         .call(&args.name, args.arguments.as_deref().unwrap_or("{}"))
         .await?;
@@ -1784,7 +1784,12 @@ async fn run_chat_with_images(
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    let registry = build_tool_registry(&config, paths, AgentMode::Normal)?;
+    let registry = build_tool_registry(
+        &config,
+        paths,
+        AgentMode::Normal,
+        crate::question_tui::available(false),
+    )?;
     let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
     let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
     let readable_tool_names = config.display.readable_tool_names;
@@ -1814,7 +1819,11 @@ async fn run_chat_with_images(
         })
         .await;
     renderer.finish()?;
-    let result = result?;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
+        Err(err) => return Err(err),
+    };
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
     let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
     let context_tokens = agent.effective_context_tokens()?;
@@ -1922,7 +1931,8 @@ async fn run_chat_with_options(
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    let registry = build_tool_registry(&config, paths, mode)?;
+    let registry =
+        build_tool_registry(&config, paths, mode, crate::question_tui::available(plain))?;
     let reasoning_mode = if show_reasoning == Some(false) {
         render::ReasoningDisplayMode::Hidden
     } else {
@@ -1951,7 +1961,11 @@ async fn run_chat_with_options(
         .chat_stream(&message, |event| handle_agent_event(&mut renderer, event))
         .await;
     renderer.finish()?;
-    let result = result?;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
+        Err(err) => return Err(err),
+    };
     print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
     let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
     let context_tokens = agent.effective_context_tokens()?;
@@ -2064,7 +2078,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     }
     let mut cumulative_tokens = 0u64;
     let mut show_shortcut_hint = true;
-    let initial_registry = build_tool_registry(&config, paths, mode)?;
+    let initial_registry =
+        build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
     let mut agent = Agent::new(
         config.clone(),
         paths,
@@ -2111,7 +2126,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 agent.effective_context_tokens()?,
                 (cumulative_tokens > 0).then_some(cumulative_tokens),
             );
-            let registry = build_tool_registry(&config, paths, mode)?;
+            let registry =
+                build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
             footer.update_context_window(agent.context_window());
@@ -2127,7 +2143,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 agent.effective_context_tokens()?,
                 (cumulative_tokens > 0).then_some(cumulative_tokens),
             );
-            let registry = build_tool_registry(&config, paths, mode)?;
+            let registry =
+                build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
             agent.switch_mode(mode, registry);
             footer.update_context_window(agent.context_window());
@@ -2219,7 +2236,8 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
         }
         input_history.push(input.to_string());
         if agent.mode() != mode {
-            let registry = build_tool_registry(&config, paths, mode)?;
+            let registry =
+                build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.switch_mode(mode, registry);
         }
         agent.prepare_for_turn()?;
@@ -2304,6 +2322,10 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                 show_shortcut_hint = false;
             }
             Ok(None) => {}
+            Err(err) if crate::question::is_question_cancelled(&err) => {
+                footer.update_session_tokens(agent.effective_context_tokens()?);
+                continue;
+            }
             Err(err) => {
                 eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
                 continue;
@@ -4204,8 +4226,13 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
             println!("{}", serde_json::to_string(&entry)?);
             continue;
         }
-        println!("{} {}", entry.timestamp, entry.role);
-        if entry.role == "assistant" {
+        let display_role = if entry.role.ends_with("_clarification") {
+            entry.role.trim_end_matches("_clarification")
+        } else {
+            entry.role.as_str()
+        };
+        println!("{} {display_role}", entry.timestamp);
+        if entry.role.starts_with("assistant") {
             let response = crate::llm::ChatResult {
                 content: entry.content,
                 reasoning: if args.no_thinking {
@@ -4463,6 +4490,7 @@ fn build_tool_registry(
     config: &AppConfig,
     paths: &MiyuPaths,
     mode: AgentMode,
+    interactive_questions: bool,
 ) -> Result<tools::ToolRegistry> {
     let mut registry = if config.tools.enabled {
         match mode {
@@ -4475,6 +4503,9 @@ fn build_tool_registry(
     };
     if config.tools.enabled && config.skills.enabled && mode != AgentMode::Chat {
         tools::register_skills(&mut registry, config, paths)?;
+    }
+    if config.tools.enabled && interactive_questions {
+        tools::register_ask_question(&mut registry);
     }
     tools::register_script_display_names(&registry);
     Ok(registry)
@@ -4505,6 +4536,17 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         } => {
             renderer.write_command_output(&name, stream, &chunk)?;
             renderer.tick_spinner()
+        }
+        AgentEvent::AskQuestion { request, responder } => {
+            renderer.prepare_for_external_output()?;
+            let response = crate::question_tui::ask(&request).unwrap_or_else(|err| {
+                crate::question::QuestionResponse::Unavailable(err.to_string())
+            });
+            if !matches!(&response, crate::question::QuestionResponse::Cancelled) {
+                renderer.start_waiting()?;
+            }
+            let _ = responder.send(response);
+            Ok(())
         }
         AgentEvent::SpinnerTick => renderer.tick_spinner(),
         AgentEvent::CompactStart => {

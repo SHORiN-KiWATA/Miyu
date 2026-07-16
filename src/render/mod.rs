@@ -692,6 +692,12 @@ impl StreamRenderer {
     }
 
     pub fn write_chunk(&mut self, chunk: ChatStreamChunk) -> Result<()> {
+        if chunk.kind == ChatStreamKind::ToolCall {
+            if chunk.text == "ask_question" {
+                self.start_preparing_question()?;
+            }
+            return Ok(());
+        }
         if !self.plain {
             self.hide_cursor()?;
         }
@@ -791,11 +797,11 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
-        self.stop_waiting()?;
-        self.end_subagent_stream_line()?;
         if is_silent_tool(name) && ok {
             return Ok(());
         }
+        self.stop_waiting()?;
+        self.end_subagent_stream_line()?;
         let status = if ok { "ok" } else { "err" };
         if name == "run_command" {
             if let Some(mut display) = self.command_display.take() {
@@ -1156,6 +1162,7 @@ impl StreamRenderer {
                     writeln!(stdout)?;
                 }
             }
+            ChatStreamKind::ToolCall => return Ok(()),
         }
         stdout.flush()?;
         self.mode = Some(mode);
@@ -1525,6 +1532,22 @@ impl StreamRenderer {
         Ok(())
     }
 
+    fn start_preparing_question(&mut self) -> Result<()> {
+        if self.plain || !WaitSpinner::supported() {
+            return Ok(());
+        }
+        self.end_active_stream_line()?;
+        self.finalize_reasoning_summary()?;
+        self.stop_waiting()?;
+        self.hide_cursor()?;
+        self.wait_spinner = Some(WaitSpinner::start(
+            t("~ Preparing question", "~ 准备提问").to_string(),
+            SpinnerStyle::Braille,
+        ));
+        self.last_tick = None;
+        self.tick_spinner()
+    }
+
     fn set_tool_waiting_phase(&mut self, header: &str, sub: Option<&str>) {
         if let Some(spinner) = &mut self.wait_spinner {
             spinner.set_phase(header.to_string());
@@ -1654,7 +1677,7 @@ fn tool_status_text(name: &str, stats: &ToolStats, subagent: bool) -> String {
 }
 
 fn is_silent_tool(name: &str) -> bool {
-    matches!(name, "show_meme")
+    matches!(name, "show_meme" | "ask_question")
 }
 
 fn is_subagent_tool(name: &str) -> bool {

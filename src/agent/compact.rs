@@ -145,6 +145,12 @@ fn turns_to_text(turns: &[&Turn]) -> String {
         output.push_str(&format!("--- Turn {} ---\n", i + 1));
         output.push_str("User: ");
         output.push_str(&turn.user_content);
+        for exchange in &turn.question_exchanges {
+            output.push_str("\nAssistant clarification: ");
+            output.push_str(&crate::question::assistant_exchange_text(exchange));
+            output.push_str("\nUser clarification: ");
+            output.push_str(&crate::question::user_exchange_text(exchange));
+        }
         output.push_str("\nAssistant: ");
         output.push_str(&turn.assistant_content);
         if let Some(reasoning) = &turn.assistant_reasoning {
@@ -275,6 +281,10 @@ fn split_into_segments<'a>(turns: &[&'a Turn], budget_tokens: usize) -> Vec<Vec<
 fn turn_to_text(turn: &Turn) -> String {
     let mut output = String::new();
     output.push_str(&turn.user_content);
+    for exchange in &turn.question_exchanges {
+        output.push_str(&crate::question::assistant_exchange_text(exchange));
+        output.push_str(&crate::question::user_exchange_text(exchange));
+    }
     output.push_str(&turn.assistant_content);
     if let Some(reasoning) = &turn.assistant_reasoning {
         output.push_str(reasoning);
