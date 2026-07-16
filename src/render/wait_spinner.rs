@@ -110,12 +110,12 @@ fn render_frame(frame: usize, state: &WaitSpinner) -> (String, u16) {
     let main_line = format!(
         "{} {}{}",
         spinner_prefix,
-        paint_secondary(&state.phase),
-        paint_secondary(&elapsed)
+        paint_for_style(&state.phase, state.style),
+        paint_for_style(&elapsed, state.style)
     );
     match &state.sub_phase {
         Some(sub) if !sub.trim().is_empty() => {
-            let sub_line = format!("  {}", paint_secondary(sub));
+            let sub_line = format!("  {}", paint_for_style(sub, state.style));
             (format!("{main_line}\n{sub_line}"), 2)
         }
         _ => (main_line, 1),
@@ -132,16 +132,16 @@ fn render_cell(char_index: usize, state: ScannerState) -> String {
 fn paint_active_dot(index: usize) -> String {
     let dot = ACTIVE_DOTS[index.min(ACTIVE_DOTS.len() - 1)];
     match index {
-        0 => format!("\x1b[36m{dot}\x1b[0m"),
-        1 => format!("\x1b[36m{dot}\x1b[0m"),
-        2 => format!("\x1b[2m\x1b[36m{dot}\x1b[0m"),
-        3 => format!("\x1b[2m\x1b[36m{dot}\x1b[0m"),
-        _ => format!("\x1b[2m\x1b[36m{dot}\x1b[0m"),
+        0 => format!("\x1b[38;5;10m{dot}\x1b[0m"),
+        1 => format!("\x1b[38;5;10m{dot}\x1b[0m"),
+        2 => format!("\x1b[2m\x1b[38;5;10m{dot}\x1b[0m"),
+        3 => format!("\x1b[2m\x1b[38;5;10m{dot}\x1b[0m"),
+        _ => format!("\x1b[2m\x1b[38;5;10m{dot}\x1b[0m"),
     }
 }
 
 fn paint_inactive_dot() -> String {
-    format!("\x1b[2m\x1b[36m{INACTIVE_DOT}\x1b[0m")
+    format!("\x1b[2m\x1b[38;5;10m{INACTIVE_DOT}\x1b[0m")
 }
 
 fn total_frames_scanner() -> usize {
@@ -241,6 +241,13 @@ fn paint_secondary(text: &str) -> String {
     format!("\x1b[2m\x1b[36m{text}\x1b[0m")
 }
 
+fn paint_for_style(text: &str, style: SpinnerStyle) -> String {
+    match style {
+        SpinnerStyle::Scanner => format!("\x1b[38;5;10m{text}\x1b[0m"),
+        SpinnerStyle::Braille => paint_secondary(text),
+    }
+}
+
 fn write_spinner_lines(output: &str, prev_lines: u16, lines: u16) -> Result<()> {
     let mut stdout = io::stdout();
     if prev_lines > 1 {
@@ -299,6 +306,8 @@ mod tests {
         let (frame, lines) = render_frame(0, &spinner);
 
         assert!(frame.contains("思考"));
+        assert!(frame.contains("\x1b[38;5;10m"));
+        assert!(!frame.contains("\x1b[36m思考"));
         assert!(!frame.contains('('));
         assert_eq!(lines, 1);
     }
@@ -311,6 +320,7 @@ mod tests {
 
         assert!(frame.contains("输入法诊断"));
         assert!(frame.contains("⠋"));
+        assert!(frame.contains("\x1b[2m\x1b[36m"));
         assert_eq!(lines, 1);
     }
 

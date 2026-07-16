@@ -1615,7 +1615,7 @@ enum SummaryStyle {
 
 fn style_summary_text(text: &str, style: SummaryStyle) -> String {
     match style {
-        SummaryStyle::Reasoning => format!("\x1b[2m\x1b[36m{text}\x1b[0m"),
+        SummaryStyle::Reasoning => format!("\x1b[38;5;10m{text}\x1b[0m"),
         SummaryStyle::Tool => format!("\x1b[2m{text}\x1b[0m"),
     }
 }
@@ -3646,7 +3646,7 @@ mod tests {
         );
         assert_eq!(
             style_summary_text("思考", SummaryStyle::Reasoning),
-            "\x1b[2m\x1b[36m思考\x1b[0m"
+            "\x1b[38;5;10m思考\x1b[0m"
         );
     }
 

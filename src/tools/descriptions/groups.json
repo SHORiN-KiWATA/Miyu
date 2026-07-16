@@ -6,7 +6,7 @@
   "dev": { "display_name": "开发修改工具组", "summary": "编辑、写入和删除文件等开发修改操作。" },
   "dev-read": { "display_name": "代码检索工具组", "summary": "读取文件、查找文件和搜索文本。" },
   "diagnostics": { "display_name": "诊断工具组", "summary": "系统问题、输入法和 Linux 桌面环境诊断。" },
-  "divination": { "display_name": "玄学娱乐工具组", "summary": "塔罗、周易、抽签和骰子等娱乐工具。" },
+  "divination": { "display_name": "玄学工具组", "summary": "塔罗、周易、抽签和骰子等娱乐工具。" },
   "gaming": { "display_name": "游戏工具组", "summary": "游戏兼容性、ProtonDB、Linux/Proton 运行情况和相关脚本。" },
   "images": { "display_name": "图片工具组", "summary": "图片生成、搜索、分析和终端显示。" },
   "knowledge": { "display_name": "知识库工具组", "summary": "搜索和读取本地知识库。" },
