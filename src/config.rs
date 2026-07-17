@@ -161,6 +161,8 @@ pub struct ProviderConfig {
         skip_serializing_if = "is_default_anthropic_max_tokens"
     )]
     pub anthropic_max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -933,6 +935,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body: None,
         }
     }
 
@@ -950,6 +953,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body: None,
         }
     }
 
@@ -991,6 +995,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body: None,
         }
     }
 
@@ -1008,6 +1013,7 @@ impl ProviderConfig {
             timeout_seconds: default_timeout(),
             temperature: default_temperature(),
             anthropic_max_tokens: default_anthropic_max_tokens(),
+            extra_body: None,
         }
     }
 
@@ -2558,5 +2564,37 @@ mod tests {
         assert!(!memes.auto_send_enabled);
         assert_eq!(memes.search_max_results, 1);
         assert_eq!(memes.auto_send_probability, 0.2);
+    }
+
+    #[test]
+    fn extra_body_roundtrip() {
+        // 构造一个包含 extra_body 的 ProviderConfig
+        let original = ProviderConfig {
+            id: "test".to_string(),
+            display_name: "Test".to_string(),
+            base_url: "https://example.com".to_string(),
+            protocol: "auto".to_string(),
+            api_key: None,
+            models: vec![],
+            model_context_window: HashMap::new(),
+            model_modalities: HashMap::new(),
+            default_model: String::new(),
+            timeout_seconds: 60,
+            temperature: 0.7,
+            anthropic_max_tokens: 4096,
+            extra_body: Some(
+                serde_json::json!({ "enable_thinking": false, "reasoning_effort": "low" }),
+            ),
+        };
+
+        // 序列化为 JSON 字符串
+        let serialized = serde_json::to_string(&original).unwrap();
+        // 反序列化回来
+        let deserialized: ProviderConfig = serde_json::from_str(&serialized).unwrap();
+
+        // 比较两个对象的 extra_body 字段是否相等
+        assert_eq!(original.extra_body, deserialized.extra_body);
+        // 也可比较其他字段确保一致
+        assert_eq!(original.id, deserialized.id);
     }
 }

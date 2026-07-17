@@ -20,6 +20,26 @@ static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LLM_SCHEDULER: LazyLock<Mutex<LlmScheduler>> =
     LazyLock::new(|| Mutex::new(LlmScheduler::default()));
 
+//过滤 extra_body 中与保留字段冲突的键
+fn sanitize_extra_body(
+    extra: Option<serde_json::Value>,
+    reserved_keys: &[&str],
+) -> Option<serde_json::Value> {
+    let mut extra = extra?;
+    if let Some(obj) = extra.as_object_mut() {
+        for key in reserved_keys {
+            obj.remove(*key);
+        }
+        //若过滤后为空对象，返回None
+        if obj.is_empty() {
+            return None;
+        }
+        return Some(serde_json::Value::Object(obj.clone()));
+    } else {
+        return Some(extra);
+    }
+}
+
 fn gen_tool_call_id() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -401,6 +421,18 @@ impl OpenAiCompatibleClient {
                 bail!("OpenAI Responses protocol is not supported by this provider");
             }
         }
+        let extra_body = sanitize_extra_body(
+            self.provider.extra_body.clone(),
+            &[
+                "model",
+                "messages",
+                "temperature",
+                "stream",
+                "stream_options",
+                "tools",
+                "chat_template_kwargs",
+            ],
+        );
         let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
@@ -411,6 +443,7 @@ impl OpenAiCompatibleClient {
             }),
             tools: (!tools.is_empty()).then_some(tools),
             chat_template_kwargs: taotoken_glm_chat_template_kwargs(&self.provider),
+            extra_body: extra_body,
         };
         let url = format!(
             "{}/chat/completions",
@@ -643,13 +676,24 @@ impl OpenAiCompatibleClient {
 
         self.consume_anthropic_stream(response, on_chunk).await
     }
-
     fn anthropic_request(
         &self,
         messages: Vec<ChatMessage>,
         tools: Vec<ToolDefinition>,
         thinking: bool,
     ) -> AnthropicRequest {
+        let extra_body = sanitize_extra_body(
+            self.provider.extra_body.clone(),
+            &[
+                "model",
+                "messages",
+                "temperature",
+                "stream",
+                "stream_options",
+                "tools",
+                "chat_template_kwargs",
+            ],
+        );
         AnthropicRequest {
             model: self.provider.default_model.clone(),
             system: lower_anthropic_system(&messages),
@@ -659,6 +703,7 @@ impl OpenAiCompatibleClient {
             max_tokens: self.provider.anthropic_max_tokens,
             temperature: Some(self.provider.temperature),
             thinking: thinking.then(anthropic_thinking_config),
+            extra_body: extra_body,
         }
     }
 
@@ -724,6 +769,18 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
+        let extra_body = sanitize_extra_body(
+            self.provider.extra_body.clone(),
+            &[
+                "model",
+                "messages",
+                "temperature",
+                "stream",
+                "stream_options",
+                "tools",
+                "chat_template_kwargs",
+            ],
+        );
         let request = ResponsesRequest {
             model: self.provider.default_model.clone(),
             input: lower_responses_messages(messages),
@@ -735,6 +792,7 @@ impl OpenAiCompatibleClient {
                 summary: Some("concise"),
             }),
             temperature: Some(self.provider.temperature),
+            extra_body: extra_body,
         };
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
         let response = self
@@ -926,6 +984,9 @@ struct ChatRequest {
     tools: Option<Vec<ToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<ChatTemplateKwargs>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -946,6 +1007,9 @@ struct ResponsesRequest {
     reasoning: Option<ResponsesReasoning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -970,6 +1034,9 @@ struct AnthropicRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinkingConfig>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -2731,6 +2798,7 @@ mod tests {
             }),
             tools: None,
             chat_template_kwargs: None,
+            extra_body: None,
         };
 
         let value = serde_json::to_value(request).unwrap();
@@ -3292,7 +3360,142 @@ mod tests {
             timeout_seconds: 60,
             temperature: 0.7,
             anthropic_max_tokens: 4096,
+            extra_body: None,
         }
+    }
+
+    #[test]
+    fn test_chat_request_extra_body_flatten() {
+        use serde_json::json;
+
+        let extra = Some(json!({
+            "enable_thinking": false,
+            "custom_param": "value"
+        }));
+
+        let request = ChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage::plain("user", "Hello")],
+            temperature: 0.7,
+            stream: true,
+            stream_options: Some(ChatStreamOptions {
+                include_usage: true,
+            }),
+            tools: None,
+            chat_template_kwargs: None,
+            extra_body: extra.clone(),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+
+        // 验证展平字段
+        assert_eq!(value["enable_thinking"], false);
+        assert_eq!(value["custom_param"], "value");
+
+        // 验证顶层字段
+        assert_eq!(value["model"], "gpt-4");
+        // 浮点数比较使用近似
+        let temp = value["temperature"].as_f64().unwrap();
+        assert!((temp - 0.7).abs() < 1e-6);
+
+        // 验证 extra_body 消失
+        assert!(value.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn test_responses_request_extra_body_flatten() {
+        use serde_json::json;
+
+        let extra = Some(json!({
+            "reasoning_effort": "high",
+            "parallel_tool_calls": false
+        }));
+
+        let request = ResponsesRequest {
+            model: "gpt-5".to_string(),
+            input: vec![json!({"role": "user", "content": "Hello"})],
+            instructions: None,
+            stream: true,
+            tools: None,
+            reasoning: None,
+            temperature: Some(0.5),
+            extra_body: extra.clone(),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+
+        // 验证展平字段
+        assert_eq!(value["reasoning_effort"], "high");
+        assert_eq!(value["parallel_tool_calls"], false);
+
+        // 验证顶层字段
+        assert_eq!(value["model"], "gpt-5");
+        assert_eq!(value["temperature"], 0.5);
+
+        // 验证 extra_body 消失
+        assert!(value.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn test_anthropic_request_extra_body_flatten() {
+        use serde_json::json;
+
+        let extra = Some(json!({
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 1024
+            },
+            "metadata": {"user_id": "123"}
+        }));
+
+        let request = AnthropicRequest {
+            model: "claude-3-opus".to_string(),
+            system: Some("You are helpful".to_string()),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContentBlock::Text {
+                    text: "Hello".to_string(),
+                }],
+            }],
+            tools: None,
+            stream: true,
+            max_tokens: 4096,
+            temperature: Some(0.7),
+            thinking: None,
+            extra_body: extra.clone(),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+
+        // 验证展平字段（包括嵌套对象）
+        assert_eq!(value["thinking"]["type"], "enabled");
+        assert_eq!(value["thinking"]["budget_tokens"], 1024);
+        assert_eq!(value["metadata"]["user_id"], "123");
+
+        // 验证顶层字段
+        assert_eq!(value["model"], "claude-3-opus");
+        assert_eq!(value["max_tokens"], 4096);
+
+        // 验证 extra_body 消失
+        assert!(value.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn extra_body_conflict_resolution() {
+        let extra = Some(serde_json::json!({
+            "temperature": 0.9,   // 冲突
+            "model": "gpt-5",     // 冲突
+            "custom": "keep"      // 不冲突
+        }));
+
+        let reserved = vec!["model", "temperature", "stream", "tools"];
+        let sanitized = sanitize_extra_body(extra, &reserved);
+
+        // 由于有非冲突字段 "custom"，sanitized 应为 Some
+        let sanitized_value = sanitized.unwrap();
+        assert!(sanitized_value.get("temperature").is_none());
+        assert!(sanitized_value.get("model").is_none());
+        assert_eq!(sanitized_value["custom"], "keep");
     }
 }
 

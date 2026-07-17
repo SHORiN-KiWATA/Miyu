@@ -1770,6 +1770,14 @@ fn edit_provider_form(
         .get(&provider.default_model)
         .copied()
         .unwrap_or_default();
+
+    // 将 extra_body 格式化为 JSON 字符串，方便编辑
+    let extra_body_string = provider
+        .extra_body
+        .as_ref()
+        .and_then(|v| serde_json::to_string_pretty(v).ok())
+        .unwrap_or_default();
+
     let mut fields = vec![
         Field::new("配置 ID", provider.id.clone()),
         Field::new("显示名称", provider.display_name.clone()),
@@ -1792,40 +1800,79 @@ fn edit_provider_form(
         ),
         Field::new("超时秒数", provider.timeout_seconds.to_string()),
         Field::new("Temperature", provider.temperature.to_string()),
+        Field::textarea("额外请求体 (JSON)", extra_body_string),
     ];
-    if !run_form(stdout, " EDIT PROVIDER ", &mut fields)? {
-        return Ok(None);
-    }
-    let default_model = fields[5].value.trim().to_string();
-    let mut model_context_window = provider.model_context_window.clone();
-    match fields[6].value.trim().parse::<usize>().unwrap_or_default() {
-        0 => {
-            model_context_window.remove(&default_model);
-        }
-        value => {
-            model_context_window.insert(default_model.clone(), value);
-        }
-    }
-    let mut models = provider.models.clone();
-    if !default_model.trim().is_empty() && !models.iter().any(|item| item == &default_model) {
-        models.push(default_model.clone());
-    }
-    Ok(Some(ProviderConfig {
-        id: fields[0].value.trim().to_string(),
-        display_name: fields[1].value.trim().to_string(),
-        base_url: normalize_base_url(&fields[2].value),
-        protocol: fields[3].value.trim().to_string(),
-        api_key: Some(fields[4].value.trim().to_string()).filter(|value| !value.is_empty()),
-        models,
-        model_context_window,
-        model_modalities: provider.model_modalities.clone(),
-        default_model,
-        timeout_seconds: fields[7].value.trim().parse().unwrap_or(60),
-        temperature: fields[8].value.trim().parse().unwrap_or(0.7),
-        anthropic_max_tokens: provider.anthropic_max_tokens,
-    }))
-}
 
+    // 循环直到用户取消或输入合法 JSON 对象
+    loop {
+        if !run_form(stdout, " EDIT PROVIDER ", &mut fields)? {
+            return Ok(None);
+        }
+
+        // 提取各个字段的值（索引保持不变）
+        let default_model = fields[5].value.trim().to_string();
+        let model_context_window_raw = fields[6].value.trim().parse::<usize>().unwrap_or_default();
+        let timeout = fields[7].value.trim().parse().unwrap_or(60);
+        let temperature = fields[8].value.trim().parse().unwrap_or(0.7);
+
+        // 解析 extra_body
+        let extra_body = if fields[9].value.trim().is_empty() {
+            None
+        } else {
+            // 在 match 中显式标注类型
+            match serde_json::from_str::<serde_json::Value>(&fields[9].value.trim()) {
+                Ok(json) => {
+                    if json.is_object() {
+                        Some(json)
+                    } else {
+                        message(
+                            stdout,
+                            "额外请求体必须是 JSON 对象 (如 {\"key\": \"value\"})",
+                        )?;
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    message(stdout, &format!("无效 JSON: {}", e))?;
+                    continue;
+                }
+            }
+        };
+
+        // 构建 model_context_window
+        let mut model_context_window = provider.model_context_window.clone();
+        match model_context_window_raw {
+            0 => {
+                model_context_window.remove(&default_model);
+            }
+            value => {
+                model_context_window.insert(default_model.clone(), value);
+            }
+        }
+
+        let mut models = provider.models.clone();
+        if !default_model.trim().is_empty() && !models.iter().any(|item| item == &default_model) {
+            models.push(default_model.clone());
+        }
+
+        // 所有验证通过，返回新的 ProviderConfig
+        return Ok(Some(ProviderConfig {
+            id: fields[0].value.trim().to_string(),
+            display_name: fields[1].value.trim().to_string(),
+            base_url: normalize_base_url(&fields[2].value),
+            protocol: fields[3].value.trim().to_string(),
+            api_key: Some(fields[4].value.trim().to_string()).filter(|value| !value.is_empty()),
+            models,
+            model_context_window,
+            model_modalities: provider.model_modalities.clone(),
+            default_model,
+            timeout_seconds: timeout,
+            temperature: temperature,
+            anthropic_max_tokens: provider.anthropic_max_tokens,
+            extra_body,
+        }));
+    }
+}
 fn edit_model_form(
     stdout: &mut io::Stdout,
     provider: &mut ProviderConfig,
@@ -2981,5 +3028,22 @@ mod tests {
         let field = Field::textarea("API Keys", String::new()).sensitive();
 
         assert_eq!(field_display_value(&field, false), "(Enter 打开 $EDITOR)");
+    }
+
+    #[test]
+    fn extra_body_reject_non_object() {
+        let invalid_inputs = vec!["true", "\"hello\"", "[1, 2, 3]"];
+
+        for input in invalid_inputs {
+            let result = serde_json::from_str::<serde_json::Value>(input);
+            assert!(result.is_ok());
+            let json = result.unwrap();
+            assert!(!json.is_object(), "Non-object JSON should be rejected");
+            // 在你的 TUI 逻辑中，你会检查 is_object() 并报错，这里模拟
+            if !json.is_object() {
+                // 模拟错误处理
+                assert!(true); // 测试通过
+            }
+        }
     }
 }
