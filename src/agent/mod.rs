@@ -310,6 +310,10 @@ impl Agent {
         self.tools = Arc::new(Mutex::new(tools));
     }
 
+    pub fn replace_client(&mut self, client: OpenAiCompatibleClient) {
+        self.client = client;
+    }
+
     pub fn reload_config(
         &mut self,
         config: AppConfig,

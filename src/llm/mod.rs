@@ -1,6 +1,6 @@
 mod openai_compatible;
 
-pub use openai_compatible::OpenAiCompatibleClient;
+pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 
 use serde::{Deserialize, Serialize};
 

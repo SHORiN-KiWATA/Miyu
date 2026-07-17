@@ -1,7 +1,7 @@
 use crate::agent::{Agent, AgentEvent, AgentMode};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
-use crate::llm::OpenAiCompatibleClient;
+use crate::llm::{OpenAiCompatibleClient, ThinkingVariantOptions};
 use crate::memory::MemoryStore;
 use crate::paths::MiyuPaths;
 use crate::render;
@@ -19,6 +19,8 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -38,6 +40,12 @@ struct ReplFooterStatus {
     model: String,
     thinking: Option<String>,
     token_usage: ReplTokenUsage,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ThinkingVariantPreferences {
+    #[serde(default)]
+    selected: HashMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +134,10 @@ impl ReplFooterStatus {
             cumulative_tokens: None,
         };
     }
+
+    fn update_thinking_variant(&mut self, variant: Option<&str>) {
+        self.thinking = variant.map(str::to_string);
+    }
 }
 
 fn short_model_name(model: &str, provider: &str) -> String {
@@ -205,13 +217,24 @@ fn repl_footer_left_parts(
     parts.join(" ")
 }
 
-fn print_mixed_model_endpoint(show: bool, result: &crate::llm::ChatResult) {
+fn print_mixed_model_endpoint(show: bool, result: &crate::llm::ChatResult, variant: Option<&str>) {
     if !show {
         return;
     }
     let provider = result.provider_id.as_deref().unwrap_or("-");
     let model = result.model.as_deref().unwrap_or("-");
-    println!("\x1b[2m{} / {}\x1b[0m\n", provider, model);
+    println!(
+        "\x1b[2m{}\x1b[0m\n",
+        mixed_model_endpoint_label(provider, model, variant)
+    );
+}
+
+fn mixed_model_endpoint_label(provider: &str, model: &str, variant: Option<&str>) -> String {
+    let variant = variant
+        .filter(|variant| !variant.is_empty())
+        .map(|variant| format!(" · {variant}"))
+        .unwrap_or_default();
+    format!("{provider} / {model}{variant}")
 }
 
 fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
@@ -1817,7 +1840,7 @@ async fn run_chat_with_images(
         Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
         Err(err) => return Err(err),
     };
-    print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
+    print_mixed_model_endpoint(show_mixed_model_endpoint, &result, None);
     let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
     let context_tokens = agent.effective_context_tokens()?;
     print_chat_token_usage(
@@ -1959,7 +1982,7 @@ async fn run_chat_with_options(
         Err(err) if crate::question::is_question_cancelled(&err) => return Ok(()),
         Err(err) => return Err(err),
     };
-    print_mixed_model_endpoint(show_mixed_model_endpoint, &result);
+    print_mixed_model_endpoint(show_mixed_model_endpoint, &result, None);
     let mut cumulative_tokens = result.usage.as_ref().map(render::usage_total).unwrap_or(0);
     let context_tokens = agent.effective_context_tokens()?;
     print_chat_token_usage(
@@ -2061,6 +2084,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     let state = StateStore::new(paths)?;
     state.init_files()?;
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    restore_thinking_variant(paths, &mut client);
     let mut mode = initial_mode;
     let mut input_history = load_repl_input_history(&state)?;
     let mut prefill = None::<String>;
@@ -2083,8 +2107,12 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
     )?;
     let mut footer =
         ReplFooterStatus::from_config(&config, agent.effective_context_tokens()?, None);
+    let thinking_summary = client.thinking_variant_summary();
+    footer.update_thinking_variant(thinking_summary.as_deref());
     footer.update_context_window(agent.context_window());
     loop {
+        let thinking_summary = client.thinking_variant_summary();
+        footer.update_thinking_variant(thinking_summary.as_deref());
         let (input, pasted_images) = match read_repl_input(
             paths,
             mode,
@@ -2100,25 +2128,30 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             None => break,
         };
         let input = input.trim();
-        let command = resolve_repl_command(input);
+        let (command_input, command_args) = split_repl_command(input);
+        let command = resolve_repl_command(command_input);
+        let command_args_empty = command_args.trim().is_empty();
         if input.eq_ignore_ascii_case("exit")
             || input.eq_ignore_ascii_case("quit")
-            || command.eq_ignore_ascii_case("/exit")
+            || (command.eq_ignore_ascii_case("/exit") && command_args_empty)
         {
             break;
         }
-        if command.eq_ignore_ascii_case("/help") {
+        if command.eq_ignore_ascii_case("/help") && command_args_empty {
             print_repl_help();
             continue;
         }
-        if command.eq_ignore_ascii_case("/models") {
+        if command.eq_ignore_ascii_case("/models") && command_args_empty {
             run_models(paths, ModelsArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
+            restore_thinking_variant(paths, &mut client);
             footer = ReplFooterStatus::from_config(
                 &config,
                 agent.effective_context_tokens()?,
                 (cumulative_tokens > 0).then_some(cumulative_tokens),
             );
+            let thinking_summary = client.thinking_variant_summary();
+            footer.update_thinking_variant(thinking_summary.as_deref());
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
@@ -2128,14 +2161,17 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             println!();
             continue;
         }
-        if command.eq_ignore_ascii_case("/config") {
+        if command.eq_ignore_ascii_case("/config") && command_args_empty {
             crate::config_tui::run(paths)?;
             reload_repl_config(paths, &mut config, &mut client)?;
+            restore_thinking_variant(paths, &mut client);
             footer = ReplFooterStatus::from_config(
                 &config,
                 agent.effective_context_tokens()?,
                 (cumulative_tokens > 0).then_some(cumulative_tokens),
             );
+            let thinking_summary = client.thinking_variant_summary();
+            footer.update_thinking_variant(thinking_summary.as_deref());
             let registry =
                 build_tool_registry(&config, paths, mode, crate::question_tui::available(false))?;
             agent.reload_config(config.clone(), client.clone())?;
@@ -2145,7 +2181,66 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             println!();
             continue;
         }
-        if command.eq_ignore_ascii_case("/undo") {
+        if command.eq_ignore_ascii_case("/variant") {
+            if !crate::models_cache::is_loaded() {
+                println!(
+                    "{}\n",
+                    t(
+                        "model metadata is still loading; try /variant again shortly",
+                        "模型元数据仍在加载，请稍后重试 /variant"
+                    )
+                );
+                continue;
+            }
+            let selected = command_args.trim();
+            if selected.is_empty() {
+                let options = client.thinking_variant_options();
+                let Some(selections) = inline_variant_select(&options)? else {
+                    continue;
+                };
+                client.set_thinking_variants(&selections)?;
+            } else {
+                if client.thinking_variant_options().len() != 1 {
+                    eprintln!(
+                        "\x1b[31m{}\x1b[0m",
+                        t(
+                            "multiple models are active; use /variant and configure them in the TUI",
+                            "当前激活了多个模型；请使用 /variant 在 TUI 中分别设置"
+                        )
+                    );
+                    continue;
+                }
+                let explicit_variant = selected.strip_prefix("variant:");
+                let variant =
+                    if explicit_variant.is_none() && selected.eq_ignore_ascii_case("default") {
+                        None
+                    } else {
+                        let selected = explicit_variant.unwrap_or(selected);
+                        let available = client.available_thinking_variants();
+                        match available
+                            .iter()
+                            .find(|candidate| candidate.eq_ignore_ascii_case(selected))
+                        {
+                            Some(candidate) => Some(candidate.clone()),
+                            None => {
+                                eprintln!(
+                                    "\x1b[31m{}: {selected}\x1b[0m",
+                                    t("unknown thinking variant", "未知思考档位")
+                                );
+                                continue;
+                            }
+                        }
+                    };
+                client.set_thinking_variant(variant)?;
+            }
+            save_thinking_variant(paths, &client)?;
+            let thinking_summary = client.thinking_variant_summary();
+            footer.update_thinking_variant(thinking_summary.as_deref());
+            agent.replace_client(client.clone());
+            println!("{}\n", t("thinking variants updated", "已更新思考档位"));
+            continue;
+        }
+        if command.eq_ignore_ascii_case("/undo") && command_args_empty {
             let (removed, prompt) = state.undo_last_turn()?;
             footer.update_session_tokens(agent.effective_context_tokens()?);
             if removed > 0 && prompt.is_none() {
@@ -2156,7 +2251,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             prefill = prompt;
             continue;
         }
-        if command.eq_ignore_ascii_case("/compact") {
+        if command.eq_ignore_ascii_case("/compact") && command_args_empty {
             let reasoning_mode =
                 render::ReasoningDisplayMode::from_config(&config.display.reasoning);
             let tool_call_mode =
@@ -2209,14 +2304,15 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             }
             continue;
         }
-        if command.eq_ignore_ascii_case("/reset") {
+        if command.eq_ignore_ascii_case("/reset") && command_args.trim().is_empty() {
             run_reset(paths, None)?;
             input_history.clear();
             cumulative_tokens = 0;
             footer.reset_token_usage(agent.effective_context_tokens()?, agent.context_window());
             continue;
         }
-        if command.eq_ignore_ascii_case("/reset all") {
+        if command.eq_ignore_ascii_case("/reset") && command_args.trim().eq_ignore_ascii_case("all")
+        {
             run_reset(paths, Some("all"))?;
             input_history.clear();
             agent.reset_memory()?;
@@ -2283,7 +2379,17 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
                     context_window,
                     (cumulative_tokens > 0).then_some(cumulative_tokens),
                 );
-                print_mixed_model_endpoint(show_mixed_model_endpoint(&config, true), &result);
+                let endpoint_variant = result.provider_id.as_deref().and_then(|provider_id| {
+                    result
+                        .model
+                        .as_deref()
+                        .and_then(|model| client.thinking_variant_for(provider_id, model))
+                });
+                print_mixed_model_endpoint(
+                    show_mixed_model_endpoint(&config, true),
+                    &result,
+                    endpoint_variant.as_deref(),
+                );
                 match handle_post_turn_overflow(
                     &agent,
                     &mut renderer,
@@ -2338,6 +2444,517 @@ fn reload_repl_config(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VariantMenuItem {
+    provider_id: String,
+    model: String,
+    options: Vec<VariantMenuOption>,
+    selected: usize,
+    cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VariantMenuOption {
+    label: String,
+    value: Option<String>,
+}
+
+impl VariantMenuItem {
+    fn from_options(options: &ThinkingVariantOptions) -> Self {
+        let mut variants = vec![VariantMenuOption {
+            label: "default".to_string(),
+            value: None,
+        }];
+        variants.extend(options.variants.iter().map(|variant| VariantMenuOption {
+            label: if variant == "default" {
+                "default (variant)".to_string()
+            } else {
+                variant.clone()
+            },
+            value: Some(variant.clone()),
+        }));
+        let selected = options
+            .selected
+            .as_ref()
+            .and_then(|selected| {
+                variants
+                    .iter()
+                    .position(|variant| variant.value.as_ref() == Some(selected))
+            })
+            .unwrap_or(0);
+        Self {
+            provider_id: options.provider_id.clone(),
+            model: options.model.clone(),
+            options: variants,
+            selected,
+            cursor: selected,
+        }
+    }
+
+    fn selection(&self) -> (String, String, Option<String>) {
+        (
+            self.provider_id.clone(),
+            self.model.clone(),
+            self.options[self.selected].value.clone(),
+        )
+    }
+
+    fn check_cursor(&mut self) {
+        self.selected = self.cursor;
+    }
+}
+
+fn inline_variant_select(
+    options: &[ThinkingVariantOptions],
+) -> Result<Option<Vec<(String, String, Option<String>)>>> {
+    let mut items = options
+        .iter()
+        .map(VariantMenuItem::from_options)
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return Ok(None);
+    }
+    if items.len() == 1 {
+        return inline_single_variant_select(items.remove(0));
+    }
+    let max_options = items
+        .iter()
+        .map(|item| item.options.len())
+        .max()
+        .unwrap_or(1);
+    let menu_lines = inline_fuzzy_lines(items.len().max(max_options));
+    reserve_inline_fuzzy_space(menu_lines)?;
+    let mut session = InlineRawMode::start()?;
+    let mut active_column = 0usize;
+    let mut model_index = 0usize;
+    let mut model_scroll = 0usize;
+    let mut variant_scroll = 0usize;
+    let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
+    let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
+    loop {
+        let visible = menu_lines.saturating_sub(2) as usize;
+        model_scroll = inline_fuzzy_scroll(model_index, model_scroll, visible.min(items.len()));
+        let item = &items[model_index];
+        variant_scroll =
+            inline_fuzzy_scroll(item.cursor, variant_scroll, visible.min(item.options.len()));
+        draw_inline_variant(
+            &mut session.stdout,
+            anchor_y,
+            menu_lines,
+            &items,
+            active_column,
+            model_index,
+            model_scroll,
+            variant_scroll,
+        )?;
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            match code {
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Enter => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(Some(items.iter().map(VariantMenuItem::selection).collect()));
+                }
+                KeyCode::Left | KeyCode::Char('h') => active_column = 0,
+                KeyCode::Right | KeyCode::Char('l') => active_column = 1,
+                KeyCode::Up | KeyCode::Char('k') if active_column == 0 => {
+                    model_index = model_index.saturating_sub(1);
+                    variant_scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') if active_column == 0 => {
+                    model_index = (model_index + 1).min(items.len() - 1);
+                    variant_scroll = 0;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    items[model_index].cursor = items[model_index].cursor.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let last = items[model_index].options.len() - 1;
+                    items[model_index].cursor = (items[model_index].cursor + 1).min(last);
+                }
+                KeyCode::Tab if active_column == 1 => {
+                    items[model_index].check_cursor();
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn inline_single_variant_select(
+    mut item: VariantMenuItem,
+) -> Result<Option<Vec<(String, String, Option<String>)>>> {
+    let menu_lines = inline_fuzzy_lines(item.options.len());
+    reserve_inline_fuzzy_space(menu_lines)?;
+    let mut session = InlineRawMode::start()?;
+    let mut scroll = 0usize;
+    let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
+    let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
+    loop {
+        let visible = menu_lines.saturating_sub(2) as usize;
+        scroll = inline_fuzzy_scroll(item.cursor, scroll, visible.min(item.options.len()));
+        draw_inline_single_variant(&mut session.stdout, anchor_y, menu_lines, &item, scroll)?;
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            match code {
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Enter => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(Some(vec![item.selection()]));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    item.cursor = item.cursor.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    item.cursor = (item.cursor + 1).min(item.options.len() - 1);
+                }
+                KeyCode::Tab => item.check_cursor(),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_inline_single_variant(
+    stdout: &mut io::Stdout,
+    anchor_y: u16,
+    menu_lines: u16,
+    item: &VariantMenuItem,
+    scroll: usize,
+) -> Result<()> {
+    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let bar = inline_fuzzy_bar();
+    let available = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
+    let width = single_variant_content_width(item).min(available);
+    let visible = menu_lines.saturating_sub(2) as usize;
+    queue!(stdout, Hide)?;
+    for row in 0..menu_lines {
+        queue!(
+            stdout,
+            MoveTo(0, anchor_y + row),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
+    queue!(
+        stdout,
+        MoveTo(0, anchor_y),
+        Print(&bar),
+        Print(variant_menu_header(
+            t("Thinking variant", "思考档位"),
+            true,
+            width,
+        )),
+    )?;
+    for row in 0..visible {
+        let index = scroll + row;
+        let line = item.options.get(index).map_or_else(
+            || " ".repeat(width),
+            |variant| {
+                variant_menu_cell(
+                    &variant.label,
+                    index == item.cursor,
+                    index == item.cursor,
+                    Some(index == item.selected),
+                    width,
+                )
+            },
+        );
+        queue!(
+            stdout,
+            MoveTo(0, anchor_y + row as u16 + 1),
+            Print(&bar),
+            Print(line),
+        )?;
+    }
+    queue!(
+        stdout,
+        MoveTo(0, anchor_y + menu_lines.saturating_sub(1)),
+        Print(&bar),
+        Print(format!(
+            "\x1b[2m{}\x1b[0m",
+            truncate_visible_width(
+                t(
+                    "j/k move · Tab select · Enter confirm · Esc/q cancel",
+                    "j/k 移动 · Tab 勾选 · Enter 确认 · Esc/q 取消"
+                ),
+                available,
+            )
+        ))
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn single_variant_content_width(item: &VariantMenuItem) -> usize {
+    item.options
+        .iter()
+        .map(|option| visible_width(&option.label).saturating_add(6))
+        .chain(std::iter::once(visible_width(t(
+            "Thinking variant",
+            "思考档位",
+        ))))
+        .max()
+        .unwrap_or(1)
+}
+
+fn draw_inline_variant(
+    stdout: &mut io::Stdout,
+    anchor_y: u16,
+    menu_lines: u16,
+    items: &[VariantMenuItem],
+    active_column: usize,
+    model_index: usize,
+    model_scroll: usize,
+    variant_scroll: usize,
+) -> Result<()> {
+    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let bar = inline_fuzzy_bar();
+    let width = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
+    let separator = if width >= 3 { " │ " } else { "" };
+    let available = width.saturating_sub(visible_width(separator));
+    let (left_width, right_width) = variant_menu_column_widths(items, available);
+    let visible = menu_lines.saturating_sub(2) as usize;
+    queue!(stdout, Hide)?;
+    for row in 0..menu_lines {
+        queue!(
+            stdout,
+            MoveTo(0, anchor_y + row),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
+    queue!(
+        stdout,
+        MoveTo(0, anchor_y),
+        Print(&bar),
+        Print(variant_menu_header(
+            t("Provider / Model", "Provider / 模型"),
+            active_column == 0,
+            left_width,
+        )),
+        Print(format!("\x1b[2m{separator}\x1b[0m")),
+        Print(variant_menu_header(
+            t("Thinking variant", "思考档位"),
+            active_column == 1,
+            right_width,
+        )),
+    )?;
+    let variants = &items[model_index];
+    for row in 0..visible {
+        let left_index = model_scroll + row;
+        let right_index = variant_scroll + row;
+        let left = items.get(left_index).map_or_else(
+            || " ".repeat(left_width),
+            |item| {
+                variant_menu_cell(
+                    &format!("{} / {}", item.provider_id, item.model),
+                    active_column == 0 && left_index == model_index,
+                    left_index == model_index,
+                    None,
+                    left_width,
+                )
+            },
+        );
+        let right = variants.options.get(right_index).map_or_else(
+            || " ".repeat(right_width),
+            |variant| {
+                variant_menu_cell(
+                    &variant.label,
+                    active_column == 1 && right_index == variants.cursor,
+                    right_index == variants.cursor,
+                    Some(right_index == variants.selected),
+                    right_width,
+                )
+            },
+        );
+        queue!(
+            stdout,
+            MoveTo(0, anchor_y + row as u16 + 1),
+            Print(&bar),
+            Print(left),
+            Print(format!("\x1b[2m{separator}\x1b[0m")),
+            Print(right),
+        )?;
+    }
+    queue!(
+        stdout,
+        MoveTo(0, anchor_y + menu_lines.saturating_sub(1)),
+        Print(&bar),
+        Print(format!(
+            "\x1b[2m{}\x1b[0m",
+            truncate_visible_width(
+                t(
+                    "h/l switch · j/k move · Tab select · Enter confirm · Esc/q cancel",
+                    "h/l 切栏 · j/k 移动 · Tab 勾选 · Enter 确认 · Esc/q 取消"
+                ),
+                width,
+            )
+        ))
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn variant_menu_column_widths(items: &[VariantMenuItem], available: usize) -> (usize, usize) {
+    if available == 0 {
+        return (0, 0);
+    }
+    if available == 1 {
+        return (1, 0);
+    }
+    let left_needed = items
+        .iter()
+        .map(|item| {
+            visible_width(&format!("{} / {}", item.provider_id, item.model)).saturating_add(2)
+        })
+        .chain(std::iter::once(visible_width(t(
+            "Provider / Model",
+            "Provider / 模型",
+        ))))
+        .max()
+        .unwrap_or(1);
+    let right_needed = items
+        .iter()
+        .flat_map(|item| item.options.iter())
+        .map(|option| visible_width(&option.label).saturating_add(6))
+        .chain(std::iter::once(visible_width(t(
+            "Thinking variant",
+            "思考档位",
+        ))))
+        .max()
+        .unwrap_or(1);
+    if left_needed.saturating_add(right_needed) <= available {
+        return (left_needed, right_needed);
+    }
+    let total_needed = left_needed.saturating_add(right_needed).max(1);
+    let left = available
+        .saturating_mul(left_needed)
+        .saturating_div(total_needed)
+        .clamp(1, available - 1);
+    (left, available - left)
+}
+
+fn variant_menu_header(label: &str, active: bool, width: usize) -> String {
+    let label = pad_visible_width(&truncate_visible_width(label, width), width);
+    if active {
+        format!("\x1b[1m\x1b[35m{label}\x1b[0m")
+    } else {
+        format!("\x1b[1m{label}\x1b[0m")
+    }
+}
+
+fn variant_menu_cell(
+    label: &str,
+    focused: bool,
+    highlighted: bool,
+    checked: Option<bool>,
+    width: usize,
+) -> String {
+    let marker = if highlighted { "›" } else { " " };
+    let check = match checked {
+        Some(true) => "[*] ",
+        Some(false) => "[ ] ",
+        None => "",
+    };
+    let line = pad_visible_width(
+        &truncate_visible_width(&format!("{marker} {check}{label}"), width),
+        width,
+    );
+    if focused {
+        format!("\x1b[1m\x1b[35m{line}\x1b[0m")
+    } else if checked == Some(true) {
+        format!("\x1b[1m\x1b[32m{line}\x1b[0m")
+    } else if highlighted {
+        format!("\x1b[1m{line}\x1b[0m")
+    } else {
+        format!("\x1b[2m{line}\x1b[0m")
+    }
+}
+
+fn pad_visible_width(value: &str, width: usize) -> String {
+    format!(
+        "{value}{}",
+        " ".repeat(width.saturating_sub(visible_width(value)))
+    )
+}
+
+fn split_repl_command(input: &str) -> (&str, &str) {
+    let Some((command, args)) = input.split_once(char::is_whitespace) else {
+        return (input, "");
+    };
+    (command, args)
+}
+
+fn thinking_variant_preferences_file(paths: &MiyuPaths) -> PathBuf {
+    paths.state_dir.join("thinking-variants.json")
+}
+
+fn thinking_variant_key(provider_id: &str, model: &str) -> String {
+    format!("{provider_id}\t{model}")
+}
+
+fn load_thinking_variant_preferences(paths: &MiyuPaths) -> ThinkingVariantPreferences {
+    let path = thinking_variant_preferences_file(paths);
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn restore_thinking_variant(paths: &MiyuPaths, client: &mut OpenAiCompatibleClient) {
+    let preferences = load_thinking_variant_preferences(paths);
+    let selections = client
+        .endpoint_model_preferences()
+        .into_iter()
+        .filter_map(|options| {
+            let (provider_id, model) = options;
+            let selected = preferences
+                .selected
+                .get(&thinking_variant_key(&provider_id, &model))?;
+            Some((provider_id, model, selected.clone()))
+        })
+        .collect::<Vec<_>>();
+    client.restore_thinking_variants(&selections);
+}
+
+fn save_thinking_variant(paths: &MiyuPaths, client: &OpenAiCompatibleClient) -> Result<()> {
+    let path = thinking_variant_preferences_file(paths);
+    let mut preferences = load_thinking_variant_preferences(paths);
+    for options in client.thinking_variant_options() {
+        let key = thinking_variant_key(&options.provider_id, &options.model);
+        if let Some(variant) = options.selected {
+            preferences.selected.insert(key, variant.to_string());
+        } else {
+            preferences.selected.remove(&key);
+        }
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("thinking variant state path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(serde_json::to_string_pretty(&preferences)?.as_bytes())?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 fn load_repl_input_history(state: &StateStore) -> Result<Vec<String>> {
     Ok(state
         .load_conversation()?
@@ -2357,6 +2974,10 @@ fn print_repl_help() {
     println!(
         "  /config     {}",
         t("open configuration UI", "打开配置界面")
+    );
+    println!(
+        "  /variant [name] {}",
+        t("view or switch thinking level", "查看或切换思考档位")
     );
     println!(
         "  /undo       {}",
@@ -3765,9 +4386,9 @@ fn colorize_repl_placeholders(line: &str) -> String {
     result
 }
 
-fn repl_commands() -> [&'static str; 7] {
+fn repl_commands() -> [&'static str; 8] {
     [
-        "/models", "/config", "/undo", "/compact", "/reset", "/help", "/exit",
+        "/models", "/config", "/variant", "/undo", "/compact", "/reset", "/help", "/exit",
     ]
 }
 
@@ -3811,6 +4432,9 @@ fn repl_command_suggestions_line(suggestions: &[&str], max_width: usize) -> Stri
 fn truncate_visible_width(value: &str, max_width: usize) -> String {
     if visible_width(value) <= max_width {
         return value.to_string();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
     }
     let mut output = String::new();
     let mut width = 0usize;
@@ -3991,6 +4615,111 @@ mod repl_input_tests {
     }
 
     #[test]
+    fn variant_is_a_repl_command_with_arguments() {
+        assert!(repl_commands().contains(&"/variant"));
+        assert_eq!(split_repl_command("/variant high"), ("/variant", "high"));
+        assert_eq!(split_repl_command("/reset all"), ("/reset", "all"));
+        assert_eq!(resolve_repl_command("/var"), "/variant");
+    }
+
+    #[test]
+    fn variant_menu_checks_pending_selection_before_confirming() {
+        let options = ThinkingVariantOptions {
+            provider_id: "ririxin".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            variants: vec!["high".to_string(), "max".to_string()],
+            selected: Some("high".to_string()),
+        };
+        let mut item = VariantMenuItem::from_options(&options);
+        assert_eq!(
+            item.options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "high", "max"]
+        );
+        assert_eq!(item.selection().2.as_deref(), Some("high"));
+
+        item.cursor = 2;
+        assert_eq!(item.selection().2.as_deref(), Some("high"));
+        item.check_cursor();
+        assert_eq!(item.selection().2.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn single_variant_menu_uses_content_width() {
+        let item = VariantMenuItem::from_options(&ThinkingVariantOptions {
+            provider_id: "ririxin".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            variants: vec!["high".to_string(), "max".to_string()],
+            selected: None,
+        });
+
+        assert!(single_variant_content_width(&item) < 30);
+    }
+
+    #[test]
+    fn mixed_variant_columns_do_not_fill_wide_terminal() {
+        let items = ["myopencode", "myopencode6"]
+            .into_iter()
+            .map(|provider_id| {
+                VariantMenuItem::from_options(&ThinkingVariantOptions {
+                    provider_id: provider_id.to_string(),
+                    model: "deepseek-v4-flash-free".to_string(),
+                    variants: vec!["high".to_string(), "max".to_string()],
+                    selected: None,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let (left, right) = variant_menu_column_widths(&items, 120);
+        assert!(left + right < 80);
+        assert!(left >= visible_width("myopencode6 / deepseek-v4-flash-free") + 2);
+        assert!(right >= visible_width("[*] default") + 2);
+    }
+
+    #[test]
+    fn mixed_endpoint_label_only_omits_unset_variant() {
+        assert_eq!(
+            mixed_model_endpoint_label("provider", "model", None),
+            "provider / model"
+        );
+        assert_eq!(
+            mixed_model_endpoint_label("provider", "model", Some("default")),
+            "provider / model · default"
+        );
+        assert_eq!(
+            mixed_model_endpoint_label("provider", "model", Some("high")),
+            "provider / model · high"
+        );
+    }
+
+    #[test]
+    fn variant_menu_distinguishes_unset_from_default_effort() {
+        let options = ThinkingVariantOptions {
+            provider_id: "groq".to_string(),
+            model: "qwen/qwen3-32b".to_string(),
+            variants: vec!["none".to_string(), "default".to_string()],
+            selected: Some("default".to_string()),
+        };
+        let item = VariantMenuItem::from_options(&options);
+
+        assert_eq!(item.options[0].label, "default");
+        assert_eq!(item.options[0].value, None);
+        assert_eq!(item.options[2].label, "default (variant)");
+        assert_eq!(item.options[2].value.as_deref(), Some("default"));
+        assert_eq!(item.selected, 2);
+        assert_eq!(item.selection().2.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn explicit_variant_prefix_can_select_default_effort() {
+        let argument = "variant:default";
+        assert_eq!(argument.strip_prefix("variant:"), Some("default"));
+        assert_ne!(argument, "default");
+    }
+
+    #[test]
     fn command_suggestions_are_prefixed_and_truncated() {
         let suggestions = repl_command_suggestions("/");
         let line = repl_command_suggestions_line(&suggestions, 24);
@@ -3999,6 +4728,14 @@ mod repl_input_tests {
 
         let line = repl_command_suggestions_line(&["/compact"], 40);
         assert_eq!(line, "/compact");
+    }
+
+    #[test]
+    fn truncation_respects_very_narrow_widths() {
+        assert_eq!(truncate_visible_width("abcdef", 0), "");
+        assert_eq!(truncate_visible_width("abcdef", 1), ".");
+        assert_eq!(truncate_visible_width("abcdef", 2), "..");
+        assert_eq!(truncate_visible_width("abcdef", 3), "...");
     }
 
     #[test]

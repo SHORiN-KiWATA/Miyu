@@ -5,6 +5,7 @@ use super::{
 use crate::config::{AppConfig, ProviderConfig};
 use crate::default_models::OPENCODE_ZEN_BASE_URL;
 use crate::i18n::text as t;
+use crate::models_cache::{self, ModelReasoningInfo, ReasoningSetting, ReasoningVariant};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
@@ -60,6 +61,37 @@ fn sanitize_extra_body(
     (!extra.is_empty()).then_some(extra)
 }
 
+fn merge_extra_body(
+    base: Option<Map<String, Value>>,
+    overlay: Option<Map<String, Value>>,
+) -> Option<Map<String, Value>> {
+    let mut base = base.unwrap_or_default();
+    for (key, value) in overlay.unwrap_or_default() {
+        match base.get_mut(&key) {
+            Some(existing) => merge_json_value(existing, value),
+            None => {
+                base.insert(key, value);
+            }
+        }
+    }
+    (!base.is_empty()).then_some(base)
+}
+
+fn merge_json_value(base: &mut Value, overlay: Value) {
+    if let (Some(base), Some(overlay)) = (base.as_object_mut(), overlay.as_object()) {
+        for (key, value) in overlay {
+            match base.get_mut(key) {
+                Some(existing) => merge_json_value(existing, value.clone()),
+                None => {
+                    base.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        *base = overlay;
+    }
+}
+
 fn gen_tool_call_id() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -91,6 +123,143 @@ impl ProviderProtocol {
     }
 }
 
+fn effective_protocol(provider: &ProviderConfig) -> Result<ProviderProtocol> {
+    match ProviderProtocol::from_provider(provider)? {
+        ProviderProtocol::Auto if provider_looks_anthropic(provider) => {
+            Ok(ProviderProtocol::Anthropic)
+        }
+        ProviderProtocol::Auto if uses_openai_responses(provider) => {
+            Ok(ProviderProtocol::OpenAiResponses)
+        }
+        ProviderProtocol::Auto => Ok(ProviderProtocol::OpenAiChat),
+        protocol => Ok(protocol),
+    }
+}
+
+fn uses_openai_responses(provider: &ProviderConfig) -> bool {
+    let model = provider.default_model.to_ascii_lowercase();
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+}
+
+fn is_openrouter_provider(provider: &ProviderConfig) -> bool {
+    provider.id.eq_ignore_ascii_case("openrouter")
+        || provider
+            .base_url
+            .to_ascii_lowercase()
+            .contains("openrouter.ai")
+}
+
+fn uses_enable_thinking(provider: &ProviderConfig, info: &ModelReasoningInfo) -> bool {
+    info.provider_npm.as_deref() == Some("@ai-sdk/alibaba")
+        || provider.id.to_ascii_lowercase().contains("alibaba")
+        || provider
+            .base_url
+            .to_ascii_lowercase()
+            .contains("dashscope.aliyuncs.com")
+}
+
+fn anthropic_reasoning_budget(max_tokens: u32, requested: u64) -> Option<u64> {
+    (max_tokens > 1024 && requested < u64::from(max_tokens)).then_some(requested)
+}
+
+fn supported_reasoning_variants(provider: &ProviderConfig) -> Vec<ReasoningVariant> {
+    let Some(info) = models_cache::reasoning_info(&provider.id, &provider.default_model) else {
+        return Vec::new();
+    };
+    info.variants
+        .iter()
+        .filter(|variant| reasoning_variant_supported(provider, &info, variant))
+        .cloned()
+        .collect()
+}
+
+fn reasoning_variant_supported(
+    provider: &ProviderConfig,
+    info: &ModelReasoningInfo,
+    variant: &ReasoningVariant,
+) -> bool {
+    let Ok(protocol) = effective_protocol(provider) else {
+        return false;
+    };
+    match protocol {
+        ProviderProtocol::OpenAiResponses => matches!(
+            variant.setting,
+            ReasoningSetting::Effort(_) | ReasoningSetting::Toggle(_) | ReasoningSetting::Disabled
+        ),
+        ProviderProtocol::Anthropic => match variant.setting {
+            ReasoningSetting::BudgetTokens(budget) => {
+                anthropic_reasoning_budget(provider.anthropic_max_tokens, budget).is_some()
+            }
+            _ => true,
+        },
+        ProviderProtocol::OpenAiChat | ProviderProtocol::Auto => {
+            let npm = info.provider_npm.as_deref().unwrap_or_default();
+            if is_openrouter_provider(provider) || npm == "@openrouter/ai-sdk-provider" {
+                matches!(
+                    variant.setting,
+                    ReasoningSetting::Effort(_) | ReasoningSetting::BudgetTokens(_)
+                )
+            } else if matches!(variant.setting, ReasoningSetting::Effort(_)) {
+                true
+            } else if uses_enable_thinking(provider, info) {
+                matches!(variant.setting, ReasoningSetting::Toggle(_))
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn thinking_variant_key(provider_id: &str, model: &str) -> String {
+    format!("{provider_id}\t{model}")
+}
+
+fn chat_variant_body(
+    provider: &ProviderConfig,
+    info: &ModelReasoningInfo,
+    setting: ReasoningSetting,
+) -> Option<Map<String, Value>> {
+    let npm = info.provider_npm.as_deref().unwrap_or_default();
+    match setting {
+        ReasoningSetting::Effort(effort)
+            if is_openrouter_provider(provider) || npm == "@openrouter/ai-sdk-provider" =>
+        {
+            Some(
+                json!({ "reasoning": { "effort": effort } })
+                    .as_object()?
+                    .clone(),
+            )
+        }
+        ReasoningSetting::BudgetTokens(budget)
+            if is_openrouter_provider(provider) || npm == "@openrouter/ai-sdk-provider" =>
+        {
+            Some(
+                json!({ "reasoning": { "max_tokens": budget } })
+                    .as_object()?
+                    .clone(),
+            )
+        }
+        ReasoningSetting::Effort(effort) => {
+            Some(json!({ "reasoning_effort": effort }).as_object()?.clone())
+        }
+        ReasoningSetting::Toggle(enabled) if uses_enable_thinking(provider, info) => {
+            Some(json!({ "enable_thinking": enabled }).as_object()?.clone())
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThinkingVariantOptions {
+    pub provider_id: String,
+    pub model: String,
+    pub variants: Vec<String>,
+    pub selected: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct OpenAiCompatibleClient {
     client: Client,
@@ -98,6 +267,7 @@ pub struct OpenAiCompatibleClient {
     api_key: String,
     key_index: usize,
     endpoints: Arc<Vec<LlmEndpoint>>,
+    thinking_variants: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -277,6 +447,7 @@ impl OpenAiCompatibleClient {
             api_key: first.api_key.clone(),
             key_index: first.key_index,
             endpoints: Arc::new(endpoints),
+            thinking_variants: HashMap::new(),
         })
     }
 
@@ -310,6 +481,7 @@ impl OpenAiCompatibleClient {
             api_key: key.value,
             key_index: key.index,
             endpoints: Arc::new(vec![endpoint]),
+            thinking_variants: HashMap::new(),
         })
     }
 
@@ -364,7 +536,202 @@ impl OpenAiCompatibleClient {
             api_key: endpoint.api_key.clone(),
             key_index: endpoint.key_index,
             endpoints: self.endpoints.clone(),
+            thinking_variants: self.thinking_variants.clone(),
         })
+    }
+
+    pub fn available_thinking_variants(&self) -> Vec<String> {
+        let options = self.thinking_variant_options();
+        (options.len() == 1)
+            .then(|| options[0].variants.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_thinking_variant(&mut self, variant: Option<String>) -> Result<()> {
+        let options = self.thinking_variant_options();
+        if options.len() != 1 {
+            bail!("a model must be specified when multiple models are active");
+        }
+        let option = &options[0];
+        self.set_thinking_variants(&[(option.provider_id.clone(), option.model.clone(), variant)])
+    }
+
+    pub fn set_thinking_variants(
+        &mut self,
+        selections: &[(String, String, Option<String>)],
+    ) -> Result<()> {
+        let options = self.thinking_variant_options();
+        for (provider_id, model, selected) in selections {
+            let option = options
+                .iter()
+                .find(|option| option.provider_id == *provider_id && option.model == *model)
+                .ok_or_else(|| anyhow::anyhow!("inactive model: {provider_id} / {model}"))?;
+            if let Some(selected) = selected {
+                if !option.variants.iter().any(|variant| variant == selected) {
+                    bail!(
+                        "thinking variant is unavailable for {provider_id} / {model}: {selected}"
+                    );
+                }
+            }
+        }
+        for (provider_id, model, selected) in selections {
+            let key = thinking_variant_key(provider_id, model);
+            if let Some(selected) = selected.as_ref().filter(|value| !value.trim().is_empty()) {
+                self.thinking_variants.insert(key, selected.clone());
+            } else {
+                self.thinking_variants.remove(&key);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn restore_thinking_variants(&mut self, selections: &[(String, String, String)]) {
+        let active = self.endpoint_model_preferences();
+        for (provider_id, model, selected) in selections {
+            if active.iter().any(|(active_provider, active_model)| {
+                active_provider == provider_id && active_model == model
+            }) {
+                self.thinking_variants
+                    .insert(thinking_variant_key(provider_id, model), selected.clone());
+            }
+        }
+    }
+
+    pub fn thinking_variant_options(&self) -> Vec<ThinkingVariantOptions> {
+        self.endpoint_model_preferences()
+            .into_iter()
+            .filter_map(|(provider_id, model)| {
+                let provider = self
+                    .endpoints
+                    .iter()
+                    .find(|endpoint| {
+                        endpoint.provider.id == provider_id
+                            && endpoint.provider.default_model == model
+                    })?
+                    .provider
+                    .clone();
+                let variants: Vec<String> = supported_reasoning_variants(&provider)
+                    .into_iter()
+                    .map(|variant| variant.id)
+                    .collect();
+                let selected = self
+                    .thinking_variants
+                    .get(&thinking_variant_key(&provider_id, &model))
+                    .filter(|selected| variants.iter().any(|variant| variant == *selected))
+                    .cloned();
+                Some(ThinkingVariantOptions {
+                    provider_id,
+                    model,
+                    variants,
+                    selected,
+                })
+            })
+            .collect()
+    }
+
+    pub fn thinking_variant_summary(&self) -> Option<String> {
+        let options = self.thinking_variant_options();
+        let mut variants = options.iter().map(|option| option.selected.as_deref());
+        let first = variants.next()?;
+        if variants.all(|variant| variant == first) {
+            first.map(str::to_string)
+        } else {
+            Some("mixed".to_string())
+        }
+    }
+
+    pub fn thinking_variant_for(&self, provider_id: &str, model: &str) -> Option<String> {
+        self.thinking_variant_options()
+            .into_iter()
+            .find(|options| options.provider_id == provider_id && options.model == model)
+            .and_then(|options| options.selected)
+    }
+
+    pub fn endpoint_model_preferences(&self) -> Vec<(String, String)> {
+        self.endpoints
+            .iter()
+            .map(|endpoint| {
+                (
+                    endpoint.provider.id.clone(),
+                    endpoint.provider.default_model.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn selected_reasoning_variant(&self) -> Option<(ModelReasoningInfo, ReasoningVariant)> {
+        let id = self.selected_thinking_variant_id()?;
+        let info = models_cache::reasoning_info(&self.provider.id, &self.provider.default_model)?;
+        let variant = info
+            .variants
+            .iter()
+            .find(|candidate| candidate.id.as_str() == id)
+            .cloned()?;
+        reasoning_variant_supported(&self.provider, &info, &variant).then_some((info, variant))
+    }
+
+    fn selected_thinking_variant_id(&self) -> Option<&str> {
+        self.thinking_variants
+            .get(&thinking_variant_key(
+                &self.provider.id,
+                &self.provider.default_model,
+            ))
+            .map(String::as_str)
+    }
+
+    fn chat_variant_extra_body(&self) -> Option<Map<String, Value>> {
+        let (info, variant) = self.selected_reasoning_variant()?;
+        chat_variant_body(&self.provider, &info, variant.setting)
+    }
+
+    fn responses_reasoning(&self) -> Option<ResponsesReasoning> {
+        let Some((_, variant)) = self.selected_reasoning_variant() else {
+            return Some(default_responses_reasoning());
+        };
+        match variant.setting {
+            ReasoningSetting::Effort(effort) => Some(ResponsesReasoning {
+                effort: Some(effort),
+                summary: Some("concise".to_string()),
+            }),
+            ReasoningSetting::Toggle(true) => Some(default_responses_reasoning()),
+            ReasoningSetting::Toggle(false) | ReasoningSetting::Disabled => None,
+            ReasoningSetting::BudgetTokens(_) => Some(default_responses_reasoning()),
+        }
+    }
+
+    fn anthropic_variant(
+        &self,
+        thinking_enabled: bool,
+    ) -> (Option<Value>, Option<Map<String, Value>>) {
+        if !thinking_enabled {
+            return (None, None);
+        }
+        let Some((_, variant)) = self.selected_reasoning_variant() else {
+            return (Some(anthropic_thinking_config()), None);
+        };
+        match variant.setting {
+            ReasoningSetting::Effort(effort) => (
+                Some(anthropic_thinking_config()),
+                Some(
+                    json!({ "output_config": { "effort": effort } })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            ),
+            ReasoningSetting::Toggle(true) => (Some(anthropic_thinking_config()), None),
+            ReasoningSetting::Toggle(false) | ReasoningSetting::Disabled => (None, None),
+            ReasoningSetting::BudgetTokens(budget) => {
+                let budget = anthropic_reasoning_budget(self.provider.anthropic_max_tokens, budget)
+                    .expect("unsupported Anthropic budget variant should be filtered");
+                (
+                    Some(json!({ "type": "enabled", "budget_tokens": budget })),
+                    None,
+                )
+            }
+        }
     }
 
     pub async fn chat_stream<F>(
@@ -441,8 +808,10 @@ impl OpenAiCompatibleClient {
                 bail!("OpenAI Responses protocol is not supported by this provider");
             }
         }
-        let extra_body =
-            sanitize_extra_body(self.provider.extra_body.clone(), CHAT_RESERVED_BODY_KEYS);
+        let extra_body = merge_extra_body(
+            sanitize_extra_body(self.provider.extra_body.clone(), CHAT_RESERVED_BODY_KEYS),
+            self.chat_variant_extra_body(),
+        );
         let mut request = ChatRequest {
             model: self.provider.default_model.clone(),
             messages,
@@ -692,9 +1061,13 @@ impl OpenAiCompatibleClient {
         tools: Vec<ToolDefinition>,
         thinking: bool,
     ) -> AnthropicRequest {
-        let extra_body = sanitize_extra_body(
-            self.provider.extra_body.clone(),
-            ANTHROPIC_RESERVED_BODY_KEYS,
+        let (variant_thinking, variant_extra) = self.anthropic_variant(thinking);
+        let extra_body = merge_extra_body(
+            sanitize_extra_body(
+                self.provider.extra_body.clone(),
+                ANTHROPIC_RESERVED_BODY_KEYS,
+            ),
+            variant_extra,
         );
         AnthropicRequest {
             model: self.provider.default_model.clone(),
@@ -704,7 +1077,7 @@ impl OpenAiCompatibleClient {
             stream: true,
             max_tokens: self.provider.anthropic_max_tokens,
             temperature: Some(self.provider.temperature),
-            thinking: thinking.then(anthropic_thinking_config),
+            thinking: variant_thinking,
             extra_body,
         }
     }
@@ -781,10 +1154,7 @@ impl OpenAiCompatibleClient {
             instructions: None,
             stream: true,
             tools: (!tools.is_empty()).then(|| lower_responses_tools(tools)),
-            reasoning: Some(ResponsesReasoning {
-                effort: Some("medium"),
-                summary: Some("concise"),
-            }),
+            reasoning: self.responses_reasoning(),
             temperature: Some(self.provider.temperature),
             extra_body,
         };
@@ -909,11 +1279,8 @@ fn claude_protocol_hint(provider: &ProviderConfig) -> &'static str {
     ""
 }
 
-fn anthropic_thinking_config() -> AnthropicThinkingConfig {
-    AnthropicThinkingConfig {
-        kind: "adaptive",
-        display: "summarized",
-    }
+fn anthropic_thinking_config() -> Value {
+    json!({ "type": "adaptive", "display": "summarized" })
 }
 
 fn anthropic_thinking_unsupported(status: u16, body: &str) -> bool {
@@ -1009,9 +1376,16 @@ struct ResponsesRequest {
 #[derive(Debug, Serialize)]
 struct ResponsesReasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
-    effort: Option<&'static str>,
+    effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    summary: Option<&'static str>,
+    summary: Option<String>,
+}
+
+fn default_responses_reasoning() -> ResponsesReasoning {
+    ResponsesReasoning {
+        effort: Some("medium".to_string()),
+        summary: Some("concise".to_string()),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1027,17 +1401,10 @@ struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<AnthropicThinkingConfig>,
+    thinking: Option<Value>,
     #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
     extra_body: Option<Map<String, Value>>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-struct AnthropicThinkingConfig {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    display: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -3337,6 +3704,7 @@ mod tests {
             api_key: "test".to_string(),
             key_index: 0,
             endpoints: Arc::new(vec![endpoint]),
+            thinking_variants: HashMap::new(),
         }
     }
 
@@ -3356,6 +3724,136 @@ mod tests {
             anthropic_max_tokens: 4096,
             extra_body: None,
         }
+    }
+
+    #[test]
+    fn reasoning_variants_use_current_wire_protocol_mapping() {
+        let info = ModelReasoningInfo {
+            provider_npm: Some("@openrouter/ai-sdk-provider".to_string()),
+            variants: Vec::new(),
+        };
+        let effort = ReasoningVariant {
+            id: "high".to_string(),
+            setting: ReasoningSetting::Effort("high".to_string()),
+        };
+        let budget = ReasoningVariant {
+            id: "max".to_string(),
+            setting: ReasoningSetting::BudgetTokens(8000),
+        };
+        let provider = test_provider("openrouter", "https://openrouter.ai/api/v1");
+        assert!(reasoning_variant_supported(&provider, &info, &effort));
+        assert!(reasoning_variant_supported(&provider, &info, &budget));
+
+        let unknown_info = ModelReasoningInfo {
+            provider_npm: Some("@unknown/provider".to_string()),
+            variants: Vec::new(),
+        };
+        let unknown = test_provider("proxy", "https://proxy.example/v1");
+        assert!(reasoning_variant_supported(
+            &unknown,
+            &unknown_info,
+            &effort
+        ));
+        assert!(!reasoning_variant_supported(
+            &unknown,
+            &unknown_info,
+            &budget
+        ));
+
+        let alibaba = test_provider("alibaba-token-plan", "https://example.com/v1");
+        let toggle = ReasoningVariant {
+            id: "on".to_string(),
+            setting: ReasoningSetting::Toggle(true),
+        };
+        assert!(reasoning_variant_supported(
+            &alibaba,
+            &unknown_info,
+            &toggle
+        ));
+    }
+
+    #[test]
+    fn anthropic_budget_is_bounded_by_max_tokens() {
+        assert_eq!(anthropic_reasoning_budget(4096, 2048), Some(2048));
+        assert_eq!(anthropic_reasoning_budget(4096, 32_000), None);
+        assert_eq!(anthropic_reasoning_budget(1024, 32_000), None);
+    }
+
+    #[test]
+    fn custom_openai_compatible_provider_uses_reasoning_effort() {
+        let mut provider = test_provider("ririxin", "https://token.sensenova.cn/v1");
+        provider.default_model = "deepseek-v4-flash".to_string();
+        let info = ModelReasoningInfo {
+            provider_npm: Some("@ai-sdk/openai-compatible".to_string()),
+            variants: Vec::new(),
+        };
+
+        let body = chat_variant_body(
+            &provider,
+            &info,
+            ReasoningSetting::Effort("high".to_string()),
+        )
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn mixed_client_keeps_variants_per_provider_and_model() {
+        let mut first = test_provider("ririxin", "https://token.sensenova.cn/v1");
+        first.default_model = "deepseek-v4-flash".to_string();
+        let mut second = test_provider("opencode", "https://opencode.ai/zen/v1");
+        second.default_model = "mimo-v2.5-free".to_string();
+        let endpoints = vec![
+            LlmEndpoint {
+                provider: first.clone(),
+                api_key: "first".to_string(),
+                key_index: 0,
+            },
+            LlmEndpoint {
+                provider: second,
+                api_key: "second".to_string(),
+                key_index: 0,
+            },
+        ];
+        let mut client = OpenAiCompatibleClient {
+            client: reqwest::Client::new(),
+            provider: first,
+            api_key: "first".to_string(),
+            key_index: 0,
+            endpoints: Arc::new(endpoints),
+            thinking_variants: HashMap::from([(
+                thinking_variant_key("ririxin", "deepseek-v4-flash"),
+                "high".to_string(),
+            )]),
+        };
+
+        let first_endpoint = client.with_endpoint(&client.endpoints[0]).unwrap();
+        let second_endpoint = client.with_endpoint(&client.endpoints[1]).unwrap();
+        assert_eq!(first_endpoint.selected_thinking_variant_id(), Some("high"));
+        assert_eq!(second_endpoint.selected_thinking_variant_id(), None);
+        client.thinking_variants.insert(
+            thinking_variant_key("opencode", "mimo-v2.5-free"),
+            "max".to_string(),
+        );
+        let second_endpoint = client.with_endpoint(&client.endpoints[1]).unwrap();
+        assert_eq!(second_endpoint.selected_thinking_variant_id(), Some("max"));
+        assert_eq!(first_endpoint.selected_thinking_variant_id(), Some("high"));
+    }
+
+    #[test]
+    fn variant_extra_body_merges_nested_reasoning_fields() {
+        let base = json!({ "reasoning": { "exclude": true }, "custom": 1 })
+            .as_object()
+            .cloned();
+        let variant = json!({ "reasoning": { "effort": "high" } })
+            .as_object()
+            .cloned();
+
+        let merged = merge_extra_body(base, variant).unwrap();
+        assert_eq!(merged["reasoning"]["exclude"], true);
+        assert_eq!(merged["reasoning"]["effort"], "high");
+        assert_eq!(merged["custom"], 1);
     }
 
     #[test]
@@ -3417,8 +3915,8 @@ mod tests {
             stream: true,
             tools: None,
             reasoning: Some(ResponsesReasoning {
-                effort: Some("medium"),
-                summary: Some("concise"),
+                effort: Some("medium".to_string()),
+                summary: Some("concise".to_string()),
             }),
             temperature: Some(0.5),
             extra_body: sanitize_extra_body(extra, RESPONSES_RESERVED_BODY_KEYS),
