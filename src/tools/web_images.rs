@@ -230,7 +230,7 @@ async fn search_web_images(
     let mut print_errors = Vec::new();
     let should_print = preview && config.plugins.print_image.enabled && preview_count > 0;
     if should_print {
-        progress.report("__external_output__");
+        progress.prepare_for_external_output().await;
         for item in stored.iter().take(preview_count) {
             if let Err(err) = vision::print_image_file(
                 &item.local_path,

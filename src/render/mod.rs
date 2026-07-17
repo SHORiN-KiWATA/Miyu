@@ -336,11 +336,11 @@ impl CommandLiveDisplay {
             ));
         }
         output.extend(rows[start..].iter().map(|line| {
-            let color = match line.stream {
-                CommandOutputStream::Stdout => 33,
-                CommandOutputStream::Stderr => 31,
+            let style = match line.stream {
+                CommandOutputStream::Stdout => "\x1b[2m",
+                CommandOutputStream::Stderr => "\x1b[2m\x1b[31m",
             };
-            format!("\x1b[2m  │\x1b[0m \x1b[{color}m{}\x1b[0m", line.text)
+            format!("\x1b[2m  │\x1b[0m {style}{}\x1b[0m", line.text)
         }));
         output
     }
@@ -751,13 +751,8 @@ impl StreamRenderer {
         if self.plain {
             return Ok(());
         }
-        self.stop_waiting()?;
-        self.end_active_stream_line()?;
-        self.finalize_reasoning_summary()?;
+        self.release_transient_output()?;
         if is_silent_tool(name) {
-            if self.summary_line_active {
-                self.clear_summary_lines()?;
-            }
             return Ok(());
         }
         if name == "run_command" {
@@ -837,6 +832,7 @@ impl StreamRenderer {
             }
         }
         if matches!(name, "todowrite" | "todoupdate") && ok {
+            self.release_transient_output()?;
             let mut stdout = io::stdout();
             if write_todo_table(&mut stdout, output)? {
                 stdout.flush()?;
@@ -849,6 +845,7 @@ impl StreamRenderer {
             }
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
+            self.release_transient_output()?;
             let mut stdout = io::stdout();
             writeln!(stdout, "result {} {status}", self.display_tool_name(name))?;
             write_tool_payload(&mut stdout, t("output", "输出"), output)?;
@@ -898,13 +895,7 @@ impl StreamRenderer {
             return Ok(());
         }
         if let Some(json) = message.strip_prefix("__patch_preview__") {
-            self.stop_waiting()?;
-            self.end_subagent_stream_line()?;
-            self.end_active_stream_line()?;
-            self.finalize_reasoning_summary()?;
-            if self.summary_line_active {
-                self.clear_summary_lines()?;
-            }
+            self.release_transient_output()?;
             let mut stdout = io::stdout();
             if write_patch_result(&mut stdout, json)? {
                 stdout.flush()?;
@@ -920,10 +911,7 @@ impl StreamRenderer {
         }
         if let Some(text) = message.strip_prefix("__subagent_stats__") {
             if self.tool_call_mode == ToolCallDisplayMode::Full {
-                self.stop_waiting()?;
-                self.end_subagent_stream_line()?;
-                self.end_active_stream_line()?;
-                self.finalize_reasoning_summary()?;
+                self.release_transient_output()?;
                 let mut stdout = io::stdout();
                 writeln!(stdout, "progress {}: {text}", self.display_tool_name(name))?;
                 stdout.flush()?;
@@ -939,13 +927,9 @@ impl StreamRenderer {
         if let Some(text) = message.strip_prefix("__subagent_reasoning__") {
             let text = normalize_stream_text(text);
             if self.tool_call_mode == ToolCallDisplayMode::Full {
-                self.stop_waiting()?;
                 if self.subagent_mode != Some(ChatStreamKind::Reasoning) {
-                    self.end_subagent_stream_line()?;
+                    self.release_transient_output()?;
                     let mut stdout = io::stdout();
-                    if self.subagent_mode.is_some() {
-                        writeln!(stdout)?;
-                    }
                     execute!(stdout, SetForegroundColor(Color::Green))?;
                     writeln!(stdout)?;
                     stdout.flush()?;
@@ -973,10 +957,7 @@ impl StreamRenderer {
                     .unwrap_or("unknown");
                 if self.tool_call_mode == ToolCallDisplayMode::Full {
                     let args = value.get("args").and_then(Value::as_str).unwrap_or("");
-                    self.stop_waiting()?;
-                    self.end_subagent_stream_line()?;
-                    self.end_active_stream_line()?;
-                    self.finalize_reasoning_summary()?;
+                    self.release_transient_output()?;
                     let mut stdout = io::stdout();
                     if tool_name == "run_command" {
                         write_command_block(&mut stdout, args)?;
@@ -999,10 +980,7 @@ impl StreamRenderer {
                 if self.tool_call_mode == ToolCallDisplayMode::Full {
                     let output = value.get("output").and_then(Value::as_str).unwrap_or("");
                     let status = if ok { "ok" } else { "err" };
-                    self.stop_waiting()?;
-                    self.end_subagent_stream_line()?;
-                    self.end_active_stream_line()?;
-                    self.finalize_reasoning_summary()?;
+                    self.release_transient_output()?;
                     let mut stdout = io::stdout();
                     if tool_name == "run_command" {
                         write_command_result_blocks(&mut stdout, output)?;
@@ -1023,10 +1001,7 @@ impl StreamRenderer {
             return Ok(());
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
-            self.stop_waiting()?;
-            self.end_subagent_stream_line()?;
-            self.end_active_stream_line()?;
-            self.finalize_reasoning_summary()?;
+            self.release_transient_output()?;
             let mut stdout = io::stdout();
             writeln!(
                 stdout,
@@ -1066,19 +1041,7 @@ impl StreamRenderer {
     }
 
     pub fn prepare_for_external_output(&mut self) -> Result<()> {
-        self.stop_waiting()?;
-        if let Some(mut display) = self.command_display.take() {
-            display.commit(self.tool_call_mode == ToolCallDisplayMode::Summary)?;
-        }
-        self.end_subagent_stream_line()?;
-        if self.summary_line_active {
-            let mut stdout = io::stdout();
-            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-            stdout.flush()?;
-            self.summary_line_active = false;
-        }
-        self.end_active_stream_line()?;
-        self.finalize_reasoning_summary()?;
+        self.release_transient_output()?;
         self.finalize_tools_summary()?;
         self.show_cursor()?;
         Ok(())
@@ -1536,9 +1499,7 @@ impl StreamRenderer {
         if self.plain || !WaitSpinner::supported() {
             return Ok(());
         }
-        self.end_active_stream_line()?;
-        self.finalize_reasoning_summary()?;
-        self.stop_waiting()?;
+        self.release_transient_output()?;
         self.hide_cursor()?;
         self.wait_spinner = Some(WaitSpinner::start(
             t("~ Preparing question", "~ 准备提问").to_string(),
@@ -1561,6 +1522,17 @@ impl StreamRenderer {
         }
         self.last_tick = None;
         Ok(())
+    }
+
+    fn release_transient_output(&mut self) -> Result<()> {
+        self.stop_waiting()?;
+        if let Some(mut display) = self.command_display.take() {
+            display.commit(self.tool_call_mode == ToolCallDisplayMode::Summary)?;
+        }
+        self.end_subagent_stream_line()?;
+        self.end_active_stream_line()?;
+        self.finalize_reasoning_summary()?;
+        self.clear_summary_lines()
     }
 }
 
@@ -2868,8 +2840,13 @@ fn write_command_result_blocks(stdout: &mut io::Stdout, output: &str) -> Result<
 fn write_fenced_block(stdout: &mut io::Stdout, label: &str, text: &str) -> Result<()> {
     writeln!(stdout, "\x1b[2m,-- {label}\x1b[0m")?;
     let sanitized = sanitize_terminal_text(text);
+    let style = if label.starts_with("err") {
+        "\x1b[2m\x1b[31m"
+    } else {
+        "\x1b[2m"
+    };
     for line in truncate_chars(sanitized.trim(), 2400).lines() {
-        writeln!(stdout, "\x1b[33m{line}\x1b[0m")?;
+        writeln!(stdout, "{style}{line}\x1b[0m")?;
     }
     writeln!(stdout, "\x1b[2m`--\x1b[0m")?;
     Ok(())
@@ -3098,7 +3075,51 @@ mod tests {
 
         assert!(strip_ansi_for_test(&lines[0]).ends_with("out"));
         assert!(strip_ansi_for_test(&lines[1]).ends_with("err"));
+        assert!(lines[0].contains("\x1b[2mout\x1b[0m"));
+        assert!(!lines[0].contains("\x1b[33m"));
+        assert!(lines[1].contains("\x1b[2m\x1b[31merr\x1b[0m"));
         assert!(lines[1].contains("\x1b[31m"));
+    }
+
+    #[test]
+    fn run_command_replaces_an_active_tool_summary() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = true;
+        renderer.summary_line_active = true;
+        renderer.summary_lines_active = 1;
+
+        renderer
+            .write_tool_call("run_command", r#"{"command":"printf ok"}"#)
+            .unwrap();
+
+        assert!(!renderer.summary_line_active);
+        assert_eq!(renderer.summary_lines_active, 0);
+        assert!(renderer.command_display.is_some());
+    }
+
+    #[test]
+    fn external_output_clears_every_active_summary_row() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = true;
+        renderer.summary_line_active = true;
+        renderer.summary_lines_active = 2;
+
+        renderer.prepare_for_external_output().unwrap();
+
+        assert!(!renderer.summary_line_active);
+        assert_eq!(renderer.summary_lines_active, 0);
     }
 
     #[test]

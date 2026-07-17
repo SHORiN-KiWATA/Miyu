@@ -133,6 +133,9 @@ pub enum AgentEvent {
         stream: tools::CommandOutputStream,
         chunk: Vec<u8>,
     },
+    PrepareForExternalOutput {
+        ready: oneshot::Sender<()>,
+    },
     AskQuestion {
         request: QuestionRequest,
         responder: oneshot::Sender<QuestionResponse>,
@@ -158,6 +161,9 @@ where
             name: name.to_string(),
             message,
         }),
+        tools::ToolProgressEvent::PrepareForExternalOutput { ready } => {
+            on_event(AgentEvent::PrepareForExternalOutput { ready })
+        }
         tools::ToolProgressEvent::CommandOutput { stream, chunk } => {
             on_event(AgentEvent::CommandOutput {
                 name: name.to_string(),

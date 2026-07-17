@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "generate_image",
         "Generate an image from a text prompt using the configured OpenAI or RightCode image API. Returns a local image path. In the final assistant response, always include the returned path so the user can reuse it. Do not call print_image after this tool unless the user explicitly asks to display/print/preview the image; if this tool returns printed=true, never call print_image for the same image.",
         json!({
@@ -22,14 +22,18 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
             "required": ["prompt"],
             "additionalProperties": false
         }),
-        move |args| {
+        move |args, progress| {
             let config = config.clone();
-            async move { generate_image(args, config).await }
+            async move { generate_image(args, config, progress).await }
         },
     ).writes());
 }
 
-async fn generate_image(args: Value, config: AppConfig) -> Result<String> {
+async fn generate_image(
+    args: Value,
+    config: AppConfig,
+    progress: crate::tools::ToolProgress,
+) -> Result<String> {
     let plugin = &config.plugins.image_generation;
     if !plugin.enabled {
         bail!("image generation plugin is disabled")
@@ -55,6 +59,7 @@ async fn generate_image(args: Value, config: AppConfig) -> Result<String> {
     let bytes = request_image(plugin, prompt, aspect_ratio, resolution).await?;
     let path = save_image(plugin, prompt, &bytes)?;
     let print_error = if plugin.auto_print && config.plugins.print_image.enabled {
+        progress.prepare_for_external_output().await;
         vision::print_image_file(
             &path,
             vision::configured_print_size(&config.plugins.print_image),

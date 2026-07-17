@@ -46,7 +46,7 @@ pub fn register_print(registry: &mut ToolRegistry, config: AppConfig) {
     if !config.plugins.print_image.enabled {
         return;
     }
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "print_image",
         t("Print/render a local image directly in the current terminal output using chafa. Use this when the user asks to show, print, render, or preview an image, or when you need to inspect an image visually in the terminal before answering.", "使用 chafa 在当前终端输出中直接打印/渲染本地图片。当用户要求显示、打印、渲染、预览图片，或回答前需要在终端中目视检查图片时使用。"),
         json!({
@@ -60,14 +60,18 @@ pub fn register_print(registry: &mut ToolRegistry, config: AppConfig) {
             "required": ["image"],
             "additionalProperties": false
         }),
-        move |args| {
+        move |args, progress| {
             let print_config = config.plugins.print_image.clone();
-            async move { print_image(args, &print_config).await }
+            async move { print_image(args, &print_config, progress).await }
         },
     ));
 }
 
-async fn print_image(args: Value, print_config: &PrintImagePluginConfig) -> Result<String> {
+async fn print_image(
+    args: Value,
+    print_config: &PrintImagePluginConfig,
+    progress: crate::tools::ToolProgress,
+) -> Result<String> {
     let image = args
         .get("image")
         .and_then(Value::as_str)
@@ -91,6 +95,7 @@ async fn print_image(args: Value, print_config: &PrintImagePluginConfig) -> Resu
             path.display()
         )
     }
+    progress.prepare_for_external_output().await;
     print_image_file(&path, print_size(&args, print_config)).await?;
     Ok(format!(
         "{}: {}",

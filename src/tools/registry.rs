@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub type ToolFuture = Pin<Box<dyn Future<Output = Result<String>> + Send>>;
 pub type ToolHandler = Arc<dyn Fn(Value, ToolProgress) -> ToolFuture + Send + Sync>;
@@ -20,6 +20,9 @@ pub enum CommandOutputStream {
 #[derive(Debug)]
 pub enum ToolProgressEvent {
     Message(String),
+    PrepareForExternalOutput {
+        ready: oneshot::Sender<()>,
+    },
     CommandOutput {
         stream: CommandOutputStream,
         chunk: Vec<u8>,
@@ -48,6 +51,45 @@ impl ToolProgress {
         if let Some(sender) = &self.sender {
             let _ = sender.send(ToolProgressEvent::CommandOutput { stream, chunk });
         }
+    }
+
+    pub async fn prepare_for_external_output(&self) {
+        let Some(sender) = &self.sender else {
+            return;
+        };
+        let (ready, receiver) = oneshot::channel();
+        if sender
+            .send(ToolProgressEvent::PrepareForExternalOutput { ready })
+            .is_ok()
+        {
+            let _ = receiver.await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn external_output_waits_for_renderer_acknowledgement() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let progress = ToolProgress::new(sender);
+        let prepare = progress.prepare_for_external_output();
+        tokio::pin!(prepare);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut prepare)
+                .await
+                .is_err()
+        );
+
+        let ToolProgressEvent::PrepareForExternalOutput { ready } = receiver.recv().await.unwrap()
+        else {
+            panic!("expected external output preparation event");
+        };
+        ready.send(()).unwrap();
+        prepare.await;
     }
 }
 

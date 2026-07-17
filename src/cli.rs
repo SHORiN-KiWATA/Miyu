@@ -386,11 +386,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "显示应用配置、数据和缓存路径",
         ),
         ("config", "Open or manage configuration", "打开或管理配置"),
-        (
-            "providers",
-            "List or switch provider/model",
-            "列出或切换 provider/模型",
-        ),
+        ("models", "List or switch models", "列出或切换模型"),
         (
             "fish-init",
             "Integrate with fish so you can chat in natural language directly in the terminal",
@@ -435,7 +431,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
     }
     command = command
         .mut_subcommand("ask", localize_ask_command)
-        .mut_subcommand("providers", localize_providers_command)
+        .mut_subcommand("models", localize_models_command)
         .mut_subcommand("history", localize_history_command)
         .mut_subcommand("kb", localize_kb_command)
         .mut_subcommand("memory", localize_memory_command)
@@ -451,12 +447,9 @@ fn localize_ask_command(command: clap::Command) -> clap::Command {
     })
 }
 
-fn localize_providers_command(command: clap::Command) -> clap::Command {
+fn localize_models_command(command: clap::Command) -> clap::Command {
     command.mut_arg("index", |arg| {
-        arg.help(t(
-            "Provider/model list index to activate",
-            "要激活的 provider/模型列表序号",
-        ))
+        arg.help(t("Model list index to activate", "要激活的模型列表序号"))
     })
 }
 
@@ -614,7 +607,7 @@ pub enum Command {
     Init,
     Paths,
     Config(ConfigArgs),
-    Providers(ProvidersArgs),
+    Models(ModelsArgs),
     FishInit,
     BashInit,
     ZshInit,
@@ -677,7 +670,7 @@ pub struct HistoryArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ProvidersArgs {
+pub struct ModelsArgs {
     pub index: Option<usize>,
 }
 
@@ -875,7 +868,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Config(args)) => run_config(&paths, args).await,
-        Some(Command::Providers(args)) => run_providers(&paths, args),
+        Some(Command::Models(args)) => run_models(&paths, args),
         Some(Command::FishInit) => shell::fish::install(&paths),
         Some(Command::BashInit) => shell::bash::install(&paths),
         Some(Command::ZshInit) => shell::zsh::install(&paths),
@@ -1178,7 +1171,7 @@ fn alarm_worker_paths(state_dir: PathBuf) -> MiyuPaths {
     }
 }
 
-fn run_providers(paths: &MiyuPaths, args: ProvidersArgs) -> Result<()> {
+fn run_models(paths: &MiyuPaths, args: ModelsArgs) -> Result<()> {
     let mut config = AppConfig::load(paths)?;
     let choices = config.text_provider_model_choices();
     if choices.is_empty() {
@@ -2119,7 +2112,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             continue;
         }
         if command.eq_ignore_ascii_case("/models") {
-            run_providers(paths, ProvidersArgs { index: None })?;
+            run_models(paths, ModelsArgs { index: None })?;
             reload_repl_config(paths, &mut config, &mut client)?;
             footer = ReplFooterStatus::from_config(
                 &config,
@@ -3840,6 +3833,25 @@ mod repl_input_tests {
     use super::*;
 
     #[test]
+    fn models_is_the_cli_model_selector() {
+        let matches = localized_command()
+            .try_get_matches_from(["miyu", "models", "1"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Models(ModelsArgs { index: Some(1) }))
+        ));
+        let old_matches = localized_command()
+            .try_get_matches_from(["miyu", "providers"])
+            .unwrap();
+        let old_cli = Cli::from_arg_matches(&old_matches).unwrap();
+        assert!(old_cli.command.is_none());
+        assert_eq!(old_cli.message, ["providers"]);
+    }
+
+    #[test]
     fn footer_reset_clears_turn_and_cumulative_tokens() {
         let config = AppConfig::default();
         let mut footer = ReplFooterStatus::from_config(&config, 100, Some(250));
@@ -4536,6 +4548,11 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
         } => {
             renderer.write_command_output(&name, stream, &chunk)?;
             renderer.tick_spinner()
+        }
+        AgentEvent::PrepareForExternalOutput { ready } => {
+            renderer.prepare_for_external_output()?;
+            let _ = ready.send(());
+            Ok(())
         }
         AgentEvent::AskQuestion { request, responder } => {
             renderer.prepare_for_external_output()?;
