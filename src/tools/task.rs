@@ -1,7 +1,7 @@
 use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, SubagentStats};
 use super::{ToolRegistry, ToolSpec};
 use crate::config::AppConfig;
-use crate::i18n::{is_zh, text as t};
+use crate::i18n::text as t;
 use crate::llm::OpenAiCompatibleClient;
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
@@ -201,18 +201,8 @@ async fn run_task(
     let enabled = context.config.plugins.deep_research.show_progress;
     let sa_progress = SubagentProgress::new(progress, mode, enabled);
 
-    sa_progress.report(if is_zh() {
-        format!(
-            "{}（{}）：{}",
-            t("subagent", "子代理"),
-            sa_type.label(),
-            description
-        )
-    } else {
-        format!("subagent ({}): {}", sa_type.label(), description)
-    });
-
-    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?;
+    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
+        .for_subagent_output(mode == ProgressMode::Full);
     let tools = match sa_type {
         SubagentType::Explore => context.tools.clone_filtered(EXPLORE_ALLOWED),
         SubagentType::General => context.tools.clone(),

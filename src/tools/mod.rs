@@ -84,10 +84,7 @@ pub fn readable_tool_name(name: &str) -> String {
             .map(|name| readable_load_target_name(name))
             .collect::<Vec<_>>()
             .join("、");
-        if targets.len() == 1 && targets[0].starts_with("group:") {
-            return format!("加载工具组：{display}");
-        }
-        return format!("加载工具：{display}");
+        return format!("加载：{display}");
     }
     if let Ok(guard) = SCRIPT_DISPLAY_NAMES.read() {
         if let Some(map) = guard.as_ref() {
@@ -114,7 +111,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "run_command" => "运行命令",
         "apply_patch" => "应用补丁",
         "ask_question" => "询问用户",
-        "task" => "子代理任务",
+        "task" => "子代理",
         "read_file" => "读取文件",
         "write_file" => "写入文件",
         "edit_file" => "编辑文件",
@@ -184,7 +181,7 @@ fn builtin_readable_tool_name(name: &str) -> String {
         "draw_fortune_lot" => "吉凶占",
         "roll_dice" => "掷骰子",
         "load_skill" => "加载技能",
-        "load_tools" => "加载工具",
+        "load_tools" => "加载",
         "register_script" => "注册脚本",
         "unregister_script" => "注销脚本",
         "todowrite" => "任务列表",

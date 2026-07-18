@@ -961,7 +961,7 @@ pub const SUBAGENT_GENERAL_PROMPT: &str = include_str!("prompts/subagent-general
 pub fn readable_tool_name(name: &str) -> &str {
     match name {
         // ...
-        "task" => "子代理任务",  // 替换 "task_agent" => "创建子任务"
+        "task" => "子代理",  // 替换 "task_agent" => "创建子任务"
         // ...
         _ => name,
     }

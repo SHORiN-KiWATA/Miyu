@@ -144,6 +144,7 @@ impl CommandStreamState {
 
 struct CommandLiveDisplay {
     command: String,
+    status: CommandStatus,
     max_output_rows: usize,
     show_output: bool,
     stdout: CommandStreamState,
@@ -159,6 +160,7 @@ impl CommandLiveDisplay {
     fn new(arguments: &str, max_output_rows: usize, show_output: bool) -> Self {
         Self {
             command: command_from_arguments(arguments),
+            status: CommandStatus::Running,
             max_output_rows,
             show_output,
             stdout: CommandStreamState::default(),
@@ -169,6 +171,14 @@ impl CommandLiveDisplay {
             frame: 0,
             rendered_line_widths: Vec::new(),
         }
+    }
+
+    fn set_result(&mut self, ok: bool) {
+        self.status = if ok {
+            CommandStatus::Ok
+        } else {
+            CommandStatus::Error
+        };
     }
 
     fn push(&mut self, stream: CommandOutputStream, chunk: &[u8]) {
@@ -220,10 +230,26 @@ impl CommandLiveDisplay {
         self.show_output = show_output;
         if !self.rendered_line_widths.is_empty() {
             let mut stdout = io::stdout();
-            writeln!(stdout)?;
+            write_command_block_gap(&mut stdout, false)?;
             stdout.flush()?;
             self.rendered_line_widths.clear();
         }
+        Ok(())
+    }
+
+    fn write_static(&mut self, include_output: bool) -> Result<()> {
+        self.stdout.finalize_pending(self.sequence);
+        self.stderr.finalize_pending(self.sequence);
+        let show_output = self.show_output;
+        self.show_output = include_output && show_output;
+        let lines = self.rendered_lines(command_terminal_width(), false);
+        self.show_output = show_output;
+        let mut stdout = io::stdout();
+        for line in lines {
+            writeln!(stdout, "{line}")?;
+        }
+        write_command_block_gap(&mut stdout, true)?;
+        stdout.flush()?;
         Ok(())
     }
 
@@ -272,7 +298,8 @@ impl CommandLiveDisplay {
             self.command.clone()
         };
         let wrapped_command = wrap_plain_text(&command, body_width);
-        let mut output = Vec::with_capacity(wrapped_command.len() + self.max_output_rows);
+        let mut output = Vec::with_capacity(wrapped_command.len() + self.max_output_rows + 1);
+        output.push(command_heading_line(self.status));
         for (index, line) in wrapped_command.iter().enumerate() {
             let prefix = if index == 0 {
                 if spinning {
@@ -346,6 +373,33 @@ impl CommandLiveDisplay {
     }
 }
 
+fn write_command_block_gap(writer: &mut impl Write, line_terminated: bool) -> Result<()> {
+    if !line_terminated {
+        writeln!(writer)?;
+    }
+    writeln!(writer)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum CommandStatus {
+    Running,
+    Ok,
+    Error,
+}
+
+fn command_heading_line(status: CommandStatus) -> String {
+    let status = match status {
+        CommandStatus::Running => t("running", "运行中"),
+        CommandStatus::Ok => "ok",
+        CommandStatus::Error => "err",
+    };
+    format!(
+        "\x1b[2m$ {}×1 {status}\x1b[0m",
+        t("run command", "运行命令")
+    )
+}
+
 fn command_terminal_width() -> usize {
     terminal::size()
         .map(|(width, _)| usize::from(width))
@@ -380,6 +434,45 @@ fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
         current_width += grapheme_width;
     }
     lines.push(current);
+    lines
+}
+
+fn clip_to_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    let ellipsis = "…";
+    let ellipsis_width = UnicodeWidthStr::width(ellipsis);
+    if max_width <= ellipsis_width {
+        return ellipsis.to_string();
+    }
+    let content_width = max_width - ellipsis_width;
+    let mut output = String::new();
+    let mut width = 0usize;
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if width + grapheme_width > content_width {
+            break;
+        }
+        output.push_str(grapheme);
+        width += grapheme_width;
+    }
+    output.push_str(ellipsis);
+    output
+}
+
+fn transient_summary_lines(text: &str, terminal_width: usize) -> Vec<String> {
+    let max_width = terminal_width.saturating_sub(1).max(1);
+    let mut lines = text
+        .lines()
+        .map(|line| clip_to_display_width(line, max_width))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
     lines
 }
 
@@ -601,9 +694,10 @@ pub struct StreamRenderer {
     mode: Option<ChatStreamKind>,
     cursor_hidden: bool,
     markdown: MarkdownStreamRenderer,
-    reasoning_chars: usize,
-    reasoning_lines: usize,
-    reasoning_line_open: bool,
+    reasoning_text: String,
+    reasoning_tokens: usize,
+    reasoning_title: Option<String>,
+    reasoning_started_at: Option<std::time::Instant>,
     tool_stats: BTreeMap<String, ToolStats>,
     readable_tool_names: bool,
     command_output_lines: usize,
@@ -615,9 +709,6 @@ pub struct StreamRenderer {
     wait_spinner: Option<WaitSpinner>,
     last_tick: Option<std::time::Instant>,
     subagent_mode: Option<ChatStreamKind>,
-    subagent_reasoning_chars: usize,
-    subagent_reasoning_lines: usize,
-    subagent_reasoning_line_open: bool,
     sent_meme_filter: SentMemeStreamFilter,
 }
 
@@ -636,9 +727,10 @@ impl StreamRenderer {
             mode: None,
             cursor_hidden: false,
             markdown: MarkdownStreamRenderer::new(),
-            reasoning_chars: 0,
-            reasoning_lines: 0,
-            reasoning_line_open: false,
+            reasoning_text: String::new(),
+            reasoning_tokens: 0,
+            reasoning_title: None,
+            reasoning_started_at: None,
             tool_stats: BTreeMap::new(),
             readable_tool_names,
             command_output_lines,
@@ -650,25 +742,94 @@ impl StreamRenderer {
             wait_spinner: None,
             last_tick: None,
             subagent_mode: None,
-            subagent_reasoning_chars: 0,
-            subagent_reasoning_lines: 0,
-            subagent_reasoning_line_open: false,
             sent_meme_filter: SentMemeStreamFilter::default(),
         }
     }
 
     pub fn start_waiting(&mut self) -> Result<()> {
-        if self.plain || self.wait_spinner.is_some() || !WaitSpinner::supported() {
+        if self.plain
+            || self.wait_spinner.is_some()
+            || self.command_display.is_some()
+            || !WaitSpinner::supported()
+        {
             return Ok(());
         }
         self.hide_cursor()?;
-        self.wait_spinner = Some(WaitSpinner::start(
-            t("thinking", "思考").to_string(),
-            SpinnerStyle::Scanner,
-        ));
+        let phase = if self.reasoning_mode == ReasoningDisplayMode::Summary {
+            self.reasoning_live_text()
+        } else {
+            t("thinking", "思考").to_string()
+        };
+        self.wait_spinner = Some(WaitSpinner::start(phase, SpinnerStyle::Scanner));
         self.last_tick = None;
         self.tick_spinner()?;
         Ok(())
+    }
+
+    pub fn start_reasoning_phase(&mut self) -> Result<()> {
+        if self.reasoning_mode == ReasoningDisplayMode::Summary {
+            self.reasoning_started_at = Some(std::time::Instant::now());
+            self.reasoning_title = None;
+            self.reasoning_text.clear();
+            self.reasoning_tokens = 0;
+        }
+        self.start_waiting()?;
+        if self.wait_spinner.is_some() {
+            self.set_waiting_phase(self.reasoning_live_text());
+            self.last_tick = None;
+            self.tick_spinner()?;
+        }
+        Ok(())
+    }
+
+    pub fn write_reasoning_title(&mut self, title: &str) -> Result<()> {
+        if self.reasoning_mode != ReasoningDisplayMode::Summary || self.plain {
+            return Ok(());
+        }
+        let title = redact_sensitive_inline(&sanitize_terminal_text(title));
+        let title = clip_progress_line(&title, 80);
+        if title.is_empty() {
+            return Ok(());
+        }
+        self.reasoning_title = Some(title);
+        self.ensure_waiting_phase(self.reasoning_live_text())
+    }
+
+    pub fn start_reasoning_part(&mut self) -> Result<()> {
+        if self.reasoning_mode != ReasoningDisplayMode::Summary {
+            return Ok(());
+        }
+        self.end_active_stream_line()?;
+        if self.reasoning_title.is_some() || !self.reasoning_text.is_empty() {
+            self.finalize_reasoning_summary()?;
+            self.reasoning_started_at = Some(std::time::Instant::now());
+        } else if self.reasoning_started_at.is_none() {
+            self.reasoning_started_at = Some(std::time::Instant::now());
+        }
+        self.reasoning_title = None;
+        self.reasoning_text.clear();
+        self.reasoning_tokens = 0;
+        self.start_waiting()
+    }
+
+    pub fn finish_reasoning_part(&mut self) -> Result<()> {
+        self.finalize_reasoning_summary()
+    }
+
+    pub fn reset_reasoning_phase(&mut self) -> Result<()> {
+        if self.reasoning_mode != ReasoningDisplayMode::Summary {
+            return Ok(());
+        }
+        self.stop_waiting()?;
+        if self.summary_line_active {
+            self.clear_summary_lines()?;
+        }
+        self.reasoning_title = None;
+        self.reasoning_text.clear();
+        self.reasoning_tokens = 0;
+        self.reasoning_started_at = Some(std::time::Instant::now());
+        self.mode = None;
+        self.start_waiting()
     }
 
     pub fn tick_spinner(&mut self) -> Result<()> {
@@ -678,13 +839,30 @@ impl StreamRenderer {
             .map(|last| now.duration_since(last) >= SPINNER_INTERVAL)
             .unwrap_or(true);
         if should_tick {
-            if let Some(spinner) = &mut self.wait_spinner {
-                spinner.tick()?;
+            let subagent_timer_active = self.has_running_subagent_timer();
+            if self.tool_call_mode == ToolCallDisplayMode::Summary
+                && !self.tool_stats.is_empty()
+                && self.wait_spinner.is_some()
+            {
+                let header = self.tool_summary_header();
+                let sub = self.tool_summary_progress();
+                self.set_tool_waiting_phase(&header, sub.as_deref());
+            } else if self.reasoning_mode == ReasoningDisplayMode::Summary
+                && self.reasoning_started_at.is_some()
+                && self.wait_spinner.is_some()
+            {
+                self.set_waiting_phase(self.reasoning_live_text());
             }
             if let Some(display) = &mut self.command_display {
+                debug_assert!(self.wait_spinner.is_none());
                 display.tick()?;
+            } else if let Some(spinner) = &mut self.wait_spinner {
+                spinner.tick()?;
             }
-            if self.wait_spinner.is_some() || self.command_display.is_some() {
+            if self.wait_spinner.is_some()
+                || self.command_display.is_some()
+                || subagent_timer_active
+            {
                 self.last_tick = Some(now);
             }
         }
@@ -696,6 +874,14 @@ impl StreamRenderer {
             if chunk.text == "ask_question" {
                 self.start_preparing_question()?;
             }
+            return Ok(());
+        }
+        if matches!(
+            chunk.kind,
+            ChatStreamKind::ReasoningPartStart
+                | ChatStreamKind::ReasoningPartEnd
+                | ChatStreamKind::ReasoningReset
+        ) {
             return Ok(());
         }
         if !self.plain {
@@ -724,7 +910,7 @@ impl StreamRenderer {
             self.finalize_tools_summary()?;
             self.record_reasoning_text(&text);
             self.mode = Some(ChatStreamKind::Reasoning);
-            self.ensure_waiting_phase(self.reasoning_summary_text())?;
+            self.ensure_waiting_phase(self.reasoning_live_text())?;
             return Ok(());
         }
         self.stop_waiting()?;
@@ -756,25 +942,22 @@ impl StreamRenderer {
             return Ok(());
         }
         if name == "run_command" {
-            let mut stdout = io::stdout();
+            let mut display = CommandLiveDisplay::new(
+                arguments,
+                self.command_output_lines,
+                self.tool_call_mode != ToolCallDisplayMode::Hidden,
+            );
             if self.live_summary {
-                write_command_heading(&mut stdout)?;
-                stdout.flush()?;
-                self.command_display = Some(CommandLiveDisplay::new(
-                    arguments,
-                    self.command_output_lines,
-                    self.tool_call_mode != ToolCallDisplayMode::Hidden,
-                ));
+                display.tick()?;
                 self.last_tick = None;
-                self.tick_spinner()?;
-            } else {
-                write_command_block(&mut stdout, arguments)?;
             }
-            stdout.flush()?;
-            if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                self.tool_stats.entry(name.to_string()).or_default().calls += 1;
-            }
+            self.command_display = Some(display);
             return Ok(());
+        }
+        if is_subagent_tool(name) && self.tool_call_mode != ToolCallDisplayMode::Hidden {
+            let stats = self.tool_stats.entry(name.to_string()).or_default();
+            stats.started_at = Some(std::time::Instant::now());
+            stats.elapsed = None;
         }
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             let mut stdout = io::stdout();
@@ -782,7 +965,9 @@ impl StreamRenderer {
             write_tool_payload(&mut stdout, t("args", "参数"), arguments)?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-            self.tool_stats.entry(name.to_string()).or_default().calls += 1;
+            let stats = self.tool_stats.entry(name.to_string()).or_default();
+            stats.calls += 1;
+            stats.subject = tool_subject(name, arguments);
             self.ensure_tool_waiting_phase()?;
         }
         Ok(())
@@ -798,38 +983,25 @@ impl StreamRenderer {
         self.stop_waiting()?;
         self.end_subagent_stream_line()?;
         let status = if ok { "ok" } else { "err" };
+        let elapsed = self.finish_subagent_timer(name);
         if name == "run_command" {
             if let Some(mut display) = self.command_display.take() {
-                display.commit(
-                    self.tool_call_mode == ToolCallDisplayMode::Summary
-                        || (self.tool_call_mode == ToolCallDisplayMode::Full && !ok),
-                )?;
-                self.last_tick = None;
-            }
-            if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                let stats = self.tool_stats.entry(name.to_string()).or_default();
-                if ok {
-                    stats.ok += 1;
+                display.set_result(ok);
+                let include_output = self.tool_call_mode == ToolCallDisplayMode::Summary
+                    || (self.tool_call_mode == ToolCallDisplayMode::Full && !ok);
+                if self.live_summary {
+                    display.commit(include_output)?;
                 } else {
-                    stats.error += 1;
+                    display.write_static(include_output)?;
                 }
-                stats.progress = None;
-                let summary = self.tool_summary_text();
-                self.last_tool_summary = summary.clone();
-                self.render_summary_line(&summary, SummaryStyle::Tool)?;
-                return Ok(());
+                self.last_tick = None;
             }
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 let mut stdout = io::stdout();
                 write_command_result_blocks(&mut stdout, output)?;
-                writeln!(
-                    stdout,
-                    "\x1b[2m$ {}×1 {status}\x1b[0m",
-                    self.display_tool_name(name)
-                )?;
                 stdout.flush()?;
-                return Ok(());
             }
+            return Ok(());
         }
         if matches!(name, "todowrite" | "todoupdate") && ok {
             self.release_transient_output()?;
@@ -840,6 +1012,8 @@ impl StreamRenderer {
                     let stats = self.tool_stats.entry(name.to_string()).or_default();
                     stats.ok += 1;
                     stats.progress = None;
+                    self.tool_stats.clear();
+                    self.last_tool_summary.clear();
                 }
                 return Ok(());
             }
@@ -847,9 +1021,15 @@ impl StreamRenderer {
         if self.tool_call_mode == ToolCallDisplayMode::Full {
             self.release_transient_output()?;
             let mut stdout = io::stdout();
-            writeln!(stdout, "result {} {status}", self.display_tool_name(name))?;
+            writeln!(
+                stdout,
+                "result {} {}",
+                self.display_tool_name(name),
+                tool_result_status(status, elapsed)
+            )?;
             write_tool_payload(&mut stdout, t("output", "输出"), output)?;
             stdout.flush()?;
+            self.tool_stats.remove(name);
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
             let stats = self.tool_stats.entry(name.to_string()).or_default();
             if ok {
@@ -858,9 +1038,7 @@ impl StreamRenderer {
                 stats.error += 1;
             }
             stats.progress = None;
-            let summary = self.tool_summary_text();
-            self.last_tool_summary = summary.clone();
-            self.render_summary_line(&summary, SummaryStyle::Tool)?;
+            self.finalize_tools_summary()?;
         }
         Ok(())
     }
@@ -928,7 +1106,9 @@ impl StreamRenderer {
             let text = normalize_stream_text(text);
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 if self.subagent_mode != Some(ChatStreamKind::Reasoning) {
-                    self.release_transient_output()?;
+                    self.stop_waiting()?;
+                    self.clear_summary_lines()?;
+                    self.end_active_stream_line()?;
                     let mut stdout = io::stdout();
                     execute!(stdout, SetForegroundColor(Color::Green))?;
                     writeln!(stdout)?;
@@ -938,14 +1118,6 @@ impl StreamRenderer {
                 write!(stdout, "{text}")?;
                 stdout.flush()?;
                 self.subagent_mode = Some(ChatStreamKind::Reasoning);
-            } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                self.record_subagent_reasoning_text(&text);
-                let summary = self.subagent_reasoning_summary_text();
-                self.tool_stats
-                    .entry(name.to_string())
-                    .or_default()
-                    .progress = Some(summary);
-                self.update_tool_summary_display()?;
             }
             return Ok(());
         }
@@ -978,12 +1150,23 @@ impl StreamRenderer {
                     .unwrap_or("unknown");
                 let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(true);
                 if self.tool_call_mode == ToolCallDisplayMode::Full {
+                    let args = value.get("args").and_then(Value::as_str).unwrap_or("");
                     let output = value.get("output").and_then(Value::as_str).unwrap_or("");
                     let status = if ok { "ok" } else { "err" };
                     self.release_transient_output()?;
                     let mut stdout = io::stdout();
                     if tool_name == "run_command" {
+                        write_command_block_with_status(
+                            &mut stdout,
+                            args,
+                            if ok {
+                                CommandStatus::Ok
+                            } else {
+                                CommandStatus::Error
+                            },
+                        )?;
                         write_command_result_blocks(&mut stdout, output)?;
+                        write_command_block_gap(&mut stdout, true)?;
                     } else {
                         writeln!(
                             stdout,
@@ -1010,9 +1193,6 @@ impl StreamRenderer {
             )?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-            self.subagent_reasoning_chars = 0;
-            self.subagent_reasoning_lines = 0;
-            self.subagent_reasoning_line_open = false;
             self.tool_stats
                 .entry(name.to_string())
                 .or_default()
@@ -1023,6 +1203,7 @@ impl StreamRenderer {
     }
 
     fn update_tool_summary_display(&mut self) -> Result<()> {
+        self.end_subagent_stream_line()?;
         if self.wait_spinner.is_some() {
             let header = self.tool_summary_header();
             let sub = self.tool_summary_progress();
@@ -1030,12 +1211,7 @@ impl StreamRenderer {
         } else {
             self.end_active_stream_line()?;
             self.finalize_reasoning_summary()?;
-            let new_summary = self.tool_summary_text();
-            if self.summary_line_active && new_summary == self.last_tool_summary {
-                return Ok(());
-            }
-            self.last_tool_summary = new_summary.clone();
-            self.render_summary_line(&new_summary, SummaryStyle::Tool)?;
+            self.ensure_tool_waiting_phase()?;
         }
         Ok(())
     }
@@ -1096,7 +1272,7 @@ impl StreamRenderer {
         if self.mode == Some(ChatStreamKind::Reasoning) {
             execute!(io::stdout(), ResetColor)?;
         }
-        if self.mode.is_some() {
+        if stream_needs_terminating_newline(self.mode, self.reasoning_mode) {
             println!();
         }
         self.finalize_reasoning_summary()?;
@@ -1126,6 +1302,8 @@ impl StreamRenderer {
                 }
             }
             ChatStreamKind::ToolCall => return Ok(()),
+            ChatStreamKind::ReasoningPartStart | ChatStreamKind::ReasoningPartEnd => return Ok(()),
+            ChatStreamKind::ReasoningReset => return Ok(()),
         }
         stdout.flush()?;
         self.mode = Some(mode);
@@ -1158,30 +1336,24 @@ impl StreamRenderer {
     }
 
     fn finalize_reasoning_summary(&mut self) -> Result<()> {
-        if self.reasoning_mode == ReasoningDisplayMode::Summary && self.reasoning_chars > 0 {
+        if self.reasoning_mode == ReasoningDisplayMode::Summary
+            && (self.reasoning_title.is_some() || !self.reasoning_text.is_empty())
+        {
             self.stop_waiting()?;
+            let summary = self.reasoning_summary_text();
             if self.summary_line_active {
-                let mut stdout = io::stdout();
                 self.clear_summary_lines()?;
-                writeln!(
-                    stdout,
-                    "{}",
-                    style_summary_text(&self.reasoning_summary_text(), SummaryStyle::Reasoning)
-                )?;
-                stdout.flush()?;
                 self.summary_line_active = false;
                 self.summary_lines_active = 0;
-            } else {
-                println!(
-                    "{}",
-                    style_summary_text(&self.reasoning_summary_text(), SummaryStyle::Reasoning)
-                );
             }
-            self.reasoning_chars = 0;
-            self.reasoning_lines = 0;
-            self.reasoning_line_open = false;
+            let mut stdout = io::stdout();
+            write_activity_summary(&mut stdout, &summary, SummaryStyle::Reasoning)?;
+            stdout.flush()?;
+            self.reasoning_text.clear();
+            self.reasoning_tokens = 0;
+            self.reasoning_title = None;
+            self.reasoning_started_at = None;
             self.mode = None;
-            println!();
         }
         Ok(())
     }
@@ -1201,56 +1373,19 @@ impl StreamRenderer {
         Ok(())
     }
 
-    fn record_subagent_reasoning_text(&mut self, text: &str) {
-        for ch in text.chars() {
-            self.subagent_reasoning_chars += 1;
-            if ch == '\n' {
-                if self.subagent_reasoning_line_open {
-                    self.subagent_reasoning_lines += 1;
-                    self.subagent_reasoning_line_open = false;
-                }
-            } else {
-                self.subagent_reasoning_line_open = true;
-            }
-        }
-    }
-
-    fn subagent_reasoning_summary_text(&self) -> String {
-        let line_count =
-            self.subagent_reasoning_lines + usize::from(self.subagent_reasoning_line_open);
-        format!(
-            "{} · {} {} · {} {}",
-            t("thinking", "思考"),
-            line_count,
-            t("lines", "行"),
-            self.subagent_reasoning_chars,
-            t("chars", "字符")
-        )
-    }
-
     fn finalize_tools_summary(&mut self) -> Result<()> {
         if self.tool_call_mode == ToolCallDisplayMode::Summary && !self.tool_stats.is_empty() {
             self.stop_waiting()?;
             execute!(io::stdout(), ResetColor)?;
+            let summary = self.tool_summary_text();
             if self.summary_line_active {
-                let mut stdout = io::stdout();
                 self.clear_summary_lines()?;
-                writeln!(
-                    stdout,
-                    "{}",
-                    style_summary_text(&self.tool_summary_text(), SummaryStyle::Tool)
-                )?;
-                stdout.flush()?;
                 self.summary_line_active = false;
                 self.summary_lines_active = 0;
-            } else {
-                println!();
-                println!(
-                    "{}",
-                    style_summary_text(&self.tool_summary_text(), SummaryStyle::Tool)
-                );
             }
-            println!();
+            let mut stdout = io::stdout();
+            write_activity_summary(&mut stdout, &summary, SummaryStyle::Tool)?;
+            stdout.flush()?;
             self.tool_stats.clear();
             self.last_tool_summary.clear();
         }
@@ -1264,11 +1399,12 @@ impl StreamRenderer {
         }
         let mut stdout = io::stdout();
         self.clear_summary_lines()?;
-        let lines = text.lines().collect::<Vec<_>>();
+        let lines = transient_summary_lines(text, command_terminal_width());
         for (index, line) in lines.iter().enumerate() {
             if index > 0 {
                 writeln!(stdout)?;
             }
+            execute!(stdout, MoveToColumn(0))?;
             write!(stdout, "{}\x1b[K", style_summary_text(line, style))?;
         }
         stdout.flush()?;
@@ -1296,32 +1432,47 @@ impl StreamRenderer {
     }
 
     fn reasoning_summary_text(&self) -> String {
+        let elapsed = self
+            .reasoning_started_at
+            .map(|started| format_reasoning_elapsed(started.elapsed()))
+            .unwrap_or_else(|| "0ms".to_string());
+        format!("{} · {elapsed}", self.reasoning_live_metrics_text())
+    }
+
+    fn reasoning_live_text(&self) -> String {
+        if self.reasoning_started_at.is_none() {
+            return match &self.reasoning_title {
+                Some(title) => format!("{}：{title}", t("thinking", "思考")),
+                None => t("thinking", "思考").to_string(),
+            };
+        }
+        let elapsed = self
+            .reasoning_started_at
+            .map(|started| format_reasoning_elapsed(started.elapsed()))
+            .unwrap_or_else(|| "0ms".to_string());
+        format!("{} · {elapsed}", self.reasoning_live_metrics_text())
+    }
+
+    fn reasoning_live_metrics_text(&self) -> String {
+        let phase = match &self.reasoning_title {
+            Some(title) => format!("{}：{title}", t("thinking", "思考")),
+            None => t("thinking", "思考").to_string(),
+        };
+        if self.reasoning_tokens == 0 {
+            return phase;
+        }
         format!(
-            "{} · {} {} · {} {}",
-            t("thinking", "思考"),
-            self.reasoning_line_count(),
-            t("lines", "行"),
-            self.reasoning_chars,
-            t("chars", "字符")
+            "{phase} · {} {}",
+            self.reasoning_tokens,
+            t("tokens", "词元")
         )
     }
 
     fn record_reasoning_text(&mut self, text: &str) {
-        for ch in text.chars() {
-            self.reasoning_chars += 1;
-            if ch == '\n' {
-                if self.reasoning_line_open {
-                    self.reasoning_lines += 1;
-                    self.reasoning_line_open = false;
-                }
-            } else {
-                self.reasoning_line_open = true;
-            }
-        }
-    }
-
-    fn reasoning_line_count(&self) -> usize {
-        self.reasoning_lines + usize::from(self.reasoning_line_open)
+        self.reasoning_started_at
+            .get_or_insert_with(std::time::Instant::now);
+        self.reasoning_text.push_str(text);
+        self.reasoning_tokens = crate::token_estimate::estimate_tokens(&self.reasoning_text);
     }
 
     fn tool_summary_text(&self) -> String {
@@ -1330,7 +1481,13 @@ impl StreamRenderer {
             .iter()
             .map(|(name, stats)| {
                 let display = self.display_tool_name(name);
-                let header = tool_status_text(&display, stats, is_subagent_tool(name));
+                let mut header = tool_status_text(&display, stats, is_subagent_tool(name));
+                if inline_tool_subject(name) {
+                    if let Some(subject) = &stats.subject {
+                        header.push_str(" · ");
+                        header.push_str(subject);
+                    }
+                }
                 let progress_text = stats.final_progress.as_ref().or(stats.progress.as_ref());
                 let progress_prefix = if stats.final_progress.is_some() {
                     "✓"
@@ -1338,7 +1495,10 @@ impl StreamRenderer {
                     "↳"
                 };
                 let is_final_progress = stats.final_progress.is_some();
-                progress_text.map_or(header.clone(), |message| {
+                let subject = (!inline_tool_subject(name))
+                    .then(|| stats.subject.as_ref().map(|subject| format!("↳ {subject}")))
+                    .flatten();
+                let progress = progress_text.and_then(|message| {
                     let progress = message
                         .lines()
                         .filter(|line| !line.trim().is_empty())
@@ -1352,12 +1512,13 @@ impl StreamRenderer {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    if progress.is_empty() {
-                        header
-                    } else {
-                        format!("{header}\n{progress}")
-                    }
-                })
+                    (!progress.is_empty()).then_some(progress)
+                });
+                [Some(header), subject, progress]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1370,7 +1531,14 @@ impl StreamRenderer {
             .iter()
             .map(|(name, stats)| {
                 let display = self.display_tool_name(name);
-                tool_status_text(&display, stats, is_subagent_tool(name))
+                let mut header = tool_status_text(&display, stats, is_subagent_tool(name));
+                if inline_tool_subject(name) {
+                    if let Some(subject) = &stats.subject {
+                        header.push_str(" · ");
+                        header.push_str(subject);
+                    }
+                }
+                header
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1379,14 +1547,6 @@ impl StreamRenderer {
 
     fn tool_summary_with_prefix(&self, parts: String) -> String {
         if self.tool_stats.len() == 1
-            && self
-                .tool_stats
-                .keys()
-                .next()
-                .is_some_and(|name| is_subagent_tool(name))
-        {
-            parts
-        } else if self.tool_stats.len() == 1
             && self
                 .tool_stats
                 .keys()
@@ -1400,7 +1560,13 @@ impl StreamRenderer {
     }
 
     fn tool_summary_progress(&self) -> Option<String> {
-        for (_name, stats) in &self.tool_stats {
+        for (name, stats) in &self.tool_stats {
+            let mut lines = Vec::new();
+            if !inline_tool_subject(name) {
+                if let Some(subject) = &stats.subject {
+                    lines.push(format!("↳ {subject}"));
+                }
+            }
             if let Some(message) = &stats.progress {
                 let progress = message
                     .lines()
@@ -1409,14 +1575,34 @@ impl StreamRenderer {
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !progress.is_empty() {
-                    return Some(progress);
+                    lines.push(progress);
                 }
+            }
+            if !lines.is_empty() {
+                return Some(lines.join("\n"));
             }
         }
         None
     }
 
+    fn has_running_subagent_timer(&self) -> bool {
+        self.tool_stats
+            .iter()
+            .any(|(name, stats)| is_subagent_tool(name) && stats.started_at.is_some())
+    }
+
+    fn finish_subagent_timer(&mut self, name: &str) -> Option<std::time::Duration> {
+        if !is_subagent_tool(name) {
+            return None;
+        }
+        let stats = self.tool_stats.get_mut(name)?;
+        let elapsed = stats.started_at.take()?.elapsed();
+        stats.elapsed = Some(elapsed);
+        Some(elapsed)
+    }
+
     fn display_tool_name<'a>(&self, name: &'a str) -> String {
+        let name = tool_event_base_name(name);
         if self.readable_tool_names {
             readable_tool_name(name)
         } else {
@@ -1447,6 +1633,9 @@ impl StreamRenderer {
     }
 
     fn ensure_waiting_phase(&mut self, phase: String) -> Result<()> {
+        if self.command_display.is_some() {
+            return Ok(());
+        }
         if self.plain || !WaitSpinner::supported() {
             if self.summary_line_active {
                 self.clear_summary_lines()?;
@@ -1465,9 +1654,10 @@ impl StreamRenderer {
     }
 
     fn ensure_tool_waiting_phase(&mut self) -> Result<()> {
+        debug_assert!(self.command_display.is_none());
         let header = self.tool_summary_header();
         let sub = self.tool_summary_progress();
-        if self.plain || !WaitSpinner::supported() {
+        if self.plain || !self.live_summary {
             let summary = match &sub {
                 Some(s) => format!("{header}\n{s}"),
                 None => header,
@@ -1476,23 +1666,22 @@ impl StreamRenderer {
                 self.clear_summary_lines()?;
             }
             self.last_tool_summary = summary.clone();
-            self.render_summary_line(&summary, SummaryStyle::Tool)?;
-            return Ok(());
+            return self.render_summary_line(&summary, SummaryStyle::Tool);
         }
         if self.summary_line_active {
             self.clear_summary_lines()?;
         }
         if self.wait_spinner.is_none() {
+            self.hide_cursor()?;
             self.wait_spinner = Some(WaitSpinner::start(header, SpinnerStyle::Braille));
             self.last_tick = None;
-            self.tick_spinner()?;
         } else {
             self.set_waiting_phase(header);
         }
         if let Some(spinner) = &mut self.wait_spinner {
             spinner.set_sub_phase(sub);
         }
-        Ok(())
+        self.tick_spinner()
     }
 
     fn start_preparing_question(&mut self) -> Result<()> {
@@ -1534,6 +1723,15 @@ impl StreamRenderer {
         self.finalize_reasoning_summary()?;
         self.clear_summary_lines()
     }
+}
+
+fn stream_needs_terminating_newline(
+    mode: Option<ChatStreamKind>,
+    reasoning_mode: ReasoningDisplayMode,
+) -> bool {
+    mode.is_some()
+        && !(mode == Some(ChatStreamKind::Reasoning)
+            && reasoning_mode == ReasoningDisplayMode::Summary)
 }
 
 #[derive(Default)]
@@ -1598,8 +1796,18 @@ struct ToolStats {
     calls: usize,
     ok: usize,
     error: usize,
+    subject: Option<String>,
     progress: Option<String>,
     final_progress: Option<String>,
+    started_at: Option<std::time::Instant>,
+    elapsed: Option<std::time::Duration>,
+}
+
+impl ToolStats {
+    fn elapsed(&self) -> Option<std::time::Duration> {
+        self.elapsed
+            .or_else(|| self.started_at.map(|started| started.elapsed()))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1615,22 +1823,22 @@ fn style_summary_text(text: &str, style: SummaryStyle) -> String {
     }
 }
 
+fn write_activity_summary(writer: &mut impl Write, text: &str, style: SummaryStyle) -> Result<()> {
+    writeln!(writer, "{}", style_summary_text(text, style))?;
+    writeln!(writer)?;
+    Ok(())
+}
+
 fn tool_status_text(name: &str, stats: &ToolStats, subagent: bool) -> String {
     let calls = stats.calls.max(stats.ok + stats.error).max(1);
     let running = stats.calls.saturating_sub(stats.ok + stats.error);
-    if calls == 1 {
-        let suffix = if subagent { "" } else { "×1" };
-        if running > 0 {
-            return format!("{name}{suffix} {}", t("running", "运行中"));
-        }
-        if stats.error > 0 {
-            return format!("{name}{suffix} err");
-        }
-        if stats.ok > 0 {
-            return format!("{name}{suffix} ok");
-        }
-    }
-    if running > 0 {
+    let text = if calls == 1 && running > 0 {
+        format!("{name}×1 {}", t("running", "运行中"))
+    } else if calls == 1 && stats.error > 0 {
+        format!("{name}×1 err")
+    } else if calls == 1 && stats.ok > 0 {
+        format!("{name}×1 ok")
+    } else if running > 0 {
         let mut text = format!(
             "{name}×{calls} {}:{} ok:{}",
             t("running", "运行中"),
@@ -1645,6 +1853,46 @@ fn tool_status_text(name: &str, stats: &ToolStats, subagent: bool) -> String {
         format!("{name}×{calls} ok:{} err:{}", stats.ok, stats.error)
     } else {
         format!("{name}×{calls} ok:{}", stats.ok)
+    };
+    if subagent {
+        if let Some(elapsed) = stats.elapsed() {
+            return format!("{text} · {}", format_elapsed(elapsed));
+        }
+    }
+    text
+}
+
+fn tool_result_status(status: &str, elapsed: Option<std::time::Duration>) -> String {
+    elapsed.map_or_else(
+        || status.to_string(),
+        |elapsed| format!("{status} · {}", format_elapsed(elapsed)),
+    )
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {:02}m", seconds / 3_600, (seconds % 3_600) / 60)
+    }
+}
+
+fn format_reasoning_elapsed(elapsed: std::time::Duration) -> String {
+    if elapsed < std::time::Duration::from_secs(1) {
+        format!("{}ms", elapsed.as_millis())
+    } else if elapsed < std::time::Duration::from_secs(60) {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    } else if elapsed < std::time::Duration::from_secs(3_600) {
+        format!("{}m {:02}s", elapsed.as_secs() / 60, elapsed.as_secs() % 60)
+    } else {
+        format!(
+            "{}h {:02}m",
+            elapsed.as_secs() / 3_600,
+            (elapsed.as_secs() % 3_600) / 60
+        )
     }
 }
 
@@ -1660,6 +1908,274 @@ fn is_subagent_tool(name: &str) -> bool {
             | "deep_research"
             | "task"
     )
+}
+
+fn tool_event_base_name(name: &str) -> &str {
+    if name.starts_with("load_skill:") {
+        "load_skill"
+    } else if name.starts_with("load_tools:") {
+        "load_tools"
+    } else {
+        name
+    }
+}
+
+fn inline_tool_subject(name: &str) -> bool {
+    tool_event_base_name(name) == "load_tools"
+}
+
+pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
+    let args = serde_json::from_str::<Value>(arguments).ok()?;
+    let name = tool_event_base_name(name);
+    let value = match name {
+        "task" => string_arg(&args, &["description"]),
+        "web_search"
+        | "search_web_images"
+        | "search_meme"
+        | "search_knowledge_base"
+        | "search_evicted_context"
+        | "recall_memories"
+        | "recall_past_events"
+        | "aur_search_packages"
+        | "online_man_search"
+        | "protondb_query"
+        | "query_caniplayonlinux"
+        | "fcitx5_input_method_wiki_qurey" => string_arg(&args, &["query", "topic"]),
+        "archwiki_query" | "query_moegirl" => string_arg(&args, &["title", "query"]),
+        "search_knowledge_base_by_name" => string_arg(&args, &["file_name_query"]),
+        "read_file" | "write_file" | "edit_file" | "edit_string" | "trash_path"
+        | "register_script" => string_arg(&args, &["path"]),
+        "run_command" => string_arg(&args, &["command"]),
+        "read_knowledge_base_file" | "edit_knowledge_base_file" | "remove_knowledge_base_file" => {
+            string_arg(&args, &["file_name"])
+        }
+        "glob" | "grep" => {
+            let pattern = string_arg(&args, &["pattern"]);
+            let path = string_arg(&args, &["path"]);
+            match (pattern, path) {
+                (Some(pattern), Some(path)) if !path.trim().is_empty() => {
+                    Some(format!("{pattern} · {path}"))
+                }
+                (pattern, _) => pattern,
+            }
+        }
+        "web_fetch" => string_arg(&args, &["url"]).and_then(|url| safe_url_subject(&url)),
+        "load_skill" => string_arg(&args, &["name"]),
+        "load_tools" => args.get("names").and_then(Value::as_array).map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|name| {
+                    let display = readable_tool_name(&format!("load_tools:{name}"));
+                    display
+                        .split_once('：')
+                        .map(|(_, target)| target.to_string())
+                        .unwrap_or(display)
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        }),
+        "deep_research" => string_arg(&args, &["topic"]),
+        "deep_research_linux_game_compatibility" => string_arg(&args, &["game"]),
+        "linux_input_method_diagnose" | "check_issue" => {
+            string_arg(&args, &["target", "area", "issue", "symptom"])
+        }
+        "get_weather" => string_arg(&args, &["location"])
+            .or_else(|| Some(t("automatic location", "自动定位").to_string())),
+        "get_exchange_rate" => {
+            let base = string_arg(&args, &["base"])?;
+            let target = string_arg(&args, &["target"])?;
+            Some(format!(
+                "{} → {}",
+                base.to_uppercase(),
+                target.to_uppercase()
+            ))
+        }
+        "scientific_calculator" => string_arg(&args, &["expression", "operation"]),
+        "set_alarm" => string_arg(&args, &["label", "time"]),
+        "cancel_alarm" => string_arg(&args, &["id"]),
+        "aur_get_package_info"
+        | "archlinux_official_package_query"
+        | "review_aur_package"
+        | "install_aur_package" => string_arg(&args, &["package_name", "package"]),
+        "online_man_get_page" => {
+            let page = string_arg(&args, &["name"])?;
+            let section = string_arg(&args, &["section"]);
+            Some(section.map_or(page.clone(), |section| format!("{page}({section})")))
+        }
+        "vision_analyze" | "print_image" | "add_meme" => {
+            string_arg(&args, &["image"]).map(|image| image_basename(&image))
+        }
+        "generate_image" => string_arg(&args, &["prompt"]),
+        "upload_text_to_knowledge_base" => string_arg(&args, &["file_name", "title"]),
+        "register_deep_research_topic_title" => string_arg(&args, &["topic_title"]),
+        "register_deep_research_reference" => string_arg(&args, &["title"]),
+        "remove_deep_research_reference" => string_arg(&args, &["ref"]),
+        "unregister_script" => string_arg(&args, &["id"]),
+        _ => None,
+    }?;
+    safe_inline_subject(&value)
+}
+
+fn string_arg(args: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn safe_inline_subject(value: &str) -> Option<String> {
+    let value = truncate_inline_input(&sanitize_terminal_text(value), 256);
+    let value = clip_progress_line(&value, 256);
+    let value = redact_sensitive_inline(&value);
+    let value = clip_progress_line(&value, 80);
+    (!value.is_empty()).then_some(value)
+}
+
+fn truncate_inline_input(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn redact_sensitive_inline(value: &str) -> String {
+    const KEYS: &[&str] = &[
+        "secret_access_key",
+        "secret-access-key",
+        "access_key_id",
+        "access-key-id",
+        "api_key",
+        "api-key",
+        "apikey",
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "authorization",
+        "cookie",
+        "credential",
+        "private_key",
+        "private-key",
+    ];
+    let mut output = value.to_string();
+    for key in KEYS {
+        let mut from = 0usize;
+        loop {
+            let lower = output.to_ascii_lowercase();
+            let Some(relative) = lower[from..].find(key) else {
+                break;
+            };
+            let key_start = from + relative;
+            let key_end = key_start + key.len();
+            let boundary_ok =
+                key_start == 0 || !lower.as_bytes()[key_start - 1].is_ascii_alphanumeric();
+            let mut separator = key_end;
+            if matches!(lower.as_bytes().get(separator), Some(b'\'' | b'"')) {
+                separator += 1;
+            }
+            let mut had_space = false;
+            while lower.as_bytes().get(separator) == Some(&b' ') {
+                had_space = true;
+                separator += 1;
+            }
+            let flag_prefix = &lower[..key_start];
+            let single_dash_flag = flag_prefix.ends_with('-')
+                && (key_start == 1 || lower.as_bytes()[key_start - 2].is_ascii_whitespace());
+            let flag_space = had_space && (flag_prefix.ends_with("--") || single_dash_flag);
+            let space_delimited = had_space
+                && (matches!(*key, "authorization" | "password" | "passwd") || flag_space);
+            if !boundary_ok
+                || (!space_delimited
+                    && !matches!(lower.as_bytes().get(separator), Some(b'=' | b':')))
+            {
+                from = key_end;
+                continue;
+            }
+            let mut value_start = separator + usize::from(!space_delimited);
+            while lower.as_bytes().get(value_start) == Some(&b' ') {
+                value_start += 1;
+            }
+            let quote = lower
+                .as_bytes()
+                .get(value_start)
+                .copied()
+                .filter(|value| matches!(value, b'\'' | b'"'));
+            value_start += usize::from(quote.is_some());
+            let value_end = quote
+                .and_then(|quote| {
+                    lower.as_bytes()[value_start..]
+                        .iter()
+                        .position(|value| *value == quote)
+                        .map(|end| value_start + end)
+                })
+                .or_else(|| {
+                    flag_space.then(|| {
+                        lower.as_bytes()[value_start..]
+                            .iter()
+                            .position(|byte| byte.is_ascii_whitespace())
+                            .map(|end| value_start + end)
+                            .unwrap_or(output.len())
+                    })
+                })
+                .or_else(|| {
+                    lower[value_start..]
+                        .find(['&', ',', ';'])
+                        .map(|end| value_start + end)
+                })
+                .unwrap_or(output.len());
+            output.replace_range(value_start..value_end, "[redacted]");
+            from = value_start + "[redacted]".len();
+        }
+    }
+    redact_bearer_token(output)
+}
+
+fn redact_bearer_token(mut output: String) -> String {
+    let mut from = 0usize;
+    loop {
+        let lower = output.to_ascii_lowercase();
+        let Some(relative) = lower[from..].find("bearer") else {
+            break;
+        };
+        let start = from + relative;
+        let end = start + "bearer".len();
+        let boundary_ok = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let mut value_start = end;
+        while lower.as_bytes().get(value_start) == Some(&b' ') {
+            value_start += 1;
+        }
+        if !boundary_ok || value_start == end || value_start == output.len() {
+            from = end;
+            continue;
+        }
+        let value_end = lower.as_bytes()[value_start..]
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace() || matches!(*byte, b',' | b';' | b'&'))
+            .map(|relative| value_start + relative)
+            .unwrap_or(output.len());
+        output.replace_range(value_start..value_end, "[redacted]");
+        from = value_start + "[redacted]".len();
+    }
+    output
+}
+
+fn safe_url_subject(value: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(value).ok()?;
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
+fn image_basename(value: &str) -> String {
+    if let Some(url) = safe_url_subject(value) {
+        return url;
+    }
+    std::path::Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn readable_tool_name(name: &str) -> String {
@@ -2776,10 +3292,18 @@ fn escape_table_cell(value: &str) -> String {
 }
 
 fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
+    write_command_block_with_status(stdout, arguments, CommandStatus::Running)
+}
+
+fn write_command_block_with_status(
+    stdout: &mut io::Stdout,
+    arguments: &str,
+    status: CommandStatus,
+) -> Result<()> {
     let command = command_from_arguments(arguments);
     let total_lines = command.lines().count();
     let total_chars = command.chars().count();
-    write_command_heading(stdout)?;
+    writeln!(stdout, "{}", command_heading_line(status))?;
     if total_lines > 1 {
         writeln!(
             stdout,
@@ -2799,11 +3323,6 @@ fn write_command_block(stdout: &mut io::Stdout, arguments: &str) -> Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-fn write_command_heading(stdout: &mut io::Stdout) -> Result<()> {
-    writeln!(stdout, "\x1b[2m$ {}\x1b[0m", t("run command", "运行命令"))?;
     Ok(())
 }
 
@@ -3037,6 +3556,19 @@ mod tests {
     }
 
     #[test]
+    fn display_width_clip_preserves_graphemes_and_reserves_last_column() {
+        assert_eq!(clip_to_display_width("中文测试", 5), "中文…");
+        assert_eq!(clip_to_display_width("a👨‍👩‍👧‍👦bc", 4), "a👨‍👩‍👧‍👦…");
+        assert_eq!(clip_to_display_width("e\u{301}x", 2), "e\u{301}x");
+
+        for columns in [20, 40, 80] {
+            let lines = transient_summary_lines(&format!("思考：{}", "中文".repeat(80)), columns);
+            assert_eq!(lines.len(), 1);
+            assert!(UnicodeWidthStr::width(lines[0].as_str()) < columns);
+        }
+    }
+
+    #[test]
     fn command_preview_limits_physical_rows_and_keeps_tail() {
         let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true);
         display.push(CommandOutputStream::Stdout, b"one\ntwo\nthree\nfour\n");
@@ -3082,6 +3614,36 @@ mod tests {
     }
 
     #[test]
+    fn command_heading_is_part_of_live_block_and_updates_status() {
+        let mut display = CommandLiveDisplay::new(r#"{"command":"printf ok"}"#, 2, true);
+        let running = visible_command_lines(display.rendered_lines(80, true));
+        assert_eq!(running[0], "$ 运行命令×1 运行中");
+        assert!(running[1].contains("printf ok"));
+
+        display.set_result(true);
+        let completed = visible_command_lines(display.rendered_lines(80, false));
+        assert_eq!(completed[0], "$ 运行命令×1 ok");
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|line| line.starts_with("$ 运行命令"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn committed_command_blocks_end_with_exactly_one_blank_line() {
+        let mut live = Vec::new();
+        write_command_block_gap(&mut live, false).unwrap();
+        assert_eq!(live, b"\n\n");
+
+        let mut already_terminated = Vec::new();
+        write_command_block_gap(&mut already_terminated, true).unwrap();
+        assert_eq!(already_terminated, b"\n");
+    }
+
+    #[test]
     fn run_command_replaces_an_active_tool_summary() {
         let mut renderer = StreamRenderer::new(
             ReasoningDisplayMode::Summary,
@@ -3101,6 +3663,102 @@ mod tests {
         assert!(!renderer.summary_line_active);
         assert_eq!(renderer.summary_lines_active, 0);
         assert!(renderer.command_display.is_some());
+        assert!(renderer.tool_stats.is_empty());
+    }
+
+    #[test]
+    fn completed_tools_are_committed_per_call_instead_of_aggregated() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = false;
+
+        renderer
+            .write_tool_call("web_search", r#"{"query":"first subject"}"#)
+            .unwrap();
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "~ 网页搜索×1 运行中\n↳ first subject"
+        );
+        renderer
+            .write_tool_result("web_search", true, "{}")
+            .unwrap();
+        assert!(renderer.tool_stats.is_empty());
+
+        renderer
+            .write_tool_call("web_search", r#"{"query":"second subject"}"#)
+            .unwrap();
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "~ 网页搜索×1 运行中\n↳ second subject"
+        );
+    }
+
+    #[test]
+    fn tool_summary_uses_spinner_and_updates_subagent_elapsed_time() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = true;
+
+        renderer
+            .write_tool_call(
+                "task",
+                r#"{"description":"确认工作区环境","prompt":"details"}"#,
+            )
+            .unwrap();
+
+        assert!(renderer.wait_spinner.is_some());
+        assert!(!renderer.summary_line_active);
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "~ 子代理×1 运行中 · 0s\n↳ 确认工作区环境"
+        );
+        renderer.tool_stats.get_mut("task").unwrap().started_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+        renderer.tick_spinner().unwrap();
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "~ 子代理×1 运行中 · 2s\n↳ 确认工作区环境"
+        );
+    }
+
+    #[test]
+    fn subagent_summary_keeps_current_internal_tool_without_raw_reasoning() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Full,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = false;
+        renderer
+            .write_tool_call(
+                "task",
+                r#"{"description":"查询磁盘占用","prompt":"details"}"#,
+            )
+            .unwrap();
+        renderer
+            .write_tool_progress("task", "工具 #2：运行命令 · du -sh /home/shorin/* 运行中")
+            .unwrap();
+        renderer
+            .write_tool_progress("task", "__subagent_reasoning__private analysis")
+            .unwrap();
+
+        let summary = renderer.tool_summary_text();
+        assert!(summary.contains("↳ 查询磁盘占用"));
+        assert!(summary.contains("↳ 工具 #2：运行命令 · du -sh /home/shorin/* 运行中"));
+        assert!(!summary.contains("private analysis"));
+        assert_eq!(renderer.subagent_mode, None);
     }
 
     #[test]
@@ -3493,8 +4151,10 @@ mod tests {
             calls: 1,
             ok: 0,
             error: 0,
+            subject: None,
             progress: None,
             final_progress: None,
+            ..ToolStats::default()
         };
         assert_eq!(tool_status_text("grep", &stats, false), "grep×1 运行中");
     }
@@ -3505,36 +4165,126 @@ mod tests {
             calls: 1,
             ok: 1,
             error: 0,
+            subject: None,
             progress: None,
             final_progress: None,
+            ..ToolStats::default()
         };
         assert_eq!(tool_status_text("grep", &stats, false), "grep×1 ok");
     }
 
     #[test]
-    fn tool_status_subagent_tool_omits_count_suffix() {
+    fn tool_status_subagent_tool_keeps_count_suffix() {
         let stats = ToolStats {
             calls: 1,
             ok: 0,
             error: 0,
+            subject: None,
             progress: None,
             final_progress: None,
+            ..ToolStats::default()
         };
         assert_eq!(
             tool_status_text("linux_input_method_diagnose", &stats, true),
-            "linux_input_method_diagnose 运行中"
+            "linux_input_method_diagnose×1 运行中"
         );
         let stats = ToolStats {
             calls: 1,
             ok: 1,
             error: 0,
+            subject: None,
             progress: None,
             final_progress: None,
+            ..ToolStats::default()
         };
         assert_eq!(
             tool_status_text("deep_research", &stats, true),
-            "deep_research ok"
+            "deep_research×1 ok"
         );
+    }
+
+    #[test]
+    fn subagent_status_shows_live_and_frozen_elapsed_time() {
+        let running = ToolStats {
+            calls: 1,
+            started_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(68)),
+            ..ToolStats::default()
+        };
+        assert_eq!(
+            tool_status_text("task", &running, true),
+            "task×1 运行中 · 1m 08s"
+        );
+        assert_eq!(tool_status_text("task", &running, false), "task×1 运行中");
+
+        let completed = ToolStats {
+            calls: 1,
+            ok: 1,
+            elapsed: Some(std::time::Duration::from_secs(3_720)),
+            ..ToolStats::default()
+        };
+        assert_eq!(
+            tool_status_text("deep_research", &completed, true),
+            "deep_research×1 ok · 1h 02m"
+        );
+    }
+
+    #[test]
+    fn elapsed_time_formats_seconds_minutes_and_hours() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(5)), "5s");
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(65)), "1m 05s");
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(7_380)),
+            "2h 03m"
+        );
+    }
+
+    #[test]
+    fn full_mode_subagent_result_uses_elapsed_status_and_clears_timer() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Full,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = false;
+        renderer
+            .write_tool_call("task", r#"{"description":"计时","prompt":"details"}"#)
+            .unwrap();
+        renderer.tool_stats.get_mut("task").unwrap().started_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
+
+        renderer.write_tool_result("task", true, "{}").unwrap();
+
+        assert!(!renderer.tool_stats.contains_key("task"));
+        assert_eq!(
+            tool_result_status("ok", Some(std::time::Duration::from_secs(5))),
+            "ok · 5s"
+        );
+    }
+
+    #[test]
+    fn tool_summary_suppresses_subagent_reasoning_even_when_reasoning_is_full() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Full,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = false;
+        renderer
+            .write_tool_call("task", r#"{"description":"分析问题","prompt":"details"}"#)
+            .unwrap();
+
+        renderer
+            .write_tool_progress("task", "__subagent_reasoning__Inspecting state")
+            .unwrap();
+
+        let stats = renderer.tool_stats.get("task").unwrap();
+        assert_eq!(stats.calls, 1);
+        assert!(stats.started_at.is_some());
+        assert_eq!(renderer.subagent_mode, None);
     }
 
     #[test]
@@ -3552,14 +4302,16 @@ mod tests {
                 calls: 1,
                 ok: 1,
                 error: 0,
+                subject: None,
                 progress: None,
-                final_progress: Some("工具调用 1 次　消耗 Token 2.3K".to_string()),
+                final_progress: Some("工具调用 1 次　消耗词元 2.3K".to_string()),
+                ..ToolStats::default()
             },
         );
 
         assert_eq!(
             renderer.tool_summary_text(),
-            "Linux 游戏兼容性调查 ok\n✓ 工具调用 1 次　消耗 Token 2.3K"
+            "~ Linux 游戏兼容性调查×1 ok\n✓ 工具调用 1 次　消耗词元 2.3K"
         );
     }
 
@@ -3578,18 +4330,24 @@ mod tests {
                 calls: 1,
                 ok: 0,
                 error: 0,
+                subject: Some("定位活动摘要渲染链路".to_string()),
                 progress: None,
                 final_progress: None,
+                ..ToolStats::default()
             },
         );
 
-        assert_eq!(renderer.tool_summary_header(), "子代理任务 运行中");
+        assert_eq!(renderer.tool_summary_header(), "~ 子代理×1 运行中");
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "~ 子代理×1 运行中\n↳ 定位活动摘要渲染链路"
+        );
     }
 
     #[test]
-    fn all_subagent_summaries_omit_tool_prefix() {
+    fn all_subagent_summaries_use_activity_prefix() {
         for (name, display) in [
-            ("task", "子代理任务"),
+            ("task", "子代理"),
             ("deep_research", "深度研究"),
             (
                 "deep_research_linux_game_compatibility",
@@ -3610,13 +4368,44 @@ mod tests {
                     calls: 1,
                     ok: 0,
                     error: 0,
+                    subject: None,
                     progress: None,
                     final_progress: None,
+                    ..ToolStats::default()
                 },
             );
 
-            assert_eq!(renderer.tool_summary_header(), format!("{display} 运行中"));
+            assert_eq!(
+                renderer.tool_summary_header(),
+                format!("~ {display}×1 运行中")
+            );
         }
+    }
+
+    #[test]
+    fn load_tools_keeps_targets_on_the_status_line() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.tool_stats.insert(
+            "load_tools:web_search,get_weather".to_string(),
+            ToolStats {
+                calls: 1,
+                ok: 1,
+                subject: Some("网页搜索、天气查询".to_string()),
+                ..ToolStats::default()
+            },
+        );
+
+        assert_eq!(
+            renderer.tool_summary_text(),
+            "~ 加载×1 ok · 网页搜索、天气查询"
+        );
+        assert!(!renderer.tool_summary_text().contains("\n↳"));
     }
 
     #[test]
@@ -3625,13 +4414,113 @@ mod tests {
             calls: 3,
             ok: 1,
             error: 1,
+            subject: None,
             progress: None,
             final_progress: None,
+            ..ToolStats::default()
         };
         assert_eq!(
             tool_status_text("grep", &stats, false),
             "grep×3 运行中:1 ok:1 err:1"
         );
+    }
+
+    #[test]
+    fn tool_subject_extracts_safe_operation_targets() {
+        assert_eq!(
+            tool_subject("web_search", r#"{"query":"OpenCode 工具摘要"}"#).as_deref(),
+            Some("OpenCode 工具摘要")
+        );
+        assert_eq!(
+            tool_subject(
+                "task",
+                r#"{"description":"定位渲染链路","prompt":"private details"}"#
+            )
+            .as_deref(),
+            Some("定位渲染链路")
+        );
+        assert_eq!(
+            tool_subject("grep", r#"{"pattern":"ToolStats","path":"src"}"#).as_deref(),
+            Some("ToolStats · src")
+        );
+        assert_eq!(
+            tool_subject("run_command", r#"{"command":"du -sh /home/shorin/*"}"#).as_deref(),
+            Some("du -sh /home/shorin/*")
+        );
+        assert_eq!(
+            tool_subject(
+                "load_tools:web_search,get_weather",
+                r#"{"names":["web_search","get_weather"]}"#
+            )
+            .as_deref(),
+            Some("网页搜索、天气查询")
+        );
+    }
+
+    #[test]
+    fn tool_subject_redacts_urls_and_ignores_unknown_arguments() {
+        let subject = tool_subject(
+            "web_fetch",
+            r#"{"url":"https://user:secret@example.com/path?token=hidden#fragment"}"#,
+        )
+        .unwrap();
+        assert_eq!(subject, "https://example.com/path");
+        assert!(!subject.contains("secret"));
+        assert!(!subject.contains("token"));
+        assert_eq!(
+            tool_subject("mcp_unknown", r#"{"password":"hidden","query":"private"}"#),
+            None
+        );
+        assert_eq!(
+            tool_subject(
+                "web_search",
+                r#"{"query":"查找 token=super-secret, Rust 文档"}"#
+            )
+            .as_deref(),
+            Some("查找 token=[redacted], Rust 文档")
+        );
+        assert_eq!(
+            safe_inline_subject(r#"请求 {"token":"super-secret"}"#).as_deref(),
+            Some(r#"请求 {"token":"[redacted]"}"#)
+        );
+        assert_eq!(
+            safe_inline_subject("Authorization Bearer super-secret").as_deref(),
+            Some("Authorization [redacted]")
+        );
+        assert_eq!(
+            safe_inline_subject("curl --password hunter2 https://example.com").as_deref(),
+            Some("curl --password [redacted] https://example.com")
+        );
+        assert_eq!(
+            safe_inline_subject("Bearer ghp_super-secret next").as_deref(),
+            Some("Bearer [redacted] next")
+        );
+        assert_eq!(
+            safe_inline_subject("curl --password\nhunter2 https://example.com").as_deref(),
+            Some("curl --password [redacted] https://example.com")
+        );
+        assert_eq!(
+            safe_inline_subject("Bearer\nghp_super-secret next").as_deref(),
+            Some("Bearer [redacted] next")
+        );
+        assert_eq!(
+            safe_inline_subject("AWS_SECRET_ACCESS_KEY=super-secret command").as_deref(),
+            Some("AWS_SECRET_ACCESS_KEY=[redacted]")
+        );
+        assert_eq!(
+            safe_inline_subject("AWS_ACCESS_KEY_ID=AKIAEXAMPLE command").as_deref(),
+            Some("AWS_ACCESS_KEY_ID=[redacted]")
+        );
+        assert_eq!(
+            safe_inline_subject("password hunter2").as_deref(),
+            Some("password [redacted]")
+        );
+    }
+
+    #[test]
+    fn tool_subject_is_single_line_and_terminal_safe() {
+        let subject = tool_subject("web_search", "{\"query\":\"safe\\ntext\\u001b[2J\"}").unwrap();
+        assert_eq!(subject, "safe text");
     }
 
     #[test]
@@ -3659,7 +4548,7 @@ mod tests {
         assert_eq!(readable_tool_name("search_meme"), "搜索表情包");
         assert_eq!(readable_tool_name("show_meme"), "发送表情");
         assert_eq!(readable_tool_name("add_meme"), "添加表情包");
-        assert_eq!(readable_tool_name("task"), "子代理任务");
+        assert_eq!(readable_tool_name("task"), "子代理");
         assert_eq!(
             readable_tool_name("upload_text_to_knowledge_base"),
             "导入知识库"
@@ -3695,6 +4584,33 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_activity_summaries_have_one_blank_line_without_leading_gap() {
+        let mut output = Vec::new();
+        write_activity_summary(&mut output, "思考摘要", SummaryStyle::Reasoning).unwrap();
+        write_activity_summary(&mut output, "~ 工具×1 ok", SummaryStyle::Tool).unwrap();
+        let output = strip_ansi_for_test(&String::from_utf8(output).unwrap());
+
+        assert_eq!(output, "思考摘要\n\n~ 工具×1 ok\n\n");
+        assert!(!output.starts_with('\n'));
+    }
+
+    #[test]
+    fn pending_summary_reasoning_does_not_add_a_leading_newline_on_finish() {
+        assert!(!stream_needs_terminating_newline(
+            Some(ChatStreamKind::Reasoning),
+            ReasoningDisplayMode::Summary,
+        ));
+        assert!(stream_needs_terminating_newline(
+            Some(ChatStreamKind::Reasoning),
+            ReasoningDisplayMode::Full,
+        ));
+        assert!(stream_needs_terminating_newline(
+            Some(ChatStreamKind::Content),
+            ReasoningDisplayMode::Summary,
+        ));
+    }
+
+    #[test]
     fn finish_keeps_pending_reasoning_summary_state() {
         let mut renderer = StreamRenderer::new(
             ReasoningDisplayMode::Summary,
@@ -3703,18 +4619,18 @@ mod tests {
             true,
             10,
         );
-        renderer.reasoning_chars = 12;
-        renderer.reasoning_lines = 1;
-        renderer.reasoning_line_open = true;
+        renderer.reasoning_title = Some("检查摘要状态".to_string());
+        renderer.reasoning_text = "some reasoning".to_string();
+        renderer.reasoning_started_at = Some(std::time::Instant::now());
         renderer.finish().unwrap();
-        assert_eq!(renderer.reasoning_chars, 0);
-        assert_eq!(renderer.reasoning_lines, 0);
-        assert!(!renderer.reasoning_line_open);
+        assert!(renderer.reasoning_text.is_empty());
+        assert!(renderer.reasoning_title.is_none());
+        assert!(renderer.reasoning_started_at.is_none());
         assert!(!renderer.summary_line_active);
     }
 
     #[test]
-    fn reasoning_summary_counts_streamed_lines() {
+    fn reasoning_summary_counts_tokens_and_uses_title() {
         let mut renderer = StreamRenderer::new(
             ReasoningDisplayMode::Summary,
             ToolCallDisplayMode::Summary,
@@ -3724,9 +4640,84 @@ mod tests {
         );
         renderer.record_reasoning_text("one\nt");
         renderer.record_reasoning_text("wo\nthree");
-        assert_eq!(renderer.reasoning_chars, 13);
-        assert_eq!(renderer.reasoning_line_count(), 3);
-        assert!(renderer.reasoning_summary_text().contains("3 行"));
+        renderer.reasoning_title = Some("分析摘要协议".to_string());
+        let expected = crate::token_estimate::estimate_tokens("one\ntwo\nthree");
+        let summary = renderer.reasoning_summary_text();
+        assert!(summary.starts_with("思考：分析摘要协议 · "));
+        assert!(summary.contains(&format!("{expected} 词元")));
+        assert!(!summary.contains("字符"));
+        assert!(!summary.contains(" 行"));
+    }
+
+    #[test]
+    fn reasoning_live_text_updates_title_tokens_and_precise_elapsed_time() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+            10,
+        );
+        renderer.reasoning_title = Some("The user is asking \"你确定\"".to_string());
+        renderer.record_reasoning_text("Inspecting the current implementation.");
+        renderer.reasoning_started_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(11_700));
+
+        let expected = crate::token_estimate::estimate_tokens(&renderer.reasoning_text);
+        assert_eq!(
+            renderer.reasoning_live_text(),
+            format!("思考：The user is asking \"你确定\" · {expected} 词元 · 11.7s")
+        );
+    }
+
+    #[test]
+    fn reasoning_title_is_not_truncated_at_forty_characters() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            false,
+            true,
+            10,
+        );
+        renderer.live_summary = false;
+        let title = "a".repeat(60);
+
+        renderer.write_reasoning_title(&title).unwrap();
+
+        assert_eq!(renderer.reasoning_title.as_deref(), Some(title.as_str()));
+    }
+
+    #[test]
+    fn reasoning_elapsed_uses_milliseconds_then_decimal_seconds() {
+        assert_eq!(
+            format_reasoning_elapsed(std::time::Duration::from_millis(38)),
+            "38ms"
+        );
+        assert_eq!(
+            format_reasoning_elapsed(std::time::Duration::from_millis(976)),
+            "976ms"
+        );
+        assert_eq!(
+            format_reasoning_elapsed(std::time::Duration::from_millis(11_700)),
+            "11.7s"
+        );
+    }
+
+    #[test]
+    fn reasoning_phase_starts_without_fabricated_title() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+            10,
+        );
+
+        renderer.start_reasoning_phase().unwrap();
+
+        assert!(renderer.reasoning_title.is_none());
+        assert!(renderer.reasoning_live_text().starts_with("思考 · "));
+        assert!(!renderer.reasoning_live_text().contains("词元"));
     }
 
     #[test]

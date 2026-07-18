@@ -366,6 +366,15 @@ pub struct OpenAiCompatibleClient {
     api_key: String,
     endpoints: Arc<Vec<LlmEndpoint>>,
     thinking_variants: HashMap<String, String>,
+    reasoning_visibility: ReasoningVisibility,
+    detailed_reasoning_summary: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReasoningVisibility {
+    Hidden,
+    Summary,
+    Full,
 }
 
 #[derive(Clone)]
@@ -536,10 +545,12 @@ impl OpenAiCompatibleClient {
             api_key: first.api_key.clone(),
             endpoints: Arc::new(endpoints),
             thinking_variants: HashMap::new(),
+            reasoning_visibility: reasoning_visibility(config),
+            detailed_reasoning_summary: reasoning_summary_is_detailed(config),
         })
     }
 
-    pub fn new(provider: &ProviderConfig, _config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
+    pub fn new(provider: &ProviderConfig, config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
         if provider.default_model.trim().is_empty() {
             bail!(
                 "{}: {}",
@@ -568,6 +579,8 @@ impl OpenAiCompatibleClient {
             api_key: key.value,
             endpoints: Arc::new(vec![endpoint]),
             thinking_variants: HashMap::new(),
+            reasoning_visibility: reasoning_visibility(config),
+            detailed_reasoning_summary: reasoning_summary_is_detailed(config),
         })
     }
 
@@ -582,6 +595,16 @@ impl OpenAiCompatibleClient {
             windows.push(window);
         }
         Ok(windows.into_iter().min())
+    }
+
+    pub fn for_subagent_output(mut self, full: bool) -> Self {
+        self.reasoning_visibility = if full {
+            ReasoningVisibility::Full
+        } else {
+            ReasoningVisibility::Hidden
+        };
+        self.detailed_reasoning_summary = full;
+        self
     }
 
     pub fn models_without_context_window(&self, config: &AppConfig) -> Vec<String> {
@@ -617,6 +640,8 @@ impl OpenAiCompatibleClient {
             api_key: endpoint.api_key.clone(),
             endpoints: self.endpoints.clone(),
             thinking_variants: self.thinking_variants.clone(),
+            reasoning_visibility: self.reasoning_visibility,
+            detailed_reasoning_summary: self.detailed_reasoning_summary,
         }
     }
 
@@ -767,17 +792,26 @@ impl OpenAiCompatibleClient {
     }
 
     fn responses_reasoning(&self) -> Option<ResponsesReasoning> {
+        let summary = self.responses_reasoning_summary();
         let Some((_, variant)) = self.selected_reasoning_variant() else {
-            return Some(default_responses_reasoning());
+            return Some(default_responses_reasoning(summary));
         };
         match variant.setting {
             ReasoningSetting::Effort(effort) => Some(ResponsesReasoning {
                 effort: Some(effort),
-                summary: Some("concise".to_string()),
+                summary: Some(summary.to_string()),
             }),
-            ReasoningSetting::Toggle(true) => Some(default_responses_reasoning()),
+            ReasoningSetting::Toggle(true) => Some(default_responses_reasoning(summary)),
             ReasoningSetting::Toggle(false) | ReasoningSetting::Disabled => None,
-            ReasoningSetting::BudgetTokens(_) => Some(default_responses_reasoning()),
+            ReasoningSetting::BudgetTokens(_) => Some(default_responses_reasoning(summary)),
+        }
+    }
+
+    fn responses_reasoning_summary(&self) -> &'static str {
+        if self.detailed_reasoning_summary {
+            "detailed"
+        } else {
+            "concise"
         }
     }
 
@@ -840,6 +874,12 @@ impl OpenAiCompatibleClient {
         for (attempt, index) in order.into_iter().enumerate() {
             let endpoint = &endpoints[index];
             let client = self.with_endpoint(endpoint);
+            if attempt > 0 {
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningReset,
+                    text: String::new(),
+                })?;
+            }
             let started = Instant::now();
             tracing::debug!(
                 request_id,
@@ -849,10 +889,23 @@ impl OpenAiCompatibleClient {
                 key_index = endpoint.key_index + 1,
                 "LLM endpoint attempt started"
             );
-            match client
-                .chat_stream_single(messages.clone(), tools.clone(), &request_id, &mut on_chunk)
-                .await
-            {
+            let mut attempt_committed = false;
+            let result = {
+                let mut attempt_on_chunk = |chunk: ChatStreamChunk| {
+                    attempt_committed |=
+                        stream_chunk_commits_attempt(&chunk, client.reasoning_visibility);
+                    on_chunk(chunk)
+                };
+                client
+                    .chat_stream_single(
+                        messages.clone(),
+                        tools.clone(),
+                        &request_id,
+                        &mut attempt_on_chunk,
+                    )
+                    .await
+            };
+            match result {
                 Ok(mut result) => {
                     result.provider_id = Some(endpoint.provider.id.clone());
                     result.model = Some(endpoint.provider.default_model.clone());
@@ -908,6 +961,11 @@ impl OpenAiCompatibleClient {
                         endpoint.provider.default_model,
                         endpoint.key_index + 1
                     ));
+                    if attempt_committed {
+                        return Err(err.context(
+                            "LLM stream failed after emitting output; endpoint failover was suppressed",
+                        ));
+                    }
                 }
             }
         }
@@ -1167,6 +1225,7 @@ impl OpenAiCompatibleClient {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut stream = response.bytes_stream();
@@ -1179,6 +1238,7 @@ impl OpenAiCompatibleClient {
                     &mut content_emitted,
                     &mut reasoning,
                     &mut reasoning_emitted,
+                    &mut reasoning_part_active,
                     &mut usage,
                     &mut tool_calls,
                     &mut *on_chunk,
@@ -1202,12 +1262,34 @@ impl OpenAiCompatibleClient {
                 &mut content_emitted,
                 &mut reasoning,
                 &mut reasoning_emitted,
+                &mut reasoning_part_active,
                 &mut usage,
                 &mut tool_calls,
                 &mut *on_chunk,
             )?;
         }
-        finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)
+        flush_buffer(
+            &reasoning,
+            &mut reasoning_emitted,
+            ChatStreamKind::Reasoning,
+            &mut *on_chunk,
+            true,
+        )?;
+        flush_buffer(
+            &content,
+            &mut content_emitted,
+            ChatStreamKind::Content,
+            &mut *on_chunk,
+            true,
+        )?;
+        let result = finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)?;
+        if reasoning_part_active {
+            on_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            })?;
+        }
+        Ok(result)
     }
 
     fn bail_chat_completion_failure<T>(&self, status: u16, body: &str) -> Result<T> {
@@ -1349,13 +1431,35 @@ impl OpenAiCompatibleClient {
         for data in buffer.finish()? {
             let _ = handle_anthropic_sse_data(&data, &mut state, &mut *on_chunk)?;
         }
-        finalize_stream_result(
+        flush_buffer(
+            &state.reasoning,
+            &mut state.reasoning_emitted,
+            ChatStreamKind::Reasoning,
+            &mut *on_chunk,
+            true,
+        )?;
+        flush_buffer(
+            &state.content,
+            &mut state.content_emitted,
+            ChatStreamKind::Content,
+            &mut *on_chunk,
+            true,
+        )?;
+        let reasoning_part_active = state.reasoning_part_active;
+        let result = finalize_stream_result(
             state.content,
             state.reasoning,
             state.usage,
             state.tool_calls.finish(),
             dsml,
-        )
+        )?;
+        if reasoning_part_active {
+            on_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            })?;
+        }
+        Ok(result)
     }
 
     async fn chat_responses_stream<F>(
@@ -1410,6 +1514,7 @@ impl OpenAiCompatibleClient {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut content_started = false;
         let mut tool_calls = ResponsesToolAccumulator::default();
@@ -1423,6 +1528,7 @@ impl OpenAiCompatibleClient {
                     &mut content_emitted,
                     &mut reasoning,
                     &mut reasoning_emitted,
+                    &mut reasoning_part_active,
                     &mut usage,
                     &mut content_started,
                     &mut tool_calls,
@@ -1446,13 +1552,35 @@ impl OpenAiCompatibleClient {
                 &mut content_emitted,
                 &mut reasoning,
                 &mut reasoning_emitted,
+                &mut reasoning_part_active,
                 &mut usage,
                 &mut content_started,
                 &mut tool_calls,
                 &mut *on_chunk,
             )?;
         }
-        finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml).map(Some)
+        flush_buffer(
+            &reasoning,
+            &mut reasoning_emitted,
+            ChatStreamKind::Reasoning,
+            &mut *on_chunk,
+            true,
+        )?;
+        flush_buffer(
+            &content,
+            &mut content_emitted,
+            ChatStreamKind::Content,
+            &mut *on_chunk,
+            true,
+        )?;
+        let result = finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)?;
+        if reasoning_part_active {
+            on_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            })?;
+        }
+        Ok(Some(result))
     }
 
     fn uses_openai_responses(&self) -> bool {
@@ -1466,6 +1594,37 @@ impl OpenAiCompatibleClient {
     fn uses_anthropic_messages(&self) -> bool {
         provider_looks_anthropic(&self.provider)
     }
+}
+
+fn stream_chunk_commits_attempt(
+    chunk: &ChatStreamChunk,
+    reasoning_visibility: ReasoningVisibility,
+) -> bool {
+    (chunk.kind == ChatStreamKind::ReasoningPartEnd
+        && reasoning_visibility != ReasoningVisibility::Hidden)
+        || chunk.kind == ChatStreamKind::ToolCall
+        || (chunk.kind == ChatStreamKind::Content && !chunk.text.is_empty())
+        || (reasoning_visibility == ReasoningVisibility::Full
+            && chunk.kind == ChatStreamKind::Reasoning
+            && !chunk.text.is_empty())
+}
+
+fn reasoning_visibility(config: &AppConfig) -> ReasoningVisibility {
+    match config
+        .display
+        .reasoning
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "hidden" => ReasoningVisibility::Hidden,
+        "full" => ReasoningVisibility::Full,
+        _ => ReasoningVisibility::Summary,
+    }
+}
+
+fn reasoning_summary_is_detailed(config: &AppConfig) -> bool {
+    config.display.reasoning.trim().eq_ignore_ascii_case("full")
 }
 
 fn provider_looks_anthropic(provider: &ProviderConfig) -> bool {
@@ -1607,10 +1766,10 @@ struct ResponsesReasoning {
     summary: Option<String>,
 }
 
-fn default_responses_reasoning() -> ResponsesReasoning {
+fn default_responses_reasoning(summary: &str) -> ResponsesReasoning {
     ResponsesReasoning {
         effort: Some("medium".to_string()),
-        summary: Some("concise".to_string()),
+        summary: Some(summary.to_string()),
     }
 }
 
@@ -2183,6 +2342,7 @@ struct AnthropicStreamState {
     content_emitted: usize,
     reasoning: String,
     reasoning_emitted: usize,
+    reasoning_part_active: bool,
     thinking_signature: Option<String>,
     usage: Option<Usage>,
     tool_calls: AnthropicToolAccumulator,
@@ -2507,6 +2667,7 @@ fn handle_sse_line<F>(
     content_emitted: &mut usize,
     reasoning: &mut String,
     reasoning_emitted: &mut usize,
+    reasoning_part_active: &mut bool,
     usage: &mut Option<Usage>,
     tool_calls: &mut ToolCallAccumulator,
     on_chunk: &mut F,
@@ -2519,16 +2680,23 @@ where
     };
     if data == "[DONE]" {
         flush_buffer(
-            content,
-            content_emitted,
-            ChatStreamKind::Content,
-            on_chunk,
-            true,
-        )?;
-        flush_buffer(
             reasoning,
             reasoning_emitted,
             ChatStreamKind::Reasoning,
+            on_chunk,
+            true,
+        )?;
+        if *reasoning_part_active {
+            on_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            })?;
+            *reasoning_part_active = false;
+        }
+        flush_buffer(
+            content,
+            content_emitted,
+            ChatStreamKind::Content,
             on_chunk,
             true,
         )?;
@@ -2550,6 +2718,16 @@ where
     for choice in response.choices {
         let delta = choice.delta;
         if let Some(text) = delta_reasoning_text(&delta) {
+            if !*reasoning_part_active {
+                if !reasoning.is_empty() && !reasoning.ends_with("\n\n") {
+                    reasoning.push_str("\n\n");
+                }
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartStart,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = true;
+            }
             push_buffered_chunk(
                 reasoning,
                 reasoning_emitted,
@@ -2559,15 +2737,45 @@ where
             )?;
         }
         if let Some(text) = delta.content {
-            push_buffered_chunk(
-                content,
-                content_emitted,
-                ChatStreamKind::Content,
-                text,
-                on_chunk,
-            )?;
+            if !text.is_empty() {
+                if *reasoning_part_active {
+                    flush_buffer(
+                        reasoning,
+                        reasoning_emitted,
+                        ChatStreamKind::Reasoning,
+                        on_chunk,
+                        true,
+                    )?;
+                    on_chunk(ChatStreamChunk {
+                        kind: ChatStreamKind::ReasoningPartEnd,
+                        text: String::new(),
+                    })?;
+                    *reasoning_part_active = false;
+                }
+                push_buffered_chunk(
+                    content,
+                    content_emitted,
+                    ChatStreamKind::Content,
+                    text,
+                    on_chunk,
+                )?;
+            }
         }
         for tool_call in delta.tool_calls {
+            if *reasoning_part_active {
+                flush_buffer(
+                    reasoning,
+                    reasoning_emitted,
+                    ChatStreamKind::Reasoning,
+                    on_chunk,
+                    true,
+                )?;
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = false;
+            }
             if let Some(name) = tool_calls.push(tool_call) {
                 on_chunk(ChatStreamChunk {
                     kind: ChatStreamKind::ToolCall,
@@ -2585,6 +2793,7 @@ fn handle_responses_sse_line<F>(
     content_emitted: &mut usize,
     reasoning: &mut String,
     reasoning_emitted: &mut usize,
+    reasoning_part_active: &mut bool,
     usage: &mut Option<Usage>,
     content_started: &mut bool,
     tool_calls: &mut ResponsesToolAccumulator,
@@ -2598,16 +2807,23 @@ where
     };
     if data == "[DONE]" {
         flush_buffer(
-            content,
-            content_emitted,
-            ChatStreamKind::Content,
-            on_chunk,
-            true,
-        )?;
-        flush_buffer(
             reasoning,
             reasoning_emitted,
             ChatStreamKind::Reasoning,
+            on_chunk,
+            true,
+        )?;
+        if *reasoning_part_active {
+            on_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartEnd,
+                text: String::new(),
+            })?;
+            *reasoning_part_active = false;
+        }
+        flush_buffer(
+            content,
+            content_emitted,
+            ChatStreamKind::Content,
             on_chunk,
             true,
         )?;
@@ -2625,21 +2841,47 @@ where
     })?;
     match event.kind.as_str() {
         "response.output_text.delta" => {
-            if let Some(text) = event.delta {
-                *content_started = true;
-                push_buffered_chunk(
-                    content,
-                    content_emitted,
-                    ChatStreamKind::Content,
-                    text,
-                    on_chunk,
-                )?;
+            let text = event.delta.unwrap_or_default();
+            if text.is_empty() {
+                return Ok(false);
             }
+            if *reasoning_part_active {
+                flush_buffer(
+                    reasoning,
+                    reasoning_emitted,
+                    ChatStreamKind::Reasoning,
+                    on_chunk,
+                    true,
+                )?;
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = false;
+            }
+            *content_started = true;
+            push_buffered_chunk(
+                content,
+                content_emitted,
+                ChatStreamKind::Content,
+                text,
+                on_chunk,
+            )?;
         }
         "response.reasoning_text.delta"
         | "response.reasoning_summary.delta"
         | "response.reasoning_summary_text.delta" => {
             if let Some(text) = event.delta {
+                if !*reasoning_part_active {
+                    if !reasoning.is_empty() && !reasoning.ends_with("\n\n") {
+                        reasoning.push_str("\n\n");
+                    }
+                    on_chunk(ChatStreamChunk {
+                        kind: ChatStreamKind::ReasoningPartStart,
+                        text: String::new(),
+                    })?;
+                    *reasoning_part_active = true;
+                }
                 push_buffered_chunk(
                     reasoning,
                     reasoning_emitted,
@@ -2652,14 +2894,21 @@ where
         "response.reasoning_text.done"
         | "response.reasoning_summary.done"
         | "response.reasoning_summary_text.done" => {
+            flush_buffer(
+                reasoning,
+                reasoning_emitted,
+                ChatStreamKind::Reasoning,
+                on_chunk,
+                true,
+            )?;
+            if *reasoning_part_active {
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = false;
+            }
             if !*content_started && !reasoning.trim().is_empty() {
-                flush_buffer(
-                    reasoning,
-                    reasoning_emitted,
-                    ChatStreamKind::Reasoning,
-                    on_chunk,
-                    true,
-                )?;
                 *content_started = true;
                 on_chunk(ChatStreamChunk {
                     kind: ChatStreamKind::Content,
@@ -2668,6 +2917,20 @@ where
             }
         }
         "response.output_item.added" => {
+            if *reasoning_part_active {
+                flush_buffer(
+                    reasoning,
+                    reasoning_emitted,
+                    ChatStreamKind::Reasoning,
+                    on_chunk,
+                    true,
+                )?;
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = false;
+            }
             if let Some(item) = event.item {
                 if let Some(name) = tool_calls.start(item) {
                     on_chunk(ChatStreamChunk {
@@ -2675,6 +2938,45 @@ where
                         text: name,
                     })?;
                 }
+            }
+        }
+        "response.reasoning_summary_part.added" => {
+            if *reasoning_part_active {
+                flush_buffer(
+                    reasoning,
+                    reasoning_emitted,
+                    ChatStreamKind::Reasoning,
+                    on_chunk,
+                    true,
+                )?;
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+            }
+            if !reasoning.is_empty() && !reasoning.ends_with("\n\n") {
+                reasoning.push_str("\n\n");
+            }
+            on_chunk(ChatStreamChunk {
+                kind: ChatStreamKind::ReasoningPartStart,
+                text: String::new(),
+            })?;
+            *reasoning_part_active = true;
+        }
+        "response.reasoning_summary_part.done" => {
+            flush_buffer(
+                reasoning,
+                reasoning_emitted,
+                ChatStreamKind::Reasoning,
+                on_chunk,
+                true,
+            )?;
+            if *reasoning_part_active {
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = false;
             }
         }
         "response.function_call_arguments.delta" => {
@@ -2703,16 +3005,23 @@ where
                 });
             }
             flush_buffer(
-                content,
-                content_emitted,
-                ChatStreamKind::Content,
-                on_chunk,
-                true,
-            )?;
-            flush_buffer(
                 reasoning,
                 reasoning_emitted,
                 ChatStreamKind::Reasoning,
+                on_chunk,
+                true,
+            )?;
+            if *reasoning_part_active {
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                *reasoning_part_active = false;
+            }
+            flush_buffer(
+                content,
+                content_emitted,
+                ChatStreamKind::Content,
                 on_chunk,
                 true,
             )?;
@@ -2771,6 +3080,20 @@ where
                         }
                     }
                     "text" => {
+                        if state.reasoning_part_active {
+                            flush_buffer(
+                                &mut state.reasoning,
+                                &mut state.reasoning_emitted,
+                                ChatStreamKind::Reasoning,
+                                on_chunk,
+                                true,
+                            )?;
+                            on_chunk(ChatStreamChunk {
+                                kind: ChatStreamKind::ReasoningPartEnd,
+                                text: String::new(),
+                            })?;
+                            state.reasoning_part_active = false;
+                        }
                         if let Some(text) = block.text {
                             push_buffered_chunk(
                                 &mut state.content,
@@ -2782,6 +3105,27 @@ where
                         }
                     }
                     "thinking" => {
+                        if state.reasoning_part_active {
+                            flush_buffer(
+                                &mut state.reasoning,
+                                &mut state.reasoning_emitted,
+                                ChatStreamKind::Reasoning,
+                                on_chunk,
+                                true,
+                            )?;
+                            on_chunk(ChatStreamChunk {
+                                kind: ChatStreamKind::ReasoningPartEnd,
+                                text: String::new(),
+                            })?;
+                        }
+                        if !state.reasoning.is_empty() && !state.reasoning.ends_with("\n\n") {
+                            state.reasoning.push_str("\n\n");
+                        }
+                        on_chunk(ChatStreamChunk {
+                            kind: ChatStreamKind::ReasoningPartStart,
+                            text: String::new(),
+                        })?;
+                        state.reasoning_part_active = true;
                         if let Some(text) = block.thinking {
                             push_buffered_chunk(
                                 &mut state.reasoning,
@@ -2800,6 +3144,20 @@ where
             if let Some(delta) = event.delta {
                 match delta.kind.as_deref() {
                     Some("text_delta") => {
+                        if state.reasoning_part_active {
+                            flush_buffer(
+                                &mut state.reasoning,
+                                &mut state.reasoning_emitted,
+                                ChatStreamKind::Reasoning,
+                                on_chunk,
+                                true,
+                            )?;
+                            on_chunk(ChatStreamChunk {
+                                kind: ChatStreamKind::ReasoningPartEnd,
+                                text: String::new(),
+                            })?;
+                            state.reasoning_part_active = false;
+                        }
                         if let Some(text) = delta.text {
                             push_buffered_chunk(
                                 &mut state.content,
@@ -2812,6 +3170,17 @@ where
                     }
                     Some("thinking_delta") => {
                         if let Some(text) = delta.thinking {
+                            if !state.reasoning_part_active {
+                                if !state.reasoning.is_empty() && !state.reasoning.ends_with("\n\n")
+                                {
+                                    state.reasoning.push_str("\n\n");
+                                }
+                                on_chunk(ChatStreamChunk {
+                                    kind: ChatStreamKind::ReasoningPartStart,
+                                    text: String::new(),
+                                })?;
+                                state.reasoning_part_active = true;
+                            }
                             push_buffered_chunk(
                                 &mut state.reasoning,
                                 &mut state.reasoning_emitted,
@@ -2831,6 +3200,22 @@ where
                     }
                     _ => {}
                 }
+            }
+        }
+        "content_block_stop" => {
+            if state.reasoning_part_active {
+                flush_buffer(
+                    &mut state.reasoning,
+                    &mut state.reasoning_emitted,
+                    ChatStreamKind::Reasoning,
+                    on_chunk,
+                    true,
+                )?;
+                on_chunk(ChatStreamChunk {
+                    kind: ChatStreamKind::ReasoningPartEnd,
+                    text: String::new(),
+                })?;
+                state.reasoning_part_active = false;
             }
         }
         "message_delta" => {
@@ -2865,16 +3250,23 @@ where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
     flush_buffer(
-        &state.content,
-        &mut state.content_emitted,
-        ChatStreamKind::Content,
-        on_chunk,
-        true,
-    )?;
-    flush_buffer(
         &state.reasoning,
         &mut state.reasoning_emitted,
         ChatStreamKind::Reasoning,
+        on_chunk,
+        true,
+    )?;
+    if state.reasoning_part_active {
+        on_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::ReasoningPartEnd,
+            text: String::new(),
+        })?;
+        state.reasoning_part_active = false;
+    }
+    flush_buffer(
+        &state.content,
+        &mut state.content_emitted,
+        ChatStreamKind::Content,
         on_chunk,
         true,
     )
@@ -3278,6 +3670,7 @@ mod tests {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut chunks = Vec::new();
@@ -3287,20 +3680,22 @@ mod tests {
         };
 
         handle_sse_line(
-            r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":null,"tool_calls":null}}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":"","tool_calls":null}}]}"#,
             &mut content,
             &mut content_emitted,
             &mut reasoning,
             &mut reasoning_emitted,
+            &mut reasoning_part_active,
             &mut usage,
             &mut tool_calls,
             &mut on_chunk,
         )
         .unwrap();
 
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].kind, ChatStreamKind::Reasoning);
-        assert_eq!(chunks[0].text, "先想一下");
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ReasoningPartStart);
+        assert_eq!(chunks[1].kind, ChatStreamKind::Reasoning);
+        assert_eq!(chunks[1].text, "先想一下");
     }
 
     #[test]
@@ -3309,6 +3704,7 @@ mod tests {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut chunks = Vec::new();
@@ -3323,6 +3719,7 @@ mod tests {
             &mut content_emitted,
             &mut reasoning,
             &mut reasoning_emitted,
+            &mut reasoning_part_active,
             &mut usage,
             &mut tool_calls,
             &mut on_chunk,
@@ -3496,6 +3893,7 @@ mod tests {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut content_started = false;
         let mut tool_calls = ResponsesToolAccumulator::default();
@@ -3511,6 +3909,20 @@ mod tests {
             &mut content_emitted,
             &mut reasoning,
             &mut reasoning_emitted,
+            &mut reasoning_part_active,
+            &mut usage,
+            &mut content_started,
+            &mut tool_calls,
+            &mut on_chunk,
+        )
+        .unwrap();
+        handle_responses_sse_line(
+            r#"data: {"type":"response.output_text.delta","item_id":"msg_1","delta":""}"#,
+            &mut content,
+            &mut content_emitted,
+            &mut reasoning,
+            &mut reasoning_emitted,
+            &mut reasoning_part_active,
             &mut usage,
             &mut content_started,
             &mut tool_calls,
@@ -3523,6 +3935,7 @@ mod tests {
             &mut content_emitted,
             &mut reasoning,
             &mut reasoning_emitted,
+            &mut reasoning_part_active,
             &mut usage,
             &mut content_started,
             &mut tool_calls,
@@ -3530,11 +3943,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].kind, ChatStreamKind::Reasoning);
-        assert_eq!(chunks[0].text, "思考");
-        assert_eq!(chunks[1].kind, ChatStreamKind::Content);
-        assert_eq!(chunks[1].text, "答案");
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ReasoningPartStart);
+        assert_eq!(chunks[1].kind, ChatStreamKind::Reasoning);
+        assert_eq!(chunks[1].text, "思考");
+        assert_eq!(chunks[2].kind, ChatStreamKind::ReasoningPartEnd);
+        assert_eq!(chunks[3].kind, ChatStreamKind::Content);
+        assert_eq!(chunks[3].text, "答案");
     }
 
     #[test]
@@ -3543,6 +3958,7 @@ mod tests {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut content_started = false;
         let mut tool_calls = ResponsesToolAccumulator::default();
@@ -3564,6 +3980,7 @@ mod tests {
                 &mut content_emitted,
                 &mut reasoning,
                 &mut reasoning_emitted,
+                &mut reasoning_part_active,
                 &mut usage,
                 &mut content_started,
                 &mut tool_calls,
@@ -3572,16 +3989,73 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(chunks.len(), 4);
-        assert_eq!(chunks[0].kind, ChatStreamKind::Reasoning);
-        assert_eq!(chunks[0].text, "思考");
-        assert_eq!(chunks[1].kind, ChatStreamKind::Content);
-        assert!(chunks[1].text.is_empty());
-        assert_eq!(chunks[2].kind, ChatStreamKind::Content);
-        assert_eq!(chunks[2].text, "答案");
-        assert_eq!(chunks[3].kind, ChatStreamKind::Reasoning);
-        assert_eq!(chunks[3].text, "晚到");
-        assert_eq!(reasoning, "思考晚到");
+        assert_eq!(chunks.len(), 7);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ReasoningPartStart);
+        assert_eq!(chunks[1].kind, ChatStreamKind::Reasoning);
+        assert_eq!(chunks[1].text, "思考");
+        assert_eq!(chunks[2].kind, ChatStreamKind::ReasoningPartEnd);
+        assert_eq!(chunks[3].kind, ChatStreamKind::Content);
+        assert!(chunks[3].text.is_empty());
+        assert_eq!(chunks[4].kind, ChatStreamKind::Content);
+        assert_eq!(chunks[4].text, "答案");
+        assert_eq!(chunks[5].kind, ChatStreamKind::ReasoningPartStart);
+        assert_eq!(chunks[6].kind, ChatStreamKind::Reasoning);
+        assert_eq!(chunks[6].text, "\n\n晚到");
+        assert_eq!(reasoning, "思考\n\n晚到");
+    }
+
+    #[test]
+    fn responses_stream_preserves_multiple_reasoning_summary_parts() {
+        let mut content = String::new();
+        let mut content_emitted = 0usize;
+        let mut reasoning = String::new();
+        let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
+        let mut usage = None;
+        let mut content_started = false;
+        let mut tool_calls = ResponsesToolAccumulator::default();
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        for line in [
+            r#"data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","summary_index":0}"#,
+            r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":"**Planning response**"}"#,
+            r#"data: {"type":"response.reasoning_summary_part.done","item_id":"rs_1","summary_index":0}"#,
+            r#"data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","summary_index":1}"#,
+            r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":1,"delta":"**Designing helper**"}"#,
+            r#"data: {"type":"response.reasoning_summary_part.done","item_id":"rs_1","summary_index":1}"#,
+        ] {
+            handle_responses_sse_line(
+                line,
+                &mut content,
+                &mut content_emitted,
+                &mut reasoning,
+                &mut reasoning_emitted,
+                &mut reasoning_part_active,
+                &mut usage,
+                &mut content_started,
+                &mut tool_calls,
+                &mut on_chunk,
+            )
+            .unwrap();
+        }
+
+        let kinds = chunks.iter().map(|chunk| chunk.kind).collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningPartEnd,
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningPartEnd,
+            ]
+        );
+        assert_eq!(reasoning, "**Planning response**\n\n**Designing helper**");
     }
 
     #[test]
@@ -3646,6 +4120,7 @@ mod tests {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut content_started = false;
         let mut tool_calls = ResponsesToolAccumulator::default();
@@ -3663,6 +4138,7 @@ mod tests {
                 &mut content_emitted,
                 &mut reasoning,
                 &mut reasoning_emitted,
+                &mut reasoning_part_active,
                 &mut usage,
                 &mut content_started,
                 &mut tool_calls,
@@ -3684,6 +4160,7 @@ mod tests {
         let mut content_emitted = 0usize;
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
         let mut usage = None;
         let mut content_started = false;
         let mut tool_calls = ResponsesToolAccumulator::default();
@@ -3699,6 +4176,7 @@ mod tests {
             &mut content_emitted,
             &mut reasoning,
             &mut reasoning_emitted,
+            &mut reasoning_part_active,
             &mut usage,
             &mut content_started,
             &mut tool_calls,
@@ -3852,11 +4330,13 @@ mod tests {
             }
         }
 
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].kind, ChatStreamKind::Reasoning);
-        assert_eq!(chunks[0].text, "想");
-        assert_eq!(chunks[1].kind, ChatStreamKind::Content);
-        assert_eq!(chunks[1].text, "答");
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0].kind, ChatStreamKind::ReasoningPartStart);
+        assert_eq!(chunks[1].kind, ChatStreamKind::Reasoning);
+        assert_eq!(chunks[1].text, "想");
+        assert_eq!(chunks[2].kind, ChatStreamKind::ReasoningPartEnd);
+        assert_eq!(chunks[3].kind, ChatStreamKind::Content);
+        assert_eq!(chunks[3].text, "答");
         let usage = state.usage.unwrap();
         assert_eq!(usage.prompt_tokens, 3);
         assert_eq!(usage.completion_tokens, 2);
@@ -3877,6 +4357,38 @@ mod tests {
 
         assert_eq!(state.thinking_signature.as_deref(), Some("sig_123"));
         assert!(state.reasoning.is_empty());
+    }
+
+    #[test]
+    fn anthropic_stream_separates_multiple_thinking_blocks() {
+        let mut state = AnthropicStreamState::default();
+        let mut chunks = Vec::new();
+        let mut on_chunk = |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        };
+
+        for data in [
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"Planning"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"Designing"}}"#,
+            r#"{"type":"content_block_stop","index":1}"#,
+        ] {
+            handle_anthropic_sse_data(data, &mut state, &mut on_chunk).unwrap();
+        }
+
+        assert_eq!(state.reasoning, "Planning\n\nDesigning");
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.kind).collect::<Vec<_>>(),
+            vec![
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningPartEnd,
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningPartEnd,
+            ]
+        );
     }
 
     #[test]
@@ -3955,6 +4467,93 @@ mod tests {
         assert_eq!(builds, 2);
         assert_eq!(response.text().await.unwrap(), "ok");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn endpoint_failover_resets_partial_reasoning_before_retry() {
+        let first_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let first_url = format!("http://{}/v1", first_listener.local_addr().unwrap());
+        let second_url = format!("http://{}/v1", second_listener.local_addr().unwrap());
+        let first_server = tokio::spawn(async move {
+            let (mut stream, _) = first_listener.accept().await.unwrap();
+            read_http_headers(&mut stream).await;
+            let body =
+                concat!("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"old\"}}]}\n\n");
+            write_http_sse_response(&mut stream, body).await;
+        });
+        let second_server = tokio::spawn(async move {
+            let (mut stream, _) = second_listener.accept().await.unwrap();
+            read_http_headers(&mut stream).await;
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"new\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write_http_sse_response(&mut stream, body).await;
+        });
+
+        let mut first = test_provider("failover-first-test", &first_url);
+        first.protocol = "openai-chat".to_string();
+        first.default_model = "test-model".to_string();
+        let mut second = test_provider("failover-second-test", &second_url);
+        second.protocol = "openai-chat".to_string();
+        second.default_model = "test-model".to_string();
+        let first_client = reqwest::Client::new();
+        let second_client = reqwest::Client::new();
+        let endpoints = vec![
+            LlmEndpoint {
+                client: first_client.clone(),
+                provider: first.clone(),
+                api_key: "first".to_string(),
+                key_index: 0,
+            },
+            LlmEndpoint {
+                client: second_client,
+                provider: second,
+                api_key: "second".to_string(),
+                key_index: 0,
+            },
+        ];
+        let client = OpenAiCompatibleClient {
+            client: first_client,
+            provider: first,
+            api_key: "first".to_string(),
+            endpoints: Arc::new(endpoints),
+            thinking_variants: HashMap::new(),
+            reasoning_visibility: ReasoningVisibility::Summary,
+            detailed_reasoning_summary: false,
+        };
+        let mut chunks = Vec::new();
+
+        let result = client
+            .chat_stream(
+                vec![ChatMessage::plain("user", "hi")],
+                Vec::new(),
+                |chunk| {
+                    chunks.push(chunk);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.reasoning.as_deref(), Some("new"));
+        assert_eq!(result.content, "answer");
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.kind).collect::<Vec<_>>(),
+            vec![
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningReset,
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningPartEnd,
+                ChatStreamKind::Content,
+            ]
+        );
+        first_server.await.unwrap();
+        second_server.await.unwrap();
     }
 
     #[tokio::test]
@@ -4051,6 +4650,100 @@ mod tests {
         assert!(!retryable_transport_failure(TransportFailureKind::Other));
     }
 
+    #[test]
+    fn endpoint_failover_stops_after_irreversible_stream_output() {
+        let reasoning = ChatStreamChunk {
+            kind: ChatStreamKind::Reasoning,
+            text: "partial".to_string(),
+        };
+        assert!(!stream_chunk_commits_attempt(
+            &reasoning,
+            ReasoningVisibility::Hidden
+        ));
+        assert!(!stream_chunk_commits_attempt(
+            &reasoning,
+            ReasoningVisibility::Summary
+        ));
+        assert!(stream_chunk_commits_attempt(
+            &reasoning,
+            ReasoningVisibility::Full
+        ));
+        assert!(!stream_chunk_commits_attempt(
+            &ChatStreamChunk {
+                kind: ChatStreamKind::Content,
+                text: String::new(),
+            },
+            ReasoningVisibility::Full,
+        ));
+        let reasoning_end = ChatStreamChunk {
+            kind: ChatStreamKind::ReasoningPartEnd,
+            text: String::new(),
+        };
+        assert!(!stream_chunk_commits_attempt(
+            &reasoning_end,
+            ReasoningVisibility::Hidden
+        ));
+        assert!(stream_chunk_commits_attempt(
+            &reasoning_end,
+            ReasoningVisibility::Summary
+        ));
+        for chunk in [
+            ChatStreamChunk {
+                kind: ChatStreamKind::Content,
+                text: "answer".to_string(),
+            },
+            ChatStreamChunk {
+                kind: ChatStreamKind::ToolCall,
+                text: "ask_question".to_string(),
+            },
+        ] {
+            assert!(stream_chunk_commits_attempt(
+                &chunk,
+                ReasoningVisibility::Hidden
+            ));
+        }
+    }
+
+    #[test]
+    fn reasoning_failover_visibility_only_follows_reasoning_display() {
+        let mut config = AppConfig::default();
+        assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Summary);
+
+        config.display.reasoning = " full ".to_string();
+        assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Full);
+
+        config.display.reasoning = "hidden".to_string();
+        config.display.tool_calls = "FULL".to_string();
+        assert_eq!(reasoning_visibility(&config), ReasoningVisibility::Hidden);
+    }
+
+    #[test]
+    fn responses_full_requests_detailed_reasoning_summary() {
+        let mut config = AppConfig::default();
+        assert!(!reasoning_summary_is_detailed(&config));
+
+        config.display.reasoning = " FULL ".to_string();
+        assert!(reasoning_summary_is_detailed(&config));
+
+        let provider = test_provider("openai", "https://api.openai.com/v1");
+        let mut client = test_client(provider);
+        client.detailed_reasoning_summary = true;
+        let reasoning = client.responses_reasoning().unwrap();
+        assert_eq!(reasoning.summary.as_deref(), Some("detailed"));
+    }
+
+    #[test]
+    fn subagent_output_visibility_follows_tool_detail_mode() {
+        let provider = test_provider("openai", "https://api.openai.com/v1");
+        let hidden = test_client(provider.clone()).for_subagent_output(false);
+        assert_eq!(hidden.reasoning_visibility, ReasoningVisibility::Hidden);
+        assert!(!hidden.detailed_reasoning_summary);
+
+        let full = test_client(provider).for_subagent_output(true);
+        assert_eq!(full.reasoning_visibility, ReasoningVisibility::Full);
+        assert!(full.detailed_reasoning_summary);
+    }
+
     async fn read_http_headers(stream: &mut tokio::net::TcpStream) {
         let mut request = Vec::new();
         let mut byte = [0u8; 1];
@@ -4059,6 +4752,15 @@ mod tests {
             assert_ne!(read, 0, "connection closed before request headers");
             request.push(byte[0]);
         }
+    }
+
+    async fn write_http_sse_response(stream: &mut tokio::net::TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
     }
 
     fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {
@@ -4075,6 +4777,8 @@ mod tests {
             api_key: "test".to_string(),
             endpoints: Arc::new(vec![endpoint]),
             thinking_variants: HashMap::new(),
+            reasoning_visibility: ReasoningVisibility::Summary,
+            detailed_reasoning_summary: false,
         }
     }
 
@@ -4199,6 +4903,8 @@ mod tests {
                 thinking_variant_key("ririxin", "deepseek-v4-flash"),
                 "high".to_string(),
             )]),
+            reasoning_visibility: ReasoningVisibility::Summary,
+            detailed_reasoning_summary: false,
         };
 
         let first_endpoint = client.with_endpoint(&client.endpoints[0]);

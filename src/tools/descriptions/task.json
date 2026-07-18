@@ -1,6 +1,6 @@
 {
   "name": "task",
-  "display_name": "子代理任务",
+  "display_name": "子代理",
   "description": "启动子代理独立处理复杂任务。",
   "parameters": {
     "type": "object",

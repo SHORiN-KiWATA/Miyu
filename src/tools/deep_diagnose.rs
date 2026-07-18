@@ -59,7 +59,7 @@ impl DiagnosisProgress {
     }
 
     fn reasoning(&self, text: &str) {
-        if self.mode != ProgressMode::Hidden {
+        if self.mode == ProgressMode::Full {
             self.progress
                 .report(format!("__subagent_reasoning__{}", text));
         }
@@ -68,7 +68,7 @@ impl DiagnosisProgress {
     fn report_stats(&self, stats: &DiagnosisStats) {
         let text = if is_zh() {
             format!(
-                "工具调用 {} 次　消耗 Token {}",
+                "工具调用 {} 次　消耗词元 {}",
                 stats.tool_calls,
                 format_token_count(stats.token_estimate, false)
             )
@@ -215,7 +215,8 @@ async fn run_linux_input_method_diagnose(
         t("issue", "问题"),
         clip_inline(&issue, 80)
     ));
-    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?;
+    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
+        .for_subagent_output(progress.mode == ProgressMode::Full);
     let prompt = input_method_prompt(&issue, target.as_deref());
     let system_prompt = INPUT_METHOD_DIAGNOSIS_PROMPT;
     let mut stats = DiagnosisStats::default();
@@ -315,15 +316,19 @@ async fn chat_with_tools(
             steps += 1;
             stats.tool_calls += 1;
             if progress.mode == ProgressMode::Summary {
+                let subject =
+                    crate::render::tool_subject(&call.function.name, &call.function.arguments)
+                        .map(|subject| format!(" · {subject}"))
+                        .unwrap_or_default();
                 progress.report(if is_zh() {
                     format!(
-                        "工具 #{steps}：{} 运行中",
+                        "工具 #{steps}：{}{subject} 运行中",
                         readable_tool_name(&call.function.name)
                     )
                 } else {
-                    format!("tool #{steps}: {} running", call.function.name)
+                    format!("tool #{steps}: {}{subject} running", call.function.name)
                 });
-            } else if progress.mode == ProgressMode::Full {
+            } else if progress.mode == ProgressMode::Full && call.function.name != "run_command" {
                 progress.subtool(format!(
                     "__subtool_call__{}",
                     json!({
@@ -354,19 +359,25 @@ async fn chat_with_tools(
                 stats.tool_errors += 1;
             }
             if progress.mode == ProgressMode::Summary {
+                let subject =
+                    crate::render::tool_subject(&call.function.name, &call.function.arguments)
+                        .map(|subject| format!(" · {subject}"))
+                        .unwrap_or_default();
+                let status = if ok { "ok" } else { "err" };
                 progress.report(if is_zh() {
                     format!(
-                        "工具 #{steps}：{} ok",
+                        "工具 #{steps}：{}{subject} {status}",
                         readable_tool_name(&call.function.name)
                     )
                 } else {
-                    format!("tool #{steps}: {} ok", call.function.name)
+                    format!("tool #{steps}: {}{subject} {status}", call.function.name)
                 });
             } else if progress.mode == ProgressMode::Full {
                 progress.subtool(format!(
                     "__subtool_result__{}",
                     json!({
                         "name": call.function.name,
+                        "args": call.function.arguments,
                         "ok": ok,
                         "output": output,
                     })

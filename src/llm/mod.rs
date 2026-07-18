@@ -160,6 +160,9 @@ pub struct ChatResult {
 pub enum ChatStreamKind {
     Content,
     Reasoning,
+    ReasoningReset,
+    ReasoningPartStart,
+    ReasoningPartEnd,
     ToolCall,
 }
 

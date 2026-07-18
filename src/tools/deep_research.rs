@@ -190,7 +190,8 @@ async fn run_deep_research(
     } else {
         plugin.max_tool_steps_per_round
     };
-    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?;
+    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
+        .for_subagent_output(sa_mode == ProgressMode::Full);
     let state = Arc::new(Mutex::new(ResearchState::default()));
     let mut draft = String::new();
     let mut review =
@@ -353,7 +354,7 @@ async fn run_deep_research(
         t("tool calls", "工具调用"),
         stats["tool_calls"].as_u64().unwrap_or(0),
         t("times", "次"),
-        t("token cost", "消耗 Token"),
+        t("token cost", "消耗词元"),
         format_token_count(
             stats["token_estimate"].as_u64().unwrap_or(0),
             !stats["token_estimate_is_actual"].as_bool().unwrap_or(false)

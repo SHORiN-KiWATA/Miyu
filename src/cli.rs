@@ -178,14 +178,16 @@ fn repl_footer_line(mode: AgentMode, footer: &ReplFooterStatus, cols: usize) -> 
 
 fn repl_footer_left(mode: AgentMode, footer: &ReplFooterStatus, width: usize) -> String {
     let thinking = footer.thinking.as_deref().unwrap_or_default();
+    let colored_thinking = (!thinking.is_empty()).then(|| primary_footer_text(thinking));
+    let colored_thinking = colored_thinking.as_deref().unwrap_or_default();
     let provider = format!("\x1b[2m{}\x1b[0m", footer.provider);
     let mode = colored_footer_mode_label(mode);
-    let full = repl_footer_left_parts(&mode, &footer.model, Some(&provider), thinking);
+    let full = repl_footer_left_parts(&mode, &footer.model, Some(&provider), colored_thinking);
     if visible_width(&full) <= width {
         return full;
     }
 
-    let compact = repl_footer_left_parts(&mode, &footer.model, None, thinking);
+    let compact = repl_footer_left_parts(&mode, &footer.model, None, colored_thinking);
     if visible_width(&compact) <= width {
         return compact;
     }
@@ -199,7 +201,7 @@ fn repl_footer_left(mode: AgentMode, footer: &ReplFooterStatus, width: usize) ->
         .saturating_add(1);
     let model_budget = width.saturating_sub(fixed_width).max(1);
     let model = truncate_display(&footer.model, model_budget);
-    repl_footer_left_parts(&mode, &model, None, thinking)
+    repl_footer_left_parts(&mode, &model, None, colored_thinking)
 }
 
 fn repl_footer_left_parts(
@@ -249,10 +251,14 @@ fn show_mixed_model_endpoint(config: &AppConfig, interactive: bool) -> bool {
 
 fn colored_footer_mode_label(mode: AgentMode) -> String {
     match mode {
-        AgentMode::Normal => "\x1b[1m\x1b[34mNormal\x1b[0m".to_string(),
+        AgentMode::Normal => primary_footer_text("Normal"),
         AgentMode::Plan => "\x1b[1m\x1b[35mPlan\x1b[0m".to_string(),
         AgentMode::Chat => "\x1b[1m\x1b[32mChat\x1b[0m".to_string(),
     }
+}
+
+fn primary_footer_text(text: &str) -> String {
+    format!("\x1b[1m\x1b[34m{text}\x1b[0m")
 }
 
 #[derive(Debug, Parser)]
@@ -4561,6 +4567,18 @@ mod repl_input_tests {
     }
 
     #[test]
+    fn footer_variant_always_uses_the_fixed_primary_color() {
+        let config = AppConfig::default();
+        let mut footer = ReplFooterStatus::from_config(&config, 0, None);
+        footer.update_thinking_variant(Some("high"));
+
+        for mode in [AgentMode::Normal, AgentMode::Plan, AgentMode::Chat] {
+            let line = repl_footer_left(mode, &footer, 120);
+            assert!(line.contains("\x1b[1m\x1b[34mhigh\x1b[0m"));
+        }
+    }
+
+    #[test]
     fn prompt_rows_wrap_at_terminal_width() {
         assert_eq!(repl_prompt_rows_for_cols("", &["1234567".into()], 10), 1);
         assert_eq!(repl_prompt_rows_for_cols("", &["1234567890".into()], 10), 2);
@@ -5332,6 +5350,14 @@ fn handle_agent_event(renderer: &mut render::StreamRenderer, event: AgentEvent) 
     match event {
         AgentEvent::Chunk(chunk) => {
             renderer.write_chunk(chunk)?;
+            renderer.tick_spinner()
+        }
+        AgentEvent::ReasoningStart => renderer.start_reasoning_phase(),
+        AgentEvent::ReasoningReset => renderer.reset_reasoning_phase(),
+        AgentEvent::ReasoningPartStart => renderer.start_reasoning_part(),
+        AgentEvent::ReasoningPartEnd => renderer.finish_reasoning_part(),
+        AgentEvent::ReasoningTitle(title) => {
+            renderer.write_reasoning_title(&title)?;
             renderer.tick_spinner()
         }
         AgentEvent::ToolCall { name, arguments } => {

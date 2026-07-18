@@ -26,7 +26,7 @@ pub fn register(registry: &mut ToolRegistry) {
                 bail!("load_tools must be executed through the active tool registry")
             },
         )
-        .with_display_name("加载工具"),
+        .with_display_name("加载"),
     );
 }
 

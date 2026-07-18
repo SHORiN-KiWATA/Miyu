@@ -1,9 +1,10 @@
+use super::clip_to_display_width;
 use anyhow::Result;
-use crossterm::cursor::{MoveToColumn, MoveUp};
+use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
 use crossterm::execute;
-use crossterm::terminal::{Clear, ClearType};
+use crossterm::terminal::{self, Clear, ClearType};
 use std::io::{self, IsTerminal, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const WIDTH: usize = 7;
 const TRAIL_LEN: usize = 6;
@@ -39,8 +40,7 @@ struct ScannerState {
 pub(crate) struct WaitSpinner {
     phase: String,
     sub_phase: Option<String>,
-    start: Instant,
-    lines_rendered: u16,
+    rendered_line_widths: Vec<usize>,
     style: SpinnerStyle,
     frame: usize,
 }
@@ -54,8 +54,7 @@ impl WaitSpinner {
         Self {
             phase,
             sub_phase: None,
-            start: Instant::now(),
-            lines_rendered: 0,
+            rendered_line_widths: Vec::new(),
             style,
             frame: 0,
         }
@@ -70,14 +69,17 @@ impl WaitSpinner {
     }
 
     pub(crate) fn tick(&mut self) -> Result<()> {
-        let (output, prev_lines, lines) = {
-            let prev = self.lines_rendered;
-            let (output, lines) = render_frame(self.frame, self);
-            self.lines_rendered = lines;
-            (output, prev, lines)
-        };
+        let terminal_width = terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(120);
+        let (output, _) = render_frame_at_width(self.frame, self, terminal_width);
         if !output.is_empty() {
-            write_spinner_lines(&output, prev_lines, lines)?;
+            let widths = output
+                .lines()
+                .map(super::command_ansi_width)
+                .collect::<Vec<_>>();
+            write_spinner_lines(&output, &self.rendered_line_widths, terminal_width)?;
+            self.rendered_line_widths = widths;
         }
         let total = total_frames_for_style(self.style);
         self.frame = (self.frame + 1) % total.max(1);
@@ -85,41 +87,57 @@ impl WaitSpinner {
     }
 
     pub(crate) fn stop(&mut self) -> Result<()> {
-        clear_spinner_lines(self.lines_rendered)?;
-        self.lines_rendered = 0;
+        clear_spinner_lines(&self.rendered_line_widths)?;
+        self.rendered_line_widths.clear();
         Ok(())
     }
 }
 
+#[cfg(test)]
 fn render_frame(frame: usize, state: &WaitSpinner) -> (String, u16) {
-    let elapsed = state.start.elapsed();
-    let elapsed = if elapsed > Duration::from_secs(1) {
-        format!(" {:.1}s", elapsed.as_secs_f64())
-    } else {
-        String::new()
-    };
-    let spinner_prefix = match state.style {
+    let width = terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(120);
+    render_frame_at_width(frame, state, width)
+}
+
+fn render_frame_at_width(
+    frame: usize,
+    state: &WaitSpinner,
+    terminal_width: usize,
+) -> (String, u16) {
+    let (spinner_prefix, spinner_width) = match state.style {
         SpinnerStyle::Scanner => {
             let scanner = scanner_state(frame % total_frames_scanner());
-            (0..WIDTH)
-                .map(|char_index| render_cell(char_index, scanner))
-                .collect::<String>()
+            (
+                (0..WIDTH)
+                    .map(|char_index| render_cell(char_index, scanner))
+                    .collect::<String>(),
+                WIDTH,
+            )
         }
-        SpinnerStyle::Braille => paint_secondary(braille_frame(frame)),
+        SpinnerStyle::Braille => (paint_secondary(braille_frame(frame)), 1),
     };
+    let usable = terminal_width.saturating_sub(1).max(1);
+    let phase_width = usable.saturating_sub(spinner_width + 1);
+    let phase = clip_to_display_width(&state.phase, phase_width);
     let main_line = format!(
-        "{} {}{}",
+        "{} {}",
         spinner_prefix,
-        paint_for_style(&state.phase, state.style),
-        paint_for_style(&elapsed, state.style)
+        paint_for_style(&phase, state.style)
     );
+    let mut lines = vec![main_line];
     match &state.sub_phase {
         Some(sub) if !sub.trim().is_empty() => {
-            let sub_line = format!("  {}", paint_for_style(sub, state.style));
-            (format!("{main_line}\n{sub_line}"), 2)
+            for line in sub.lines().filter(|line| !line.trim().is_empty()) {
+                let line = clip_to_display_width(line, usable.saturating_sub(2));
+                lines.push(format!("  {}", paint_for_style(&line, state.style)));
+            }
         }
-        _ => (main_line, 1),
+        _ => {}
     }
+    let count = lines.len().min(u16::MAX as usize) as u16;
+    (lines.join("\n"), count)
 }
 
 fn render_cell(char_index: usize, state: ScannerState) -> String {
@@ -248,39 +266,66 @@ fn paint_for_style(text: &str, style: SpinnerStyle) -> String {
     }
 }
 
-fn write_spinner_lines(output: &str, prev_lines: u16, lines: u16) -> Result<()> {
+fn write_spinner_lines(
+    output: &str,
+    previous_widths: &[usize],
+    terminal_width: usize,
+) -> Result<()> {
     let mut stdout = io::stdout();
-    if prev_lines > 1 {
-        for _ in 1..prev_lines {
-            execute!(stdout, MoveUp(1))?;
-        }
+    if !previous_widths.is_empty() {
+        clear_spinner_lines_with_writer(&mut stdout, previous_widths, terminal_width)?;
     }
-    for (index, line) in output.lines().enumerate() {
+    let output_lines = output.lines().collect::<Vec<_>>();
+    for (index, line) in output_lines.iter().enumerate() {
         execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
         write!(stdout, "{line}")?;
-        if index + 1 < output.lines().count() {
+        if index + 1 < output_lines.len() {
             write!(stdout, "\n")?;
-        }
-    }
-    if prev_lines > lines {
-        for _ in lines..prev_lines {
-            execute!(stdout, MoveUp(1))?;
-            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
         }
     }
     stdout.flush()?;
     Ok(())
 }
 
-fn clear_spinner_lines(lines: u16) -> Result<()> {
-    let mut stdout = io::stdout();
-    for i in 0..lines {
-        if i > 0 {
-            execute!(stdout, MoveUp(1))?;
-        }
-        execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+fn clear_spinner_lines(widths: &[usize]) -> Result<()> {
+    if widths.is_empty() {
+        return Ok(());
     }
+    let mut stdout = io::stdout();
+    let terminal_width = terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(120);
+    clear_spinner_lines_with_writer(&mut stdout, widths, terminal_width)?;
     stdout.flush()?;
+    Ok(())
+}
+
+fn clear_spinner_lines_with_writer(
+    stdout: &mut impl Write,
+    widths: &[usize],
+    terminal_width: usize,
+) -> Result<()> {
+    if widths.is_empty() {
+        return Ok(());
+    }
+    let columns = terminal_width.max(1);
+    let rows = widths
+        .iter()
+        .map(|width| (*width).max(1).div_ceil(columns))
+        .sum::<usize>()
+        .min(u16::MAX as usize) as u16;
+    if rows > 1 {
+        execute!(stdout, MoveUp(rows - 1))?;
+    }
+    for index in 0..rows {
+        execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        if index + 1 < rows {
+            execute!(stdout, MoveDown(1))?;
+        }
+    }
+    if rows > 1 {
+        execute!(stdout, MoveUp(rows - 1))?;
+    }
     Ok(())
 }
 
@@ -292,8 +337,7 @@ mod tests {
         WaitSpinner {
             phase: phase.to_string(),
             sub_phase: sub_phase.map(|s| s.to_string()),
-            start: Instant::now(),
-            lines_rendered: 0,
+            rendered_line_widths: Vec::new(),
             style,
             frame: 0,
         }
@@ -337,6 +381,63 @@ mod tests {
         assert!(frame.contains("输入法诊断"));
         assert!(frame.contains("第 1 轮"));
         assert_eq!(lines, 2);
+    }
+
+    #[test]
+    fn long_unicode_phase_never_soft_wraps() {
+        let spinner = make_spinner(
+            &format!("思考：{}", "中文".repeat(40)),
+            Some(&format!("↳ {}", "👨‍👩‍👧‍👦测试".repeat(30))),
+            SpinnerStyle::Scanner,
+        );
+        for width in [20, 40, 80] {
+            let (frame, lines) = render_frame_at_width(3, &spinner, width);
+            assert_eq!(lines, 2);
+            for line in frame.lines() {
+                assert!(
+                    crate::render::command_ansi_width(line) < width,
+                    "line exceeded {width} columns: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_multiline_spinner_returns_cursor_to_block_top() {
+        let mut output = Vec::new();
+        clear_spinner_lines_with_writer(&mut output, &[20, 20], 80).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(output.starts_with("\x1b[1A"));
+        assert!(output.contains("\x1b[1B"));
+        assert!(output.ends_with("\x1b[1A"));
+    }
+
+    #[test]
+    fn clearing_spinner_counts_soft_wrapped_physical_rows() {
+        let mut output = Vec::new();
+        clear_spinner_lines_with_writer(&mut output, &[100, 20], 40).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(output.starts_with("\x1b[3A"));
+        assert_eq!(output.matches("\x1b[1B").count(), 3);
+        assert!(output.ends_with("\x1b[3A"));
+    }
+
+    #[test]
+    fn multiline_sub_phase_reports_every_rendered_row() {
+        let spinner = make_spinner(
+            "~ 子代理×1 运行中 · 4s",
+            Some("↳ 查询磁盘占用\n↳ 工具 #2：运行命令 运行中"),
+            SpinnerStyle::Braille,
+        );
+
+        let (frame, lines) = render_frame_at_width(0, &spinner, 80);
+
+        assert_eq!(lines, 3);
+        assert_eq!(frame.lines().count(), 3);
+        assert_eq!(frame.matches("子代理×1").count(), 1);
+        assert_eq!(frame.matches("4s").count(), 1);
     }
 
     #[test]

@@ -16,13 +16,11 @@ pub enum ProgressMode {
 
 impl ProgressMode {
     pub fn from_config(config: &crate::config::AppConfig) -> Self {
-        match config
-            .display
-            .tool_calls
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
+        Self::from_value(&config.display.tool_calls)
+    }
+
+    fn from_value(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
             "hidden" => Self::Hidden,
             "full" => Self::Full,
             _ => Self::Summary,
@@ -33,15 +31,15 @@ impl ProgressMode {
 #[derive(Clone)]
 pub struct SubagentProgress {
     progress: ToolProgress,
-    mode: ProgressMode,
+    tool_mode: ProgressMode,
     enabled: bool,
 }
 
 impl SubagentProgress {
-    pub fn new(progress: ToolProgress, mode: ProgressMode, enabled: bool) -> Self {
+    pub fn new(progress: ToolProgress, tool_mode: ProgressMode, enabled: bool) -> Self {
         Self {
             progress,
-            mode,
+            tool_mode,
             enabled,
         }
     }
@@ -50,44 +48,37 @@ impl SubagentProgress {
         self.progress.clone()
     }
 
-    pub fn report(&self, message: impl Into<String>) {
-        self.progress.report(message);
-    }
-
     pub fn phase(&self, message: impl Into<String>) {
-        if self.enabled && self.mode != ProgressMode::Hidden {
+        if self.enabled && self.tool_mode != ProgressMode::Hidden {
             self.progress.report(message.into());
         }
     }
 
     pub fn reasoning(&self, text: &str) {
-        if self.enabled && self.mode != ProgressMode::Hidden {
+        if self.enabled && self.tool_mode == ProgressMode::Full {
             self.progress
                 .report(format!("__subagent_reasoning__{}", text));
         }
     }
 
-    pub fn tool_start(&self, step: usize, name: &str) {
-        if !self.enabled || self.mode == ProgressMode::Hidden {
+    pub fn tool_start(&self, step: usize, name: &str, args: &str) {
+        if !self.enabled || self.tool_mode == ProgressMode::Hidden {
             return;
         }
-        if self.mode == ProgressMode::Summary {
+        if self.tool_mode == ProgressMode::Summary {
+            let subject = crate::render::tool_subject(name, args)
+                .map(|subject| format!(" · {subject}"))
+                .unwrap_or_default();
             self.progress.report(if is_zh() {
-                format!("工具 #{step}：{} 运行中", readable_tool_name(name))
+                format!("工具 #{step}：{}{subject} 运行中", readable_tool_name(name))
             } else {
-                format!("tool #{step}: {} running", name)
+                format!("tool #{step}: {name}{subject} running")
             });
-        }
-        if self.mode == ProgressMode::Full {
-            self.progress.report(format!(
-                "__subtool_call__{}",
-                json!({ "name": name, "step": step })
-            ));
         }
     }
 
     pub fn tool_call_detail(&self, name: &str, args: &str) {
-        if self.enabled && self.mode == ProgressMode::Full {
+        if self.enabled && self.tool_mode == ProgressMode::Full && name != "run_command" {
             self.progress.report(format!(
                 "__subtool_call__{}",
                 json!({ "name": name, "args": args })
@@ -95,21 +86,28 @@ impl SubagentProgress {
         }
     }
 
-    pub fn tool_end(&self, step: usize, name: &str, ok: bool, output: &str) {
-        if !self.enabled || self.mode == ProgressMode::Hidden {
+    pub fn tool_end(&self, step: usize, name: &str, args: &str, ok: bool, output: &str) {
+        if !self.enabled || self.tool_mode == ProgressMode::Hidden {
             return;
         }
-        if self.mode == ProgressMode::Summary {
+        if self.tool_mode == ProgressMode::Summary {
+            let subject = crate::render::tool_subject(name, args)
+                .map(|subject| format!(" · {subject}"))
+                .unwrap_or_default();
+            let status = if ok { "ok" } else { "err" };
             self.progress.report(if is_zh() {
-                format!("工具 #{step}：{} ok", readable_tool_name(name))
+                format!(
+                    "工具 #{step}：{}{subject} {status}",
+                    readable_tool_name(name)
+                )
             } else {
-                format!("tool #{step}: {} ok", name)
+                format!("tool #{step}: {name}{subject} {status}")
             });
         }
-        if self.mode == ProgressMode::Full {
+        if self.tool_mode == ProgressMode::Full {
             self.progress.report(format!(
                 "__subtool_result__{}",
-                json!({ "name": name, "ok": ok, "output": output })
+                json!({ "name": name, "args": args, "ok": ok, "output": output })
             ));
         }
     }
@@ -294,7 +292,7 @@ impl SubagentRunner {
     fn report_stats(&self, stats: &SubagentStats) {
         let text = if is_zh() {
             format!(
-                "工具调用 {} 次　消耗 Token {}",
+                "工具调用 {} 次　消耗词元 {}",
                 stats.tool_calls,
                 format_token_count(stats.token_estimate, false)
             )
@@ -370,7 +368,8 @@ impl SubagentRunner {
                 steps += 1;
                 stats.tool_calls += 1;
 
-                self.progress.tool_start(steps, &call.function.name);
+                self.progress
+                    .tool_start(steps, &call.function.name, &call.function.arguments);
                 self.progress
                     .tool_call_detail(&call.function.name, &call.function.arguments);
 
@@ -398,10 +397,51 @@ impl SubagentRunner {
                     stats.tool_errors += 1;
                 }
 
-                self.progress
-                    .tool_end(steps, &call.function.name, ok, &output);
+                self.progress.tool_end(
+                    steps,
+                    &call.function.name,
+                    &call.function.arguments,
+                    ok,
+                    &output,
+                );
                 messages.push(ChatMessage::tool(call.id, output));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ToolProgressEvent;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn tool_summary_suppresses_raw_subagent_reasoning() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let progress =
+            SubagentProgress::new(ToolProgress::new(sender), ProgressMode::Summary, true);
+
+        progress.reasoning("detailed reasoning");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn tool_full_emits_subagent_reasoning_and_tool_details() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let progress = SubagentProgress::new(ToolProgress::new(sender), ProgressMode::Full, true);
+
+        progress.reasoning("detailed reasoning");
+        progress.tool_call_detail("grep", r#"{"pattern":"x"}"#);
+
+        let ToolProgressEvent::Message(message) = receiver.try_recv().unwrap() else {
+            panic!("expected reasoning progress message");
+        };
+        assert_eq!(message, "__subagent_reasoning__detailed reasoning");
+        let ToolProgressEvent::Message(message) = receiver.try_recv().unwrap() else {
+            panic!("expected tool detail progress message");
+        };
+        assert!(message.starts_with("__subtool_call__"));
+        assert!(receiver.try_recv().is_err());
     }
 }
