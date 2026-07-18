@@ -755,11 +755,7 @@ impl StreamRenderer {
             return Ok(());
         }
         self.hide_cursor()?;
-        let phase = if self.reasoning_mode == ReasoningDisplayMode::Summary {
-            self.reasoning_live_text()
-        } else {
-            t("thinking", "思考").to_string()
-        };
+        let phase = self.waiting_phase_text();
         self.wait_spinner = Some(WaitSpinner::start(phase, SpinnerStyle::Scanner));
         self.last_tick = None;
         self.tick_spinner()?;
@@ -775,11 +771,19 @@ impl StreamRenderer {
         }
         self.start_waiting()?;
         if self.wait_spinner.is_some() {
-            self.set_waiting_phase(self.reasoning_live_text());
+            self.set_waiting_phase(self.waiting_phase_text());
             self.last_tick = None;
             self.tick_spinner()?;
         }
         Ok(())
+    }
+
+    fn waiting_phase_text(&self) -> String {
+        match self.reasoning_mode {
+            ReasoningDisplayMode::Summary => self.reasoning_live_text(),
+            ReasoningDisplayMode::Full => String::new(),
+            ReasoningDisplayMode::Hidden => t("thinking", "思考").to_string(),
+        }
     }
 
     pub fn write_reasoning_title(&mut self, title: &str) -> Result<()> {
@@ -4718,6 +4722,19 @@ mod tests {
         assert!(renderer.reasoning_title.is_none());
         assert!(renderer.reasoning_live_text().starts_with("思考 · "));
         assert!(!renderer.reasoning_live_text().contains("词元"));
+    }
+
+    #[test]
+    fn full_reasoning_waiting_phase_is_empty() {
+        let renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Full,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+            10,
+        );
+
+        assert!(renderer.waiting_phase_text().is_empty());
     }
 
     #[test]

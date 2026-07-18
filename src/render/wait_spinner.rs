@@ -121,11 +121,15 @@ fn render_frame_at_width(
     let usable = terminal_width.saturating_sub(1).max(1);
     let phase_width = usable.saturating_sub(spinner_width + 1);
     let phase = clip_to_display_width(&state.phase, phase_width);
-    let main_line = format!(
-        "{} {}",
-        spinner_prefix,
-        paint_for_style(&phase, state.style)
-    );
+    let main_line = if phase.is_empty() {
+        spinner_prefix
+    } else {
+        format!(
+            "{} {}",
+            spinner_prefix,
+            paint_for_style(&phase, state.style)
+        )
+    };
     let mut lines = vec![main_line];
     match &state.sub_phase {
         Some(sub) if !sub.trim().is_empty() => {
@@ -353,6 +357,16 @@ mod tests {
         assert!(frame.contains("\x1b[38;5;10m"));
         assert!(!frame.contains("\x1b[36m思考"));
         assert!(!frame.contains('('));
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn render_frame_scanner_without_phase_has_no_separator() {
+        let spinner = make_spinner("", None, SpinnerStyle::Scanner);
+
+        let (frame, lines) = render_frame(0, &spinner);
+
+        assert_eq!(crate::render::command_ansi_width(&frame), WIDTH);
         assert_eq!(lines, 1);
     }
 

@@ -14,7 +14,7 @@ use crate::question::{
     answered_tool_output, unavailable_tool_output, QuestionCancelled, QuestionExchange,
     QuestionRequest, QuestionResponse,
 };
-use crate::render::wait_spinner::SPINNER_INTERVAL;
+use crate::render::{wait_spinner::SPINNER_INTERVAL, ReasoningDisplayMode};
 use crate::state::StateStore;
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use anyhow::{bail, Result};
@@ -209,7 +209,8 @@ impl Agent {
             state.reset_if_prompt_changed(&base_system_prompt)?;
             state.recover_stale_turns()?;
         }
-        let system_prompt = with_mode_reminder(base_system_prompt, mode);
+        let reasoning_mode = ReasoningDisplayMode::from_config(&config.display.reasoning);
+        let system_prompt = with_mode_reminder(base_system_prompt, mode, reasoning_mode);
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
         let memory = MemoryStore::new(&config, paths);
@@ -238,7 +239,8 @@ impl Agent {
             self.state.reset_if_prompt_changed(&base_system_prompt)?;
             self.state.recover_stale_turns()?;
         }
-        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode);
+        let reasoning_mode = ReasoningDisplayMode::from_config(&self.config.display.reasoning);
+        self.system_prompt = with_mode_reminder(base_system_prompt, self.mode, reasoning_mode);
         Ok(())
     }
 
@@ -1704,9 +1706,15 @@ fn vision_analysis_progress(tick: usize) -> String {
     }
 }
 
-fn with_mode_reminder(system_prompt: String, mode: AgentMode) -> String {
+fn with_mode_reminder(
+    system_prompt: String,
+    mode: AgentMode,
+    reasoning_mode: ReasoningDisplayMode,
+) -> String {
     let mut prompt = system_prompt;
-    prompt.push_str(REASONING_TITLE_PROTOCOL);
+    if reasoning_mode == ReasoningDisplayMode::Summary {
+        prompt.push_str(REASONING_TITLE_PROTOCOL);
+    }
     if let Some(reminder) = mode.reminder() {
         prompt.push_str("\n\n");
         prompt.push_str(reminder);
@@ -1719,10 +1727,10 @@ const REASONING_TITLE_CLOSE: &str = "</reasoning_title>";
 const REASONING_TITLE_PROTOCOL: &str = r#"
 
 <reasoning_title_protocol>
-Whenever you produce a reasoning stream, begin it with a standalone Markdown title block:
-**short action-focused purpose**
+Whenever you produce a reasoning stream, begin it with exactly one standalone Markdown bold block whose bold text is the action phrase itself:
+**Checking terminal redraw behavior**
 
-Use a specific 4-80 character phrase describing the current reasoning action, such as "Checking terminal redraw behavior". Do not use first-person narration such as "I need to answer" or generic progress such as "I have more information". Emit the title only in reasoning, never in the final answer. Do not include secrets or raw user content in the title.
+Use a specific 4-80 character phrase describing the current reasoning action. Do not emit a field label, put the phrase on a separate line, or add headings such as "Title", "Action-focused purpose", "Reasoning", or "Reasoning process" (including translated equivalents). Do not use first-person narration such as "I need to answer" or generic progress such as "I have more information". Emit the title only in reasoning, never in the final answer. Do not include secrets or raw user content in the title.
 </reasoning_title_protocol>"#;
 
 #[derive(Default)]
@@ -2176,15 +2184,31 @@ mod tests {
     }
 
     #[test]
-    fn mode_reminder_keeps_runtime_out_of_stable_prompt() {
-        let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal);
+    fn reasoning_title_protocol_is_limited_to_summary_prompts() {
+        let prompt = with_mode_reminder(
+            "base".to_string(),
+            AgentMode::Normal,
+            ReasoningDisplayMode::Summary,
+        );
         assert!(prompt.starts_with("base"));
         assert!(prompt.contains(REASONING_TITLE_PROTOCOL.trim()));
+        assert!(prompt.contains("**Checking terminal redraw behavior**"));
+        assert!(!prompt.contains("**short action-focused purpose**"));
         assert!(!prompt.contains("<runtime"));
 
-        let prompt = with_mode_reminder("base".to_string(), AgentMode::Plan);
+        for reasoning_mode in [ReasoningDisplayMode::Full, ReasoningDisplayMode::Hidden] {
+            let prompt = with_mode_reminder("base".to_string(), AgentMode::Normal, reasoning_mode);
+            assert_eq!(prompt, "base");
+        }
+
+        let prompt = with_mode_reminder(
+            "base".to_string(),
+            AgentMode::Plan,
+            ReasoningDisplayMode::Full,
+        );
         assert!(prompt.contains("base"));
         assert!(prompt.contains(crate::prompts::PLAN_REMINDER));
+        assert!(!prompt.contains(REASONING_TITLE_PROTOCOL.trim()));
         assert!(!prompt.contains("<runtime"));
     }
 
