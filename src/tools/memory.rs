@@ -39,7 +39,7 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
     if !config.memory_config().enabled {
         return;
     }
-    if config.memory_config().evicted_context_enabled && config.context.on_overflow == "pop" {
+    if config.memory_config().evicted_context_enabled {
         registry.register(ToolSpec::new(
             "search_evicted_context",
             t("Search conversation turns that were moved out of the active context window. Use this when the current context appears to be missing earlier discussion.", "搜索已经移出当前上下文窗口的对话轮次。当当前上下文明显缺少早前讨论时使用。"),
@@ -213,12 +213,12 @@ mod tests {
     }
 
     #[test]
-    fn search_evicted_context_is_available_only_for_pop_overflow() {
+    fn search_evicted_context_is_available_for_manual_pop_with_compact_overflow() {
         let paths = test_paths();
         let compact_config = AppConfig::default();
         let mut compact_registry = ToolRegistry::new();
         register_readonly(&mut compact_registry, compact_config, paths.clone());
-        assert!(!tool_names(&compact_registry).contains("search_evicted_context"));
+        assert!(tool_names(&compact_registry).contains("search_evicted_context"));
 
         let mut pop_config = AppConfig::default();
         pop_config.context.on_overflow = "pop".to_string();

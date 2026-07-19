@@ -1,7 +1,9 @@
+use crate::i18n::text as t;
+use crate::memory::EvictedTurn;
 use crate::question::QuestionExchange;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -251,6 +253,20 @@ impl ConversationDb {
         Ok(items)
     }
 
+    pub fn load_session_loaded_items_with_sources(
+        &self,
+        kind: &str,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, source_turn_id FROM session_loaded_items WHERE kind = ?1 ORDER BY name ASC",
+        )?;
+        let items = stmt
+            .query_map(params![kind], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(items)
+    }
+
     pub fn add_session_loaded_items(
         &self,
         kind: &str,
@@ -436,32 +452,85 @@ impl ConversationDb {
              WHERE hidden = 0 AND is_summary = 0 AND status != 'running'
              ORDER BY seq ASC LIMIT ?1",
         )?;
+        let count = i64::try_from(count).unwrap_or(i64::MAX);
         let mut turns = stmt
-            .query_map(params![count as i64], map_turn_row)?
+            .query_map(params![count], map_turn_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         attach_question_exchanges_locked(&conn, &mut turns)?;
         Ok(turns)
     }
 
     pub fn delete_visible_turns(&self, turn_ids: &[String]) -> Result<usize> {
+        self.delete_visible_turns_checked(turn_ids, None)
+    }
+
+    pub fn delete_visible_turns_checked(
+        &self,
+        turn_ids: &[String],
+        expected_loaded_tools: Option<&[(String, Option<String>)]>,
+    ) -> Result<usize> {
         if turn_ids.is_empty() {
             return Ok(0);
         }
         let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let mut affected = 0usize;
-        for turn_id in turn_ids {
-            affected += tx.execute(
-                "DELETE FROM turns
-                 WHERE turn_id = ?1 AND hidden = 0 AND is_summary = 0 AND status != 'running'",
-                params![turn_id],
-            )?;
-        }
-        if affected != turn_ids.len() {
-            bail!("conversation changed before evicted turns could be deleted");
-        }
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        verify_loaded_tool_sources(&tx, expected_loaded_tools)?;
+        let affected = delete_visible_turns_in_transaction(&tx, turn_ids)?;
         tx.commit()?;
         Ok(affected)
+    }
+
+    pub fn archive_and_delete_visible_turns(
+        &self,
+        archive_db: &Path,
+        turns: &[EvictedTurn],
+        turn_ids: &[String],
+        expected_loaded_tools: Option<&[(String, Option<String>)]>,
+    ) -> Result<usize> {
+        if turn_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let archive_db = archive_db.to_string_lossy().into_owned();
+        let archive_alias = format!("evicted_context_{}", rand::random::<u32>());
+        conn.execute(
+            &format!("ATTACH DATABASE ?1 AS {archive_alias}"),
+            params![archive_db],
+        )?;
+        let insert_sql = format!(
+            "INSERT OR IGNORE INTO {archive_alias}.evicted_turns
+             (source_id, timestamp, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)"
+        );
+        let operation = (|| -> Result<usize> {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            verify_loaded_tool_sources(&tx, expected_loaded_tools)?;
+            let created_at = Utc::now().to_rfc3339();
+            for turn in turns {
+                tx.execute(
+                    &insert_sql,
+                    params![
+                        turn.source_id,
+                        turn.timestamp,
+                        turn.role,
+                        turn.content,
+                        created_at
+                    ],
+                )?;
+            }
+            let affected = delete_visible_turns_in_transaction(&tx, turn_ids)?;
+            tx.commit()?;
+            Ok(affected)
+        })();
+        let detach = conn.execute_batch(&format!("DETACH DATABASE {archive_alias}"));
+        if let Err(detach_err) = detach {
+            tracing::warn!(
+                error = %detach_err,
+                archive_alias,
+                "failed to detach evicted-context database"
+            );
+        }
+        operation
     }
 
     pub fn replace_visible_with_summary(
@@ -784,6 +853,61 @@ impl ConversationDb {
         }
         Ok(migrated)
     }
+}
+
+fn delete_visible_turns_in_transaction(tx: &Transaction<'_>, turn_ids: &[String]) -> Result<usize> {
+    let mut affected = 0usize;
+    for turn_id in turn_ids {
+        let deleted = tx.execute(
+            "DELETE FROM turns
+             WHERE turn_id = ?1 AND hidden = 0 AND is_summary = 0 AND status != 'running'",
+            params![turn_id],
+        )?;
+        if deleted != 1 {
+            bail!(
+                "{}",
+                t(
+                    "conversation changed before popped turns could be deleted",
+                    "删除弹出轮次前会话已发生变化"
+                )
+            );
+        }
+        tx.execute(
+            "DELETE FROM session_loaded_items WHERE source_turn_id = ?1",
+            params![turn_id],
+        )?;
+        affected += deleted;
+    }
+    Ok(affected)
+}
+
+fn verify_loaded_tool_sources(
+    tx: &Transaction<'_>,
+    expected: Option<&[(String, Option<String>)]>,
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current = {
+        let mut stmt = tx.prepare(
+            "SELECT name, source_turn_id FROM session_loaded_items
+             WHERE kind = 'tool' ORDER BY name ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<(String, Option<String>)>, _>>()?;
+        rows
+    };
+    if current != expected {
+        bail!(
+            "{}",
+            t(
+                "dynamic tool state changed while popping context",
+                "弹出上下文时动态工具状态已发生变化"
+            )
+        );
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]

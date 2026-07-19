@@ -2,12 +2,13 @@ mod conversation_db;
 mod usage;
 
 use crate::llm::Usage;
+use crate::memory::EvictedTurn;
 use crate::paths::MiyuPaths;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[allow(unused_imports)]
@@ -107,6 +108,10 @@ impl StateStore {
 
     pub fn load_session_loaded_tools(&self) -> Result<BTreeSet<String>> {
         self.conv_db.load_session_loaded_items("tool")
+    }
+
+    pub fn load_session_loaded_tools_with_sources(&self) -> Result<Vec<(String, Option<String>)>> {
+        self.conv_db.load_session_loaded_items_with_sources("tool")
     }
 
     pub fn add_session_loaded_tools(
@@ -216,6 +221,30 @@ impl StateStore {
 
     pub fn delete_visible_turns(&self, turn_ids: &[String]) -> Result<usize> {
         self.conv_db.delete_visible_turns(turn_ids)
+    }
+
+    pub fn delete_visible_turns_checked(
+        &self,
+        turn_ids: &[String],
+        expected_loaded_tools: Option<&[(String, Option<String>)]>,
+    ) -> Result<usize> {
+        self.conv_db
+            .delete_visible_turns_checked(turn_ids, expected_loaded_tools)
+    }
+
+    pub fn archive_and_delete_visible_turns(
+        &self,
+        archive_db: &Path,
+        turns: &[EvictedTurn],
+        turn_ids: &[String],
+        expected_loaded_tools: Option<&[(String, Option<String>)]>,
+    ) -> Result<usize> {
+        self.conv_db.archive_and_delete_visible_turns(
+            archive_db,
+            turns,
+            turn_ids,
+            expected_loaded_tools,
+        )
     }
 
     pub fn reset_conversation(&self) -> Result<()> {
@@ -718,23 +747,96 @@ mod tests {
             store.start_turn(id, id, 999999).unwrap();
             store.complete_turn(id, "reply", None).unwrap();
         }
+        store
+            .add_session_loaded_tools(&["from_t1".to_string()], Some("t1"))
+            .unwrap();
+        store
+            .add_session_loaded_tools(&["from_t2".to_string()], Some("t2"))
+            .unwrap();
 
         assert!(store
             .delete_visible_turns(&["t1".to_string(), "missing".to_string()])
             .is_err());
         assert_eq!(store.load_visible_turns().unwrap().len(), 2);
+        assert_eq!(
+            store.load_session_loaded_tools().unwrap(),
+            BTreeSet::from(["from_t1".to_string(), "from_t2".to_string()])
+        );
     }
 
     #[test]
-    fn evictable_turns_do_not_include_summary_or_running_turn() {
+    fn checked_pop_rolls_back_when_loaded_tool_sources_change() {
         let (_temp, store) = test_store();
-        store
-            .insert_summary_turn("summary", Some(1), false)
-            .unwrap();
         for id in ["t1", "t2"] {
             store.start_turn(id, id, 999999).unwrap();
             store.complete_turn(id, "reply", None).unwrap();
         }
+        store
+            .add_session_loaded_tools(&["dynamic_tool".to_string()], Some("t1"))
+            .unwrap();
+        let expected = store.load_session_loaded_tools_with_sources().unwrap();
+        store
+            .add_session_loaded_tools(&["dynamic_tool".to_string()], Some("t2"))
+            .unwrap();
+
+        assert!(store
+            .delete_visible_turns_checked(&["t1".to_string()], Some(&expected))
+            .is_err());
+
+        assert_eq!(store.load_visible_turns().unwrap().len(), 2);
+        assert_eq!(
+            store.load_session_loaded_tools_with_sources().unwrap(),
+            vec![("dynamic_tool".to_string(), Some("t2".to_string()))]
+        );
+    }
+
+    #[test]
+    fn deleting_visible_turns_unloads_only_items_sourced_from_deleted_turns() {
+        let (_temp, store) = test_store();
+        for id in ["t1", "t2"] {
+            store.start_turn(id, id, 999999).unwrap();
+            store.complete_turn(id, "reply", None).unwrap();
+        }
+        store
+            .add_session_loaded_tools(&["popped_tool".to_string()], Some("t1"))
+            .unwrap();
+        store
+            .add_session_loaded_tools(&["kept_tool".to_string()], Some("t2"))
+            .unwrap();
+        store
+            .add_session_loaded_tools(&["global_tool".to_string()], None)
+            .unwrap();
+        store
+            .add_session_loaded_targets(&["popped_target".to_string()], Some("t1"))
+            .unwrap();
+        store
+            .add_session_loaded_targets(&["kept_target".to_string()], Some("t2"))
+            .unwrap();
+
+        assert_eq!(store.delete_visible_turns(&["t1".to_string()]).unwrap(), 1);
+
+        assert_eq!(
+            store.load_session_loaded_tools().unwrap(),
+            BTreeSet::from(["global_tool".to_string(), "kept_tool".to_string()])
+        );
+        assert_eq!(
+            store.conv_db.load_session_loaded_items("target").unwrap(),
+            BTreeSet::from(["kept_target".to_string()])
+        );
+    }
+
+    #[test]
+    fn interrupted_turn_is_evictable_but_summary_and_running_turn_are_not() {
+        let (_temp, store) = test_store();
+        store
+            .insert_summary_turn("summary", Some(1), false)
+            .unwrap();
+        store.start_turn("completed", "completed", 999999).unwrap();
+        store.complete_turn("completed", "reply", None).unwrap();
+        store
+            .start_turn("interrupted", "interrupted", 999999)
+            .unwrap();
+        store.interrupt_turn("interrupted").unwrap();
         store
             .start_turn("running", "pending", std::process::id())
             .unwrap();
@@ -745,8 +847,9 @@ mod tests {
                 .iter()
                 .map(|turn| turn.turn_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["t1", "t2"]
+            vec!["completed", "interrupted"]
         );
+        assert_eq!(evicted[1].status, TurnStatus::Interrupted);
     }
 
     #[test]

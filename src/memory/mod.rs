@@ -65,6 +65,7 @@ impl MemoryStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn remember_evicted_turns(&self, turns: &[EvictedTurn]) -> Result<()> {
         if !self.config.enabled || !self.config.evicted_context_enabled || turns.is_empty() {
             return Ok(());
@@ -75,12 +76,20 @@ impl MemoryStore {
         for turn in turns {
             tx.execute(
                 "INSERT OR IGNORE INTO evicted_turns (source_id, timestamp, role, content, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![turn.source_id, turn.timestamp, turn.role, turn.content, now()],
             )?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub(crate) fn prepare_evicted_context_db(&self) -> Result<Option<PathBuf>> {
+        if !self.config.enabled || !self.config.evicted_context_enabled {
+            return Ok(None);
+        }
+        self.init()?;
+        Ok(Some(self.state_db.clone()))
     }
 
     pub fn clear_evicted_context(&self) -> Result<()> {

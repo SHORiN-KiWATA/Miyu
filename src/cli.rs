@@ -1,4 +1,4 @@
-use crate::agent::{Agent, AgentEvent, AgentMode};
+use crate::agent::{archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{OpenAiCompatibleClient, ThinkingVariantOptions};
@@ -6,9 +6,10 @@ use crate::memory::MemoryStore;
 use crate::paths::MiyuPaths;
 use crate::render;
 use crate::shell;
-use crate::state::StateStore;
+use crate::state::{StateStore, Turn, TurnStatus};
 use crate::tools;
 use anyhow::{bail, Result};
+use chrono::{DateTime, Local};
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use crossterm::cursor::{self, Hide, MoveTo, Show};
 use crossterm::event::{
@@ -471,6 +472,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "安全删除已安装的 Miyu shell hook",
         ),
         ("history", "Show conversation history", "显示会话历史"),
+        (
+            "pop",
+            "Move conversation turns out of active context",
+            "将对话轮次移出当前上下文",
+        ),
         ("kb", "Manage local knowledge base", "管理本地知识库"),
         (
             "update-default-kb",
@@ -496,6 +502,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         .mut_subcommand("ask", localize_ask_command)
         .mut_subcommand("models", localize_models_command)
         .mut_subcommand("history", localize_history_command)
+        .mut_subcommand("pop", localize_pop_command)
         .mut_subcommand("kb", localize_kb_command)
         .mut_subcommand("memory", localize_memory_command)
         .mut_subcommand("skills", localize_skills_command)
@@ -527,6 +534,15 @@ fn localize_history_command(command: clap::Command) -> clap::Command {
         .mut_arg("no_thinking", |arg| {
             arg.help(t("Hide stored reasoning", "隐藏已保存的思考内容"))
         })
+}
+
+fn localize_pop_command(command: clap::Command) -> clap::Command {
+    command.mut_arg("count", |arg| {
+        arg.help(t(
+            "Number of oldest turns to pop; omit to select interactively",
+            "要弹出的最旧轮次数；省略则进入交互多选",
+        ))
+    })
 }
 
 fn localize_config_command(command: clap::Command) -> clap::Command {
@@ -676,6 +692,7 @@ pub enum Command {
     ZshInit,
     RemoveShellHook,
     History(HistoryArgs),
+    Pop(PopArgs),
     Kb(KbArgs),
     UpdateDefaultKb,
     Memory(MemoryArgs),
@@ -732,6 +749,12 @@ pub struct HistoryArgs {
 
     #[arg(long)]
     pub no_thinking: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct PopArgs {
+    #[arg(value_parser = parse_positive_pop_count)]
+    pub count: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -951,6 +974,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::ZshInit) => shell::zsh::install(&paths),
         Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
+        Some(Command::Pop(args)) => run_pop(&paths, args),
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
@@ -1246,6 +1270,422 @@ fn alarm_worker_paths(state_dir: PathBuf, cache_dir: PathBuf) -> MiyuPaths {
         scripts_dir: PathBuf::new(),
         system_scripts_dir: PathBuf::new(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PopOutcome {
+    turns: usize,
+    archived: bool,
+}
+
+fn run_pop(paths: &MiyuPaths, args: PopArgs) -> Result<()> {
+    let config = AppConfig::load_or_default(paths)?;
+    let state = StateStore::new(paths)?;
+    state.recover_stale_turns()?;
+    if let Some(outcome) = execute_pop(paths, &config, &state, args.count)? {
+        print_pop_outcome(outcome);
+    }
+    Ok(())
+}
+
+fn execute_pop(
+    paths: &MiyuPaths,
+    config: &AppConfig,
+    state: &StateStore,
+    count: Option<usize>,
+) -> Result<Option<PopOutcome>> {
+    let turns = match count {
+        Some(count) => {
+            validate_pop_count(count)?;
+            state.oldest_evictable_visible_turns(count)?
+        }
+        None => {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                bail!(
+                    "{}",
+                    t(
+                        "interactive pop requires a terminal; use `miyu pop <count>`",
+                        "交互 pop 需要终端；请使用 `miyu pop <数量>`",
+                    )
+                );
+            }
+            let limit = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+            let candidates = state.oldest_evictable_visible_turns(limit)?;
+            if candidates.is_empty() {
+                print_nothing_to_pop();
+                return Ok(None);
+            }
+            let Some(selected) = inline_pop_select(&candidates)? else {
+                return Ok(None);
+            };
+            let selected = candidates
+                .into_iter()
+                .zip(selected)
+                .filter_map(|(turn, selected)| selected.then_some(turn))
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                return Ok(None);
+            }
+            selected
+        }
+    };
+    if turns.is_empty() {
+        print_nothing_to_pop();
+        return Ok(None);
+    }
+
+    let memory = MemoryStore::new(config, paths);
+    archive_and_delete_visible_turns(state, &memory, &turns)?;
+    let memory_config = config.memory_config();
+    Ok(Some(PopOutcome {
+        turns: turns.len(),
+        archived: memory_config.enabled && memory_config.evicted_context_enabled,
+    }))
+}
+
+fn validate_pop_count(count: usize) -> Result<usize> {
+    if count == 0 {
+        bail!(
+            "{}",
+            t("pop count must be greater than zero", "pop 数量必须大于 0")
+        );
+    }
+    Ok(count)
+}
+
+fn parse_positive_pop_count(value: &str) -> std::result::Result<usize, String> {
+    let count = value.parse::<usize>().map_err(|_| {
+        t(
+            "pop count must be a positive integer",
+            "pop 数量必须是正整数",
+        )
+        .to_string()
+    })?;
+    if count == 0 {
+        return Err(t("pop count must be greater than zero", "pop 数量必须大于 0").to_string());
+    }
+    Ok(count)
+}
+
+fn parse_repl_pop_count(args: &str) -> Result<Option<usize>> {
+    let mut parts = args.split_whitespace();
+    let Some(value) = parts.next() else {
+        return Ok(None);
+    };
+    if parts.next().is_some() {
+        bail!(
+            "{}",
+            t("usage: /pop [positive integer]", "用法：/pop [正整数]")
+        );
+    }
+    let count = parse_positive_pop_count(value).map_err(anyhow::Error::msg)?;
+    validate_pop_count(count).map(Some)
+}
+
+fn print_pop_outcome(outcome: PopOutcome) {
+    let message = if is_zh() {
+        if outcome.archived {
+            format!("已弹出 {} 轮 · 已归档", outcome.turns)
+        } else {
+            format!(
+                "已弹出 {} 轮 · 未归档（弹出上下文归档已关闭）",
+                outcome.turns
+            )
+        }
+    } else {
+        let turns = if outcome.turns == 1 { "turn" } else { "turns" };
+        if outcome.archived {
+            format!("popped {} {turns} · archived", outcome.turns)
+        } else {
+            format!(
+                "popped {} {turns} · not archived (evicted-context archiving is disabled)",
+                outcome.turns
+            )
+        }
+    };
+    println!("\x1b[2m{message}\x1b[0m\n");
+}
+
+fn print_nothing_to_pop() {
+    println!(
+        "\x1b[2m{}\x1b[0m\n",
+        t(
+            "no conversation turns are available to pop",
+            "没有可弹出的上下文轮次"
+        )
+    );
+}
+
+fn inline_pop_select(turns: &[Turn]) -> Result<Option<Vec<bool>>> {
+    let menu_lines = inline_pop_lines(turns.len());
+    let visible_items = menu_lines.saturating_sub(2) as usize / 3;
+    reserve_inline_fuzzy_space(menu_lines)?;
+    let mut session = InlineRawMode::start()?;
+    let matcher = SkimMatcherV2::default();
+    let search_items = turns.iter().map(pop_search_text).collect::<Vec<_>>();
+    let mut active = vec![false; turns.len()];
+    let mut query = String::new();
+    let mut selected = 0usize;
+    let mut scroll = 0usize;
+    let (_, cursor_y) = cursor::position().unwrap_or((0, menu_lines.saturating_sub(1)));
+    let anchor_y = cursor_y.saturating_sub(menu_lines.saturating_sub(1));
+    loop {
+        let matches = pop_matches(&matcher, &search_items, &query);
+        if selected >= matches.len() {
+            selected = matches.len().saturating_sub(1);
+        }
+        let visible = matches.len().min(visible_items);
+        scroll = inline_fuzzy_scroll(selected, scroll, visible);
+        draw_inline_pop(
+            &mut session.stdout,
+            anchor_y,
+            menu_lines,
+            turns,
+            &matches,
+            selected,
+            scroll,
+            &active,
+            &query,
+        )?;
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            match code {
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Esc => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Char('q') => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(None);
+                }
+                KeyCode::Enter => {
+                    clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
+                    return Ok(Some(active));
+                }
+                KeyCode::Tab => {
+                    if let Some(index) = matches.get(selected) {
+                        if let Some(value) = active.get_mut(*index) {
+                            *value = !*value;
+                        }
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1).min(matches.len().saturating_sub(1));
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    selected = 0;
+                    scroll = 0;
+                }
+                KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    query.push(ch);
+                    selected = 0;
+                    scroll = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn pop_matches(matcher: &SkimMatcherV2, items: &[String], query: &str) -> Vec<usize> {
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            (query.trim().is_empty() || matcher.fuzzy_match(item, query).is_some()).then_some(index)
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_inline_pop(
+    stdout: &mut io::Stdout,
+    anchor_y: u16,
+    menu_lines: u16,
+    turns: &[Turn],
+    matches: &[usize],
+    selected: usize,
+    scroll: usize,
+    active: &[bool],
+    query: &str,
+) -> Result<()> {
+    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let bar = inline_fuzzy_bar();
+    let width = (cols as usize).saturating_sub(visible_width(&bar)).max(1);
+    let visible_items = menu_lines.saturating_sub(2) as usize / 3;
+    queue!(stdout, Hide)?;
+    for row in 0..menu_lines {
+        queue!(
+            stdout,
+            MoveTo(0, anchor_y + row),
+            Clear(ClearType::CurrentLine)
+        )?;
+    }
+    queue!(
+        stdout,
+        MoveTo(0, anchor_y),
+        Print(&bar),
+        Print(pop_menu_header(
+            query,
+            active.iter().filter(|selected| **selected).count(),
+            turns.len(),
+            width,
+        )),
+    )?;
+    if matches.is_empty() {
+        queue!(
+            stdout,
+            MoveTo(0, anchor_y + 1),
+            Print(&bar),
+            Print(format!("\x1b[2m{}\x1b[0m", t("no matches", "没有匹配项")))
+        )?;
+    } else {
+        for (row, item_index) in matches.iter().skip(scroll).take(visible_items).enumerate() {
+            let focused = scroll + row == selected;
+            let checked = active.get(*item_index).copied().unwrap_or(false);
+            let lines = pop_menu_turn_lines(&turns[*item_index], focused, checked, width);
+            for (line_offset, line) in lines.into_iter().enumerate() {
+                queue!(
+                    stdout,
+                    MoveTo(0, anchor_y + 1 + row as u16 * 3 + line_offset as u16),
+                    Print(&bar),
+                    Print(line)
+                )?;
+            }
+        }
+    }
+    queue!(
+        stdout,
+        MoveTo(0, anchor_y + menu_lines.saturating_sub(1)),
+        Print(&bar),
+        Print(pop_menu_help_line(width))
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn pop_menu_header(query: &str, selected: usize, total: usize, width: usize) -> String {
+    let title = if query.trim().is_empty() {
+        t("Pop context", "弹出上下文").to_string()
+    } else {
+        format!(
+            "{} · {}: {}",
+            t("Pop context", "弹出上下文"),
+            t("Search", "搜索"),
+            query.trim()
+        )
+    };
+    let count = if is_zh() {
+        format!("已选 {selected} / {total}")
+    } else {
+        format!("selected {selected} / {total}")
+    };
+    let count_width = visible_width(&count);
+    if count_width >= width {
+        return format!("\x1b[2m{}\x1b[0m", truncate_visible_width(&count, width));
+    }
+    let title_width = width.saturating_sub(count_width + 1);
+    let title = truncate_visible_width(&title, title_width);
+    let gap = width
+        .saturating_sub(visible_width(&title).saturating_add(count_width))
+        .max(1);
+    format!(
+        "\x1b[1m{title}\x1b[0m{}\x1b[2m{count}\x1b[0m",
+        " ".repeat(gap)
+    )
+}
+
+fn pop_menu_turn_lines(turn: &Turn, focused: bool, checked: bool, width: usize) -> [String; 3] {
+    let cursor = if focused { "›" } else { " " };
+    let marker = if checked { "[*]" } else { "[ ]" };
+    let lines = [
+        format!(
+            "{cursor} {marker} {}",
+            pop_menu_timestamp(&turn.user_timestamp)
+        ),
+        format!(
+            "      {}{}",
+            t("You: ", "你："),
+            pop_menu_summary(&turn.user_content)
+        ),
+        format!(
+            "      {}{}",
+            t("AI: ", "AI："),
+            pop_menu_assistant_summary(turn)
+        ),
+    ];
+    lines.map(|line| {
+        let line = truncate_visible_width(&line, width);
+        if focused {
+            format!("\x1b[1m\x1b[35m{line}\x1b[0m")
+        } else if checked {
+            format!("\x1b[1m\x1b[32m{line}\x1b[0m")
+        } else {
+            format!("\x1b[2m{line}\x1b[0m")
+        }
+    })
+}
+
+fn pop_menu_timestamp(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| pop_menu_summary(timestamp))
+}
+
+fn pop_menu_assistant_summary(turn: &Turn) -> String {
+    if turn.status == TurnStatus::Interrupted {
+        t("(reply interrupted)", "（回复已中断）").to_string()
+    } else {
+        pop_menu_summary(&turn.assistant_content)
+    }
+}
+
+fn pop_menu_summary(content: &str) -> String {
+    strip_terminal_control_sequences(content)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_else(|| t("(empty)", "（空）"))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn pop_search_text(turn: &Turn) -> String {
+    format!(
+        "{} {} {}",
+        pop_menu_timestamp(&turn.user_timestamp),
+        pop_menu_summary(&turn.user_content),
+        pop_menu_assistant_summary(turn)
+    )
+}
+
+fn pop_menu_help_line(width: usize) -> String {
+    let line = t(
+        "Up/Down or j/k move · Tab toggle · Enter pop · Esc/q cancel",
+        "↑/↓ 或 j/k 移动 · Tab 勾选 · Enter 弹出 · Esc/q 取消",
+    );
+    format!("\x1b[2m{}\x1b[0m", truncate_visible_width(line, width))
+}
+
+fn inline_pop_lines(item_count: usize) -> u16 {
+    let (_, terminal_rows) = terminal::size().unwrap_or((80, 24));
+    let available_items = terminal_rows.saturating_sub(2).saturating_div(3).max(1) as usize;
+    let visible_items = item_count.min(5).min(available_items).max(1);
+    (visible_items as u16).saturating_mul(3).saturating_add(2)
 }
 
 fn run_models(paths: &MiyuPaths, args: ModelsArgs) -> Result<()> {
@@ -2305,6 +2745,27 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
             prefill = prompt;
             continue;
         }
+        if command.eq_ignore_ascii_case("/pop") {
+            let count = match parse_repl_pop_count(command_args) {
+                Ok(count) => count,
+                Err(err) => {
+                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                    continue;
+                }
+            };
+            state.recover_stale_turns()?;
+            match execute_pop(paths, &config, &state, count) {
+                Ok(Some(outcome)) => {
+                    print_pop_outcome(outcome);
+                    footer.update_session_tokens(agent.effective_context_tokens()?);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("\x1b[31m{}: {err}\x1b[0m", t("error", "错误"));
+                }
+            }
+            continue;
+        }
         if command.eq_ignore_ascii_case("/compact") && command_args_empty {
             let reasoning_mode =
                 render::ReasoningDisplayMode::from_config(&config.display.reasoning);
@@ -3038,6 +3499,13 @@ fn print_repl_help() {
         t(
             "undo the last turn or context compaction",
             "撤销上一轮或上下文压缩"
+        )
+    );
+    println!(
+        "  /pop [count] {}",
+        t(
+            "pop selected turns or the oldest count from active context",
+            "从当前上下文弹出所选轮次或最旧的指定轮数"
         )
     );
     println!(
@@ -4440,9 +4908,9 @@ fn colorize_repl_placeholders(line: &str) -> String {
     result
 }
 
-fn repl_commands() -> [&'static str; 8] {
+fn repl_commands() -> [&'static str; 9] {
     [
-        "/models", "/config", "/variant", "/undo", "/compact", "/reset", "/help", "/exit",
+        "/models", "/config", "/variant", "/undo", "/pop", "/compact", "/reset", "/help", "/exit",
     ]
 }
 
@@ -4510,6 +4978,43 @@ fn truncate_visible_width(value: &str, max_width: usize) -> String {
 mod repl_input_tests {
     use super::*;
 
+    fn sample_pop_turn(status: TurnStatus) -> Turn {
+        Turn {
+            turn_id: "turn-1".to_string(),
+            seq: 1,
+            user_content: "first prompt line\nsecond prompt line".to_string(),
+            user_timestamp: "2026-07-19 10:42".to_string(),
+            assistant_content: "first answer line\nsecond answer line".to_string(),
+            assistant_reasoning: Some("private reasoning".to_string()),
+            assistant_timestamp: Some("2026-07-19 10:43".to_string()),
+            status,
+            tool_reports: vec!["hidden tool report".to_string()],
+            question_exchanges: Vec::new(),
+            hidden: false,
+            is_summary: false,
+            owner_pid: None,
+            token_total: 0,
+            token_usage_estimated: false,
+        }
+    }
+
+    fn pop_test_paths(root: &std::path::Path) -> MiyuPaths {
+        MiyuPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish/miyu.fish"),
+            bash_hook_file: root.join("shell/bash-hook.sh"),
+            zsh_hook_file: root.join("shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: root.join("system/scripts"),
+        }
+    }
+
     #[test]
     fn models_is_the_cli_model_selector() {
         let matches = localized_command()
@@ -4527,6 +5032,115 @@ mod repl_input_tests {
         let old_cli = Cli::from_arg_matches(&old_matches).unwrap();
         assert!(old_cli.command.is_none());
         assert_eq!(old_cli.message, ["providers"]);
+    }
+
+    #[test]
+    fn pop_is_a_cli_subcommand_with_an_optional_count() {
+        let cli = parse_args(["miyu", "pop"].map(OsString::from).to_vec()).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Pop(PopArgs { count: None }))
+        ));
+
+        let cli = parse_args(["miyu", "pop", "3"].map(OsString::from).to_vec()).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Pop(PopArgs { count: Some(3) }))
+        ));
+        assert!(parse_args(["miyu", "pop", "0"].map(OsString::from).to_vec()).is_err());
+        assert!(parse_args(["miyu", "pop", "nope"].map(OsString::from).to_vec()).is_err());
+    }
+
+    #[test]
+    fn repl_pop_accepts_zero_or_one_positive_integer() {
+        assert_eq!(parse_repl_pop_count("").unwrap(), None);
+        assert_eq!(parse_repl_pop_count(" 3 ").unwrap(), Some(3));
+        assert!(parse_repl_pop_count("0").is_err());
+        assert!(parse_repl_pop_count("nope").is_err());
+        assert!(parse_repl_pop_count("1 2").is_err());
+    }
+
+    #[test]
+    fn counted_pop_removes_oldest_turns_and_caps_at_available_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = pop_test_paths(temp.path());
+        let config = AppConfig::default();
+        let state = StateStore::new(&paths).unwrap();
+        for id in ["t1", "t2", "t3"] {
+            state.start_turn(id, id, 999999).unwrap();
+            state.complete_turn(id, "reply", None).unwrap();
+        }
+
+        let first = execute_pop(&paths, &config, &state, Some(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.turns, 2);
+        assert_eq!(
+            state
+                .load_visible_turns()
+                .unwrap()
+                .into_iter()
+                .map(|turn| turn.turn_id)
+                .collect::<Vec<_>>(),
+            vec!["t3"]
+        );
+
+        let second = execute_pop(&paths, &config, &state, Some(99))
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.turns, 1);
+        assert!(state.load_visible_turns().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pop_menu_uses_three_lines_without_context_metadata() {
+        let turn = sample_pop_turn(TurnStatus::Completed);
+        let lines = pop_menu_turn_lines(&turn, true, false, 80)
+            .map(|line| strip_terminal_control_sequences(&line));
+
+        assert_eq!(lines[0], "› [ ] 2026-07-19 10:42");
+        assert!(lines[1].contains("first prompt line"));
+        assert!(!lines[1].contains("second prompt line"));
+        assert!(lines[2].contains("first answer line"));
+        assert!(!lines[2].contains("second answer line"));
+        let joined = lines.join(" ");
+        assert!(!joined.contains("hidden tool report"));
+        assert!(!joined.contains("private reasoning"));
+        assert!(lines.iter().all(|line| visible_width(line) <= 80));
+    }
+
+    #[test]
+    fn pop_menu_labels_an_interrupted_reply_without_showing_the_reminder() {
+        let mut turn = sample_pop_turn(TurnStatus::Interrupted);
+        turn.assistant_content = crate::state::interrupted_text().to_string();
+        let lines = pop_menu_turn_lines(&turn, false, true, 80)
+            .map(|line| strip_terminal_control_sequences(&line));
+
+        assert!(lines[2].contains("中断") || lines[2].contains("interrupted"));
+        assert!(!lines[2].contains("system-reminder"));
+    }
+
+    #[test]
+    fn pop_menu_footer_has_controls_but_no_position_counter() {
+        let help = strip_terminal_control_sequences(&pop_menu_help_line(120));
+        assert!(help.contains("Tab"));
+        assert!(help.contains("Enter"));
+        assert!(!help.contains("3 / 8"));
+
+        let header = strip_terminal_control_sequences(&pop_menu_header("", 2, 8, 80));
+        assert!(header.contains("2 / 8"));
+    }
+
+    #[test]
+    fn filtered_pop_turns_keep_oldest_first_order() {
+        let matcher = SkimMatcherV2::default();
+        let items = vec![
+            "old matching prompt".to_string(),
+            "middle unrelated".to_string(),
+            "new matching prompt".to_string(),
+        ];
+
+        assert_eq!(pop_matches(&matcher, &items, "matching"), vec![0, 2]);
     }
 
     #[test]
@@ -4698,6 +5312,13 @@ mod repl_input_tests {
     #[test]
     fn compact_is_a_repl_command() {
         assert!(repl_commands().contains(&"/compact"));
+    }
+
+    #[test]
+    fn pop_is_a_repl_command_with_an_optional_count() {
+        assert!(repl_commands().contains(&"/pop"));
+        assert_eq!(split_repl_command("/pop 3"), ("/pop", "3"));
+        assert_eq!(resolve_repl_command("/p"), "/pop");
     }
 
     #[test]

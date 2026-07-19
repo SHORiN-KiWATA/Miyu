@@ -263,32 +263,38 @@ impl Agent {
         let mut tokens = overflow::estimate_messages_tokens(&messages) as u64;
         if self.tools_enabled {
             let loaded_tools = self.initial_loaded_tools(&messages)?;
-            let definitions = {
-                let tools = self.tools.lock().unwrap();
-                if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
-                    tools.lazy_definitions(&loaded_tools)
-                } else {
-                    tools.definitions()
-                }
-            };
-            tokens = tokens.saturating_add(estimate_tool_definition_tokens(&definitions) as u64);
+            tokens = tokens.saturating_add(self.tool_definition_tokens(&loaded_tools) as u64);
         }
         Ok(tokens)
     }
 
-    fn trim_visible_context(&self) -> Result<Vec<crate::state::StoredConversationEntry>> {
-        self.trim_visible_context_from(
-            usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX),
-        )
+    fn tool_definition_tokens(&self, loaded_tools: &BTreeSet<String>) -> usize {
+        let tools = self.tools.lock().unwrap();
+        let definitions = if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
+            tools.lazy_definitions(loaded_tools)
+        } else {
+            tools.definitions()
+        };
+        estimate_tool_definition_tokens(&definitions)
     }
 
-    fn trim_visible_context_from(
-        &self,
-        mut total: usize,
-    ) -> Result<Vec<crate::state::StoredConversationEntry>> {
+    fn trim_visible_context(&self) -> Result<Vec<crate::state::StoredConversationEntry>> {
         let Some(context_window) = self.context_window() else {
             return Ok(Vec::new());
         };
+        let track_loaded_tool_sources = self.tools_enabled
+            && self.config.tools.persist_loaded_tools
+            && tools::is_hybrid_loading_mode(&self.config.tools.loading_mode);
+        if track_loaded_tool_sources {
+            self.effective_context_tokens()?;
+        }
+        let mut loaded_tool_sources = if track_loaded_tool_sources {
+            Some(self.state.load_session_loaded_tools_with_sources()?)
+        } else {
+            None
+        };
+        let expected_loaded_tools = loaded_tool_sources.clone();
+        let mut total = usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
         let trigger = (context_window as f32 * self.trim_at_ratio).max(1.0) as usize;
         if total < trigger {
             return Ok(Vec::new());
@@ -296,6 +302,17 @@ impl Agent {
 
         let target = (context_window as f32 * (1.0 - self.trim_batch_ratio)).max(1.0) as usize;
         let turns = self.state.load_visible_turns()?;
+        let mut loaded_tool_tokens = loaded_tool_sources
+            .as_ref()
+            .map(|items| {
+                self.tool_definition_tokens(
+                    &items
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<BTreeSet<_>>(),
+                )
+            })
+            .unwrap_or(0);
         let mut count = 0usize;
         for turn in turns
             .iter()
@@ -305,17 +322,29 @@ impl Agent {
                 break;
             }
             total = total.saturating_sub(turn_context_tokens(turn));
+            if let Some(items) = loaded_tool_sources.as_mut() {
+                items.retain(|(_, source)| source.as_deref() != Some(turn.turn_id.as_str()));
+                let remaining = items
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<BTreeSet<_>>();
+                let remaining_tokens = self.tool_definition_tokens(&remaining);
+                if remaining_tokens <= loaded_tool_tokens {
+                    total = total.saturating_sub(loaded_tool_tokens - remaining_tokens);
+                } else {
+                    total = total.saturating_add(remaining_tokens - loaded_tool_tokens);
+                }
+                loaded_tool_tokens = remaining_tokens;
+            }
             count += 1;
         }
         let turns = self.state.oldest_evictable_visible_turns(count)?;
-        let (entries, evicted) = evicted_turn_entries(&turns);
-        self.memory.remember_evicted_turns(&evicted)?;
-        let turn_ids = turns
-            .iter()
-            .map(|turn| turn.turn_id.clone())
-            .collect::<Vec<_>>();
-        self.state.delete_visible_turns(&turn_ids)?;
-        Ok(entries)
+        archive_and_delete_visible_turns_checked(
+            &self.state,
+            &self.memory,
+            &turns,
+            expected_loaded_tools.as_deref(),
+        )
     }
 
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
@@ -629,7 +658,7 @@ impl Agent {
             }
             "pop" => {
                 on_event(AgentEvent::PopStart)?;
-                self.trim_visible_context_from(context_tokens)?;
+                self.trim_visible_context()?;
                 on_event(AgentEvent::PopEnd)?;
                 None
             }
@@ -1409,6 +1438,40 @@ fn evicted_turn_entries(
         }
     }
     (entries, evicted)
+}
+
+pub(crate) fn archive_and_delete_visible_turns(
+    state: &StateStore,
+    memory: &MemoryStore,
+    turns: &[crate::state::Turn],
+) -> Result<Vec<crate::state::StoredConversationEntry>> {
+    archive_and_delete_visible_turns_checked(state, memory, turns, None)
+}
+
+fn archive_and_delete_visible_turns_checked(
+    state: &StateStore,
+    memory: &MemoryStore,
+    turns: &[crate::state::Turn],
+    expected_loaded_tools: Option<&[(String, Option<String>)]>,
+) -> Result<Vec<crate::state::StoredConversationEntry>> {
+    let (entries, evicted) = evicted_turn_entries(turns);
+    let turn_ids = turns
+        .iter()
+        .map(|turn| turn.turn_id.clone())
+        .collect::<Vec<_>>();
+    if let Some(archive_db) = memory.prepare_evicted_context_db()? {
+        state.archive_and_delete_visible_turns(
+            &archive_db,
+            &evicted,
+            &turn_ids,
+            expected_loaded_tools,
+        )?;
+    } else if expected_loaded_tools.is_some() {
+        state.delete_visible_turns_checked(&turn_ids, expected_loaded_tools)?;
+    } else {
+        state.delete_visible_turns(&turn_ids)?;
+    }
+    Ok(entries)
 }
 
 fn compact_remembered_fact_report(output: &str) -> Option<String> {
@@ -2588,6 +2651,250 @@ mod tests {
         assert_eq!(visible.len(), 2);
         assert!(visible[0].is_summary);
         assert_eq!(visible[1].turn_id, "t2");
+    }
+
+    #[test]
+    fn trim_accounts_for_tool_definitions_unloaded_with_a_popped_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        config.tools.loading_mode = "hybrid".to_string();
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let mut tools = ToolRegistry::new();
+        tools.register(
+            ToolSpec::new(
+                "heavy_context_tool",
+                "heavy context ".repeat(20_000),
+                empty_parameters(),
+                |_| async { Ok(String::new()) },
+            )
+            .with_always_loaded(false),
+        );
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state.clone(),
+            client,
+            tools,
+            AgentMode::Normal,
+        )
+        .unwrap();
+        for id in ["t1", "t2"] {
+            state.start_turn(id, id, 999999).unwrap();
+            state.complete_turn(id, "reply", None).unwrap();
+        }
+        state
+            .add_session_loaded_tools(&["heavy_context_tool".to_string()], Some("t1"))
+            .unwrap();
+        agent.trim_at_ratio = 1.0;
+        agent.trim_batch_ratio = 0.5;
+        let context_window = agent.effective_context_tokens().unwrap() as usize;
+        let choice = agent.config.active_provider_model_choices().remove(0);
+        agent
+            .config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == choice.provider_id)
+            .unwrap()
+            .model_context_window
+            .insert(choice.model, context_window);
+
+        agent.trim_visible_context().unwrap();
+
+        let visible = state.load_visible_turns().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].turn_id, "t2");
+        assert!(state.load_session_loaded_tools().unwrap().is_empty());
+    }
+
+    #[test]
+    fn trim_ignores_stale_loaded_tool_sources_when_persistence_is_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        config.tools.loading_mode = "hybrid".to_string();
+        config.tools.persist_loaded_tools = false;
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        let mut tools = ToolRegistry::new();
+        tools.register(
+            ToolSpec::new(
+                "stale_heavy_tool",
+                "stale heavy context ".repeat(20_000),
+                empty_parameters(),
+                |_| async { Ok(String::new()) },
+            )
+            .with_always_loaded(false),
+        );
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state.clone(),
+            client,
+            tools,
+            AgentMode::Normal,
+        )
+        .unwrap();
+        for id in ["t1", "t2"] {
+            state.start_turn(id, id, 999999).unwrap();
+            state.complete_turn(id, "reply", None).unwrap();
+        }
+        state
+            .add_session_loaded_tools(&["stale_heavy_tool".to_string()], Some("t1"))
+            .unwrap();
+        agent.trim_at_ratio = 1.0;
+        agent.trim_batch_ratio = 0.5;
+        let context_window = agent.effective_context_tokens().unwrap() as usize;
+        let choice = agent.config.active_provider_model_choices().remove(0);
+        agent
+            .config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == choice.provider_id)
+            .unwrap()
+            .model_context_window
+            .insert(choice.model, context_window);
+
+        agent.trim_visible_context().unwrap();
+
+        assert!(state.load_visible_turns().unwrap().is_empty());
+    }
+
+    #[test]
+    fn explicit_pop_archives_context_content_but_not_reasoning() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let state = StateStore::new(&paths).unwrap();
+        state.start_turn("t1", "promptonlyalpha", 999999).unwrap();
+        state
+            .complete_turn("t1", "answeronlybeta", Some("reasoningonlyquasar"))
+            .unwrap();
+        state
+            .append_persisted_context("t1", "toolonlygamma")
+            .unwrap();
+        let memory = MemoryStore::new(&config, &paths);
+        let turns = state.oldest_evictable_visible_turns(1).unwrap();
+
+        archive_and_delete_visible_turns(&state, &memory, &turns).unwrap();
+
+        assert!(state.load_visible_turns().unwrap().is_empty());
+        for query in ["promptonlyalpha", "answeronlybeta", "toolonlygamma"] {
+            assert!(
+                !memory.search_evicted_context(query, 10).unwrap()["results"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(memory
+            .search_evicted_context("reasoningonlyquasar", 10)
+            .unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn explicit_pop_still_deletes_when_evicted_context_archiving_is_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        config.memory.evicted_context_enabled = false;
+        let state = StateStore::new(&paths).unwrap();
+        state.start_turn("t1", "unarchived-marker", 999999).unwrap();
+        state.complete_turn("t1", "reply", None).unwrap();
+        let memory = MemoryStore::new(&config, &paths);
+        let turns = state.oldest_evictable_visible_turns(1).unwrap();
+
+        archive_and_delete_visible_turns(&state, &memory, &turns).unwrap();
+
+        assert!(state.load_visible_turns().unwrap().is_empty());
+        assert!(memory
+            .search_evicted_context("unarchived-marker", 10)
+            .unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn explicit_pop_does_not_archive_a_turn_removed_before_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let state = StateStore::new(&paths).unwrap();
+        state
+            .start_turn("t1", "stale-archive-quasar", 999999)
+            .unwrap();
+        state.complete_turn("t1", "reply", None).unwrap();
+        let turns = state.oldest_evictable_visible_turns(1).unwrap();
+        state.delete_visible_turns(&["t1".to_string()]).unwrap();
+        let memory = MemoryStore::new(&config, &paths);
+
+        assert!(archive_and_delete_visible_turns(&state, &memory, &turns).is_err());
+
+        assert!(memory
+            .search_evicted_context("stale-archive-quasar", 10)
+            .unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn failed_concurrent_pop_preserves_archive_from_the_successful_pop() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let state = StateStore::new(&paths).unwrap();
+        state
+            .start_turn("t1", "successful-pop-quasar", 999999)
+            .unwrap();
+        state.complete_turn("t1", "reply", None).unwrap();
+        let turns = state.oldest_evictable_visible_turns(1).unwrap();
+        let memory = MemoryStore::new(&config, &paths);
+
+        archive_and_delete_visible_turns(&state, &memory, &turns).unwrap();
+        assert!(archive_and_delete_visible_turns(&state, &memory, &turns).is_err());
+
+        assert!(!memory
+            .search_evicted_context("successful-pop-quasar", 10)
+            .unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn explicit_pop_removes_new_archive_when_the_turn_still_exists_hidden() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let state = StateStore::new(&paths).unwrap();
+        state
+            .start_turn("t1", "hidden-stale-quasar", 999999)
+            .unwrap();
+        state.complete_turn("t1", "reply", None).unwrap();
+        let turns = state.oldest_evictable_visible_turns(1).unwrap();
+        state
+            .replace_visible_with_summary(turns[0].seq, &["t1".to_string()], "summary", None, false)
+            .unwrap();
+        let memory = MemoryStore::new(&config, &paths);
+
+        assert!(archive_and_delete_visible_turns(&state, &memory, &turns).is_err());
+
+        assert!(memory
+            .search_evicted_context("hidden-stale-quasar", 10)
+            .unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     fn test_paths(root: &std::path::Path) -> MiyuPaths {
