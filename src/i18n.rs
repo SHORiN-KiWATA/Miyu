@@ -79,8 +79,25 @@ impl Locale {
                 return locale;
             }
         }
+        #[cfg(windows)]
+        if let Some(locale) = windows_locale().and_then(|value| Self::from_env_value(&value)) {
+            return locale;
+        }
         Self::En
     }
+}
+
+#[cfg(windows)]
+fn windows_locale() -> Option<String> {
+    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
+
+    const LOCALE_NAME_MAX_LENGTH: i32 = 85;
+    let mut buffer = [0_u16; LOCALE_NAME_MAX_LENGTH as usize];
+    let length = unsafe { GetUserDefaultLocaleName(buffer.as_mut_ptr(), LOCALE_NAME_MAX_LENGTH) };
+    if length <= 1 {
+        return None;
+    }
+    String::from_utf16(&buffer[..length as usize - 1]).ok()
 }
 
 static UI_LOCALE: OnceLock<Locale> = OnceLock::new();

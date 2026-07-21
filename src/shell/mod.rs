@@ -1,10 +1,12 @@
 pub mod bash;
 pub mod fish;
+pub mod powershell;
 pub mod zsh;
 
 use crate::i18n::text as t;
 use std::env;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -48,16 +50,32 @@ pub fn current_parent_shell() -> Option<String> {
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_name = stat.rsplit_once(") ")?.1;
-    after_name.split_whitespace().nth(1)?.parse().ok()
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_name = stat.rsplit_once(") ")?.1;
+        after_name.split_whitespace().nth(1)?.parse().ok()
+    }
 }
 
 fn process_name(pid: u32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -84,7 +102,12 @@ pub fn looks_like_natural_language(input: &str) -> bool {
 }
 
 pub fn is_shell_command(input: &str, shell_name: &str) -> bool {
-    let Some((command, rest)) = first_command_token_with_rest(input) else {
+    let parsed = if shell_name == "powershell" {
+        first_powershell_command_token_with_rest(input)
+    } else {
+        first_command_token_with_rest(input)
+    };
+    let Some((command, rest)) = parsed else {
         return false;
     };
     if ambiguous_command_tail_looks_like_message(&command, rest) {
@@ -93,6 +116,75 @@ pub fn is_shell_command(input: &str, shell_name: &str) -> bool {
     is_shell_keyword_or_builtin(&command, shell_name)
         || is_explicit_command_path(&command)
         || command_exists_in_path(&command)
+}
+
+fn first_powershell_command_token_with_rest(input: &str) -> Option<(String, &str)> {
+    let mut index = 0;
+    loop {
+        while let Some(ch) = input.get(index..)?.chars().next() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            index += ch.len_utf8();
+        }
+        let rest = input.get(index..)?;
+        if let Some(after_operator) = rest.strip_prefix('&') {
+            index = input.len() - after_operator.len();
+            continue;
+        }
+        if let Some(after_operator) = rest.strip_prefix('.') {
+            if after_operator
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+            {
+                index = input.len() - after_operator.len();
+                continue;
+            }
+        }
+        break;
+    }
+
+    let mut token = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut consumed = input.len();
+
+    for (relative, ch) in input[index..].char_indices() {
+        let absolute = index + relative;
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '`' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() || matches!(ch, ';' | '|' | '&' | '<' | '>') {
+            consumed = absolute + ch.len_utf8();
+            break;
+        }
+        token.push(ch);
+    }
+
+    if token.is_empty() {
+        None
+    } else {
+        Some((token, input.get(consumed..).unwrap_or("")))
+    }
 }
 
 fn first_command_token_with_rest(input: &str) -> Option<(String, &str)> {
@@ -228,6 +320,7 @@ fn is_shell_keyword_or_builtin(command: &str, shell_name: &str) -> bool {
             | "command"
             | "continue"
             | "else"
+            | "echo"
             | "end"
             | "exec"
             | "exit"
@@ -239,6 +332,7 @@ fn is_shell_keyword_or_builtin(command: &str, shell_name: &str) -> bool {
             | "history"
             | "if"
             | "jobs"
+            | "ls"
             | "not"
             | "or"
             | "and"
@@ -277,26 +371,55 @@ fn is_shell_keyword_or_builtin(command: &str, shell_name: &str) -> bool {
 
 fn is_explicit_command_path(command: &str) -> bool {
     command.starts_with('/')
+        || command.starts_with('\\')
         || command.starts_with("./")
+        || command.starts_with(".\\")
         || command.starts_with("../")
+        || command.starts_with("..\\")
         || command.starts_with("~/")
+        || (command.len() >= 3
+            && command.as_bytes()[1] == b':'
+            && matches!(command.as_bytes()[2], b'\\' | b'/'))
 }
 
 fn command_exists_in_path(command: &str) -> bool {
-    if command.is_empty() || command.contains('/') {
+    if command.is_empty() || command.contains('/') || command.contains('\\') {
         return false;
     }
     let Some(paths) = env::var_os("PATH") else {
         return false;
     };
-    env::split_paths(&paths).any(|dir| is_executable_file(&dir.join(command)))
+    env::split_paths(&paths).any(|dir| {
+        if is_executable_file(&dir.join(command)) {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            let extensions =
+                env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD;.PS1".to_string());
+            return extensions
+                .split(';')
+                .filter(|extension| !extension.is_empty())
+                .any(|extension| is_executable_file(&dir.join(format!("{command}{extension}"))));
+        }
+        #[cfg(not(windows))]
+        false
+    })
 }
 
 fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };
-    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    return metadata.permissions().mode() & 0o111 != 0;
+    #[cfg(windows)]
+    return true;
+    #[cfg(not(any(unix, windows)))]
+    false
 }
 
 #[cfg(test)]
@@ -346,6 +469,18 @@ mod tests {
         assert!(is_shell_command("./target/release/miyu hi", "fish"));
         assert!(is_shell_command("for item in a b", "fish"));
         assert!(is_shell_command("time cargo check", "fish"));
+        assert!(is_shell_command(
+            r".\not-installed-yet.ps1 --help",
+            "powershell"
+        ));
+        assert!(is_shell_command(
+            r"C:\Tools\not-installed-yet.exe --help",
+            "powershell"
+        ));
+        assert!(is_shell_command(
+            r"& '.\not installed yet.ps1' --help",
+            "powershell"
+        ));
     }
 
     #[test]

@@ -855,10 +855,8 @@ impl KnowledgeBase {
     fn safe_file_path(&self, rel: &str) -> Result<PathBuf> {
         let rel = normalize_relative_path(rel)?;
         let path = self.files_dir.join(&rel);
-        let base = self
-            .files_dir
-            .canonicalize()
-            .unwrap_or_else(|_| self.files_dir.clone());
+        std::fs::create_dir_all(&self.files_dir)?;
+        let base = self.files_dir.canonicalize()?;
         let parent = path.parent().unwrap_or(&self.files_dir);
         std::fs::create_dir_all(parent)?;
         let resolved_parent = parent.canonicalize()?;

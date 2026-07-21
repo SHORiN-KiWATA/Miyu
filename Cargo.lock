@@ -1681,6 +1681,7 @@ dependencies = [
  "blake3",
  "chrono",
  "clap",
+ "clipboard-win",
  "crc32fast",
  "crossterm 0.28.1",
  "directories",
@@ -1719,6 +1720,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width 0.2.2",
  "urlencoding",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

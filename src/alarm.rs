@@ -130,7 +130,19 @@ pub fn stop_process(pid: u32) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let _ = pid;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let status = std::process::Command::new("taskkill.exe")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status()?;
+            if !status.success() && process_exists(pid) {
+                bail!("failed to stop alarm process {pid}")
+            }
+        }
+        #[cfg(not(windows))]
         bail!("alarm cancellation is not supported on this platform")
     }
     Ok(())
@@ -143,8 +155,32 @@ pub fn process_exists(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _ = pid;
-        true
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let filter = format!("PID eq {pid}");
+            return std::process::Command::new("tasklist.exe")
+                .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| {
+                    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                        line.split(',')
+                            .nth(1)
+                            .map(|value| value.trim().trim_matches('"') == pid.to_string())
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            true
+        }
     }
 }
 

@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 
-const BUILTIN_MEMES_DIR: &str = "/usr/share/miyu/memes";
 const MIN_SHORT_MEME_ID_LEN: usize = 7;
 
 static MEME_LIBRARY_CACHE: OnceLock<RwLock<Option<MemeLibraryCache>>> = OnceLock::new();
@@ -711,7 +710,7 @@ fn builtin_library_dir(library: &str) -> PathBuf {
     if dev.is_dir() {
         return dev;
     }
-    PathBuf::from(BUILTIN_MEMES_DIR).join(library)
+    crate::paths::system_data_dir().join("memes").join(library)
 }
 
 fn user_library_dir(paths: &MiyuPaths, library: &str) -> PathBuf {

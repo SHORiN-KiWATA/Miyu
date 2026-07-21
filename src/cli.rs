@@ -13,7 +13,8 @@ use chrono::{DateTime, Local};
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use crossterm::cursor::{self, Hide, MoveTo, Show};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
 };
 use crossterm::style::Print;
 use crossterm::terminal::{self, Clear, ClearType};
@@ -464,6 +465,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "集成到 zsh，集成后可在终端直接使用自然语言交流。",
         ),
         (
+            "powershell-init",
+            "Integrate with Windows PowerShell so you can chat in natural language directly in the terminal",
+            "集成到 Windows PowerShell，集成后可在终端直接使用自然语言交流。",
+        ),
+        (
             "remove-shell-hook",
             "Safely remove installed Miyu shell hooks",
             "安全删除已安装的 Miyu shell hook",
@@ -695,9 +701,14 @@ pub enum Command {
     Config(ConfigArgs),
     Models(ModelsArgs),
     Variant(VariantArgs),
+    #[cfg_attr(windows, command(hide = true))]
     FishInit,
+    #[cfg_attr(windows, command(hide = true))]
     BashInit,
+    #[cfg_attr(windows, command(hide = true))]
     ZshInit,
+    #[cfg_attr(not(windows), command(hide = true))]
+    PowershellInit,
     RemoveShellHook,
     History(HistoryArgs),
     Pop(PopArgs),
@@ -961,6 +972,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::FishInit)
                 | Some(Command::BashInit)
                 | Some(Command::ZshInit)
+                | Some(Command::PowershellInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
         )
@@ -985,6 +997,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::FishInit) => shell::fish::install(&paths),
         Some(Command::BashInit) => shell::bash::install(&paths),
         Some(Command::ZshInit) => shell::zsh::install(&paths),
+        Some(Command::PowershellInit) => shell::powershell::install(&paths),
         Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Pop(args)) => run_pop(&paths, args),
@@ -1111,22 +1124,26 @@ fn prompt_shell_init_menu(paths: &MiyuPaths) -> Result<()> {
         Some("fish") => shell::fish::install(paths),
         Some("bash") => shell::bash::install(paths),
         Some("zsh") => shell::zsh::install(paths),
+        Some("powershell") => shell::powershell::install(paths),
         _ => Ok(()),
     }
 }
 
 fn select_shell_hook() -> Result<Option<&'static str>> {
-    let options = [
-        (t("Skip", "跳过"), None),
+    let mut options = vec![(t("Skip", "跳过"), None)];
+    #[cfg(windows)]
+    options.push(("Windows PowerShell", Some("powershell")));
+    #[cfg(not(windows))]
+    options.extend([
         ("fish", Some("fish")),
         ("bash", Some("bash")),
         ("zsh", Some("zsh")),
-    ];
+    ]);
     let detected = shell::current_parent_shell();
     let mut selected = detected
         .as_deref()
         .and_then(|shell| options.iter().position(|(_, value)| *value == Some(shell)))
-        .unwrap_or(0);
+        .unwrap_or(if cfg!(windows) { 1 } else { 0 });
     let mut stdout = io::stdout();
     let (_, menu_row) = cursor::position()?;
     execute!(stdout, Hide)?;
@@ -1183,7 +1200,12 @@ fn select_shell_hook() -> Result<Option<&'static str>> {
 
 fn read_shell_menu_key() -> Result<KeyCode> {
     loop {
-        if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+        if let Event::Key(KeyEvent {
+            code,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event::read()?
+        {
             return Ok(code);
         }
     }
@@ -1193,6 +1215,7 @@ fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
     let removed = shell::fish::uninstall(paths)?;
     let removed = shell::bash::uninstall(paths)? || removed;
     let removed = shell::zsh::uninstall(paths)? || removed;
+    let removed = shell::powershell::uninstall(paths)? || removed;
     if !removed {
         println!(
             "{}",
@@ -1461,7 +1484,10 @@ fn inline_pop_select(turns: &[Turn]) -> Result<Option<Vec<bool>>> {
             &query,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
         }) = event::read()?
         {
             match code {
@@ -1801,7 +1827,10 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
         }) = event::read()?
         {
             match code {
@@ -2135,7 +2164,10 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 if link_path.exists() || link_path.is_symlink() {
                     std::fs::remove_file(&link_path)?;
                 }
+                #[cfg(unix)]
                 std::os::unix::fs::symlink(&path, &link_path)?;
+                #[cfg(windows)]
+                std::fs::copy(&path, &link_path).map(|_| ())?;
             }
             print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
@@ -2188,7 +2220,7 @@ fn shell_message_from_input(use_stdin: bool, message: Vec<String>) -> Result<Str
 }
 
 fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
-    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+    if !matches!(shell_name, "fish" | "bash" | "zsh" | "powershell") {
         std::process::exit(2);
     }
     if shell::is_shell_command(message, shell_name) {
@@ -2198,7 +2230,7 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
 }
 
 async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
-    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+    if !matches!(shell_name, "fish" | "bash" | "zsh" | "powershell") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
     }
     if message.trim().is_empty() {
@@ -2378,6 +2410,7 @@ async fn run_chat_with_images(
     Ok(())
 }
 
+#[cfg(unix)]
 fn drain_stdin() {
     use std::os::fd::AsRawFd;
 
@@ -2407,6 +2440,9 @@ fn drain_stdin() {
 
     let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
 }
+
+#[cfg(not(unix))]
+fn drain_stdin() {}
 
 const STDIN_MAX_CHARS: usize = 50_000;
 const STDIN_TIMEOUT_SECS: u64 = 5;
@@ -3147,7 +3183,10 @@ fn inline_variant_select(
             variant_scroll,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
         }) = event::read()?
         {
             match code {
@@ -3203,7 +3242,10 @@ fn inline_single_variant_select(
         scroll = inline_fuzzy_scroll(item.cursor, scroll, visible.min(item.options.len()));
         draw_inline_single_variant(&mut session.stdout, anchor_y, menu_lines, &item, scroll)?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
         }) = event::read()?
         {
             match code {
@@ -3660,7 +3702,10 @@ fn read_repl_input(
                 )?;
             }
             Event::Key(KeyEvent {
-                code, modifiers, ..
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
             }) => match code {
                 KeyCode::Tab => {
                     if input.starts_with('/') {

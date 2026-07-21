@@ -41,7 +41,7 @@ impl MiyuPaths {
         let bash_hook_file = config_dir.join("shell/bash-hook.sh");
         let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");
         let scripts_dir = config_dir.join("scripts");
-        let system_scripts_dir = PathBuf::from("/usr/share/miyu/scripts");
+        let system_scripts_dir = system_data_dir().join("scripts");
 
         Ok(Self {
             config_file: config_dir.join("config.jsonc"),
@@ -132,6 +132,16 @@ impl MiyuPaths {
         );
         println!(
             "{}: {}",
+            t("PowerShell hook file", "PowerShell hook 文件"),
+            crate::shell::powershell::hook_file(self).display()
+        );
+        println!(
+            "{}: {}",
+            t("Windows PowerShell profile", "Windows PowerShell Profile"),
+            crate::shell::powershell::profile_path().display()
+        );
+        println!(
+            "{}: {}",
             t("scripts directory", "scripts 目录"),
             self.scripts_dir.display()
         );
@@ -141,4 +151,21 @@ impl MiyuPaths {
             self.system_scripts_dir.display()
         );
     }
+}
+
+pub fn system_data_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("MIYU_SYSTEM_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+
+    #[cfg(windows)]
+    {
+        return std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("share/miyu")))
+            .unwrap_or_else(|| PathBuf::from("share/miyu"));
+    }
+
+    #[cfg(not(windows))]
+    PathBuf::from("/usr/share/miyu")
 }
