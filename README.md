@@ -4,6 +4,9 @@
 
 # Miyu
 
+> Windows 用户请参阅 [Windows 中文使用说明](README_中文.md)；Windows
+> 构建与移植说明见 [README_WINDOWS.md](README_WINDOWS.md)。
+
 一个活在终端里的二次元少女。
 
 >暂时

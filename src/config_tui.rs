@@ -5,7 +5,7 @@ use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
@@ -3277,9 +3277,20 @@ fn read_key_with_timeout(timeout: Option<Duration>) -> Result<Option<KeyCode>> {
                 return Ok(None);
             }
         }
-        if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+        if let Some(code) = pressed_key_code(event::read()?) {
             return Ok(Some(code));
         }
+    }
+}
+
+fn pressed_key_code(event: Event) -> Option<KeyCode> {
+    match event {
+        Event::Key(KeyEvent {
+            code,
+            kind: KeyEventKind::Press,
+            ..
+        }) => Some(code),
+        _ => None,
     }
 }
 
@@ -3434,9 +3445,27 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::{
-        field_display_value, language_choice_label, language_choice_value, parse_extra_body, t,
-        Field,
+        field_display_value, language_choice_label, language_choice_value, parse_extra_body,
+        pressed_key_code, t, Field,
     };
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    #[test]
+    fn windows_key_release_is_not_treated_as_a_second_press() {
+        let press = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+        let release = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+
+        assert_eq!(pressed_key_code(press), Some(KeyCode::Down));
+        assert_eq!(pressed_key_code(release), None);
+    }
 
     #[test]
     fn sensitive_field_is_masked_until_actively_edited() {

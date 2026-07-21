@@ -86,6 +86,11 @@ fn check_os_info() -> Result<String> {
         "DESKTOP_SESSION",
         "WAYLAND_DISPLAY",
         "DISPLAY",
+        "OS",
+        "COMSPEC",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER",
+        "PSModulePath",
     ] {
         if let Ok(value) = std::env::var(key) {
             if !value.trim().is_empty() {
@@ -122,7 +127,9 @@ fn check_os_info() -> Result<String> {
         "os": std::env::consts::OS,
         "family": std::env::consts::FAMILY,
         "username": std::env::var("USER").ok().or_else(|| std::env::var("USERNAME").ok()),
-        "hostname": read_small_file("/etc/hostname").map(|value| value.trim().to_string()),
+        "hostname": read_small_file("/etc/hostname")
+            .map(|value| value.trim().to_string())
+            .or_else(|| std::env::var("COMPUTERNAME").ok()),
         "env": env,
         "package_manager_guess": package_manager_guess,
         "notes": [
@@ -181,6 +188,9 @@ fn package_manager_guess(
         {
             managers.push("brew");
         }
+    }
+    if std::env::consts::OS == "windows" {
+        managers.push("winget");
     }
     if managers.is_empty() {
         managers.push("unknown");
@@ -468,10 +478,27 @@ async fn run_readonly_command(args: Value, progress: ToolProgress) -> Result<Str
 }
 
 async fn execute_command(command: &str, timeout: u64, progress: ToolProgress) -> Result<String> {
+    #[cfg(windows)]
+    let mut command_process = {
+        let mut process = Command::new("powershell.exe");
+        process.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+        ]);
+        process.arg(format!(
+            "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); {command}"
+        ));
+        process
+    };
+    #[cfg(not(windows))]
     let mut command_process = Command::new("sh");
+    #[cfg(not(windows))]
+    command_process.arg("-lc").arg(command);
     command_process
-        .arg("-lc")
-        .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -524,10 +551,10 @@ struct CommandProcessGroup {
 }
 
 impl CommandProcessGroup {
-    fn new(child_id: Option<u32>) -> Self {
+    fn new(_child_id: Option<u32>) -> Self {
         Self {
             #[cfg(unix)]
-            pgid: child_id.and_then(|id| i32::try_from(id).ok()),
+            pgid: _child_id.and_then(|id| i32::try_from(id).ok()),
         }
     }
 
@@ -614,6 +641,28 @@ fn ensure_readonly_command(command: &str) -> Result<()> {
         "dnf install",
         "brew install",
         "sed -i",
+        "remove-item",
+        "move-item",
+        "copy-item",
+        "new-item",
+        "rename-item",
+        "set-item",
+        "set-content",
+        "add-content",
+        "clear-content",
+        "out-file",
+        "stop-process",
+        "invoke-expression",
+        "iex ",
+        "set-executionpolicy",
+        "reg add",
+        "reg delete",
+        "winget install",
+        "winget uninstall",
+        "choco install",
+        "choco uninstall",
+        "scoop install",
+        "scoop uninstall",
         "git add",
         "git commit",
         "git push",
@@ -971,7 +1020,11 @@ mod tests {
     #[tokio::test]
     async fn command_execution_streams_stdout_and_stderr() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let output = execute_command("printf 'out'; printf 'err' >&2", 5, ToolProgress::new(tx))
+        #[cfg(windows)]
+        let command = "[Console]::Out.Write('out'); [Console]::Error.Write('err')";
+        #[cfg(not(windows))]
+        let command = "printf 'out'; printf 'err' >&2";
+        let output = execute_command(command, 5, ToolProgress::new(tx))
             .await
             .unwrap();
         let output: Value = serde_json::from_str(&output).unwrap();

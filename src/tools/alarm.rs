@@ -103,6 +103,12 @@ async fn set_alarm(args: Value, paths: MiyuPaths) -> Result<String> {
     if let Some(path) = &audio_file {
         command.arg("--audio-file").arg(path);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    }
     let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())

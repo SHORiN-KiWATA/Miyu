@@ -2,8 +2,10 @@ use anyhow::Result;
 use base64::Engine;
 use sha2::Digest;
 use std::cell::OnceCell;
+#[cfg(not(windows))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -63,6 +65,24 @@ impl ClipboardImage {
     }
 }
 
+#[cfg(windows)]
+pub fn read_clipboard_image() -> Result<Option<ClipboardImage>> {
+    use clipboard_win::formats::{Bitmap, CF_BITMAP};
+
+    if !clipboard_win::is_format_avail(CF_BITMAP) {
+        return Ok(None);
+    }
+    let data: Vec<u8> = match clipboard_win::get_clipboard(Bitmap) {
+        Ok(data) => data,
+        Err(_) => return Ok(None),
+    };
+    if data.is_empty() || data.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+        return Ok(None);
+    }
+    Ok(Some(ClipboardImage::new("image/bmp".to_string(), data)))
+}
+
+#[cfg(not(windows))]
 pub fn read_clipboard_image() -> Result<Option<ClipboardImage>> {
     if let Some(img) = try_command("wl-paste", &["-t", "image/png"], "image/png")? {
         return Ok(Some(img));
@@ -77,6 +97,7 @@ pub fn read_clipboard_image() -> Result<Option<ClipboardImage>> {
     Ok(None)
 }
 
+#[cfg(not(windows))]
 fn try_command(cmd: &str, args: &[&str], mime: &str) -> Result<Option<ClipboardImage>> {
     let output = Command::new(cmd)
         .args(args)
@@ -106,6 +127,50 @@ pub enum ClipboardContent {
     Text(String),
 }
 
+#[cfg(windows)]
+pub fn read_clipboard() -> Result<ClipboardContent> {
+    use clipboard_win::formats::{FileList, CF_HDROP};
+
+    if clipboard_win::is_format_avail(CF_HDROP) {
+        if let Ok(paths) = clipboard_win::get_clipboard::<Vec<String>, _>(FileList) {
+            if let Some(path) = paths
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.exists())
+            {
+                let is_image = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| {
+                        IMAGE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+                    })
+                    .unwrap_or(false);
+                let path = path.display().to_string();
+                return Ok(if is_image {
+                    ClipboardContent::ImagePath(path)
+                } else {
+                    ClipboardContent::TextPath(path)
+                });
+            }
+        }
+    }
+    if let Some(text) = read_clipboard_text()? {
+        if let Some(path) = parse_clipboard_path(&text) {
+            return Ok(if path.is_image {
+                ClipboardContent::ImagePath(path.path)
+            } else {
+                ClipboardContent::TextPath(path.path)
+            });
+        }
+        return Ok(ClipboardContent::Text(text));
+    }
+    if let Some(image) = read_clipboard_image()? {
+        return Ok(ClipboardContent::Image(image));
+    }
+    Ok(ClipboardContent::None)
+}
+
+#[cfg(not(windows))]
 pub fn read_clipboard() -> Result<ClipboardContent> {
     let targets = list_clipboard_targets()?;
     let has_uri_list = targets.iter().any(|t| {
@@ -141,6 +206,7 @@ pub fn read_clipboard() -> Result<ClipboardContent> {
     Ok(ClipboardContent::None)
 }
 
+#[cfg(not(windows))]
 fn list_clipboard_targets() -> Result<Vec<String>> {
     if let Some(targets) = try_targets_command("wl-paste", &["-l"])? {
         return Ok(targets);
@@ -153,6 +219,7 @@ fn list_clipboard_targets() -> Result<Vec<String>> {
     Ok(Vec::new())
 }
 
+#[cfg(not(windows))]
 fn try_targets_command(cmd: &str, args: &[&str]) -> Result<Option<Vec<String>>> {
     let output = Command::new(cmd)
         .args(args)
@@ -182,6 +249,22 @@ pub struct ClipboardPath {
     pub is_image: bool,
 }
 
+#[cfg(windows)]
+pub fn read_clipboard_text() -> Result<Option<String>> {
+    use clipboard_win::formats::{Unicode, CF_UNICODETEXT};
+
+    if !clipboard_win::is_format_avail(CF_UNICODETEXT) {
+        return Ok(None);
+    }
+    let text: String = match clipboard_win::get_clipboard(Unicode) {
+        Ok(text) => text,
+        Err(_) => return Ok(None),
+    };
+    let text = text.trim().to_string();
+    Ok((!text.is_empty()).then_some(text))
+}
+
+#[cfg(not(windows))]
 pub fn read_clipboard_text() -> Result<Option<String>> {
     if let Some(text) = try_text_command("wl-paste", &[])? {
         return Ok(Some(text));
@@ -195,6 +278,12 @@ pub fn read_clipboard_text() -> Result<Option<String>> {
     Ok(None)
 }
 
+#[cfg(windows)]
+pub fn write_clipboard_text(text: &str) -> Result<bool> {
+    Ok(clipboard_win::set_clipboard(clipboard_win::formats::Unicode, text).is_ok())
+}
+
+#[cfg(not(windows))]
 pub fn write_clipboard_text(text: &str) -> Result<bool> {
     if try_write_text_command("wl-copy", &[], text)? {
         return Ok(true);
@@ -208,6 +297,7 @@ pub fn write_clipboard_text(text: &str) -> Result<bool> {
     Ok(false)
 }
 
+#[cfg(not(windows))]
 fn try_write_text_command(cmd: &str, args: &[&str], text: &str) -> Result<bool> {
     let mut child = match Command::new(cmd)
         .args(args)
@@ -226,6 +316,7 @@ fn try_write_text_command(cmd: &str, args: &[&str], text: &str) -> Result<bool> 
     Ok(child.wait().map(|status| status.success()).unwrap_or(false))
 }
 
+#[cfg(not(windows))]
 fn try_text_command(cmd: &str, args: &[&str]) -> Result<Option<String>> {
     let output = Command::new(cmd)
         .args(args)
@@ -259,7 +350,11 @@ pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
     } else {
         raw.to_string()
     };
-    let path_str = if raw.starts_with('/') {
+    let path_str = if Path::new(&raw).is_absolute() {
+        raw.to_string()
+    } else if cfg!(windows) && raw.starts_with('/') && raw.as_bytes().get(2) == Some(&b':') {
+        raw.trim_start_matches('/').to_string()
+    } else if raw.starts_with('/') {
         raw.to_string()
     } else if let Some(rest) = raw.strip_prefix("~/") {
         if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {

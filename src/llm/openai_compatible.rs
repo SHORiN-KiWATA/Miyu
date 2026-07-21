@@ -4863,6 +4863,21 @@ mod tests {
             assert_ne!(read, 0, "connection closed before request headers");
             request.push(byte[0]);
         }
+        let headers = String::from_utf8_lossy(&request);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        if content_length > 0 {
+            let mut body = vec![0_u8; content_length];
+            stream.read_exact(&mut body).await.unwrap();
+        }
     }
 
     async fn write_http_sse_response(stream: &mut tokio::net::TcpStream, body: &str) {

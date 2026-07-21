@@ -86,11 +86,11 @@ mod tests {
             ("Rust + 中文 + emoji 🚀\nsecond line", 10),
             (" \t\n\r\n punctuation: !@#$%^&*()[]{}", 13),
             ("<|endoftext|><|endofprompt|>", 13),
-            (include_str!("prompts/miyu.md"), 3144),
+            (include_str!("prompts/miyu.md"), 3174),
             (include_str!("prompts/compact.md"), 230),
             (include_str!("prompts/plan.md"), 85),
             (include_str!("prompts/chat.md"), 29),
-            (include_str!("../README.md"), 2605),
+            (include_str!("../README.md"), 2808),
         ];
 
         for (text, expected) in vectors {

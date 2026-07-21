@@ -525,7 +525,7 @@ async fn run_script(
         serde_json::to_string(args).unwrap_or_default()
     };
 
-    let mut command = Command::new(&script_path);
+    let mut command = script_command(&script_path);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -559,6 +559,50 @@ async fn run_script(
     }))?)
 }
 
+fn script_command(script_path: &Path) -> Command {
+    #[cfg(windows)]
+    {
+        let extension = script_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match extension.as_str() {
+            "ps1" => {
+                let mut command = Command::new("powershell.exe");
+                command.args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                ]);
+                let path = script_path.display().to_string().replace('\'', "''");
+                command.arg(format!(
+                    "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); & '{path}'"
+                ));
+                return command;
+            }
+            "cmd" | "bat" => {
+                let mut command = Command::new("cmd.exe");
+                command.args(["/D", "/S", "/C"]).arg(script_path);
+                return command;
+            }
+            "py" => {
+                let mut command = Command::new("python.exe");
+                command.arg(script_path);
+                command.env("PYTHONUTF8", "1");
+                command.env("PYTHONIOENCODING", "utf-8");
+                return command;
+            }
+            _ => return Command::new(script_path),
+        }
+    }
+    #[cfg(not(windows))]
+    Command::new(script_path)
+}
+
 fn clip_output(value: &str) -> String {
     if value.chars().count() <= MAX_SCRIPT_OUTPUT_CHARS {
         value.to_string()
@@ -575,13 +619,13 @@ fn clip_output(value: &str) -> String {
     }
 }
 
-fn make_executable(path: &Path) -> Result<()> {
+fn make_executable(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)?.permissions();
+        let mut perms = std::fs::metadata(_path)?.permissions();
         perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(path, perms)?;
+        std::fs::set_permissions(_path, perms)?;
     }
     Ok(())
 }
