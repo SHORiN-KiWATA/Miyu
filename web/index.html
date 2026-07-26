@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#111512">
+  <title>Miyu</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/app.js"></script>
+</head>
+<body data-theme="graphite">
+  <div class="app-shell" id="appShell">
+    <button class="page-scrim sidebar-scrim" id="sidebarScrim" type="button" aria-label="关闭会话栏" tabindex="-1"></button>
+
+    <aside class="sidebar" id="sidebar" aria-label="当前会话">
+      <header class="brand-row">
+        <div class="brand-identity">
+          <img src="/assets/miyu-logo.png" alt="Miyu" class="brand-avatar">
+          <div>
+            <strong>Miyu</strong>
+            <span><i class="status-dot is-connecting" id="sidebarStatusDot"></i><span id="sidebarConnectionStatus">连接中</span></span>
+          </div>
+        </div>
+        <button class="icon-button sidebar-close" id="sidebarClose" type="button" title="关闭会话栏" aria-label="关闭会话栏">
+          <span class="icon-slot" data-icon="x" aria-hidden="true"><span class="icon-fallback">×</span></span>
+        </button>
+      </header>
+
+      <button class="new-chat-button" id="newChatButton" type="button" disabled>
+        <span class="icon-slot" data-icon="square-pen" aria-hidden="true"><span class="icon-fallback">＋</span></span>
+        <span>新对话</span>
+      </button>
+
+      <nav class="session-list" aria-label="会话">
+        <button class="session-item active" id="currentConversation" type="button">
+          <span class="session-item-main">
+            <span class="icon-slot" data-icon="message-circle" aria-hidden="true"><span class="icon-fallback">●</span></span>
+            <span class="session-copy">
+              <strong id="sidebarConversationTitle">新对话</strong>
+              <small id="sidebarConversationSnippet">尚未开始</small>
+            </span>
+          </span>
+          <span class="session-time" id="sidebarConversationTime"></span>
+        </button>
+      </nav>
+
+      <footer class="sidebar-footer">
+        <div class="sidebar-actions">
+          <button class="sidebar-action" id="settingsButton" type="button">
+            <span class="icon-slot" data-icon="settings-2" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
+            <span class="settings-label">设置</span>
+          </button>
+          <button class="icon-button" id="sidebarThemeButton" type="button" title="切换主题" aria-label="切换主题">
+            <span class="icon-slot" data-icon="sun-moon" aria-hidden="true"><span class="icon-fallback">◐</span></span>
+          </button>
+        </div>
+      </footer>
+    </aside>
+
+    <main class="main-stage" id="mainStage">
+      <header class="topbar">
+        <div class="topbar-leading">
+          <button class="icon-button mobile-menu-button" id="mobileMenuButton" type="button" title="打开会话栏" aria-label="打开会话栏">
+            <span class="icon-slot" data-icon="panel-left" aria-hidden="true"><span class="icon-fallback">☰</span></span>
+          </button>
+          <div class="conversation-heading">
+            <strong id="conversationTitle">新对话</strong>
+            <span id="conversationMeta">正在载入</span>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <div class="model-menu-wrap" id="modelMenuWrap">
+            <button class="model-button" id="modelButton" type="button" aria-haspopup="menu" aria-expanded="false" disabled>
+              <span class="model-mark" id="modelMark">--</span>
+              <span class="model-label" id="modelLabel">正在载入</span>
+              <span class="icon-slot" data-icon="chevron-down" aria-hidden="true"><span class="icon-fallback">⌄</span></span>
+            </button>
+            <div class="model-menu" id="modelMenu" role="menu" aria-label="选择模型" hidden></div>
+          </div>
+          <button class="icon-button" id="themeButton" type="button" title="切换主题" aria-label="切换主题">
+            <span class="icon-slot" data-icon="moon" aria-hidden="true"><span class="icon-fallback">◐</span></span>
+          </button>
+          <button class="icon-button" id="topbarSettingsButton" type="button" title="打开设置" aria-label="打开设置">
+            <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
+          </button>
+        </div>
+      </header>
+
+      <section class="conversation-stage" id="conversationStage">
+        <div class="inline-error" id="errorRegion" role="alert" hidden></div>
+
+        <div class="chat-scroll" id="chatScroll">
+          <div class="loading-state" id="loadingState" role="status">
+            <span class="loading-mark" aria-hidden="true"></span>
+            <span>正在载入对话</span>
+          </div>
+
+          <section class="blocked-state" id="blockedState" aria-labelledby="blockedTitle" hidden>
+            <img src="/assets/miyu-logo.png" alt="" aria-hidden="true">
+            <h1 id="blockedTitle">登录 Miyu</h1>
+            <p id="blockedMessage">输入访问密码以继续。</p>
+            <form class="login-form" id="loginForm" hidden novalidate>
+              <label for="loginPassword">访问密码</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">*</span></span>
+                <input id="loginPassword" name="password" type="password" autocomplete="current-password" required spellcheck="false" autocapitalize="none">
+              </div>
+              <p class="login-error" id="loginError" role="alert" hidden></p>
+              <button class="login-submit" id="loginSubmit" type="submit">
+                <span class="icon-slot" data-icon="log-in" aria-hidden="true"><span class="icon-fallback">→</span></span>
+                <span id="loginSubmitLabel">登录</span>
+              </button>
+            </form>
+            <button class="secondary-button" id="retryBootstrapButton" type="button">
+              <span class="icon-slot" data-icon="refresh-cw" aria-hidden="true"><span class="icon-fallback">↻</span></span>
+              <span>重新载入</span>
+            </button>
+          </section>
+
+          <div class="timeline" id="timeline" hidden></div>
+
+          <section class="empty-state" id="emptyState" aria-labelledby="emptyTitle" hidden>
+            <div class="empty-visual">
+              <img src="/assets/miyuwallpaper.png" alt="Miyu 坐在窗边的书桌前">
+            </div>
+            <div class="empty-copy">
+              <span class="empty-kicker"><i class="status-dot"></i>Miyu 在这里</span>
+              <h1 id="emptyTitle">今天想聊些什么？</h1>
+              <p>从一个问题、计划或此刻的想法开始。</p>
+            </div>
+            <div class="prompt-grid" id="promptGrid">
+              <button type="button" data-prompt="帮我整理一下今天的安排">
+                <span class="icon-slot" data-icon="list-todo" aria-hidden="true"><span class="icon-fallback">✓</span></span>
+                <span>整理今天的安排</span>
+              </button>
+              <button type="button" data-prompt="和我一起分析一个问题">
+                <span class="icon-slot" data-icon="lightbulb" aria-hidden="true"><span class="icon-fallback">?</span></span>
+                <span>分析一个问题</span>
+              </button>
+              <button type="button" data-prompt="帮我制定一个清晰的执行计划">
+                <span class="icon-slot" data-icon="route" aria-hidden="true"><span class="icon-fallback">→</span></span>
+                <span>制定执行计划</span>
+              </button>
+              <button type="button" data-prompt="陪我聊聊现在的想法">
+                <span class="icon-slot" data-icon="messages-square" aria-hidden="true"><span class="icon-fallback">…</span></span>
+                <span>聊聊现在的想法</span>
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <button class="jump-bottom-button" id="jumpBottomButton" type="button" hidden>
+          <span class="icon-slot" data-icon="arrow-down" aria-hidden="true"><span class="icon-fallback">↓</span></span>
+          <span>回到底部</span>
+        </button>
+
+        <footer class="composer-dock" id="composerDock">
+          <div class="question-dock" id="questionDock" aria-label="待回答问题" aria-live="polite" hidden></div>
+          <form class="composer" id="composerForm">
+            <textarea id="composerInput" rows="3" placeholder="给 Miyu 发消息" aria-label="消息" disabled></textarea>
+            <div class="queue-tray" id="queueTray" aria-label="排队中的消息" hidden></div>
+            <div class="composer-footer">
+              <div class="composer-controls">
+                <div class="mode-switch" id="modeSwitch" role="group" aria-label="对话模式">
+                  <button class="active" type="button" data-mode="normal" aria-pressed="true">普通</button>
+                  <button type="button" data-mode="plan" aria-pressed="false">计划</button>
+                  <button type="button" data-mode="chat" aria-pressed="false">闲聊</button>
+                </div>
+                <span class="composer-state" id="composerState">正在载入</span>
+              </div>
+              <div class="composer-submit">
+                <div class="composer-context">
+                  <div class="context-heading">
+                    <span>上下文</span>
+                    <span id="contextNumbers">-- / --</span>
+                  </div>
+                  <div class="context-track" id="contextTrack" role="progressbar" aria-label="上下文使用情况" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <i id="contextBar"></i>
+                  </div>
+                </div>
+                <span class="character-count" id="characterCount" hidden>0 / 20,000</span>
+                <button class="stop-button" id="stopButton" type="button" title="停止回复" aria-label="停止回复" hidden>
+                  <span class="icon-slot" data-icon="circle-stop" aria-hidden="true"><span class="icon-fallback">■</span></span>
+                </button>
+                <button class="send-button" id="sendButton" type="submit" title="发送消息" aria-label="发送消息" disabled>
+                  <span class="icon-slot" data-icon="arrow-up" aria-hidden="true"><span class="icon-fallback">↑</span></span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </footer>
+      </section>
+    </main>
+
+    <button class="page-scrim drawer-scrim" id="drawerScrim" type="button" aria-label="关闭设置" tabindex="-1"></button>
+    <aside class="settings-drawer" id="settingsDrawer" aria-label="设置" aria-hidden="true" tabindex="-1">
+      <header>
+        <div><small>MIYU</small><strong>设置</strong></div>
+        <button class="icon-button" id="settingsClose" type="button" title="关闭设置" aria-label="关闭设置">
+          <span class="icon-slot" data-icon="x" aria-hidden="true"><span class="icon-fallback">×</span></span>
+        </button>
+      </header>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="设置分类">
+          <button class="active" type="button" data-settings-view="interface">界面</button>
+          <button type="button" data-settings-view="general">全局</button>
+          <button type="button" data-settings-view="providers">供应商</button>
+          <button type="button" data-settings-view="models">模型池</button>
+          <button type="button" data-settings-view="plugins">插件</button>
+          <button type="button" data-settings-view="prompts">提示词</button>
+          <button type="button" data-settings-view="advanced">高级</button>
+        </nav>
+        <div class="settings-content">
+          <section class="settings-section settings-panel" data-settings-panel="interface">
+          <h2>界面主题</h2>
+          <div class="theme-options" role="group" aria-label="界面主题">
+            <button type="button" data-theme-choice="linen"><i class="theme-swatch linen"></i><span>浅色</span></button>
+            <button type="button" data-theme-choice="graphite"><i class="theme-swatch graphite"></i><span>石墨</span></button>
+          </div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="interface">
+          <h2>当前模型</h2>
+          <div class="settings-model" id="settingsModel">
+            <span class="model-mark" id="settingsModelMark">--</span>
+            <span><strong id="settingsModelName">正在载入</strong><small id="settingsModelProvider">--</small></span>
+          </div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="interface">
+          <h2>能力</h2>
+          <dl class="capability-list" id="capabilityList">
+            <div><dt>会话</dt><dd>正在载入</dd></div>
+            <div><dt>附件</dt><dd>正在载入</dd></div>
+            <div><dt>消息队列</dt><dd>正在载入</dd></div>
+          </dl>
+          </section>
+          <section class="settings-section about-section settings-panel" data-settings-panel="interface">
+          <h2>关于</h2>
+          <div class="about-row"><span>Miyu WebUI</span><span id="versionLabel">--</span></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="general" hidden>
+          <h2>全局设置</h2>
+          <div class="config-form" id="generalConfigForm"></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="providers" hidden>
+          <div class="settings-section-heading"><h2>供应商</h2><button class="secondary-button compact-button" id="addProviderButton" type="button">添加</button></div>
+          <div class="provider-editor" id="providerEditor"></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="models" hidden>
+          <h2>模型池</h2>
+          <div class="model-pool-editor" id="modelPoolEditor"></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="plugins" hidden>
+          <h2>插件配置</h2>
+          <div class="plugin-editor" id="pluginEditor"></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="prompts" hidden>
+          <h2>自定义提示词</h2>
+          <div class="prompt-editor" id="promptEditor"></div>
+          </section>
+          <section class="settings-section settings-panel" data-settings-panel="advanced" hidden>
+          <h2>完整配置</h2>
+          <p class="settings-description">这里包含结构化表单未单独展示的所有配置项。应用到草稿后仍需保存。</p>
+          <textarea class="config-json-editor" id="advancedConfigEditor" spellcheck="false" aria-label="完整配置 JSON"></textarea>
+          <button class="secondary-button" id="applyAdvancedConfigButton" type="button">应用到草稿</button>
+          </section>
+        </div>
+      </div>
+      <footer class="settings-footer">
+        <span id="settingsStatus">尚未载入配置</span>
+        <div>
+          <button class="secondary-button" id="reloadConfigButton" type="button">重新载入</button>
+          <button class="primary-button" id="saveConfigButton" type="button" disabled>保存配置</button>
+        </div>
+      </footer>
+    </aside>
+
+    <div class="toast-region" id="toastRegion" role="status" aria-live="polite" aria-atomic="true"></div>
+
+    <dialog class="reset-dialog" id="resetDialog" aria-labelledby="resetDialogTitle" aria-describedby="resetDialogDescription">
+      <form method="dialog">
+        <header>
+          <span class="dialog-icon" aria-hidden="true">
+            <span class="icon-slot" data-icon="triangle-alert"><span class="icon-fallback">!</span></span>
+          </span>
+          <div>
+            <h2 id="resetDialogTitle">开始新对话？</h2>
+            <p id="resetDialogDescription">当前对话记录将被永久清除，此操作无法撤销。</p>
+          </div>
+        </header>
+        <footer>
+          <button class="secondary-button" id="resetCancelButton" type="submit" value="cancel">取消</button>
+          <button class="danger-button" id="resetConfirmButton" type="button">清除并新建</button>
+        </footer>
+      </form>
+    </dialog>
+  </div>
+
+  <noscript>
+    <div class="noscript-state">Miyu WebUI 需要启用 JavaScript。</div>
+  </noscript>
+</body>
+</html>

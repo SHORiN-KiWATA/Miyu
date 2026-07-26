@@ -21,6 +21,7 @@ mod state;
 mod token_counter;
 mod token_estimate;
 mod tools;
+mod web;
 
 use anyhow::Result;
 

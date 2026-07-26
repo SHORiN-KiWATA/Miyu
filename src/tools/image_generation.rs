@@ -58,8 +58,11 @@ async fn generate_image(
         .trim();
     let bytes = request_image(plugin, prompt, aspect_ratio, resolution).await?;
     let path = save_image(plugin, prompt, &bytes)?;
-    let print_error = if plugin.auto_print && config.plugins.print_image.enabled {
-        progress.prepare_for_external_output().await;
+    progress.report_image(path.clone(), prompt.to_string());
+    let should_render_terminal = plugin.auto_print
+        && config.plugins.print_image.enabled
+        && progress.prepare_for_external_output().await;
+    let print_error = if should_render_terminal {
         vision::print_image_file(
             &path,
             vision::configured_print_size(&config.plugins.print_image),
@@ -70,7 +73,7 @@ async fn generate_image(
     } else {
         None
     };
-    let printed = plugin.auto_print && config.plugins.print_image.enabled && print_error.is_none();
+    let printed = should_render_terminal && print_error.is_none();
     let path_text = path.display().to_string();
     Ok(json!({
         "status": "ok",

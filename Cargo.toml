@@ -1,6 +1,6 @@
 [package]
 name = "miyu"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/SHORiN-KiWATA/Miyu"
@@ -8,6 +8,7 @@ description = "Command-line AI assistant"
 
 [dependencies]
 anyhow = "1.0"
+axum = "0.8"
 base64 = "0.22"
 blake3 = "1.5"
 blake2 = "0.10"
@@ -25,10 +26,12 @@ futures-util = "0.3"
 flate2 = "1.0"
 fuzzy-matcher = "0.3"
 fancy-regex = "0.17"
+if-addrs = "0.13"
 libc = "0.2"
 md5 = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 rand = "0.8"
+rpassword = "7.4"
 rodio = { version = "0.19", default-features = false, features = ["mp3", "wav"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rustyline = "14.0"
@@ -41,7 +44,7 @@ syntect = { version = "5.2", default-features = false, features = ["default-synt
 termimad = "0.34"
 tempfile = "3.15"
 tar = "0.4"
-tokio = { version = "1.38", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal"] }
+tokio = { version = "1.38", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 trash = "5.2"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-appender = "0.2"
@@ -49,6 +52,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 urlencoding = "2.1"
+vte = "0.15"
 rustc-hash = "2"
 
 [target.'cfg(windows)'.dependencies]

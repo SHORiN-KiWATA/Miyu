@@ -15,6 +15,7 @@ mod exchange_rate;
 mod fcitx_wiki;
 mod hash_codec;
 mod image_generation;
+mod kitty_image;
 pub mod knowledge_base;
 mod linux_game;
 mod load_tools;

@@ -1162,6 +1162,9 @@ impl AppConfig {
     pub fn save(&self, paths: &MiyuPaths) -> Result<()> {
         paths.create_dirs()?;
         let mut config = self.clone();
+        let effective_memory = config.memory_config().clone();
+        config.plugins.memory = effective_memory;
+        config.memory = MemoryConfig::default();
         if let Some(prompt) = config.system_prompt.take() {
             let prompt_file = config.system_prompt_path(paths);
             if let Some(parent) = prompt_file.parent() {
@@ -1645,6 +1648,40 @@ impl AppConfig {
             model: model.to_string(),
         });
         Ok(true)
+    }
+
+    pub fn set_active_provider_models(
+        &mut self,
+        models: &[ActiveProviderModelConfig],
+    ) -> Result<()> {
+        if models.is_empty() {
+            bail!("at least one model endpoint must remain active");
+        }
+        let choices = self.provider_model_choices();
+        let mut seen = std::collections::HashSet::with_capacity(models.len());
+        for model in models {
+            if model.provider_id.trim().is_empty() || model.model.trim().is_empty() {
+                bail!("provider_id and model cannot be empty");
+            }
+            if !seen.insert((&model.provider_id, &model.model)) {
+                bail!(
+                    "duplicate active provider/model: {} / {}",
+                    model.provider_id,
+                    model.model
+                );
+            }
+            if !choices.iter().any(|choice| {
+                choice.provider_id == model.provider_id && choice.model == model.model
+            }) {
+                bail!(
+                    "unknown configured provider/model: {} / {}",
+                    model.provider_id,
+                    model.model
+                );
+            }
+        }
+        self.active_provider_models = Some(models.to_vec());
+        Ok(())
     }
 
     pub fn set_active_provider_model(&mut self, provider_id: &str, model: &str) -> Result<()> {
@@ -2282,6 +2319,44 @@ mod tests {
             .provider_model_choices()
             .iter()
             .any(|choice| choice.provider_id == provider_id));
+    }
+
+    #[test]
+    fn active_provider_models_are_replaced_as_one_validated_pool() {
+        let mut config = AppConfig::default();
+        let provider_id = config.providers[0].id.clone();
+        config.providers[0].models = vec!["model-a".to_string(), "model-b".to_string()];
+        config.providers[0].default_model = "model-a".to_string();
+        let before = config.active_provider_models.clone();
+
+        let invalid = vec![
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "model-a".to_string(),
+            },
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "missing".to_string(),
+            },
+        ];
+        assert!(config.set_active_provider_models(&invalid).is_err());
+        assert_eq!(config.active_provider_models, before);
+
+        let selected = vec![
+            ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "model-b".to_string(),
+            },
+            ActiveProviderModelConfig {
+                provider_id,
+                model: "model-a".to_string(),
+            },
+        ];
+        config.set_active_provider_models(&selected).unwrap();
+        assert_eq!(
+            config.active_provider_models.as_deref(),
+            Some(selected.as_slice())
+        );
     }
 
     #[test]

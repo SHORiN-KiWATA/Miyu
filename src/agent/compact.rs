@@ -151,6 +151,23 @@ fn turns_to_text(turns: &[&Turn]) -> String {
             output.push_str("\nUser clarification: ");
             output.push_str(&crate::question::user_exchange_text(exchange));
         }
+        for followup in &turn.followups {
+            if let Some(content) = &followup.preceding_assistant_content {
+                if !content.trim().is_empty() {
+                    output.push_str("\nAssistant: ");
+                    output.push_str(content);
+                }
+            }
+            if let Some(reasoning) = &followup.preceding_assistant_reasoning {
+                if !reasoning.trim().is_empty() {
+                    output.push_str("\n[Reasoning: ");
+                    output.push_str(reasoning);
+                    output.push(']');
+                }
+            }
+            output.push_str("\nUser: ");
+            output.push_str(&followup.content);
+        }
         output.push_str("\nAssistant: ");
         output.push_str(&turn.assistant_content);
         if let Some(reasoning) = &turn.assistant_reasoning {
@@ -284,6 +301,15 @@ fn turn_to_text(turn: &Turn) -> String {
     for exchange in &turn.question_exchanges {
         output.push_str(&crate::question::assistant_exchange_text(exchange));
         output.push_str(&crate::question::user_exchange_text(exchange));
+    }
+    for followup in &turn.followups {
+        if let Some(content) = &followup.preceding_assistant_content {
+            output.push_str(content);
+        }
+        if let Some(reasoning) = &followup.preceding_assistant_reasoning {
+            output.push_str(reasoning);
+        }
+        output.push_str(&followup.content);
     }
     output.push_str(&turn.assistant_content);
     if let Some(reasoning) = &turn.assistant_reasoning {

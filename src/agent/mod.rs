@@ -15,13 +15,15 @@ use crate::question::{
     QuestionRequest, QuestionResponse,
 };
 use crate::render::wait_spinner::SPINNER_INTERVAL;
-use crate::state::StateStore;
+use crate::state::{QueuedPrompt, QueuedPromptAttachment, StateStore};
 use crate::tools::{self, memes, vision, ToolPermission, ToolRegistry};
 use anyhow::{bail, Result};
+use base64::Engine;
 use chrono::Local;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -43,17 +45,21 @@ impl PendingTurnGuard {
         }
     }
 
-    pub fn complete(
+    pub fn complete_with_model(
         mut self,
         content: &str,
         reasoning: Option<&str>,
+        provider_id: Option<&str>,
+        model: Option<&str>,
         token_total: Option<u64>,
         token_usage_estimated: bool,
     ) -> Result<()> {
-        self.state.complete_turn_with_usage(
+        self.state.complete_turn_with_usage_and_model(
             &self.turn_id,
             content,
             reasoning,
+            provider_id,
+            model,
             token_total,
             token_usage_estimated,
         )?;
@@ -86,6 +92,46 @@ pub enum AgentMode {
     Chat,
 }
 
+#[derive(Clone)]
+pub struct AgentTurnControl {
+    mode: Arc<Mutex<AgentMode>>,
+    normal_tools: ToolRegistry,
+    plan_tools: ToolRegistry,
+    chat_tools: ToolRegistry,
+}
+
+impl AgentTurnControl {
+    pub fn new(
+        mode: AgentMode,
+        normal_tools: ToolRegistry,
+        plan_tools: ToolRegistry,
+        chat_tools: ToolRegistry,
+    ) -> Self {
+        Self {
+            mode: Arc::new(Mutex::new(mode)),
+            normal_tools,
+            plan_tools,
+            chat_tools,
+        }
+    }
+
+    pub fn mode(&self) -> AgentMode {
+        *self.mode.lock().unwrap()
+    }
+
+    pub fn set_mode(&self, mode: AgentMode) {
+        *self.mode.lock().unwrap() = mode;
+    }
+
+    fn tools(&self, mode: AgentMode) -> ToolRegistry {
+        match mode {
+            AgentMode::Normal => self.normal_tools.clone(),
+            AgentMode::Plan => self.plan_tools.clone(),
+            AgentMode::Chat => self.chat_tools.clone(),
+        }
+    }
+}
+
 impl AgentMode {
     pub fn label(self) -> &'static str {
         if crate::i18n::is_zh() {
@@ -114,6 +160,9 @@ impl AgentMode {
 
 #[derive(Debug)]
 pub enum AgentEvent {
+    TurnStarted {
+        turn_id: String,
+    },
     Chunk(ChatStreamChunk),
     ReasoningStart {
         received_at: Instant,
@@ -147,11 +196,22 @@ pub enum AgentEvent {
         chunk: Vec<u8>,
     },
     PrepareForExternalOutput {
-        ready: oneshot::Sender<()>,
+        ready: oneshot::Sender<bool>,
+    },
+    Image {
+        name: String,
+        path: PathBuf,
+        alt: String,
     },
     AskQuestion {
         request: QuestionRequest,
         responder: oneshot::Sender<QuestionResponse>,
+    },
+    QueuedPromptsConsumed {
+        prompt_ids: Vec<String>,
+        mode: AgentMode,
+        provider_id: Option<String>,
+        model: Option<String>,
     },
     SpinnerTick,
     CompactStart,
@@ -177,6 +237,11 @@ where
         tools::ToolProgressEvent::PrepareForExternalOutput { ready } => {
             on_event(AgentEvent::PrepareForExternalOutput { ready })
         }
+        tools::ToolProgressEvent::Image { path, alt } => on_event(AgentEvent::Image {
+            name: name.to_string(),
+            path,
+            alt,
+        }),
         tools::ToolProgressEvent::CommandOutput { stream, chunk } => {
             on_event(AgentEvent::CommandOutput {
                 name: name.to_string(),
@@ -201,6 +266,12 @@ pub struct Agent {
     config: AppConfig,
     paths: MiyuPaths,
     on_overflow: String,
+}
+
+struct PreparedUserInput {
+    content: String,
+    message: ChatMessage,
+    hints: Vec<ChatMessage>,
 }
 
 impl Agent {
@@ -276,6 +347,66 @@ impl Agent {
             tools.definitions()
         };
         estimate_tool_definition_tokens(&definitions)
+    }
+
+    async fn consume_queued_prompts<F>(
+        &mut self,
+        current_turn_id: &str,
+        messages: &mut Vec<ChatMessage>,
+        queued: Vec<QueuedPrompt>,
+        preceding_assistant: (Option<&str>, Option<&str>, Option<&str>, Option<&str>),
+        control: &AgentTurnControl,
+        on_event: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
+        let mut prepared = Vec::with_capacity(queued.len());
+        for prompt in queued {
+            let images = queued_prompt_images(&prompt)?;
+            let input = self.prepare_user_input(&prompt.content, &images).await?;
+            prepared.push((prompt, input));
+        }
+
+        let mode = control.mode();
+        if self.mode != mode {
+            self.switch_mode(mode, control.tools(mode));
+            self.prepare_for_turn()?;
+        }
+        replace_request_mode_context(messages, &self.system_prompt, mode);
+
+        let consumed = prepared
+            .iter()
+            .map(|(prompt, input)| (prompt.prompt_id.clone(), input.content.clone()))
+            .collect::<Vec<_>>();
+        self.state.consume_queued_prompts_with_model(
+            current_turn_id,
+            &consumed,
+            preceding_assistant
+                .0
+                .filter(|content| !content.trim().is_empty()),
+            preceding_assistant
+                .1
+                .filter(|reasoning| !reasoning.trim().is_empty()),
+            preceding_assistant
+                .2
+                .filter(|provider_id| !provider_id.trim().is_empty()),
+            preceding_assistant
+                .3
+                .filter(|model| !model.trim().is_empty()),
+        )?;
+        on_event(AgentEvent::QueuedPromptsConsumed {
+            prompt_ids: consumed.iter().map(|(id, _)| id.clone()).collect(),
+            mode,
+            provider_id: preceding_assistant.2.map(str::to_string),
+            model: preceding_assistant.3.map(str::to_string),
+        })?;
+
+        for (_, input) in prepared {
+            messages.push(input.message);
+            messages.extend(input.hints);
+        }
+        Ok(())
     }
 
     fn trim_visible_context(&self) -> Result<Vec<crate::state::StoredConversationEntry>> {
@@ -395,35 +526,38 @@ impl Agent {
     where
         F: FnMut(AgentEvent) -> Result<()>,
     {
+        self.chat_stream_with_images_inner(input, images, None, on_event)
+            .await
+    }
+
+    pub async fn chat_stream_with_control<F>(
+        &mut self,
+        input: &str,
+        images: &[Option<PastedImage>],
+        control: &AgentTurnControl,
+        on_event: F,
+    ) -> Result<ChatResult>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
+        self.chat_stream_with_images_inner(input, images, Some(control), on_event)
+            .await
+    }
+
+    async fn chat_stream_with_images_inner<F>(
+        &mut self,
+        input: &str,
+        images: &[Option<PastedImage>],
+        control: Option<&AgentTurnControl>,
+        on_event: F,
+    ) -> Result<ChatResult>
+    where
+        F: FnMut(AgentEvent) -> Result<()>,
+    {
         self.state.recover_stale_turns()?;
         self.trim_visible_context()?;
-        let input = clean_user_visible_text(input);
-        let binary_images: Vec<&ClipboardImage> = images
-            .iter()
-            .filter_map(|opt| match opt {
-                Some(PastedImage::Binary(img)) => Some(img),
-                _ => None,
-            })
-            .collect();
-        let path_images: Vec<&str> = images
-            .iter()
-            .filter_map(|opt| match opt {
-                Some(PastedImage::Path(p)) => Some(p.as_str()),
-                _ => None,
-            })
-            .collect();
-        let absolute_image_paths = resolve_pasted_image_paths(images, &self.paths);
-        let temp_paths: Vec<String> = absolute_image_paths
-            .iter()
-            .filter_map(|path| path.clone())
-            .collect();
-        let input = rewrite_image_placeholders_with_paths(&input, &absolute_image_paths);
-        let input = if !binary_images.is_empty() && !self.current_model_supports_vision() {
-            self.describe_images_with_vision_provider(&input, &binary_images)
-                .await?
-        } else {
-            input
-        };
+        let prepared = self.prepare_user_input(input, images).await?;
+        let input = prepared.content.clone();
         let turn_id = format!(
             "turn_{}_{}",
             std::time::SystemTime::now()
@@ -435,61 +569,15 @@ impl Agent {
         self.state
             .start_turn(&turn_id, &input, std::process::id())?;
         let guard = PendingTurnGuard::new(self.state.clone(), turn_id.clone());
+        let mut on_event = on_event;
+        on_event(AgentEvent::TurnStarted {
+            turn_id: turn_id.clone(),
+        })?;
         let mut messages = self.chat_messages(&turn_id, &input)?;
-        if !binary_images.is_empty() && self.current_model_supports_vision() {
-            if let Some(last) = messages.last_mut() {
-                if last.role == "user" {
-                    let text = match &last.content {
-                        Some(ChatContent::Text(t)) => t.clone(),
-                        _ => String::new(),
-                    };
-                    let mut parts = vec![ChatContentPart::Text { text }];
-                    for img in &binary_images {
-                        parts.push(ChatContentPart::ImageUrl {
-                            image_url: ImageUrlContent {
-                                url: img.data_url(),
-                            },
-                        });
-                    }
-                    last.content = Some(ChatContent::Parts(parts));
-                }
-            }
+        if let Some(last) = messages.last_mut() {
+            *last = prepared.message;
         }
-        if !temp_paths.is_empty() {
-            let hint = if temp_paths.len() == 1 {
-                format!(
-                    "用户粘贴了 1 张剪贴板图片，已保存到临时文件：{}\n你可以使用 vision_analyze 工具对此图片进行更详细的分析。",
-                    temp_paths[0]
-                )
-            } else {
-                let list = temp_paths
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| format!("  [Image {}] {}", i + 1, p))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!(
-                    "用户粘贴了 {} 张剪贴板图片，已保存到临时文件：\n{}\n你可以使用 vision_analyze 工具对这些图片进行更详细的分析。",
-                    temp_paths.len(),
-                    list
-                )
-            };
-            messages.push(ChatMessage::system(hint));
-        }
-        if !path_images.is_empty() {
-            let list = path_images
-                .iter()
-                .enumerate()
-                .map(|(i, p)| format!("  [Image {}] {}", i + 1, p))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let hint = format!(
-                "用户粘贴了 {} 张本地图片路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些图片。",
-                path_images.len(),
-                list
-            );
-            messages.push(ChatMessage::system(hint));
-        }
+        messages.extend(prepared.hints);
         if self.mode != AgentMode::Chat {
             if let Some(association) = self.memory.association(&input)? {
                 messages.insert(
@@ -498,7 +586,6 @@ impl Agent {
                 );
             }
         }
-        let mut on_event = on_event;
         if self.mode != AgentMode::Plan {
             if let Some(reminder) = memes::auto_meme_reminder(&self.config, &input) {
                 messages.push(ChatMessage::system(reminder));
@@ -512,6 +599,7 @@ impl Agent {
                 &mut messages,
                 &mut used_tools,
                 &mut persisted_tool_reports,
+                control,
                 &mut on_event,
             )
             .await?;
@@ -519,9 +607,11 @@ impl Agent {
             self.state.append_persisted_context(&turn_id, &report)?;
         }
         let token_total = result.usage.as_ref().map(Usage::effective_total_tokens);
-        guard.complete(
+        guard.complete_with_model(
             &result.content,
             result.reasoning.as_deref(),
+            result.provider_id.as_deref(),
+            result.model.as_deref(),
             token_total,
             result.usage_estimated,
         )?;
@@ -530,6 +620,101 @@ impl Agent {
             self.state.add_usage(&usage)?;
         }
         Ok(result)
+    }
+
+    async fn prepare_user_input(
+        &self,
+        input: &str,
+        images: &[Option<PastedImage>],
+    ) -> Result<PreparedUserInput> {
+        let input = clean_user_visible_text(input);
+        let binary_images = images
+            .iter()
+            .filter_map(|image| match image {
+                Some(PastedImage::Binary(image)) => Some(image),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let path_images = images
+            .iter()
+            .filter_map(|image| match image {
+                Some(PastedImage::Path(path)) => Some(path.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let absolute_image_paths = resolve_pasted_image_paths(images, &self.paths);
+        let temp_paths = absolute_image_paths
+            .iter()
+            .filter_map(|path| path.clone())
+            .collect::<Vec<_>>();
+        let input = rewrite_image_placeholders_with_paths(&input, &absolute_image_paths);
+        let content = if !binary_images.is_empty() && !self.current_model_supports_vision() {
+            self.describe_images_with_vision_provider(&input, &binary_images)
+                .await?
+        } else {
+            input
+        };
+
+        let message = if !binary_images.is_empty() && self.current_model_supports_vision() {
+            let mut parts = vec![ChatContentPart::Text {
+                text: content.clone(),
+            }];
+            parts.extend(binary_images.iter().map(|image| ChatContentPart::ImageUrl {
+                image_url: ImageUrlContent {
+                    url: image.data_url(),
+                },
+            }));
+            ChatMessage {
+                role: "user".to_string(),
+                content: Some(ChatContent::Parts(parts)),
+                tool_call_id: None,
+                tool_calls: None,
+            }
+        } else {
+            ChatMessage::plain("user", &content)
+        };
+
+        let mut hints = Vec::new();
+        if !temp_paths.is_empty() {
+            let hint = if temp_paths.len() == 1 {
+                format!(
+                    "用户粘贴了 1 张剪贴板图片，已保存到临时文件：{}\n你可以使用 vision_analyze 工具对此图片进行更详细的分析。",
+                    temp_paths[0]
+                )
+            } else {
+                let list = temp_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| format!("  [Image {}] {}", index + 1, path))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "用户粘贴了 {} 张剪贴板图片，已保存到临时文件：\n{}\n你可以使用 vision_analyze 工具对这些图片进行更详细的分析。",
+                    temp_paths.len(),
+                    list
+                )
+            };
+            hints.push(ChatMessage::system(hint));
+        }
+        if !path_images.is_empty() {
+            let list = path_images
+                .iter()
+                .enumerate()
+                .map(|(index, path)| format!("  [Image {}] {}", index + 1, path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            hints.push(ChatMessage::system(format!(
+                "用户粘贴了 {} 张本地图片路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些图片。",
+                path_images.len(),
+                list
+            )));
+        }
+
+        Ok(PreparedUserInput {
+            content,
+            message,
+            hints,
+        })
     }
 
     pub async fn handle_overflow_after_turn<F>(
@@ -729,11 +914,12 @@ impl Agent {
     }
 
     async fn chat_with_tools<F>(
-        &self,
+        &mut self,
         current_turn_id: &str,
         messages: &mut Vec<ChatMessage>,
         used_tools: &mut Vec<String>,
         persisted_tool_reports: &mut Vec<(String, String)>,
+        control: Option<&AgentTurnControl>,
         on_event: &mut F,
     ) -> Result<ChatResult>
     where
@@ -769,27 +955,29 @@ impl Agent {
             let (chunk_tx, mut chunk_rx) =
                 tokio::sync::mpsc::unbounded_channel::<(ChatStreamChunk, Instant)>();
             let request_messages = messages.clone();
-            let llm_future =
-                self.client
-                    .chat_stream(request_messages.clone(), definitions, move |chunk| {
-                        let _ = chunk_tx.send((chunk, Instant::now()));
-                        Ok(())
-                    });
-            tokio::pin!(llm_future);
-            let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
-            spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            spinner_interval.tick().await;
             let mut reasoning_filter = ReasoningTitleFilter::default();
-            let result = loop {
-                tokio::select! {
-                    result = &mut llm_future => {
-                        break result?;
-                    }
-                    Some((chunk, received_at)) = chunk_rx.recv() => {
-                        emit_filtered_chunk_at(chunk, received_at, &mut reasoning_filter, on_event)?;
-                    }
-                    _ = spinner_interval.tick() => {
-                        on_event(AgentEvent::SpinnerTick)?;
+            let result = {
+                let llm_future =
+                    self.client
+                        .chat_stream(request_messages.clone(), definitions, move |chunk| {
+                            let _ = chunk_tx.send((chunk, Instant::now()));
+                            Ok(())
+                        });
+                tokio::pin!(llm_future);
+                let mut spinner_interval = tokio::time::interval(SPINNER_INTERVAL);
+                spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                spinner_interval.tick().await;
+                loop {
+                    tokio::select! {
+                        result = &mut llm_future => {
+                            break result?;
+                        }
+                        Some((chunk, received_at)) = chunk_rx.recv() => {
+                            emit_filtered_chunk_at(chunk, received_at, &mut reasoning_filter, on_event)?;
+                        }
+                        _ = spinner_interval.tick() => {
+                            on_event(AgentEvent::SpinnerTick)?;
+                        }
                     }
                 }
             };
@@ -808,6 +996,30 @@ impl Agent {
             }
             usage_accumulator.add_result(&result, &request_messages);
             if result.tool_calls.is_empty() || !self.tools_enabled {
+                if let Some(control) = control {
+                    let queued = self.state.load_queued_prompts()?;
+                    if !queued.is_empty() {
+                        messages.push(ChatMessage::plain(
+                            "assistant",
+                            chat_result_replay_content(&result),
+                        ));
+                        self.consume_queued_prompts(
+                            current_turn_id,
+                            messages,
+                            queued,
+                            (
+                                Some(&result.content),
+                                result.reasoning.as_deref(),
+                                result.provider_id.as_deref(),
+                                result.model.as_deref(),
+                            ),
+                            control,
+                            on_event,
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
                 let mut result = result;
                 if let Some(usage) = usage_accumulator.usage() {
                     result.usage = Some(usage);
@@ -1146,6 +1358,25 @@ impl Agent {
             if question_round_allowed {
                 tool_round = tool_round.saturating_sub(1);
             }
+            if let Some(control) = control {
+                let queued = self.state.load_queued_prompts()?;
+                if !queued.is_empty() {
+                    self.consume_queued_prompts(
+                        current_turn_id,
+                        messages,
+                        queued,
+                        (
+                            Some(&result.content),
+                            result.reasoning.as_deref(),
+                            result.provider_id.as_deref(),
+                            result.model.as_deref(),
+                        ),
+                        control,
+                        on_event,
+                    )
+                    .await?;
+                }
+            }
         }
     }
 
@@ -1221,7 +1452,16 @@ impl Agent {
                     crate::question::user_exchange_text(exchange),
                 ));
             }
-            messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
+            for followup in &turn.followups {
+                if let Some(content) = followup_assistant_replay_content(followup) {
+                    messages.push(ChatMessage::plain("assistant", content));
+                }
+                messages.push(self.followup_user_message(followup));
+            }
+            messages.push(ChatMessage::plain(
+                "assistant",
+                assistant_replay_content(turn),
+            ));
             if !turn.tool_reports.is_empty() {
                 messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
             }
@@ -1229,6 +1469,39 @@ impl Agent {
         messages.push(ChatMessage::system(runtime_context(self.mode)));
         messages.push(ChatMessage::plain("user", current_input));
         Ok(messages)
+    }
+
+    fn followup_user_message(&self, followup: &crate::state::TurnFollowup) -> ChatMessage {
+        if !self.current_model_supports_vision() {
+            return ChatMessage::plain("user", &followup.content);
+        }
+        let images = followup
+            .attachments
+            .iter()
+            .filter_map(|attachment| match attachment {
+                QueuedPromptAttachment::Binary { mime, data_base64 } => {
+                    Some(ChatContentPart::ImageUrl {
+                        image_url: ImageUrlContent {
+                            url: format!("data:{mime};base64,{data_base64}"),
+                        },
+                    })
+                }
+                QueuedPromptAttachment::Path { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            return ChatMessage::plain("user", &followup.content);
+        }
+        let mut parts = vec![ChatContentPart::Text {
+            text: followup.content.clone(),
+        }];
+        parts.extend(images);
+        ChatMessage {
+            role: "user".to_string(),
+            content: Some(ChatContent::Parts(parts)),
+            tool_call_id: None,
+            tool_calls: None,
+        }
     }
 }
 
@@ -1277,6 +1550,44 @@ impl UsageAccumulator {
             completion_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
         })
+    }
+}
+
+fn queued_prompt_images(prompt: &QueuedPrompt) -> Result<Vec<Option<PastedImage>>> {
+    prompt
+        .attachments
+        .iter()
+        .map(|attachment| match attachment {
+            QueuedPromptAttachment::Binary { mime, data_base64 } => {
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(data_base64)
+                    .map_err(|error| anyhow::anyhow!("invalid queued image data: {error}"))?;
+                Ok(Some(PastedImage::Binary(ClipboardImage::new(
+                    mime.clone(),
+                    data,
+                ))))
+            }
+            QueuedPromptAttachment::Path { path } => Ok(Some(PastedImage::Path(path.clone()))),
+        })
+        .collect()
+}
+
+fn replace_request_mode_context(
+    messages: &mut [ChatMessage],
+    system_prompt: &str,
+    mode: AgentMode,
+) {
+    if let Some(system) = messages.first_mut() {
+        *system = ChatMessage::system(system_prompt);
+    }
+    if let Some(runtime) = messages.iter_mut().rev().find(|message| {
+        message.role == "system"
+            && matches!(
+                message.content.as_ref(),
+                Some(ChatContent::Text(content)) if content.starts_with("<runtime now=")
+            )
+    }) {
+        *runtime = ChatMessage::system(runtime_context(mode));
     }
 }
 
@@ -1362,11 +1673,54 @@ fn turn_context_tokens(turn: &crate::state::Turn) -> usize {
             crate::question::user_exchange_text(exchange),
         ));
     }
-    messages.push(ChatMessage::plain("assistant", &turn.assistant_content));
+    for followup in &turn.followups {
+        if let Some(content) = followup_assistant_replay_content(followup) {
+            messages.push(ChatMessage::plain("assistant", content));
+        }
+        messages.push(ChatMessage::plain("user", &followup.content));
+    }
+    messages.push(ChatMessage::plain(
+        "assistant",
+        assistant_replay_content(turn),
+    ));
     if !turn.tool_reports.is_empty() {
         messages.push(ChatMessage::system(private_tool_memory(&turn.tool_reports)));
     }
     overflow::estimate_messages_tokens(&messages)
+}
+
+fn assistant_replay_content(turn: &crate::state::Turn) -> &str {
+    if !turn.assistant_content.trim().is_empty() {
+        return &turn.assistant_content;
+    }
+    turn.assistant_reasoning
+        .as_deref()
+        .filter(|reasoning| !reasoning.trim().is_empty())
+        .unwrap_or(&turn.assistant_content)
+}
+
+fn followup_assistant_replay_content(followup: &crate::state::TurnFollowup) -> Option<&str> {
+    followup
+        .preceding_assistant_content
+        .as_deref()
+        .filter(|content| !content.trim().is_empty())
+        .or_else(|| {
+            followup
+                .preceding_assistant_reasoning
+                .as_deref()
+                .filter(|reasoning| !reasoning.trim().is_empty())
+        })
+}
+
+fn chat_result_replay_content(result: &ChatResult) -> &str {
+    if !result.content.trim().is_empty() {
+        return &result.content;
+    }
+    result
+        .reasoning
+        .as_deref()
+        .filter(|reasoning| !reasoning.trim().is_empty())
+        .unwrap_or(&result.content)
 }
 
 fn evicted_turn_entries(
@@ -1415,6 +1769,39 @@ fn evicted_turn_entries(
                 timestamp,
                 role: "user".to_string(),
                 content: user_content,
+            });
+        }
+
+        for followup in &turn.followups {
+            if followup_assistant_replay_content(followup).is_some() {
+                let content = followup
+                    .preceding_assistant_content
+                    .clone()
+                    .unwrap_or_default();
+                entries.push(crate::state::StoredConversationEntry {
+                    timestamp: followup.submitted_at.clone(),
+                    role: "assistant".to_string(),
+                    content: content.clone(),
+                    reasoning: followup.preceding_assistant_reasoning.clone(),
+                });
+                evicted.push(EvictedTurn {
+                    source_id: format!("{}:before:{}", turn.turn_id, followup.prompt_id),
+                    timestamp: followup.submitted_at.clone(),
+                    role: "assistant".to_string(),
+                    content,
+                });
+            }
+            entries.push(crate::state::StoredConversationEntry {
+                timestamp: followup.submitted_at.clone(),
+                role: "user".to_string(),
+                content: followup.content.clone(),
+                reasoning: None,
+            });
+            evicted.push(EvictedTurn {
+                source_id: format!("{}:followup:{}", turn.turn_id, followup.prompt_id),
+                timestamp: followup.submitted_at.clone(),
+                role: "user".to_string(),
+                content: followup.content.clone(),
             });
         }
 
@@ -2107,10 +2494,12 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppConfig;
+    use crate::config::{AppConfig, ProviderConfig};
     use crate::paths::MiyuPaths;
     use crate::tools::{empty_parameters, ToolSpec};
     use std::path::PathBuf;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     #[test]
     fn strips_pasted_system_reminder_from_user_input() {
@@ -2588,10 +2977,13 @@ mod tests {
             user_timestamp: String::new(),
             assistant_content: "answer".to_string(),
             assistant_reasoning: Some("hidden reasoning ".repeat(1_000)),
+            assistant_provider_id: None,
+            assistant_model: None,
             assistant_timestamp: None,
             status: crate::state::TurnStatus::Completed,
             tool_reports: Vec::new(),
             question_exchanges: Vec::new(),
+            followups: Vec::new(),
             hidden: false,
             is_summary: false,
             owner_pid: None,
@@ -2604,6 +2996,17 @@ mod tests {
 
         turn.tool_reports.push("persisted tool result".to_string());
         assert!(turn_context_tokens(&turn) > without_reports);
+
+        turn.tool_reports.clear();
+        turn.assistant_content.clear();
+        turn.assistant_reasoning = Some("replayed reasoning ".repeat(1_000));
+        assert_eq!(
+            assistant_replay_content(&turn),
+            turn.assistant_reasoning.as_deref().unwrap()
+        );
+        let with_replayed_reasoning = turn_context_tokens(&turn);
+        turn.assistant_reasoning = None;
+        assert!(with_replayed_reasoning > turn_context_tokens(&turn));
     }
 
     #[test]
@@ -2905,6 +3308,300 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_prompt_continues_after_a_completed_model_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut config = queue_test_config(base_url);
+        config.tools.enabled = false;
+        config.providers[0].model_modalities.insert(
+            "test-model".to_string(),
+            vec!["text".to_string(), "image".to_string()],
+        );
+        let control = AgentTurnControl::new(
+            AgentMode::Normal,
+            ToolRegistry::new(),
+            ToolRegistry::new(),
+            ToolRegistry::new(),
+        );
+        let server_control = control.clone();
+        let (request_tx, request_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let _ = read_test_http_request(&mut first).await;
+            server_control.set_mode(AgentMode::Plan);
+            write_test_sse(
+                &mut first,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"first answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            let request = read_test_http_request(&mut second).await;
+            let _ = request_tx.send(request);
+            write_test_sse(
+                &mut second,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"continued answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+        });
+
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let provider = config.provider(None).unwrap().clone();
+        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state.clone(),
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap();
+        state
+            .enqueue_prompt(
+                "q1",
+                "queued followup",
+                "queued followup",
+                &[QueuedPromptAttachment::Binary {
+                    mime: "image/png".to_string(),
+                    data_base64: base64::engine::general_purpose::STANDARD.encode(b"image-data"),
+                }],
+            )
+            .unwrap();
+
+        let result = agent
+            .chat_stream_with_control("initial prompt", &[], &control, |_| Ok(()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "continued answer");
+        assert_eq!(agent.mode(), AgentMode::Plan);
+        let request: serde_json::Value =
+            serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
+        let messages = request["messages"].as_array().unwrap();
+        let first_answer = messages
+            .iter()
+            .position(|message| {
+                message["role"] == "assistant" && message["content"] == "first answer"
+            })
+            .unwrap();
+        let followup = messages
+            .iter()
+            .position(|message| {
+                message["role"] == "user"
+                    && message["content"].as_array().is_some_and(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| part["type"] == "text" && part["text"] == "queued followup")
+                            && parts.iter().any(|part| part["type"] == "image_url")
+                    })
+            })
+            .unwrap();
+        assert!(first_answer < followup);
+        let turns = state.load_turns().unwrap();
+        assert_eq!(
+            turns[0].followups[0].preceding_assistant_content.as_deref(),
+            Some("first answer")
+        );
+        let history = agent.chat_messages("", "next prompt").unwrap();
+        assert!(history.iter().any(|message| {
+            matches!(
+                message.content.as_ref(),
+                Some(ChatContent::Parts(parts))
+                    if parts.iter().any(|part| matches!(part, ChatContentPart::ImageUrl { .. }))
+            )
+        }));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_prompts_are_consumed_after_tools_with_dispatch_time_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut config = queue_test_config(base_url);
+        config.tools.enabled = true;
+        config.skills.enabled = false;
+        config.memory.enabled = false;
+
+        let mut normal_tools = ToolRegistry::new();
+        normal_tools.register(ToolSpec::new(
+            "queue_boundary_tool",
+            "returns a fixed result",
+            empty_parameters(),
+            |_| async { Ok("tool finished".to_string()) },
+        ));
+        let control = AgentTurnControl::new(
+            AgentMode::Normal,
+            normal_tools.clone(),
+            ToolRegistry::new(),
+            ToolRegistry::new(),
+        );
+        let server_control = control.clone();
+        let (request_tx, request_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let _ = read_test_http_request(&mut first).await;
+            server_control.set_mode(AgentMode::Chat);
+            write_test_sse(
+                &mut first,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"queue_boundary_tool\",\"arguments\":\"{}\"}}]}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            let request = read_test_http_request(&mut second).await;
+            let _ = request_tx.send(request);
+            write_test_sse(
+                &mut second,
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"final answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+            .await;
+        });
+
+        let state = StateStore::new(&paths).unwrap();
+        state.init_files().unwrap();
+        let provider = config.provider(None).unwrap().clone();
+        let client = OpenAiCompatibleClient::new(&provider, &config, &paths).unwrap();
+        let mut agent = Agent::new(
+            config,
+            &paths,
+            state.clone(),
+            client,
+            normal_tools,
+            AgentMode::Normal,
+        )
+        .unwrap();
+        state
+            .enqueue_prompt("q1", "first followup", "first followup", &[])
+            .unwrap();
+        state
+            .enqueue_prompt("q2", "second followup", "second followup", &[])
+            .unwrap();
+        let mut consumed = None;
+
+        let result = agent
+            .chat_stream_with_control("initial prompt", &[], &control, |event| {
+                if let AgentEvent::QueuedPromptsConsumed {
+                    prompt_ids, mode, ..
+                } = event
+                {
+                    consumed = Some((prompt_ids, mode));
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "final answer");
+        assert_eq!(agent.mode(), AgentMode::Chat);
+        assert_eq!(
+            consumed,
+            Some((vec!["q1".to_string(), "q2".to_string()], AgentMode::Chat))
+        );
+        let request: serde_json::Value =
+            serde_json::from_slice(&request_rx.await.unwrap()).unwrap();
+        let messages = request["messages"].as_array().unwrap();
+        assert!(messages.iter().any(|message| {
+            message["role"] == "user" && message["content"] == "first followup"
+        }));
+        assert!(messages.iter().any(|message| {
+            message["role"] == "user" && message["content"] == "second followup"
+        }));
+        assert!(messages
+            .iter()
+            .any(|message| { message["role"] == "tool" && message["content"] == "tool finished" }));
+        assert!(state.load_queued_prompts().unwrap().is_empty());
+        let turns = state.load_turns().unwrap();
+        assert_eq!(turns[0].followups.len(), 2);
+        assert_eq!(turns[0].assistant_content, "final answer");
+        server.await.unwrap();
+    }
+
+    async fn read_test_http_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0);
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("content-length: ")
+                    .or_else(|| line.strip_prefix("Content-Length: "))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0);
+            request.extend_from_slice(&buffer[..read]);
+        }
+        request[header_end..header_end + content_length].to_vec()
+    }
+
+    async fn write_test_sse(stream: &mut TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
+    fn queue_test_config(base_url: String) -> AppConfig {
+        let mut config = AppConfig {
+            active_provider: "queue-test".to_string(),
+            active_provider_models: None,
+            providers: vec![ProviderConfig {
+                id: "queue-test".to_string(),
+                display_name: "Queue Test".to_string(),
+                base_url,
+                protocol: "openai-chat".to_string(),
+                api_key: Some("test-key".to_string()),
+                models: vec!["test-model".to_string()],
+                model_context_window: Default::default(),
+                model_modalities: Default::default(),
+                default_model: "test-model".to_string(),
+                timeout_seconds: 30,
+                temperature: 0.0,
+                anthropic_max_tokens: 4096,
+                extra_body: None,
+            }],
+            ..AppConfig::default()
+        };
+        config.skills.enabled = false;
+        config.memory.enabled = false;
+        config
     }
 
     fn test_paths(root: &std::path::Path) -> MiyuPaths {

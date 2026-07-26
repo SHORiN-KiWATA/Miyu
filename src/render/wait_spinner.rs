@@ -10,7 +10,7 @@ const WIDTH: usize = 7;
 const TRAIL_LEN: usize = 6;
 const HOLD_END: usize = 9;
 const HOLD_START: usize = 30;
-pub(crate) const SPINNER_INTERVAL: Duration = Duration::from_millis(42);
+pub(crate) const SPINNER_INTERVAL: Duration = Duration::from_millis(40);
 const MIN_FADE_ALPHA: f64 = 0.12;
 const ACTIVE_DOTS: [&str; TRAIL_LEN] = ["▪", "▪", "▫", "▫", "·", "·"];
 const INACTIVE_DOT: &str = "·";
@@ -68,7 +68,18 @@ impl WaitSpinner {
         self.sub_phase = sub_phase;
     }
 
-    pub(crate) fn tick(&mut self) -> Result<()> {
+    #[cfg(test)]
+    fn tick_changes_layout_at_width(&self, terminal_width: usize) -> bool {
+        let (output, _) = render_frame_at_width(self.frame, self, terminal_width);
+        let next_widths = output
+            .lines()
+            .map(super::command_ansi_width)
+            .collect::<Vec<_>>();
+        super::rendered_physical_rows(&self.rendered_line_widths, terminal_width)
+            != super::rendered_physical_rows(&next_widths, terminal_width)
+    }
+
+    pub(crate) fn tick(&mut self, writer: &mut impl Write) -> Result<()> {
         let terminal_width = terminal::size()
             .map(|(width, _)| usize::from(width))
             .unwrap_or(120);
@@ -78,7 +89,7 @@ impl WaitSpinner {
                 .lines()
                 .map(super::command_ansi_width)
                 .collect::<Vec<_>>();
-            write_spinner_lines(&output, &self.rendered_line_widths, terminal_width)?;
+            write_spinner_lines(writer, &output, &self.rendered_line_widths, terminal_width)?;
             self.rendered_line_widths = widths;
         }
         let total = total_frames_for_style(self.style);
@@ -86,8 +97,8 @@ impl WaitSpinner {
         Ok(())
     }
 
-    pub(crate) fn stop(&mut self) -> Result<()> {
-        clear_spinner_lines(&self.rendered_line_widths)?;
+    pub(crate) fn stop(&mut self, writer: &mut impl Write) -> Result<()> {
+        clear_spinner_lines(writer, &self.rendered_line_widths)?;
         self.rendered_line_widths.clear();
         Ok(())
     }
@@ -271,36 +282,35 @@ fn paint_for_style(text: &str, style: SpinnerStyle) -> String {
 }
 
 fn write_spinner_lines(
+    writer: &mut impl Write,
     output: &str,
     previous_widths: &[usize],
     terminal_width: usize,
 ) -> Result<()> {
-    let mut stdout = io::stdout();
     if !previous_widths.is_empty() {
-        clear_spinner_lines_with_writer(&mut stdout, previous_widths, terminal_width)?;
+        clear_spinner_lines_with_writer(writer, previous_widths, terminal_width)?;
     }
     let output_lines = output.lines().collect::<Vec<_>>();
     for (index, line) in output_lines.iter().enumerate() {
-        execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-        write!(stdout, "{line}")?;
+        execute!(writer, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        write!(writer, "{line}")?;
         if index + 1 < output_lines.len() {
-            write!(stdout, "\n")?;
+            writeln!(writer)?;
         }
     }
-    stdout.flush()?;
+    writer.flush()?;
     Ok(())
 }
 
-fn clear_spinner_lines(widths: &[usize]) -> Result<()> {
+fn clear_spinner_lines(writer: &mut impl Write, widths: &[usize]) -> Result<()> {
     if widths.is_empty() {
         return Ok(());
     }
-    let mut stdout = io::stdout();
     let terminal_width = terminal::size()
         .map(|(width, _)| usize::from(width))
         .unwrap_or(120);
-    clear_spinner_lines_with_writer(&mut stdout, widths, terminal_width)?;
-    stdout.flush()?;
+    clear_spinner_lines_with_writer(writer, widths, terminal_width)?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -312,12 +322,7 @@ fn clear_spinner_lines_with_writer(
     if widths.is_empty() {
         return Ok(());
     }
-    let columns = terminal_width.max(1);
-    let rows = widths
-        .iter()
-        .map(|width| (*width).max(1).div_ceil(columns))
-        .sum::<usize>()
-        .min(u16::MAX as usize) as u16;
+    let rows = super::rendered_physical_rows(widths, terminal_width);
     if rows > 1 {
         execute!(stdout, MoveUp(rows - 1))?;
     }
@@ -336,6 +341,11 @@ fn clear_spinner_lines_with_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spinner_runs_at_least_twenty_four_frames_per_second() {
+        assert!(SPINNER_INTERVAL <= Duration::from_millis(41));
+    }
 
     fn make_spinner(phase: &str, sub_phase: Option<&str>, style: SpinnerStyle) -> WaitSpinner {
         WaitSpinner {
@@ -395,6 +405,27 @@ mod tests {
         assert!(frame.contains("输入法诊断"));
         assert!(frame.contains("第 1 轮"));
         assert_eq!(lines, 2);
+    }
+
+    #[test]
+    fn detects_sub_phase_row_growth_before_tick() {
+        let mut spinner = make_spinner(
+            "~ Linux 游戏兼容性调查×1 运行中",
+            Some("↳ Black Myth: Wukong"),
+            SpinnerStyle::Braille,
+        );
+        let (rendered, _) = render_frame_at_width(0, &spinner, 80);
+        spinner.rendered_line_widths = rendered
+            .lines()
+            .map(crate::render::command_ansi_width)
+            .collect();
+        assert!(!spinner.tick_changes_layout_at_width(80));
+
+        spinner.set_sub_phase(Some(
+            "↳ Black Myth: Wukong\n↳ 收集游戏兼容性信号".to_string(),
+        ));
+
+        assert!(spinner.tick_changes_layout_at_width(80));
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub fn register_print(registry: &mut ToolRegistry, config: AppConfig) {
     }
     registry.register(ToolSpec::new_with_progress(
         "print_image",
-        t("Print/render a local image directly in the current terminal output using chafa. Use this when the user asks to show, print, render, or preview an image, or when you need to inspect an image visually in the terminal before answering.", "使用 chafa 在当前终端输出中直接打印/渲染本地图片。当用户要求显示、打印、渲染、预览图片，或回答前需要在终端中目视检查图片时使用。"),
+        t("Print/render a local image directly in the current terminal output. Use this when the user asks to show, print, render, or preview an image, or when you need to inspect an image visually in the terminal before answering.", "在当前终端输出中直接打印/渲染本地图片。当用户要求显示、打印、渲染、预览图片，或回答前需要在终端中目视检查图片时使用。"),
         json!({
             "type": "object",
             "properties": {
@@ -95,8 +95,15 @@ async fn print_image(
             path.display()
         )
     }
-    progress.prepare_for_external_output().await;
-    print_image_file(&path, print_size(&args, print_config)).await?;
+    progress.report_image(
+        path.clone(),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image"),
+    );
+    if progress.prepare_for_external_output().await {
+        print_image_file(&path, print_size(&args, print_config)).await?;
+    }
     Ok(format!(
         "{}: {}",
         t("printed image in terminal", "已在终端打印图片"),
@@ -107,10 +114,23 @@ async fn print_image(
 pub async fn print_image_file(path: &Path, size: Option<String>) -> Result<()> {
     println!();
     io::stdout().flush()?;
+    if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+        && super::kitty_image::is_native_kitty_terminal()
+        && super::kitty_image::supports_path(path)
+    {
+        super::kitty_image::print(path, size.as_deref())?;
+        println!();
+        io::stdout().flush()?;
+        return Ok(());
+    }
     let mut command = Command::new("chafa");
+    if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+        command.args(["--probe", "off", "--relative", "off"]);
+    }
     if let Some(size) = size {
         command.arg("--size").arg(size);
     }
+    command.kill_on_drop(true);
     let status = command
         .arg(path)
         .stdin(Stdio::null())

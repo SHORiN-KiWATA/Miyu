@@ -1011,6 +1011,7 @@ impl OpenAiCompatibleClient {
                             provider = %endpoint.provider.id,
                             model = %endpoint.provider.default_model,
                             elapsed_ms = started.elapsed().as_millis(),
+                            error = %format!("{err:#}"),
                             "LLM endpoint failed outside the HTTP send stage"
                         );
                     }
@@ -1286,6 +1287,7 @@ impl OpenAiCompatibleClient {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut stream = response.bytes_stream();
@@ -1299,6 +1301,7 @@ impl OpenAiCompatibleClient {
                     &mut reasoning,
                     &mut reasoning_emitted,
                     &mut reasoning_part_active,
+                    &mut finish_reason,
                     &mut usage,
                     &mut tool_calls,
                     &mut *on_chunk,
@@ -1323,6 +1326,7 @@ impl OpenAiCompatibleClient {
                 &mut reasoning,
                 &mut reasoning_emitted,
                 &mut reasoning_part_active,
+                &mut finish_reason,
                 &mut usage,
                 &mut tool_calls,
                 &mut *on_chunk,
@@ -1342,6 +1346,15 @@ impl OpenAiCompatibleClient {
             &mut *on_chunk,
             true,
         )?;
+        tracing::debug!(
+            provider = %self.provider.id,
+            model = %self.provider.default_model,
+            finish_reason = finish_reason.as_deref(),
+            content_chars = content.chars().count(),
+            reasoning_chars = reasoning.chars().count(),
+            tool_call_count = tool_calls.calls.len(),
+            "Chat completions stream reached EOF"
+        );
         let result = finalize_stream_result(content, reasoning, usage, tool_calls.finish(), dsml)?;
         if reasoning_part_active {
             on_chunk(ChatStreamChunk {
@@ -2247,10 +2260,14 @@ struct ChatStreamResponse {
     choices: Vec<ChatStreamChoice>,
     #[serde(default, deserialize_with = "null_as_default")]
     usage: Option<Usage>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    error: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatStreamChoice {
+    #[serde(default, deserialize_with = "null_as_default")]
+    finish_reason: Option<String>,
     #[serde(default)]
     delta: ChatChoiceMessage,
 }
@@ -2716,6 +2733,20 @@ fn clean_response_content(content: String) -> (String, Option<String>) {
     split_tagged_reasoning(clean_plain_text(content))
 }
 
+fn provider_error_text(value: &Value) -> String {
+    value
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+        })
+        .map(|message| clean_plain_text(message.to_string()))
+        .unwrap_or_else(|| clean_plain_text(value.to_string()))
+}
+
 fn split_tagged_reasoning(content: String) -> (String, Option<String>) {
     match split_tag_pair(content, "think").or_else(|content| split_tag_pair(content, "thinking")) {
         Ok(result) => result,
@@ -2754,6 +2785,7 @@ fn handle_sse_line<F>(
     reasoning: &mut String,
     reasoning_emitted: &mut usize,
     reasoning_part_active: &mut bool,
+    finish_reason: &mut Option<String>,
     usage: &mut Option<Usage>,
     tool_calls: &mut ToolCallAccumulator,
     on_chunk: &mut F,
@@ -2786,6 +2818,13 @@ where
             on_chunk,
             true,
         )?;
+        tracing::debug!(
+            finish_reason = finish_reason.as_deref(),
+            content_chars = content.chars().count(),
+            reasoning_chars = reasoning.chars().count(),
+            tool_call_count = tool_calls.calls.len(),
+            "Chat completions stream received DONE"
+        );
         return Ok(Some(true));
     }
     let response: ChatStreamResponse = serde_json::from_str(data).with_context(|| {
@@ -2798,10 +2837,27 @@ where
             clean_plain_text(data.to_string())
         )
     })?;
+    if let Some(error) = response.error {
+        bail!(
+            "{}: {}",
+            t(
+                "chat completions stream returned an error",
+                "聊天流式响应返回错误"
+            ),
+            provider_error_text(&error)
+        );
+    }
     if let Some(next_usage) = response.usage {
         *usage = Some(next_usage);
     }
     for choice in response.choices {
+        if let Some(next_finish_reason) = choice.finish_reason {
+            tracing::debug!(
+                finish_reason = %next_finish_reason,
+                "Chat completions stream finish reason received"
+            );
+            *finish_reason = Some(next_finish_reason);
+        }
         let delta = choice.delta;
         if let Some(text) = delta_reasoning_text(&delta) {
             if !*reasoning_part_active {
@@ -3532,7 +3588,12 @@ fn finalize_stream_result(
     } else {
         dsml_tool_calls
     };
-    if content.trim().is_empty() && tool_calls.is_empty() {
+    if content.trim().is_empty()
+        && !reasoning
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty())
+        && tool_calls.is_empty()
+    {
         bail!(
             "{}",
             t(
@@ -3767,6 +3828,7 @@ mod tests {
 
         assert!(parsed.usage.is_none());
         assert_eq!(parsed.choices.len(), 1);
+        assert!(parsed.choices[0].finish_reason.is_none());
         assert_eq!(parsed.choices[0].delta.content.as_deref(), Some("在"));
         assert!(parsed.choices[0].delta.reasoning_content.is_none());
         assert!(parsed.choices[0].delta.tool_calls.is_empty());
@@ -3779,6 +3841,7 @@ mod tests {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut chunks = Vec::new();
@@ -3788,12 +3851,13 @@ mod tests {
         };
 
         handle_sse_line(
-            r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":"","tool_calls":null}}]}"#,
+            r#"data: {"choices":[{"finish_reason":"length","delta":{"reasoning_content":"先想一下","content":"","tool_calls":null}}]}"#,
             &mut content,
             &mut content_emitted,
             &mut reasoning,
             &mut reasoning_emitted,
             &mut reasoning_part_active,
+            &mut finish_reason,
             &mut usage,
             &mut tool_calls,
             &mut on_chunk,
@@ -3804,6 +3868,7 @@ mod tests {
         assert_eq!(chunks[0].kind, ChatStreamKind::ReasoningPartStart);
         assert_eq!(chunks[1].kind, ChatStreamKind::Reasoning);
         assert_eq!(chunks[1].text, "先想一下");
+        assert_eq!(finish_reason.as_deref(), Some("length"));
     }
 
     #[test]
@@ -3813,6 +3878,7 @@ mod tests {
         let mut reasoning = String::new();
         let mut reasoning_emitted = 0usize;
         let mut reasoning_part_active = false;
+        let mut finish_reason = None;
         let mut usage = None;
         let mut tool_calls = ToolCallAccumulator::default();
         let mut chunks = Vec::new();
@@ -3828,6 +3894,7 @@ mod tests {
             &mut reasoning,
             &mut reasoning_emitted,
             &mut reasoning_part_active,
+            &mut finish_reason,
             &mut usage,
             &mut tool_calls,
             &mut on_chunk,
@@ -3837,6 +3904,57 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].kind, ChatStreamKind::ToolCall);
         assert_eq!(chunks[0].text, "ask_question");
+    }
+
+    #[test]
+    fn chat_stream_surfaces_sse_error_objects() {
+        let mut content = String::new();
+        let mut content_emitted = 0usize;
+        let mut reasoning = String::new();
+        let mut reasoning_emitted = 0usize;
+        let mut reasoning_part_active = false;
+        let mut finish_reason = None;
+        let mut usage = None;
+        let mut tool_calls = ToolCallAccumulator::default();
+
+        let error = handle_sse_line(
+            r#"data: {"error":{"message":"upstream generation timed out"}}"#,
+            &mut content,
+            &mut content_emitted,
+            &mut reasoning,
+            &mut reasoning_emitted,
+            &mut reasoning_part_active,
+            &mut finish_reason,
+            &mut usage,
+            &mut tool_calls,
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("upstream generation timed out"));
+    }
+
+    #[test]
+    fn reasoning_only_stream_result_is_preserved() {
+        let result = finalize_stream_result(
+            String::new(),
+            "完整思考内容".to_string(),
+            None,
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+
+        assert!(result.content.is_empty());
+        assert_eq!(result.reasoning.as_deref(), Some("完整思考内容"));
+    }
+
+    #[test]
+    fn fully_empty_stream_result_is_rejected() {
+        let error = finalize_stream_result(String::new(), String::new(), None, Vec::new(), false)
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("流式响应为空"));
     }
 
     #[test]
@@ -4578,33 +4696,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_failover_resets_partial_reasoning_before_retry() {
-        let first_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let first_url = format!("http://{}/v1", first_listener.local_addr().unwrap());
-        let second_url = format!("http://{}/v1", second_listener.local_addr().unwrap());
-        let first_server = tokio::spawn(async move {
-            let (mut stream, _) = first_listener.accept().await.unwrap();
-            read_http_headers(&mut stream).await;
-            let body =
-                concat!("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"old\"}}]}\n\n");
-            write_http_sse_response(&mut stream, body).await;
-        });
-        let second_server = tokio::spawn(async move {
-            let (mut stream, _) = second_listener.accept().await.unwrap();
+    async fn endpoint_accepts_reasoning_only_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
             read_http_headers(&mut stream).await;
             let body = concat!(
-                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"new\"}}]}\n\n",
-                "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"partial reasoning\"}}]}\n\n",
+                "data: {\"choices\":[{\"finish_reason\":\"length\",\"delta\":{}}]}\n\n",
                 "data: [DONE]\n\n"
             );
             write_http_sse_response(&mut stream, body).await;
         });
 
-        let mut first = test_provider("failover-first-test", &first_url);
+        let mut provider = test_provider("reasoning-only-test", &url);
+        provider.protocol = "openai-chat".to_string();
+        provider.default_model = "test-model".to_string();
+        let client = test_client(provider);
+        let mut chunks = Vec::new();
+
+        let result = client
+            .chat_stream(
+                vec![ChatMessage::plain("user", "hi")],
+                Vec::new(),
+                |chunk| {
+                    chunks.push(chunk);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.content.is_empty());
+        assert_eq!(result.reasoning.as_deref(), Some("partial reasoning"));
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.kind).collect::<Vec<_>>(),
+            vec![
+                ChatStreamKind::ReasoningPartStart,
+                ChatStreamKind::Reasoning,
+                ChatStreamKind::ReasoningPartEnd,
+            ]
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn endpoint_failover_resets_partial_reasoning_before_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let bodies = [
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"old\"}}]}\n\n",
+                    "data: {\"error\":{\"message\":\"upstream stream failed\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"new\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            ];
+            for body in bodies {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http_headers(&mut stream).await;
+                write_http_sse_response(&mut stream, body).await;
+            }
+        });
+
+        let mut first = test_provider("failover-first-test", &url);
         first.protocol = "openai-chat".to_string();
         first.default_model = "test-model".to_string();
-        let mut second = test_provider("failover-second-test", &second_url);
+        let mut second = test_provider("failover-second-test", &url);
         second.protocol = "openai-chat".to_string();
         second.default_model = "test-model".to_string();
         let first_client = reqwest::Client::new();
@@ -4660,8 +4823,7 @@ mod tests {
                 ChatStreamKind::Content,
             ]
         );
-        first_server.await.unwrap();
-        second_server.await.unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

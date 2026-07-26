@@ -227,10 +227,15 @@ async fn search_web_images(
     )
     .await?;
     let stored = download_result.images;
+    for item in &stored {
+        progress.report_image(item.local_path.clone(), item.candidate.title.clone());
+    }
     let mut print_errors = Vec::new();
-    let should_print = preview && config.plugins.print_image.enabled && preview_count > 0;
+    let should_print = preview
+        && config.plugins.print_image.enabled
+        && preview_count > 0
+        && progress.prepare_for_external_output().await;
     if should_print {
-        progress.prepare_for_external_output().await;
         for item in stored.iter().take(preview_count) {
             if let Err(err) = vision::print_image_file(
                 &item.local_path,

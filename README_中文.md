@@ -31,7 +31,7 @@ C:\Tools\Miyu
 正常情况下会显示：
 
 ```text
-miyu 0.2.1
+miyu 0.3.0
 ```
 
 ### 3. 首次配置
@@ -102,9 +102,14 @@ miyu --version               # 查看版本
 miyu init                    # 运行首次初始化
 miyu config                  # 修改配置
 miyu paths                   # 查看配置、数据和日志路径
+miyu web                     # 启动本地 WebUI（默认端口 4096）
+miyu web --password          # 使用密码保护 WebUI
 miyu powershell-init         # 安装或刷新 PowerShell 集成
 miyu remove-shell-hook       # 删除 PowerShell 集成
 ```
+
+启动 WebUI 后会自动打开浏览器。服务会监听本机网络接口；如果 Windows
+防火墙允许局域网访问，建议使用 `miyu web --password` 设置访问密码。
 
 ## 四、常见问题
 

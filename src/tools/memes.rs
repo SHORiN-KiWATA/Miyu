@@ -235,7 +235,7 @@ fn register_search_and_show(registry: &mut ToolRegistry, config: AppConfig, path
             }
         },
     ));
-    registry.register(ToolSpec::new(
+    registry.register(ToolSpec::new_with_progress(
         "show_meme",
         t(
             "Render a meme in the terminal with chafa. GIFs are shown as static previews unless animation is explicitly allowed in config.",
@@ -256,10 +256,10 @@ fn register_search_and_show(registry: &mut ToolRegistry, config: AppConfig, path
         {
             let config = config.clone();
             let paths = paths.clone();
-            move |args| {
+            move |args, progress| {
                 let config = config.clone();
                 let paths = paths.clone();
-                async move { show_meme(args, &config, &paths).await }
+                async move { show_meme(args, &config, &paths, progress).await }
             }
         },
     ));
@@ -315,14 +315,22 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
     Ok(json!({ "success": true, "library": library, "results": results }).to_string())
 }
 
-async fn show_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
+async fn show_meme(
+    args: Value,
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    progress: crate::tools::ToolProgress,
+) -> Result<String> {
     let library = selected_library(&args, config);
     let id = required_str(&args, "id")?;
     let memes = load_library(paths, &library)?;
     let ids = meme_ids(&memes);
     let meme = find_meme_in(memes, id)?.with_context(|| format!("meme not found: {id}"))?;
     let size = meme_print_size(&args, &config.plugins.memes);
-    vision::print_image_file(&meme.path, size).await?;
+    progress.report_image(meme.path.clone(), meme.item.description.clone());
+    if progress.prepare_for_external_output().await {
+        vision::print_image_file(&meme.path, size).await?;
+    }
     Ok(json!({
         "success": true,
         "id": unique_short_id_from_ids(&ids, &meme.item.id),

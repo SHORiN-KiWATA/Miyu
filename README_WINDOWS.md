@@ -22,9 +22,14 @@ Open PowerShell in the `dist` directory:
 .\miyu.exe init
 .\miyu.exe config
 .\miyu.exe
+.\miyu.exe web
 ```
 
 `miyu.cmd` is provided for Command Prompt users.
+
+The WebUI uses port 4096 by default and opens the browser automatically. It
+listens on the machine's network interfaces, so use `miyu web --password` when
+Windows Firewall permits access from the local network.
 
 ## Integrate with Windows PowerShell
 

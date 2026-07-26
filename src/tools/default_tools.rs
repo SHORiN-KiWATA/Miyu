@@ -359,6 +359,18 @@ fn edit_file(args: Value, progress: ToolProgress) -> Result<String> {
 }
 
 fn trash_path(args: Value) -> Result<String> {
+    trash_path_with(
+        args,
+        |path| trash::delete(path).map_err(|err| anyhow::anyhow!("failed to move to trash: {err}")),
+        find_recent_trash_item,
+    )
+}
+
+fn trash_path_with(
+    args: Value,
+    move_to_trash: impl FnOnce(&Path) -> Result<()>,
+    locate_trash_item: impl FnOnce(&Path, i64) -> Option<String>,
+) -> Result<String> {
     let input = path_arg(&args, "path")?;
     let resolved = resolve_existing_path_without_following_leaf(&input)?;
     ensure_safe_trash_target(&resolved)?;
@@ -368,10 +380,10 @@ fn trash_path(args: Value) -> Result<String> {
     let original_path = resolved.display().to_string();
     let timestamp_before = current_unix_seconds();
 
-    trash::delete(&resolved).map_err(|err| anyhow::anyhow!("failed to move to trash: {err}"))?;
+    move_to_trash(&resolved)?;
 
     let exists_after = std::fs::symlink_metadata(&resolved).is_ok();
-    let trash_item_id = find_recent_trash_item(&resolved, timestamp_before);
+    let trash_item_id = locate_trash_item(&resolved, timestamp_before);
     Ok(serde_json::to_string_pretty(&json!({
         "ok": !exists_after,
         "kind": kind,
@@ -1017,6 +1029,21 @@ fn required(args: &Value, key: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn fake_trash_path(args: Value) -> Result<String> {
+        trash_path_with(
+            args,
+            |path| {
+                if std::fs::symlink_metadata(path)?.file_type().is_dir() {
+                    std::fs::remove_dir_all(path)?;
+                } else {
+                    std::fs::remove_file(path)?;
+                }
+                Ok(())
+            },
+            |_, _| None,
+        )
+    }
+
     #[tokio::test]
     async fn command_execution_streams_stdout_and_stderr() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1218,7 +1245,7 @@ mod tests {
         let temp = tempfile::tempdir_in(cwd).unwrap();
         let path = temp.path().join("trash-me.txt");
         std::fs::write(&path, "bye").unwrap();
-        let result = trash_path(json!({"path": path.display().to_string()})).unwrap();
+        let result = fake_trash_path(json!({"path": path.display().to_string()})).unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["ok"], true);
         assert_eq!(data["kind"], "file");
@@ -1233,7 +1260,7 @@ mod tests {
         let path = temp.path().join("trash-dir");
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("child.txt"), "bye").unwrap();
-        let result = trash_path(json!({"path": path.display().to_string()})).unwrap();
+        let result = fake_trash_path(json!({"path": path.display().to_string()})).unwrap();
         let data: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(data["ok"], true);
         assert_eq!(data["kind"], "directory");

@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -21,7 +22,11 @@ pub enum CommandOutputStream {
 pub enum ToolProgressEvent {
     Message(String),
     PrepareForExternalOutput {
-        ready: oneshot::Sender<()>,
+        ready: oneshot::Sender<bool>,
+    },
+    Image {
+        path: PathBuf,
+        alt: String,
     },
     CommandOutput {
         stream: CommandOutputStream,
@@ -53,17 +58,27 @@ impl ToolProgress {
         }
     }
 
-    pub async fn prepare_for_external_output(&self) {
+    pub fn report_image(&self, path: impl Into<PathBuf>, alt: impl Into<String>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(ToolProgressEvent::Image {
+                path: path.into(),
+                alt: alt.into(),
+            });
+        }
+    }
+
+    pub async fn prepare_for_external_output(&self) -> bool {
         let Some(sender) = &self.sender else {
-            return;
+            return true;
         };
         let (ready, receiver) = oneshot::channel();
         if sender
             .send(ToolProgressEvent::PrepareForExternalOutput { ready })
             .is_ok()
         {
-            let _ = receiver.await;
+            return receiver.await.unwrap_or(false);
         }
+        false
     }
 }
 
@@ -88,8 +103,8 @@ mod progress_tests {
         else {
             panic!("expected external output preparation event");
         };
-        ready.send(()).unwrap();
-        prepare.await;
+        ready.send(true).unwrap();
+        assert!(prepare.await);
     }
 }
 
