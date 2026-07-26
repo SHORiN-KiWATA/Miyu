@@ -66,6 +66,65 @@ Miyu stores per-user files in the normal Windows application directories:
 
 Run `.\miyu.exe paths` to print the exact paths on the current machine.
 
+## Upgrade an existing Windows installation
+
+Only replace the program directory. Configuration, API keys, conversation
+state, and logs are stored in the user's application directories and are not
+included in the release archive. Do not delete or overwrite `%APPDATA%\miyu`.
+
+First, locate the executable used by the PowerShell integration:
+
+```powershell
+Get-Command miyu -All | Format-List CommandType,Source,Definition
+```
+
+When `Source` is empty, read the executable path from `Definition`. Back up the
+per-user configuration before continuing:
+
+```powershell
+$config = Join-Path $env:APPDATA "miyu"
+
+if (Test-Path $config) {
+    $backup = Join-Path $env:APPDATA (
+        "miyu-backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    )
+    Copy-Item -LiteralPath $config -Destination $backup -Recurse
+    Write-Host "Configuration backup: $backup"
+}
+```
+
+The backup may contain API keys. Never upload or share it.
+
+Close Miyu, `miyu web`, and old PowerShell windows. Check for remaining
+processes with:
+
+```powershell
+Get-Process miyu -ErrorAction SilentlyContinue
+```
+
+Extract the new `Miyu-windows-x86_64.zip` into a temporary directory. Copy all
+of its contents over the existing installation and replace files when asked.
+Update `miyu.exe`, `miyu.cmd`, `rg.exe`, the `share` directory, and the
+documentation together; copying only `miyu.exe` can leave incompatible runtime
+files behind.
+
+From the installation directory, refresh the PowerShell hook:
+
+```powershell
+.\miyu.exe powershell-init
+```
+
+Close and reopen PowerShell, then verify the upgrade:
+
+```powershell
+miyu --version
+miyu config validate
+```
+
+The current package should report `miyu 0.3.0`. If the upgrade fails, stop
+`miyu.exe` and restore a copy of the old program directory. Restore the
+configuration backup only if the configuration itself was damaged.
+
 ## Build from source
 
 Install Rust from <https://rustup.rs>. Use either the MSVC toolchain with the

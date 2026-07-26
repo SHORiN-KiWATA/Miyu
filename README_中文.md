@@ -111,7 +111,89 @@ miyu remove-shell-hook       # 删除 PowerShell 集成
 启动 WebUI 后会自动打开浏览器。服务会监听本机网络接口；如果 Windows
 防火墙允许局域网访问，建议使用 `miyu web --password` 设置访问密码。
 
-## 四、常见问题
+## 四、从旧版本安全升级
+
+升级只需要替换程序目录。模型配置、API Key、聊天状态和日志位于用户目录，
+不在发布压缩包内。请不要删除或覆盖 `%APPDATA%\miyu`。
+
+### 1. 找到当前安装目录
+
+在可以正常运行 `miyu` 的 Windows PowerShell 中执行：
+
+```powershell
+Get-Command miyu -All | Format-List CommandType,Source,Definition
+```
+
+如果 `Source` 为空，请查看 `Definition`。其中 `miyu.exe` 所在的文件夹就是
+当前安装目录，例如 `C:\Tools\Miyu`。
+
+### 2. 备份个人配置
+
+以下命令会创建一个带时间戳的完整配置备份：
+
+```powershell
+$config = Join-Path $env:APPDATA "miyu"
+
+if (Test-Path $config) {
+    $backup = Join-Path $env:APPDATA (
+        "miyu-backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    )
+    Copy-Item -LiteralPath $config -Destination $backup -Recurse
+    Write-Host "配置已备份到：$backup"
+}
+```
+
+备份中可能包含 API Key，不要上传或分享这个文件夹。
+
+### 3. 关闭旧版程序
+
+关闭正在运行的 Miyu、`miyu web` 和使用 Miyu 的旧 PowerShell 窗口。可以用
+下面的命令确认是否仍有进程：
+
+```powershell
+Get-Process miyu -ErrorAction SilentlyContinue
+```
+
+如果确认这些进程都可以结束，再运行：
+
+```powershell
+Get-Process miyu -ErrorAction SilentlyContinue | Stop-Process
+```
+
+### 4. 覆盖程序文件
+
+1. 将新版 `Miyu-windows-x86_64.zip` 解压到一个临时文件夹。
+2. 把临时文件夹内的全部内容复制到原安装目录。
+3. Windows 询问时选择替换同名文件。
+
+必须一起更新 `miyu.exe`、`miyu.cmd`、`rg.exe`、`share` 文件夹和说明文件，
+不要只复制 `miyu.exe`。也不要把新版解压到旧目录的子文件夹中。
+
+### 5. 刷新 PowerShell 集成
+
+在安装目录中运行：
+
+```powershell
+.\miyu.exe powershell-init
+```
+
+关闭所有旧 PowerShell 窗口并重新打开，然后验证：
+
+```powershell
+miyu --version
+miyu config validate
+```
+
+当前发布包应显示 `miyu 0.3.0`。原来的模型配置和 API Key 应继续有效。如需
+验证 WebUI，可运行 `miyu web`。
+
+### 6. 升级失败时回退
+
+升级前也可以把整个旧程序目录复制一份作为程序备份。如果新版无法启动，先
+结束 `miyu.exe`，再用旧程序备份覆盖安装目录。只有在配置也发生异常时，才
+需要用步骤 2 创建的备份恢复 `%APPDATA%\miyu`。
+
+## 五、常见问题
 
 ### Windows 提示“未知发布者”或阻止运行
 
@@ -164,7 +246,7 @@ miyu paths
 通常配置位于 `%APPDATA%\miyu`，日志及缓存位于
 `%LOCALAPPDATA%\miyu`。
 
-## 五、取消 PowerShell 集成
+## 六、取消 PowerShell 集成
 
 运行：
 
@@ -181,10 +263,10 @@ miyu remove-shell-hook
 关闭并重新打开 Windows PowerShell 后完成卸载。该操作只删除 Miyu 添加的
 集成区块和生成的 Hook，不会删除其他 PowerShell Profile 内容。
 
-## 六、分享与安全提示
+## 七、分享与安全提示
 
 - 只需分享 `Miyu-windows-x86_64.zip`，不要分享自己的配置目录。
 - 不要把 API Key 写进压缩包、截图或聊天消息。
 - 接收者需要使用自己的模型服务账号和 API Key。
-- 收到更新版本后，可解压到固定目录覆盖旧程序，再运行一次
-  `miyu powershell-init` 刷新集成路径。
+- 收到更新版本后，请按照“从旧版本安全升级”一节先备份配置，再覆盖完整
+  程序目录并运行 `miyu powershell-init`。
