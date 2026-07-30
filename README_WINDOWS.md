@@ -168,9 +168,12 @@ powershell -ExecutionPolicy Bypass -File .\build-windows.ps1 -UseRsProxy
 - Custom `.ps1`, `.cmd`, `.bat`, `.py`, and `.exe` script tools are supported.
 - Alarm workers run without opening a second console window and can be cancelled.
 - Windows PowerShell integration is available through `powershell-init`.
-- Multiline prompt and identity fields open `VISUAL` or `EDITOR`; when neither
-  is configured, Windows Notepad is used automatically. Editor commands may
-  include arguments such as `code.cmd --wait`.
+- Multiline prompt and identity fields use Miyu's built-in Windows editor by
+  default. It supports paste, newlines, cursor movement, `Ctrl+S` to save, and
+  double-Esc to discard unsaved changes.
+- `VISUAL` or `EDITOR` may select a waiting external editor such as
+  `code.cmd --wait`. Windows Notepad is intentionally rejected because its
+  single-instance tab handoff can return before the temporary file is saved.
 - Linux-only diagnostic/AUR tools remain Linux-specific.
 
 If PowerShell cannot find `miyu`, either run it as `.\miyu.exe` or add the

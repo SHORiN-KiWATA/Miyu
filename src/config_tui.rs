@@ -5,7 +5,10 @@ use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
@@ -2850,6 +2853,61 @@ fn parse_provider_model_choice(value: &str) -> (String, String) {
 }
 
 fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        let commands = configured_editor_commands();
+        if commands.is_empty() {
+            edit_textarea_in_tui(stdout, value)
+        } else {
+            match run_external_textarea_editor(stdout, value, &commands)? {
+                Ok(edited) => {
+                    *value = edited;
+                    Ok(true)
+                }
+                Err(err) => {
+                    message(
+                        stdout,
+                        &format!(
+                            "{}\n{}",
+                            t(
+                                "The configured external editor failed; the built-in editor will be used.",
+                                "配置的外部编辑器启动失败，将改用内置编辑器。"
+                            ),
+                            err
+                        ),
+                    )?;
+                    edit_textarea_in_tui(stdout, value)
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        match run_external_textarea_editor(stdout, value, &external_editor_commands())? {
+            Ok(edited) => {
+                *value = edited;
+                Ok(true)
+            }
+            Err(err) => {
+                message(
+                    stdout,
+                    &format!(
+                        "{}: {err}",
+                        t("Failed to open a text editor", "无法打开文本编辑器")
+                    ),
+                )?;
+                Ok(false)
+            }
+        }
+    }
+}
+
+fn run_external_textarea_editor(
+    stdout: &mut io::Stdout,
+    value: &str,
+    commands: &[EditorCommand],
+) -> Result<std::result::Result<String, anyhow::Error>> {
     execute!(
         stdout,
         Show,
@@ -2860,25 +2918,382 @@ fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<bool> {
     stdout.flush()?;
     terminal::disable_raw_mode()?;
 
-    let edit_result = edit_textarea_with_external_editor(value);
+    let edit_result = edit_textarea_with_external_editor(value, commands);
     let restore_result = restore_tui_after_external_editor(stdout);
     restore_result?;
+    Ok(edit_result)
+}
 
-    match edit_result {
-        Ok(edited) => {
-            *value = edited;
-            Ok(true)
+fn edit_textarea_in_tui(stdout: &mut io::Stdout, value: &mut String) -> Result<bool> {
+    let mut editor = MultilineEditor::new(value);
+    execute!(stdout, EnableBracketedPaste, Hide)?;
+    let edit_result = (|| -> Result<bool> {
+        let mut discard_armed = false;
+        loop {
+            draw_multiline_editor(stdout, &mut editor, discard_armed)?;
+            let event = event::read()?;
+            if matches!(
+                &event,
+                Event::Key(KeyEvent {
+                    code: KeyCode::Esc,
+                    kind: KeyEventKind::Press,
+                    ..
+                })
+            ) {
+                if !editor.is_dirty() || discard_armed {
+                    return Ok(false);
+                }
+                discard_armed = true;
+                continue;
+            }
+            discard_armed = false;
+            match handle_multiline_editor_event(&mut editor, event) {
+                MultilineEditorAction::Continue => {}
+                MultilineEditorAction::Save => {
+                    *value = editor.text().trim().to_string();
+                    return Ok(true);
+                }
+                MultilineEditorAction::Cancel => return Ok(false),
+            }
         }
-        Err(err) => {
-            let text = if is_zh() {
-                format!("无法打开文本编辑器：{err}")
-            } else {
-                format!("Failed to open a text editor: {err}")
-            };
-            message(stdout, &text)?;
-            Ok(false)
+    })();
+    let cleanup_result = execute!(stdout, DisableBracketedPaste, Hide);
+    cleanup_result?;
+    edit_result
+}
+
+#[derive(Debug, Clone)]
+struct MultilineEditor {
+    original: Vec<char>,
+    text: Vec<char>,
+    cursor: usize,
+    preferred_column: Option<usize>,
+    vertical_scroll: usize,
+}
+
+impl MultilineEditor {
+    fn new(value: &str) -> Self {
+        let text = value.chars().collect::<Vec<_>>();
+        Self {
+            original: text.clone(),
+            cursor: text.len(),
+            text,
+            preferred_column: None,
+            vertical_scroll: 0,
         }
     }
+
+    fn text(&self) -> String {
+        self.text.iter().collect()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.text != self.original
+    }
+
+    fn line_bounds(&self) -> Vec<(usize, usize)> {
+        let mut bounds = Vec::new();
+        let mut start = 0usize;
+        for (index, ch) in self.text.iter().enumerate() {
+            if *ch == '\n' {
+                bounds.push((start, index));
+                start = index + 1;
+            }
+        }
+        bounds.push((start, self.text.len()));
+        bounds
+    }
+
+    fn cursor_line_column(&self) -> (usize, usize) {
+        self.line_bounds()
+            .into_iter()
+            .enumerate()
+            .find_map(|(line, (start, end))| {
+                (self.cursor <= end).then_some((line, self.cursor.saturating_sub(start)))
+            })
+            .unwrap_or((0, 0))
+    }
+
+    fn insert_text(&mut self, value: &str) {
+        let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+        let chars = normalized.chars().collect::<Vec<_>>();
+        let count = chars.len();
+        self.text.splice(self.cursor..self.cursor, chars);
+        self.cursor += count;
+        self.preferred_column = None;
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+        self.preferred_column = None;
+    }
+
+    fn move_right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.text.len());
+        self.preferred_column = None;
+    }
+
+    fn move_home(&mut self, document: bool) {
+        if document {
+            self.cursor = 0;
+        } else {
+            let (line, _) = self.cursor_line_column();
+            self.cursor = self.line_bounds()[line].0;
+        }
+        self.preferred_column = None;
+    }
+
+    fn move_end(&mut self, document: bool) {
+        if document {
+            self.cursor = self.text.len();
+        } else {
+            let (line, _) = self.cursor_line_column();
+            self.cursor = self.line_bounds()[line].1;
+        }
+        self.preferred_column = None;
+    }
+
+    fn move_vertical(&mut self, delta: isize) {
+        let bounds = self.line_bounds();
+        let (line, column) = self.cursor_line_column();
+        let preferred = self.preferred_column.unwrap_or(column);
+        let target = (line as isize + delta).clamp(0, bounds.len() as isize - 1) as usize;
+        let (start, end) = bounds[target];
+        self.cursor = start + preferred.min(end.saturating_sub(start));
+        self.preferred_column = Some(preferred);
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.text.remove(self.cursor);
+            self.preferred_column = None;
+        }
+    }
+
+    fn delete(&mut self) {
+        if self.cursor < self.text.len() {
+            self.text.remove(self.cursor);
+            self.preferred_column = None;
+        }
+    }
+
+    fn ensure_cursor_visible(&mut self, visible_lines: usize) {
+        let (line, _) = self.cursor_line_column();
+        if line < self.vertical_scroll {
+            self.vertical_scroll = line;
+        } else if line >= self.vertical_scroll + visible_lines.max(1) {
+            self.vertical_scroll = line + 1 - visible_lines.max(1);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MultilineEditorAction {
+    Continue,
+    Save,
+    Cancel,
+}
+
+fn handle_multiline_editor_event(
+    editor: &mut MultilineEditor,
+    event: Event,
+) -> MultilineEditorAction {
+    match event {
+        Event::Paste(value) => editor.insert_text(&value),
+        Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        }) => match code {
+            KeyCode::Char('s' | 'S')
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    && !modifiers.contains(KeyModifiers::ALT) =>
+            {
+                return MultilineEditorAction::Save;
+            }
+            KeyCode::Esc => return MultilineEditorAction::Cancel,
+            KeyCode::Enter => editor.insert_text("\n"),
+            KeyCode::Tab => editor.insert_text("    "),
+            KeyCode::Backspace => editor.backspace(),
+            KeyCode::Delete => editor.delete(),
+            KeyCode::Left => editor.move_left(),
+            KeyCode::Right => editor.move_right(),
+            KeyCode::Up => editor.move_vertical(-1),
+            KeyCode::Down => editor.move_vertical(1),
+            KeyCode::PageUp => editor.move_vertical(-10),
+            KeyCode::PageDown => editor.move_vertical(10),
+            KeyCode::Home => editor.move_home(modifiers.contains(KeyModifiers::CONTROL)),
+            KeyCode::End => editor.move_end(modifiers.contains(KeyModifiers::CONTROL)),
+            KeyCode::Char(ch)
+                if !modifiers.contains(KeyModifiers::CONTROL)
+                    || modifiers.contains(KeyModifiers::ALT) =>
+            {
+                editor.insert_text(&ch.to_string());
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+    MultilineEditorAction::Continue
+}
+
+fn draw_multiline_editor(
+    stdout: &mut io::Stdout,
+    editor: &mut MultilineEditor,
+    discard_armed: bool,
+) -> Result<()> {
+    let (cols, rows) = terminal::size()?;
+    if cols < 8 || rows < 4 {
+        queue!(
+            stdout,
+            Hide,
+            Clear(ClearType::All),
+            MoveTo(0, 0),
+            Print(truncate(
+                t(
+                    "Resize the terminal to continue editing",
+                    "请放大终端窗口以继续编辑"
+                ),
+                cols as usize
+            )),
+            Show,
+            MoveTo(0, rows.saturating_sub(1))
+        )?;
+        stdout.flush()?;
+        return Ok(());
+    }
+    let body_top = 3u16;
+    let body_height = rows.saturating_sub(body_top + 1).max(1) as usize;
+    editor.ensure_cursor_visible(body_height);
+    let bounds = editor.line_bounds();
+    let (cursor_line, cursor_column) = editor.cursor_line_column();
+    let line_number_width = bounds.len().max(1).to_string().len().max(3);
+    let gutter_width = line_number_width + 3;
+    let content_width = (cols as usize).saturating_sub(gutter_width).max(1);
+    let (line_start, line_end) = bounds[cursor_line];
+    let current_line = &editor.text[line_start..line_end];
+    let horizontal_start =
+        editor_horizontal_start(current_line, cursor_column, content_width.saturating_sub(1));
+
+    queue!(
+        stdout,
+        Hide,
+        Clear(ClearType::All),
+        MoveTo(0, 0),
+        SetAttribute(Attribute::Reverse),
+        Print(pad(
+            t(" MIYU BUILT-IN PROMPT EDITOR ", " MIYU 内置提示词编辑器 "),
+            cols as usize
+        )),
+        SetAttribute(Attribute::Reset),
+        MoveTo(0, 1),
+        Print(truncate(
+            t(
+                "[Ctrl+S]save [Esc]cancel [Enter]newline [Tab]4 spaces",
+                "[Ctrl+S]保存 [Esc]取消 [Enter]换行 [Tab]插入 4 空格"
+            ),
+            cols as usize
+        )),
+        MoveTo(0, 2),
+        SetAttribute(Attribute::Dim),
+        Print(truncate(
+            &if discard_armed {
+                t(
+                    "Unsaved changes: press Esc again to discard",
+                    "存在未保存修改：再次按 Esc 放弃",
+                )
+                .to_string()
+            } else {
+                format!(
+                    "{} {}/{}  {} {}",
+                    t("Line", "行"),
+                    cursor_line + 1,
+                    bounds.len(),
+                    t("Column", "列"),
+                    cursor_column + 1
+                )
+            },
+            cols as usize
+        )),
+        SetAttribute(Attribute::Reset)
+    )?;
+
+    for screen_line in 0..body_height {
+        let line_index = editor.vertical_scroll + screen_line;
+        if line_index >= bounds.len() {
+            break;
+        }
+        let (start, end) = bounds[line_index];
+        let line = &editor.text[start..end];
+        let segment = editor_line_segment(line, horizontal_start, content_width);
+        queue!(
+            stdout,
+            MoveTo(0, body_top + screen_line as u16),
+            SetAttribute(Attribute::Dim),
+            Print(format!(
+                "{:>width$} │ ",
+                line_index + 1,
+                width = line_number_width
+            )),
+            SetAttribute(Attribute::Reset),
+            Print(segment)
+        )?;
+    }
+
+    let cursor_prefix_width =
+        editor_chars_display_width(&current_line[horizontal_start..cursor_column]);
+    let cursor_x = (gutter_width + cursor_prefix_width).min(cols.saturating_sub(1) as usize) as u16;
+    let cursor_y = body_top
+        + cursor_line
+            .saturating_sub(editor.vertical_scroll)
+            .min(body_height.saturating_sub(1)) as u16;
+    queue!(stdout, Show, MoveTo(cursor_x, cursor_y))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn editor_horizontal_start(line: &[char], cursor_column: usize, max_width: usize) -> usize {
+    let mut start = 0usize;
+    while start < cursor_column
+        && editor_chars_display_width(&line[start..cursor_column]) > max_width
+    {
+        start += 1;
+    }
+    start
+}
+
+fn editor_line_segment(line: &[char], start: usize, max_width: usize) -> String {
+    let mut output = String::new();
+    let mut width = 0usize;
+    for ch in line.iter().skip(start) {
+        let display = if *ch == '\t' {
+            "    ".to_string()
+        } else {
+            ch.to_string()
+        };
+        let ch_width = display_width(&display);
+        if width + ch_width > max_width {
+            break;
+        }
+        output.push_str(&display);
+        width += ch_width;
+    }
+    output
+}
+
+fn editor_chars_display_width(chars: &[char]) -> usize {
+    chars
+        .iter()
+        .map(|ch| {
+            if *ch == '\t' {
+                4
+            } else {
+                display_width(&ch.to_string())
+            }
+        })
+        .sum()
 }
 
 fn restore_tui_after_external_editor(stdout: &mut io::Stdout) -> Result<()> {
@@ -2887,7 +3302,10 @@ fn restore_tui_after_external_editor(stdout: &mut io::Stdout) -> Result<()> {
     Ok(())
 }
 
-fn edit_textarea_with_external_editor(value: &str) -> Result<String> {
+fn edit_textarea_with_external_editor(value: &str, commands: &[EditorCommand]) -> Result<String> {
+    if commands.is_empty() {
+        bail!("no external editor command was configured");
+    }
     let mut file = tempfile::Builder::new()
         .prefix("miyu-prompt-")
         .suffix(".md")
@@ -2895,10 +3313,9 @@ fn edit_textarea_with_external_editor(value: &str) -> Result<String> {
     file.write_all(value.as_bytes())?;
     file.flush()?;
     let path = file.path().to_path_buf();
-    let commands = external_editor_commands();
     let mut failures = Vec::new();
 
-    for command in &commands {
+    for command in commands {
         match run_editor_command(command, &path) {
             Ok(status) if status.success() => {
                 return Ok(std::fs::read_to_string(&path)?.trim().to_string());
@@ -2930,19 +3347,36 @@ impl EditorCommand {
     }
 }
 
-fn external_editor_commands() -> Vec<EditorCommand> {
-    let mut commands = ["VISUAL", "EDITOR"]
-        .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .filter_map(|value| parse_editor_command(&value))
-        .collect::<Vec<_>>();
+fn configured_editor_commands() -> Vec<EditorCommand> {
+    let visual = std::env::var("VISUAL").ok();
+    let editor = std::env::var("EDITOR").ok();
+    editor_commands_from_specs(visual.as_deref(), editor.as_deref())
+}
 
+fn editor_commands_from_specs(visual: Option<&str>, editor: Option<&str>) -> Vec<EditorCommand> {
+    let mut commands = [visual, editor]
+        .into_iter()
+        .flatten()
+        .filter_map(parse_editor_command)
+        .collect::<Vec<_>>();
     #[cfg(windows)]
-    commands.push(EditorCommand {
-        program: "notepad.exe".to_string(),
-        args: Vec::new(),
-    });
-    #[cfg(not(windows))]
+    commands.retain(|command| !is_windows_notepad_command(command));
+    commands.dedup();
+    commands
+}
+
+#[cfg(windows)]
+fn is_windows_notepad_command(command: &EditorCommand) -> bool {
+    std::path::Path::new(&command.program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("notepad"))
+}
+
+#[cfg(not(windows))]
+fn external_editor_commands() -> Vec<EditorCommand> {
+    let mut commands = configured_editor_commands();
+
     commands.extend(["vim", "nano"].into_iter().map(|program| EditorCommand {
         program: program.to_string(),
         args: Vec::new(),
@@ -3301,7 +3735,7 @@ fn draw_form(
 
 fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
     if field.textarea && field.value.is_empty() {
-        t("(Enter opens the text editor)", "(Enter 打开文本编辑器)").to_string()
+        textarea_editor_hint().to_string()
     } else if field.sensitive && !field.value.is_empty() && !reveal_sensitive {
         if field.textarea {
             if is_zh() {
@@ -3329,6 +3763,20 @@ fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
             .join(", ")
     } else {
         truncate(&field.value.replace('\n', " "), 70)
+    }
+}
+
+fn textarea_editor_hint() -> &'static str {
+    #[cfg(windows)]
+    {
+        t(
+            "(Enter opens the built-in editor)",
+            "(Enter 打开内置编辑器)",
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        t("(Enter opens the text editor)", "(Enter 打开文本编辑器)")
     }
 }
 
@@ -3580,9 +4028,10 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::{
-        external_editor_commands, field_display_value, language_choice_label,
+        editor_commands_from_specs, editor_horizontal_start, editor_line_segment,
+        field_display_value, handle_multiline_editor_event, language_choice_label,
         language_choice_value, parse_editor_command, parse_extra_body, pressed_key_code,
-        run_editor_command, t, EditorCommand, Field,
+        run_editor_command, t, EditorCommand, Field, MultilineEditor, MultilineEditorAction,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -3625,14 +4074,9 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_always_has_notepad_as_the_final_editor_fallback() {
-        assert_eq!(
-            external_editor_commands().last(),
-            Some(&EditorCommand {
-                program: "notepad.exe".to_string(),
-                args: Vec::new(),
-            })
-        );
+    fn windows_uses_builtin_editor_without_env_and_rejects_async_notepad() {
+        assert!(editor_commands_from_specs(None, None).is_empty());
+        assert!(editor_commands_from_specs(Some("notepad.exe"), None).is_empty());
     }
 
     #[cfg(windows)]
@@ -3658,6 +4102,88 @@ mod tests {
             std::fs::read_to_string(prompt_path).unwrap().trim(),
             "edited by batch"
         );
+    }
+
+    #[test]
+    fn builtin_editor_handles_unicode_paste_newlines_and_save() {
+        let mut editor = MultilineEditor::new("尾部");
+        editor.move_home(true);
+
+        assert_eq!(
+            handle_multiline_editor_event(&mut editor, Event::Paste("你好\r\nworld".to_string())),
+            MultilineEditorAction::Continue
+        );
+        assert_eq!(editor.text(), "你好\nworld尾部");
+        assert!(editor.is_dirty());
+        assert_eq!(editor.cursor_line_column(), (1, 5));
+
+        assert_eq!(
+            handle_multiline_editor_event(
+                &mut editor,
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('s'),
+                    KeyModifiers::CONTROL,
+                    KeyEventKind::Press,
+                ))
+            ),
+            MultilineEditorAction::Save
+        );
+    }
+
+    #[test]
+    fn builtin_editor_ignores_windows_key_release_events() {
+        let mut editor = MultilineEditor::new("once");
+        let action = handle_multiline_editor_event(
+            &mut editor,
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+        );
+
+        assert_eq!(action, MultilineEditorAction::Continue);
+        assert_eq!(editor.text(), "once");
+    }
+
+    #[test]
+    fn builtin_editor_vertical_navigation_preserves_preferred_column() {
+        let mut editor = MultilineEditor::new("abcd\nx\nwxyz");
+
+        editor.move_vertical(-1);
+        assert_eq!(editor.cursor_line_column(), (1, 1));
+        editor.move_vertical(-1);
+        assert_eq!(editor.cursor_line_column(), (0, 4));
+        editor.move_vertical(1);
+        assert_eq!(editor.cursor_line_column(), (1, 1));
+    }
+
+    #[test]
+    fn builtin_editor_cancel_does_not_replace_the_original_value() {
+        let mut editor = MultilineEditor::new("original");
+        editor.insert_text("\nchanged");
+        assert!(editor.is_dirty());
+
+        let action = handle_multiline_editor_event(
+            &mut editor,
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                KeyEventKind::Press,
+            )),
+        );
+
+        assert_eq!(action, MultilineEditorAction::Cancel);
+        assert_eq!(editor.original.iter().collect::<String>(), "original");
+    }
+
+    #[test]
+    fn builtin_editor_horizontal_view_respects_wide_characters() {
+        let line = "ab中文cd".chars().collect::<Vec<_>>();
+        let start = editor_horizontal_start(&line, line.len(), 5);
+
+        assert!(start > 0);
+        assert_eq!(editor_line_segment(&line, start, 5), "文cd");
     }
 
     #[test]
@@ -3691,7 +4217,10 @@ mod tests {
 
         assert_eq!(
             field_display_value(&field, false),
-            t("(Enter opens the text editor)", "(Enter 打开文本编辑器)")
+            t(
+                "(Enter opens the built-in editor)",
+                "(Enter 打开内置编辑器)"
+            )
         );
     }
 
