@@ -224,6 +224,32 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 随后关闭并重新打开 Windows PowerShell。如果程序目录曾被移动，也需要再次
 执行这条命令。
 
+### 自定义人格或用户身份的“内容”按 Enter 无法编辑
+
+Windows 版本在没有配置编辑器时会自动打开系统记事本。编辑完成后请在记事本
+中保存文件并关闭窗口，Miyu 会读取内容并返回配置界面。
+
+也可以通过 `VISUAL` 或 `EDITOR` 指定其他编辑器。例如，临时使用 VS Code：
+
+```powershell
+$env:EDITOR = "code.cmd --wait"
+miyu config
+```
+
+如需为当前用户永久设置，请运行：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "EDITOR",
+    "code.cmd --wait",
+    "User"
+)
+```
+
+设置后关闭并重新打开 PowerShell。编辑器命令必须等待文件关闭后再退出，因此
+VS Code 需要保留 `--wait` 参数。如果指定的编辑器无法启动，Miyu 会继续尝试
+系统记事本，并在所有编辑器均不可用时显示明确错误。
+
 ### 自然语言请求无法得到回答
 
 运行 `miyu config` 检查接口地址、模型名称和 API Key，并确认计算机可以访问

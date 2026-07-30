@@ -168,7 +168,10 @@ powershell -ExecutionPolicy Bypass -File .\build-windows.ps1 -UseRsProxy
 - Custom `.ps1`, `.cmd`, `.bat`, `.py`, and `.exe` script tools are supported.
 - Alarm workers run without opening a second console window and can be cancelled.
 - Windows PowerShell integration is available through `powershell-init`.
-  Linux-only diagnostic/AUR tools remain Linux-specific.
+- Multiline prompt and identity fields open `VISUAL` or `EDITOR`; when neither
+  is configured, Windows Notepad is used automatically. Editor commands may
+  include arguments such as `code.cmd --wait`.
+- Linux-only diagnostic/AUR tools remain Linux-specific.
 
 If PowerShell cannot find `miyu`, either run it as `.\miyu.exe` or add the
 absolute `dist` directory to your user `Path` environment variable.

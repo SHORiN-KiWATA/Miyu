@@ -2395,9 +2395,9 @@ fn run_form(stdout: &mut io::Stdout, title: &str, fields: &mut [Field]) -> Resul
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
-                edit_textarea(stdout, &mut fields[selected].value)?;
+                let edited = edit_textarea(stdout, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
-                if !fields[selected].sensitive {
+                if edited && !fields[selected].sensitive {
                     return Ok(true);
                 }
             }
@@ -2497,9 +2497,9 @@ fn run_form_without_buttons(
                 cursors[selected] = fields[selected].value.chars().count();
             }
             KeyCode::Enter if !editing && fields[selected].textarea => {
-                edit_textarea(stdout, &mut fields[selected].value)?;
+                let edited = edit_textarea(stdout, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
-                if !fields[selected].sensitive {
+                if edited && !fields[selected].sensitive {
                     return Ok(());
                 }
             }
@@ -2849,7 +2849,7 @@ fn parse_provider_model_choice(value: &str) -> (String, String) {
     (value.to_string(), String::new())
 }
 
-fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
+fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<bool> {
     execute!(
         stdout,
         Show,
@@ -2859,25 +2859,160 @@ fn edit_textarea(stdout: &mut io::Stdout, value: &mut String) -> Result<()> {
     )?;
     stdout.flush()?;
     terminal::disable_raw_mode()?;
-    let mut file = tempfile::NamedTempFile::new()?;
-    file.write_all(value.as_bytes())?;
-    let path = file.path().to_path_buf();
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-    let status = Command::new(&editor)
-        .arg(&path)
-        .status()
-        .or_else(|_| Command::new("nano").arg(&path).status());
-    if let Err(err) = status {
-        if is_zh() {
-            eprintln!("无法打开编辑器: {err}");
-        } else {
-            eprintln!("Failed to open editor: {err}");
+
+    let edit_result = edit_textarea_with_external_editor(value);
+    let restore_result = restore_tui_after_external_editor(stdout);
+    restore_result?;
+
+    match edit_result {
+        Ok(edited) => {
+            *value = edited;
+            Ok(true)
+        }
+        Err(err) => {
+            let text = if is_zh() {
+                format!("无法打开文本编辑器：{err}")
+            } else {
+                format!("Failed to open a text editor: {err}")
+            };
+            message(stdout, &text)?;
+            Ok(false)
         }
     }
-    *value = std::fs::read_to_string(&path)?.trim().to_string();
+}
+
+fn restore_tui_after_external_editor(stdout: &mut io::Stdout) -> Result<()> {
     terminal::enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, Clear(ClearType::All), Hide)?;
     Ok(())
+}
+
+fn edit_textarea_with_external_editor(value: &str) -> Result<String> {
+    let mut file = tempfile::Builder::new()
+        .prefix("miyu-prompt-")
+        .suffix(".md")
+        .tempfile()?;
+    file.write_all(value.as_bytes())?;
+    file.flush()?;
+    let path = file.path().to_path_buf();
+    let commands = external_editor_commands();
+    let mut failures = Vec::new();
+
+    for command in &commands {
+        match run_editor_command(command, &path) {
+            Ok(status) if status.success() => {
+                return Ok(std::fs::read_to_string(&path)?.trim().to_string());
+            }
+            Ok(status) => failures.push(format!("{} ({status})", command.label())),
+            Err(err) => failures.push(format!("{} ({err})", command.label())),
+        }
+    }
+
+    let attempted = failures.join("; ");
+    if is_zh() {
+        bail!("没有可用的编辑器。已尝试：{attempted}。请安装编辑器，或设置 VISUAL/EDITOR 环境变量");
+    }
+    bail!("no usable editor was found. Tried: {attempted}. Install an editor or set VISUAL/EDITOR")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditorCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+impl EditorCommand {
+    fn label(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn external_editor_commands() -> Vec<EditorCommand> {
+    let mut commands = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter_map(|value| parse_editor_command(&value))
+        .collect::<Vec<_>>();
+
+    #[cfg(windows)]
+    commands.push(EditorCommand {
+        program: "notepad.exe".to_string(),
+        args: Vec::new(),
+    });
+    #[cfg(not(windows))]
+    commands.extend(["vim", "nano"].into_iter().map(|program| EditorCommand {
+        program: program.to_string(),
+        args: Vec::new(),
+    }));
+
+    commands.dedup();
+    commands
+}
+
+fn parse_editor_command(value: &str) -> Option<EditorCommand> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut token_started = false;
+
+    for ch in value.trim().chars() {
+        match quote {
+            Some(active) if ch == active => quote = None,
+            Some(_) => current.push(ch),
+            None if matches!(ch, '"' | '\'') => {
+                quote = Some(ch);
+                token_started = true;
+            }
+            None if ch.is_whitespace() => {
+                if token_started {
+                    parts.push(std::mem::take(&mut current));
+                    token_started = false;
+                }
+            }
+            None => {
+                current.push(ch);
+                token_started = true;
+            }
+        }
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+    if token_started {
+        parts.push(current);
+    }
+    let mut parts = parts.into_iter();
+    let program = parts.next()?;
+    Some(EditorCommand {
+        program,
+        args: parts.collect(),
+    })
+}
+
+fn run_editor_command(
+    editor: &EditorCommand,
+    path: &std::path::Path,
+) -> std::io::Result<std::process::ExitStatus> {
+    let direct = Command::new(&editor.program)
+        .args(&editor.args)
+        .arg(path)
+        .status();
+
+    #[cfg(windows)]
+    if direct.is_err() {
+        return Command::new("cmd.exe")
+            .args(["/D", "/C"])
+            .arg(&editor.program)
+            .args(&editor.args)
+            .arg(path)
+            .status();
+    }
+
+    direct
 }
 
 fn draw_menu(
@@ -3166,7 +3301,7 @@ fn draw_form(
 
 fn field_display_value(field: &Field, reveal_sensitive: bool) -> String {
     if field.textarea && field.value.is_empty() {
-        t("(Enter opens $EDITOR)", "(Enter 打开 $EDITOR)").to_string()
+        t("(Enter opens the text editor)", "(Enter 打开文本编辑器)").to_string()
     } else if field.sensitive && !field.value.is_empty() && !reveal_sensitive {
         if field.textarea {
             if is_zh() {
@@ -3445,8 +3580,9 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::{
-        field_display_value, language_choice_label, language_choice_value, parse_extra_body,
-        pressed_key_code, t, Field,
+        external_editor_commands, field_display_value, language_choice_label,
+        language_choice_value, parse_editor_command, parse_extra_body, pressed_key_code,
+        run_editor_command, t, EditorCommand, Field,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -3465,6 +3601,63 @@ mod tests {
 
         assert_eq!(pressed_key_code(press), Some(KeyCode::Down));
         assert_eq!(pressed_key_code(release), None);
+    }
+
+    #[test]
+    fn editor_command_parser_supports_arguments_and_quoted_windows_paths() {
+        assert_eq!(
+            parse_editor_command("code --wait"),
+            Some(EditorCommand {
+                program: "code".to_string(),
+                args: vec!["--wait".to_string()],
+            })
+        );
+        assert_eq!(
+            parse_editor_command(r#""C:\Program Files\Editor\edit.exe" --wait"#),
+            Some(EditorCommand {
+                program: r"C:\Program Files\Editor\edit.exe".to_string(),
+                args: vec!["--wait".to_string()],
+            })
+        );
+        assert_eq!(parse_editor_command("  "), None);
+        assert_eq!(parse_editor_command(r#""unterminated"#), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_always_has_notepad_as_the_final_editor_fallback() {
+        assert_eq!(
+            external_editor_commands().last(),
+            Some(&EditorCommand {
+                program: "notepad.exe".to_string(),
+                args: Vec::new(),
+            })
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_editor_command_with_spaces_is_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let editor_path = dir.path().join("fake editor.cmd");
+        let prompt_path = dir.path().join("prompt file.md");
+        std::fs::write(
+            &editor_path,
+            "@echo off\r\necho edited by batch>\"%~1\"\r\n",
+        )
+        .unwrap();
+        let editor = EditorCommand {
+            program: editor_path.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+
+        let status = run_editor_command(&editor, &prompt_path).unwrap();
+
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(prompt_path).unwrap().trim(),
+            "edited by batch"
+        );
     }
 
     #[test]
@@ -3498,7 +3691,7 @@ mod tests {
 
         assert_eq!(
             field_display_value(&field, false),
-            t("(Enter opens $EDITOR)", "(Enter 打开 $EDITOR)")
+            t("(Enter opens the text editor)", "(Enter 打开文本编辑器)")
         );
     }
 
