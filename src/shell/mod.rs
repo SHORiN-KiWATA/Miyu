@@ -1,5 +1,6 @@
 pub mod bash;
 pub mod fish;
+pub mod nu;
 pub mod zsh;
 
 use crate::i18n::text as t;
@@ -12,6 +13,7 @@ pub fn print_reload_hint(shell: &str, hook_file: &Path) {
     let source = match shell {
         "fish" => format!("source {}", fish_quote(hook_file)),
         "bash" | "zsh" => format!("source {}", shell_quote(hook_file)),
+        "nu" => format!("source {}", nu_quote(hook_file)),
         _ => return,
     };
     if current_parent_shell().as_deref() == Some(shell) {
@@ -39,7 +41,7 @@ pub fn current_parent_shell() -> Option<String> {
     for _ in 0..8 {
         let parent = parent_pid(pid)?;
         let name = process_name(parent)?;
-        if matches!(name.as_str(), "fish" | "bash" | "zsh") {
+        if matches!(name.as_str(), "fish" | "bash" | "zsh" | "nu") {
             return Some(name);
         }
         pid = parent;
@@ -72,6 +74,10 @@ fn fish_quote(path: &Path) -> String {
             .replace('\\', "\\\\")
             .replace('\'', "\\'")
     )
+}
+
+fn nu_quote(path: &Path) -> String {
+    serde_json::to_string(&path.to_string_lossy()).expect("serializing a path string cannot fail")
 }
 
 #[cfg(test)]
