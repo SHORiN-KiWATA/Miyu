@@ -483,6 +483,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "集成到 zsh，集成后可在终端直接使用自然语言交流。",
         ),
         (
+            "nu-init",
+            "Integrate with Nushell; press Alt+M to send the current command line to Miyu",
+            "集成到 Nushell；按 Alt+M 将当前命令行发送给 Miyu。",
+        ),
+        (
             "remove-shell-hook",
             "Safely remove installed Miyu shell hooks",
             "安全删除已安装的 Miyu shell hook",
@@ -742,6 +747,7 @@ pub enum Command {
     FishInit,
     BashInit,
     ZshInit,
+    NuInit,
     RemoveShellHook,
     History(HistoryArgs),
     Pop(PopArgs),
@@ -1033,6 +1039,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::FishInit)
                 | Some(Command::BashInit)
                 | Some(Command::ZshInit)
+                | Some(Command::NuInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
         )
@@ -1057,6 +1064,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::FishInit) => shell::fish::install(&paths),
         Some(Command::BashInit) => shell::bash::install(&paths),
         Some(Command::ZshInit) => shell::zsh::install(&paths),
+        Some(Command::NuInit) => shell::nu::install(&paths),
         Some(Command::RemoveShellHook) => remove_shell_hooks(&paths),
         Some(Command::History(args)) => run_history(&paths, args),
         Some(Command::Pop(args)) => run_pop(&paths, args),
@@ -1184,6 +1192,7 @@ fn prompt_shell_init_menu(paths: &MiyuPaths) -> Result<()> {
         Some("fish") => shell::fish::install(paths),
         Some("bash") => shell::bash::install(paths),
         Some("zsh") => shell::zsh::install(paths),
+        Some("nu") => shell::nu::install(paths),
         _ => Ok(()),
     }
 }
@@ -1194,6 +1203,7 @@ fn select_shell_hook() -> Result<Option<&'static str>> {
         ("fish", Some("fish")),
         ("bash", Some("bash")),
         ("zsh", Some("zsh")),
+        ("nushell (Alt+M)", Some("nu")),
     ];
     let detected = shell::current_parent_shell();
     let mut selected = detected
@@ -1266,6 +1276,7 @@ fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
     let removed = shell::fish::uninstall(paths)?;
     let removed = shell::bash::uninstall(paths)? || removed;
     let removed = shell::zsh::uninstall(paths)? || removed;
+    let removed = shell::nu::uninstall(paths)? || removed;
     if !removed {
         println!(
             "{}",
@@ -2271,7 +2282,7 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
 }
 
 async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
-    if !matches!(shell_name, "fish" | "bash" | "zsh") {
+    if !matches!(shell_name, "fish" | "bash" | "zsh" | "nu") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
     }
     if message.trim().is_empty() {
@@ -6834,6 +6845,12 @@ mod repl_input_tests {
                 .to_vec()
         )
         .is_err());
+    }
+
+    #[test]
+    fn nu_init_is_a_cli_subcommand() {
+        let cli = parse_args(["miyu", "nu-init"].map(OsString::from).to_vec()).unwrap();
+        assert!(matches!(cli.command, Some(Command::NuInit)));
     }
 
     #[test]

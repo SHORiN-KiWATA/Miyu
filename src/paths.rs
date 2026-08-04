@@ -74,6 +74,10 @@ impl MiyuPaths {
         self.cache_dir.join("logs")
     }
 
+    pub fn nu_hook_file(&self) -> PathBuf {
+        self.config_dir.join("shell/nu-hook.nu")
+    }
+
     pub fn print(&self) {
         println!(
             "{}: {}",
@@ -129,6 +133,11 @@ impl MiyuPaths {
             "{}: {}",
             t("zsh hook file", "zsh hook 文件"),
             self.zsh_hook_file.display()
+        );
+        println!(
+            "{}: {}",
+            t("nushell hook file", "nushell hook 文件"),
+            self.nu_hook_file().display()
         );
         println!(
             "{}: {}",

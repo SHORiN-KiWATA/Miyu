@@ -16,9 +16,19 @@ Miyu 是从我曾经很喜欢的动画中的角色[久遠寺未有](http://www.m
 
 ## 有什么功能？
 
-`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。她并非专业的 Coding Agent，而是更偏向聊天日常、游戏娱乐、系统排障等日用场景。并且 `miyu` 还可以无缝与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
+`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。她并非专业的 Coding Agent，而是更偏向聊天日常、游戏娱乐、系统排障等日用场景。并且 `miyu` 还可以与 `fish`、`zsh`、`bash` 和 Nushell 集成，在终端中直接对话！
 
 ![](./pics/shell-init.png)
+
+### Nushell 集成
+
+Nushell 用户可以运行：
+
+```nu
+miyu nu-init
+```
+
+重启 Nushell（或按命令提示重新加载 hook）后，在命令行输入消息并按 `Alt+M` 即可发送给 Miyu。普通 `Enter` 不会被重绑定，Nushell 的原生命令执行、历史、提示符和行编辑行为保持不变。`miyu remove-shell-hook` 可以安全移除该集成。
 
 `miyu` 还自带了 TUI 方便修改配置。
 
