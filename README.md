@@ -72,7 +72,7 @@ miyu config
   miyu
   ```
 
-- webui 局域网网页
+- webui 网页（默认仅本机 `127.0.0.1` 可访问；需要局域网访问时加 `--bind 0.0.0.0` 并务必设置密码）
 
   ```
   miyu web

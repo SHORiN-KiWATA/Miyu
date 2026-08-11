@@ -1772,10 +1772,10 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     }
     let context = cold_context(&config, &state_store)?;
 
-    // Default binds all interfaces so the WebUI is reachable from the LAN;
-    // `--bind 127.0.0.1` restricts it to this machine. Access URLs matching
-    // the effective bind are printed below.
-    let bind_ip = args.bind.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    // Default binds loopback only so an unauthenticated WebUI is never
+    // exposed to the LAN; `--bind 0.0.0.0` opts back in explicitly. Access
+    // URLs matching the effective bind are printed below.
+    let bind_ip = args.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
     let listener = match tokio::net::TcpListener::bind(SocketAddr::new(bind_ip, args.port)).await {
         Ok(listener) => listener,
         Err(error)

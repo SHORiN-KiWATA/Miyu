@@ -1051,7 +1051,7 @@ pub struct WebArgs {
     #[arg(long, default_value_t = ipc::DEFAULT_WEB_PORT)]
     pub port: u16,
 
-    /// WebUI 监听地址；默认 0.0.0.0（所有网卡），127.0.0.1 仅限本机访问。
+    /// WebUI 监听地址；默认 127.0.0.1（仅限本机），0.0.0.0 显式开放局域网访问。
     #[arg(long, value_name = "ADDR")]
     pub bind: Option<std::net::IpAddr>,
 
@@ -1595,7 +1595,7 @@ fn web_launch_config(paths: &MiyuPaths, args: &WebArgs) -> Result<Option<ipc::Da
 fn daemon_web_access_urls(info: &ipc::DaemonInfo) -> Vec<String> {
     let bind = info
         .web_bind
-        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     ipc::web_access_urls_for(bind, info.web_port)
 }
 

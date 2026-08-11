@@ -76,7 +76,7 @@ pub struct DaemonLaunchConfig {
     pub port: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_file: Option<PathBuf>,
-    /// WebUI bind address; `None` keeps the historical 0.0.0.0 default.
+    /// WebUI bind address; `None` binds loopback only (the secure default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<std::net::IpAddr>,
 }
@@ -783,7 +783,8 @@ fn recover_legacy_daemon_launch_from_cmdline(
     Ok(DaemonLaunchConfig {
         port: parsed.port,
         password_file,
-        // Legacy daemons predate --bind, so they were listening on 0.0.0.0.
+        // Legacy daemons predate --bind and listened on 0.0.0.0; recovery
+        // now leaves the (secure) loopback default in place.
         bind: None,
     })
 }
