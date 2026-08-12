@@ -26,6 +26,7 @@ mod render;
 mod shell;
 mod skills;
 mod state;
+mod sys;
 mod token_counter;
 mod token_estimate;
 mod tools;

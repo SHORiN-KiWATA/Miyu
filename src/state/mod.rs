@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Cursor, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
@@ -1721,7 +1722,7 @@ impl StateStore {
             }
             Err(error) => return Err(error.into()),
         }
-        std::fs::set_permissions(&session_dir, std::fs::Permissions::from_mode(0o700))?;
+        crate::sys::set_secure_dir_permissions(&session_dir)?;
         let canonical_dir = session_dir.canonicalize()?;
         let managed_target = |source_key: &str| -> Option<PathBuf> {
             let source = Path::new(source_key);
@@ -1741,8 +1742,7 @@ impl StateStore {
                 continue;
             };
             let mut temp = tempfile::NamedTempFile::new_in(&canonical_dir)?;
-            temp.as_file_mut()
-                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            crate::sys::set_secure_file_permissions(temp.path())?;
             temp.write_all(&artifact.bytes)?;
             temp.as_file_mut().sync_all()?;
             temp.persist(&target)

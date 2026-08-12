@@ -5,7 +5,7 @@ use crate::cli::{build_tool_registry, WebArgs};
 use crate::config::{ActiveProviderModelConfig, AppConfig, PromptAudience};
 use crate::i18n::text as t;
 use crate::ipc::{
-    self, Command as IpcCommand, Frame as IpcFrame, ImageAttachment, Request as IpcRequest,
+    self, Command as IpcCommand, Frame as IpcFrame, ImageAttachment,
 };
 use crate::llm::{
     thinking_variant_options_for_model, ChatResult, ChatStreamKind, OpenAiCompatibleClient,
@@ -47,6 +47,7 @@ use std::convert::Infallible;
 use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path as FilePath, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -54,7 +55,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{broadcast, mpsc, oneshot, Semaphore};
+#[cfg(unix)]
+use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle as TokioJoinHandle;
 
 use crate::platforms::{self, PlatformRuntime};
@@ -1938,7 +1941,7 @@ impl IpcRunGuard {
 impl Drop for IpcRunGuard {
     fn drop(&mut self) {
         if !self.finished {
-            // Client disconnected mid-turn: cancel its run.
+            // Client disconnected mid-turn: cancel its run
             if let Some(info) = self.manager.lock().unwrap().active_runs.get(&self.run_id) {
                 info.request_cancel();
             }
@@ -1946,6 +1949,7 @@ impl Drop for IpcRunGuard {
     }
 }
 
+#[cfg(unix)]
 fn start_ipc_server(
     state: &DaemonState,
 ) -> Result<(crate::ipc::WebCoreLease, TokioJoinHandle<()>)> {
@@ -1954,7 +1958,7 @@ fn start_ipc_server(
     let socket_path = state.paths.ipc_socket();
     let listener = tokio::net::UnixListener::bind(&socket_path)
         .with_context(|| format!("binding Miyu IPC socket at {}", socket_path.display()))?;
-    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    crate::sys::set_secure_file_permissions(&socket_path)?;
 
     let server_state = state.clone();
     let permits = Arc::new(Semaphore::new(32));
@@ -1991,16 +1995,74 @@ fn start_ipc_server(
             });
         }
     });
+
+    Ok((lease, task))
+}
+
+#[cfg(not(unix))]
+fn start_ipc_server(
+    state: &DaemonState,
+) -> Result<(crate::ipc::WebCoreLease, TokioJoinHandle<()>)> {
+    let lease = ipc::acquire_web_core(&state.paths)
+        .context("another Miyu core is already running or starting")?;
+    let port_path = state.paths.ipc_socket().with_extension("port");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .with_context(|| "binding Miyu IPC TCP socket at 127.0.0.1")?;
+    listener.set_nonblocking(true)?;
+    let local_port = listener.local_addr()?.port();
+    std::fs::write(&port_path, local_port.to_string())
+        .with_context(|| format!("writing Miyu IPC port file at {}", port_path.display()))?;
+
+    let listener = tokio::net::TcpListener::from_std(listener)?;
+    let server_state = state.clone();
+    let permits = Arc::new(tokio::sync::Semaphore::new(32));
+    let cleanup_port_path = port_path.clone();
+
+    let task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "{}",
+                        t("Miyu IPC listener stopped", "Miyu IPC 监听器已停止")
+                    );
+                    break;
+                }
+            };
+            let permit = match permits.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => break,
+            };
+            let connection_state = server_state.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                if let Err(error) = handle_ipc_connection(connection_state, stream).await {
+                    tracing::debug!(
+                        error = %error,
+                        "{}",
+                        t(
+                            "Miyu IPC connection closed with an error",
+                            "Miyu IPC 连接因错误关闭"
+                        )
+                    );
+                }
+            });
+        }
+        let _ = std::fs::remove_file(cleanup_port_path);
+    });
+
     Ok((lease, task))
 }
 
 async fn handle_ipc_connection(
     state: DaemonState,
-    mut stream: tokio::net::UnixStream,
+    mut stream: impl tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
 ) -> Result<()> {
     let Some(request) = tokio::time::timeout(
         Duration::from_secs(5),
-        ipc::receive::<IpcRequest>(&mut stream),
+        ipc::receive::<ipc::Request>(&mut stream),
     )
     .await
     .context("timed out waiting for a Miyu IPC request")??
@@ -3249,7 +3311,7 @@ fn resolve_turn_session(
 #[allow(clippy::too_many_arguments)]
 async fn handle_ipc_turn(
     state: &DaemonState,
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
     content: String,
     mode: String,
     images: Vec<Option<ImageAttachment>>,
@@ -3407,7 +3469,7 @@ async fn handle_ipc_turn(
 /// forwards its event frames until terminal, without owning the run.
 async fn follow_run(
     state: &DaemonState,
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut (impl tokio::io::AsyncWriteExt + Unpin),
     run_id: String,
 ) -> Result<()> {
     let mut subscription = state.events.subscribe_after(state.events.latest_id());
@@ -10287,6 +10349,7 @@ mod tests {
         assert!(value.contains("filename*=UTF-8''%E6%8A%A5%E5%91%8A%201.md"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn config_reload_applies_disk_config() {
         let temp = tempfile::tempdir().unwrap();
@@ -10318,6 +10381,7 @@ mod tests {
         actor_join.join().unwrap().unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn failed_config_reload_preserves_the_candidate_file() {
         let temp = tempfile::tempdir().unwrap();
@@ -10364,6 +10428,7 @@ mod tests {
         assert!(!manager.admin_busy);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn busy_config_reload_returns_an_error_frame() {
         let temp = tempfile::tempdir().unwrap();
@@ -10403,6 +10468,7 @@ mod tests {
         actor_join.join().unwrap().unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn config_reload_succeeds_and_keeps_turns_running() {
         let temp = tempfile::tempdir().unwrap();

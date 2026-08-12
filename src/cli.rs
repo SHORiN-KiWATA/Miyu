@@ -4496,7 +4496,10 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 if link_path.exists() || link_path.is_symlink() {
                     std::fs::remove_file(&link_path)?;
                 }
+                #[cfg(unix)]
                 std::os::unix::fs::symlink(&path, &link_path)?;
+                #[cfg(windows)]
+                std::os::windows::fs::symlink_file(&path, &link_path).or_else(|_| std::fs::copy(&path, &link_path).map(|_| ()))?;
             }
             print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
@@ -4775,6 +4778,10 @@ async fn run_chat_with_images(
     Ok(())
 }
 
+#[cfg(not(unix))]
+fn drain_stdin() {}
+
+#[cfg(unix)]
 fn drain_stdin() {
     use std::os::fd::AsRawFd;
 
@@ -4808,6 +4815,7 @@ fn drain_stdin() {
 const STDIN_MAX_CHARS: usize = 50_000;
 const STDIN_TIMEOUT_SECS: u64 = 5;
 
+#[cfg(unix)]
 async fn append_stdin_if_piped(message: String) -> String {
     if io::stdin().is_terminal() {
         return message;
@@ -4854,6 +4862,33 @@ async fn append_stdin_if_piped(message: String) -> String {
         }
         buf.truncate(STDIN_MAX_CHARS);
         Ok(String::from_utf8_lossy(&buf).into_owned())
+    })
+    .await;
+
+    let stdin_content = match read_result {
+        Ok(Ok(content)) if !content.trim().is_empty() => content.trim().to_string(),
+        _ => return message,
+    };
+
+    if message.is_empty() {
+        stdin_content
+    } else {
+        format!("{message}\n\n---\n(stdin)\n{stdin_content}")
+    }
+}
+
+#[cfg(not(unix))]
+async fn append_stdin_if_piped(message: String) -> String {
+    if io::stdin().is_terminal() {
+        return message;
+    }
+    let read_result = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+        if buf.len() > STDIN_MAX_CHARS {
+            buf.truncate(STDIN_MAX_CHARS);
+        }
+        Ok(buf)
     })
     .await;
 
@@ -6962,6 +6997,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
     // exit path at the bottom never runs, so stop this session's background
     // jobs from a signal task before dying. SIGKILL still leaks them — the
     // daemon keeps those running and their completion wakes queue up.
+    #[cfg(unix)]
     {
         let paths = paths.clone();
         let feed = jobs_shared.clone();

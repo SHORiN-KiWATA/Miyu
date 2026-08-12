@@ -1,5 +1,6 @@
 use crate::config::{persona_scope_name, AppConfig};
 use crate::paths::MiyuPaths;
+use crate::sys;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1475,20 +1476,9 @@ fn acquire_publish_lock(paths: &MiyuPaths) -> Result<PublishLease> {
     }
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    sys::set_open_options_mode(&mut options, 0o600);
     let file = options.open(&lock_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if result != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-    }
+    sys::flock_lock_ex(&file, false)?;
     Ok(PublishLease { _file: file })
 }
 
@@ -1558,22 +1548,14 @@ fn secure_directory(path: &Path) -> Result<()> {
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("expected a regular directory: {}", path.display());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
+    sys::set_secure_dir_permissions(path)?;
     Ok(())
 }
 
 fn write_private_file(path: &Path, content: &[u8]) -> Result<()> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    sys::set_open_options_mode(&mut options, 0o600);
     let mut file = options.open(path)?;
     file.write_all(content)?;
     file.sync_all()?;
