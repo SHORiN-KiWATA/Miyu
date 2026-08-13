@@ -176,6 +176,9 @@ impl MiyuPaths {
             if current_exe != target_exe {
                 let _ = fs::copy(&current_exe, &target_exe);
             }
+            if let Some(parent) = current_exe.parent() {
+                let _ = sys::install_windows_user_path(parent);
+            }
         }
         Ok(sys::install_windows_user_path(&bin_dir)?)
     }

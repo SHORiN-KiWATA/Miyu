@@ -234,15 +234,33 @@ pub fn install_windows_user_path(bin_dir: &Path) -> Result<bool> {
     {
         use std::process::Command;
         let bin_str = bin_dir.to_string_lossy().to_string();
-        
-        let path_var = std::env::var("PATH").unwrap_or_default();
-        if path_var.split(';').any(|p| Path::new(p) == bin_dir) {
-            return Ok(false);
-        }
+        let exe_path = bin_dir.join("miyu.exe");
+        let exe_str = exe_path.to_string_lossy().to_string();
 
         let script = format!(
-            "$bin = '{}'; $old = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($old -notlike \"*$bin*\") {{ [Environment]::SetEnvironmentVariable('Path', ($old.TrimEnd(';') + ';' + $bin), 'User') }}",
-            bin_str.replace('\'', "''")
+            r#"
+            $bin = '{bin_str}'
+            $exe = '{exe_str}'
+
+            # 1. Update Windows User PATH in registry if not present
+            $oldPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if ($null -eq $oldPath) {{ $oldPath = "" }}
+            $pathList = $oldPath -split ';' | Where-Object {{ $_ -ne "" }}
+            if ($pathList -notcontains $bin) {{
+                $newPath = ($pathList + $bin) -join ';'
+                [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+            }}
+
+            # 2. Register Windows App Paths for Instant Global Invocation (Win+R / CMD / PowerShell)
+            $regKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\miyu.exe'
+            if (-not (Test-Path $regKey)) {{
+                New-Item -Path $regKey -Force | Out-Null
+            }}
+            Set-ItemProperty -Path $regKey -Name '(Default)' -Value $exe
+            Set-ItemProperty -Path $regKey -Name 'Path' -Value $bin
+            "#,
+            bin_str = bin_str.replace('\'', "''"),
+            exe_str = exe_str.replace('\'', "''")
         );
 
         let output = Command::new("powershell")
