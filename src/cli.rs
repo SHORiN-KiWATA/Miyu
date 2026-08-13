@@ -2922,9 +2922,12 @@ fn inline_pop_select(turns: &[Turn]) -> Result<Option<Vec<bool>>> {
             &query,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -3832,9 +3835,12 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -3918,9 +3924,12 @@ fn inline_fuzzy_select_single(items: &[String], initial: usize) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -4237,11 +4246,14 @@ fn inline_single_select_deletable(
             confirm_label,
         )?;
         let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         else {
             continue;
         };
+        if kind == KeyEventKind::Release {
+            continue;
+        }
         if let Some(index) = confirming {
             // Only an explicit yes deletes; every other key backs out.
             let confirmed = matches!(code, KeyCode::Char('y') | KeyCode::Char('Y'));
@@ -8702,9 +8714,12 @@ fn inline_variant_select(
             variant_scroll,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -8758,9 +8773,12 @@ fn inline_single_variant_select(
         scroll = inline_fuzzy_scroll(item.cursor, scroll, visible.min(item.options.len()));
         draw_inline_single_variant(&mut session.stdout, anchor_y, menu_lines, &item, scroll)?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;

@@ -22,7 +22,7 @@ use crate::platforms::plugins::{
 use crate::state::StateStore;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
@@ -7884,8 +7884,10 @@ fn read_key_with_timeout(timeout: Option<Duration>) -> Result<Option<KeyCode>> {
                 return Ok(None);
             }
         }
-        if let Event::Key(KeyEvent { code, .. }) = event::read()? {
-            return Ok(Some(code));
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Release {
+                return Ok(Some(key.code));
+            }
         }
     }
 }
