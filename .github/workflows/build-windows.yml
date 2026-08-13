@@ -1,0 +1,47 @@
+name: Build Miyu Windows Binary
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Check binary output
+        shell: powershell
+        run: |
+          if (Test-Path "target/x86_64-pc-windows-msvc/release/miyu.exe") {
+            Write-Host "Binary built successfully at target/x86_64-pc-windows-msvc/release/miyu.exe"
+          } else {
+            Write-Error "miyu.exe not found!"
+            exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: miyu-windows-x86_64
+          path: target/x86_64-pc-windows-msvc/release/miyu.exe
+          if-no-files-found: error

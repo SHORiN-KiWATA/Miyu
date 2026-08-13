@@ -1485,7 +1485,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::Web(args)) => run_web(&paths, args).await,
         Some(Command::Daemon(args)) => run_daemon_command(&paths, args).await,
         None => {
-            let message = join_message(cli.message);
+            let message = join_message(cli.message.clone());
             if message.is_empty() && io::stdin().is_terminal() {
                 if session_arg.is_some() || continue_session {
                     bail!(
@@ -1496,7 +1496,29 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                         )
                     );
                 }
-                run_repl(&paths, mode).await
+                if let Ok(config) = AppConfig::load_or_default(&paths) {
+                    if !config.has_configured_llm() {
+                        println!(
+                            "{}\n",
+                            t(
+                                "No active provider API key configured. Launching interactive configuration...",
+                                "检测到尚未配置有效的大模型 API Key，即将为你自动打开交互配置界面..."
+                            )
+                        );
+                        std::thread::sleep(Duration::from_millis(1200));
+                        crate::config_tui::run(&paths)?;
+                    }
+                }
+                let res = run_repl(&paths, mode).await;
+                #[cfg(windows)]
+                {
+                    if io::stdout().is_terminal() {
+                        let mut line = String::new();
+                        println!("\n{}", t("Press Enter to exit...", "按下 Enter 键退出程序..."));
+                        let _ = io::stdin().read_line(&mut line);
+                    }
+                }
+                res
             } else {
                 let session =
                     one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
