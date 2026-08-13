@@ -2549,6 +2549,15 @@ fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
         t("Preparing data directory", "正在准备数据目录"),
         &paths.data_dir.display().to_string(),
     )?;
+    if let Ok(installed) = paths.ensure_bin_installed() {
+        if installed {
+            print_init_step(
+                interactive,
+                t("Registering Windows PATH", "注册全局 PATH 环境变量"),
+                &paths.bin_dir().display().to_string(),
+            )?;
+        }
+    }
     if interactive {
         println!("\n{}\n", t("Initialization complete.", "初始化完成。"));
     } else {

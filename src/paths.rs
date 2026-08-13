@@ -163,11 +163,29 @@ impl MiyuPaths {
         })
     }
 
+    pub fn bin_dir(&self) -> PathBuf {
+        self.root_dir.join("bin")
+    }
+
+    pub fn ensure_bin_installed(&self) -> Result<bool> {
+        let bin_dir = self.bin_dir();
+        ensure_private_dir(&bin_dir)?;
+        if let Ok(current_exe) = std::env::current_exe() {
+            let target_exe_name = if cfg!(windows) { "miyu.exe" } else { "miyu" };
+            let target_exe = bin_dir.join(target_exe_name);
+            if current_exe != target_exe {
+                let _ = fs::copy(&current_exe, &target_exe);
+            }
+        }
+        Ok(sys::install_windows_user_path(&bin_dir)?)
+    }
+
     pub fn create_dirs(&self) -> Result<()> {
         let prompts_dir = self.prompts_dir();
         let identities_dir = self.identities_dir();
         let persona_avatars_dir = self.persona_avatars_dir();
         let skill_drafts_dir = self.skill_drafts_dir();
+        let bin_dir = self.bin_dir();
         for directory in [
             &self.config_dir,
             &self.skills_dir,
@@ -176,6 +194,7 @@ impl MiyuPaths {
             &self.state_dir,
             &self.pictures_dir,
             &self.scripts_dir,
+            &bin_dir,
             &prompts_dir,
             &identities_dir,
             &persona_avatars_dir,

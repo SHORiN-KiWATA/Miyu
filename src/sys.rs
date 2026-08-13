@@ -228,3 +228,35 @@ mod win_lock {
         }
     }
 }
+
+pub fn install_windows_user_path(bin_dir: &Path) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let bin_str = bin_dir.to_string_lossy().to_string();
+        
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        if path_var.split(';').any(|p| Path::new(p) == bin_dir) {
+            return Ok(false);
+        }
+
+        let script = format!(
+            "$bin = '{}'; $old = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($old -notlike \"*$bin*\") {{ [Environment]::SetEnvironmentVariable('Path', ($old.TrimEnd(';') + ';' + $bin), 'User') }}",
+            bin_str.replace('\'', "''")
+        );
+
+        let output = Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(&script)
+            .output()?;
+
+        Ok(output.status.success())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = bin_dir;
+        Ok(false)
+    }
+}
