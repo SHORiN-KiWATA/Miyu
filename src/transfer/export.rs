@@ -10,6 +10,7 @@ use flate2::Compression;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -130,7 +131,7 @@ pub fn export(paths: &MiyuPaths, output: &Path, options: &ExportOptions) -> Resu
     write_archive(output, &manifest, &planned)?;
     // The archive carries plaintext credentials unless they were stripped, so
     // it must not be world-readable even for a moment.
-    std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o600))
+    crate::sys::set_secure_file_permissions(output)
         .with_context(|| format!("restricting permissions on {}", output.display()))?;
 
     Ok(ExportReport {
@@ -360,7 +361,7 @@ fn write_archive(output: &Path, manifest: &Manifest, planned: &[Planned]) -> Res
         }
     }
     let file = File::create(output).with_context(|| format!("creating {}", output.display()))?;
-    std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o600)).ok();
+    crate::sys::set_secure_file_permissions(output).ok();
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = tar::Builder::new(encoder);
 

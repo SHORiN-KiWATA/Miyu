@@ -420,7 +420,7 @@ async fn resolve_context_image(
         .context("platform image lookup is unavailable")?;
     if state
         .fetches
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count < MAX_SCOPED_CONTEXT_FETCHES).then_some(count + 1)
         })
         .is_err()

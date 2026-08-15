@@ -2,11 +2,15 @@ use crate::i18n::text as t;
 use anyhow::{bail, Context, Result};
 use directories::{BaseDirs, UserDirs};
 use serde::{Deserialize, Serialize};
+use crate::sys;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{symlink, DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file as symlink;
 
 const LAYOUT_MARKER: &str = ".layout-v1";
 const RESOURCE_LAYOUT_MARKER: &str = ".resource-layout-v1";
@@ -88,9 +92,10 @@ impl MiyuPaths {
         // process, and the newly spawned daemon performs the migration.
         let migration_enabled = explicit_home.is_none() && !cfg!(test);
         let marker_exists = layout_marker_exists(&next)?;
+        let legacy_exists = legacy.exists()?;
         let use_legacy_temporarily = migration_enabled
             && !marker_exists
-            && legacy.exists()?
+            && legacy_exists
             && legacy_daemon_is_running(&legacy);
         let (config_dir, data_dir, cache_dir, state_dir) = if use_legacy_temporarily {
             (
@@ -158,11 +163,32 @@ impl MiyuPaths {
         })
     }
 
+    pub fn bin_dir(&self) -> PathBuf {
+        self.root_dir.join("bin")
+    }
+
+    pub fn ensure_bin_installed(&self) -> Result<bool> {
+        let bin_dir = self.bin_dir();
+        ensure_private_dir(&bin_dir)?;
+        if let Ok(current_exe) = std::env::current_exe() {
+            let target_exe_name = if cfg!(windows) { "miyu.exe" } else { "miyu" };
+            let target_exe = bin_dir.join(target_exe_name);
+            if current_exe != target_exe {
+                let _ = fs::copy(&current_exe, &target_exe);
+            }
+            if let Some(parent) = current_exe.parent() {
+                let _ = sys::install_windows_user_path(parent);
+            }
+        }
+        Ok(sys::install_windows_user_path(&bin_dir)?)
+    }
+
     pub fn create_dirs(&self) -> Result<()> {
         let prompts_dir = self.prompts_dir();
         let identities_dir = self.identities_dir();
         let persona_avatars_dir = self.persona_avatars_dir();
         let skill_drafts_dir = self.skill_drafts_dir();
+        let bin_dir = self.bin_dir();
         for directory in [
             &self.config_dir,
             &self.skills_dir,
@@ -171,6 +197,7 @@ impl MiyuPaths {
             &self.state_dir,
             &self.pictures_dir,
             &self.scripts_dir,
+            &bin_dir,
             &prompts_dir,
             &identities_dir,
             &persona_avatars_dir,
@@ -518,9 +545,19 @@ fn resource_runtime_dir(layout: &Layout) -> PathBuf {
 }
 
 fn daemon_is_running_at(runtime_dir: &Path, current_process_is_daemon: bool) -> bool {
-    std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
-        || runtime_lock_is_held(&runtime_dir.join("core.lock"))
-        || (!current_process_is_daemon && runtime_lock_is_held(&runtime_dir.join("starter.lock")))
+    let sock_connected = {
+        #[cfg(unix)]
+        {
+            std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    };
+    sock_connected
+        || runtime_lock_is_held(&runtime_dir.join("core.lock")).unwrap_or(false)
+        || (!current_process_is_daemon && runtime_lock_is_held(&runtime_dir.join("starter.lock")).unwrap_or(false))
 }
 
 fn normalize_resource_relative_path(path: &Path) -> Option<PathBuf> {
@@ -647,7 +684,7 @@ fn try_acquire_resource_daemon_guard(
     let runtime_dir = resource_runtime_dir(layout);
     ensure_private_dir(&runtime_dir)?;
     let starter_path = runtime_dir.join("starter.lock");
-    let starter_already_held = current_process_is_daemon && runtime_lock_is_held(&starter_path);
+    let starter_already_held = current_process_is_daemon && runtime_lock_is_held(&starter_path).unwrap_or(false);
     let starter = if starter_already_held {
         None
     } else {
@@ -659,7 +696,17 @@ fn try_acquire_resource_daemon_guard(
     let Some(core) = try_acquire_runtime_lock(&runtime_dir.join("core.lock"))? else {
         return Ok(None);
     };
-    if std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok() {
+    let unix_sock_ok = {
+        #[cfg(unix)]
+        {
+            std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    };
+    if unix_sock_ok {
         return Ok(None);
     }
     Ok(Some(ResourceDaemonGuard {
@@ -669,24 +716,14 @@ fn try_acquire_resource_daemon_guard(
 }
 
 fn try_acquire_runtime_lock(path: &Path) -> Result<Option<File>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    sys::set_open_options_mode(&mut options, 0o600);
+    let file = options.open(path)?;
+    if sys::flock_lock_ex(&file, true)? {
         return Ok(Some(file));
     }
-    let error = std::io::Error::last_os_error();
-    if matches!(error.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN)
-    {
-        Ok(None)
-    } else {
-        Err(error.into())
-    }
+    Ok(None)
 }
 
 fn preflight_resource_entries(layout: &Layout, entries: &[ResourceMigrationEntry]) -> Result<()> {
@@ -830,10 +867,10 @@ fn write_resource_journal(layout: &Layout, journal: &ResourceMigrationJournal) -
         std::process::id(),
         rand::random::<u64>()
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::set_open_options_mode(&mut options, 0o600);
+    let mut file = options
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
     serde_json::to_writer_pretty(&mut file, journal)?;
@@ -945,9 +982,7 @@ struct MigrationLease(File);
 
 impl Drop for MigrationLease {
     fn drop(&mut self) {
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
+        sys::flock_unlock(&self.0);
     }
 }
 
@@ -969,27 +1004,35 @@ fn legacy_daemon_is_running_at(legacy: &LegacyLayout, xdg_runtime_dir: Option<&P
         .into_iter()
         .map(|runtime_dir| runtime_dir.join("miyu"))
         .any(|runtime_dir| {
-            std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
-                || runtime_lock_is_held(&runtime_dir.join("core.lock"))
-                || runtime_lock_is_held(&runtime_dir.join("starter.lock"))
+            let unix_sock = {
+                #[cfg(unix)]
+                {
+                    std::os::unix::net::UnixStream::connect(runtime_dir.join("core.sock")).is_ok()
+                }
+                #[cfg(not(unix))]
+                {
+                    false
+                }
+            };
+            unix_sock
+                || runtime_lock_is_held(&runtime_dir.join("core.lock")).unwrap_or(false)
+                || runtime_lock_is_held(&runtime_dir.join("starter.lock")).unwrap_or(false)
         })
 }
 
-fn runtime_lock_is_held(path: &Path) -> bool {
-    let file = match OpenOptions::new().read(true).write(true).open(path) {
+fn runtime_lock_is_held(path: &Path) -> Result<bool> {
+    let file = match OpenOptions::new().read(true).write(true).create(false).open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
-        // Failure to inspect an existing lock must not authorize migration.
-        Err(_) => return true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            || error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(false),
+        Err(error) => return Err(error.into()),
     };
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        unsafe {
-            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+    match sys::flock_lock_ex(&file, true) {
+        Ok(true) => {
+            sys::flock_unlock(&file);
+            Ok(false)
         }
-        false
-    } else {
-        true
+        _ => Ok(true),
     }
 }
 
@@ -1112,34 +1155,44 @@ fn existing_mappings(mappings: &[MigrationMapping]) -> Result<Vec<MigrationMappi
 fn entry_exists(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            || error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
 
 fn acquire_migration_lock(root: &Path) -> Result<MigrationLease> {
-    // Lock the directory itself so a failed preflight never leaves a lock file
-    // behind in an otherwise untouched destination layout.
+    // Lock the directory itself on Unix, or a lockfile on Windows so opening directory doesn't fail with OS Error 5.
+    #[cfg(unix)]
     let file = File::open(root)
         .with_context(|| format!("opening migration lock directory {}", root.display()))?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error()).context("locking Miyu directory migration");
+    #[cfg(not(unix))]
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".migration.lock"))
+        .with_context(|| format!("opening migration lock file in {}", root.display()))?;
+
+    if sys::flock_lock_ex(&file, false)? {
+        Ok(MigrationLease(file))
+    } else {
+        Err(std::io::Error::last_os_error()).context("locking Miyu directory migration")
     }
-    Ok(MigrationLease(file))
 }
 
 fn ensure_private_dir(path: &Path) -> Result<()> {
     ensure_existing_directory(path)?;
     if !entry_exists(path)? {
         let mut builder = fs::DirBuilder::new();
-        builder.recursive(true).mode(0o700);
+        builder.recursive(true);
+        sys::set_dir_builder_mode(&mut builder, 0o700);
         builder
             .create(path)
             .with_context(|| format!("creating {}", path.display()))?;
     }
     ensure_existing_directory(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    sys::set_secure_dir_permissions(path)
         .with_context(|| format!("securing {}", path.display()))?;
     Ok(())
 }
@@ -1172,7 +1225,8 @@ fn layout_marker_exists(layout: &Layout) -> Result<bool> {
             marker.display()
         ),
         Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            || error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
@@ -1183,10 +1237,10 @@ fn write_marker(path: &Path) -> Result<()> {
         std::process::id(),
         rand::random::<u64>()
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::set_open_options_mode(&mut options, 0o600);
+    let mut file = options
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
     file.write_all(b"1\n")?;
@@ -1502,7 +1556,8 @@ fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Res
                 &destination.join(entry.file_name()),
             )?;
         }
-        File::open(destination)?.sync_all()?;
+        #[cfg(unix)]
+        let _ = File::open(destination).map(|f| f.sync_all());
         sync_parent(destination)?;
         return Ok(());
     }
@@ -1515,11 +1570,10 @@ fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Res
         rand::random::<u64>()
     ));
     let mut input = File::open(source)?;
-    let mut output = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(metadata.permissions().mode())
-        .open(&temporary)?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    sys::set_open_options_mode(&mut options, sys::get_permissions_mode(&metadata.permissions()));
+    let mut output = options.open(&temporary)?;
     std::io::copy(&mut input, &mut output)?;
     output.sync_all()?;
     fs::rename(&temporary, destination)?;
@@ -1527,9 +1581,12 @@ fn copy_entry(source: &Path, metadata: &fs::Metadata, destination: &Path) -> Res
     Ok(())
 }
 
-fn sync_parent(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+fn sync_parent(_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = _path.parent() {
+        if let Ok(file) = File::open(parent) {
+            let _ = file.sync_all();
+        }
     }
     Ok(())
 }
@@ -1548,7 +1605,7 @@ fn entries_identical(
     if !left_meta.is_file()
         || !right_meta.is_file()
         || left_meta.len() != right_meta.len()
-        || left_meta.permissions().mode() & 0o7777 != right_meta.permissions().mode() & 0o7777
+        || sys::get_permissions_mode(&left_meta.permissions()) != sys::get_permissions_mode(&right_meta.permissions())
     {
         return Ok(false);
     }
@@ -2290,15 +2347,10 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("core.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::flock_lock_ex(&lock, true).unwrap());
 
         assert!(legacy_daemon_is_running_at(&legacy, None));
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
-        }
+        sys::flock_unlock(&lock);
         assert!(!legacy_daemon_is_running_at(&legacy, None));
     }
 
@@ -2315,15 +2367,10 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("starter.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::flock_lock_ex(&lock, true).unwrap());
 
         assert!(legacy_daemon_is_running_at(&legacy, None));
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
-        }
+        sys::flock_unlock(&lock);
         assert!(!legacy_daemon_is_running_at(&legacy, None));
     }
 
@@ -2339,10 +2386,7 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("starter.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::flock_lock_ex(&lock, true).unwrap());
 
         assert!(daemon_is_running_at(&runtime_dir, false));
         assert!(!daemon_is_running_at(&runtime_dir, true));
@@ -2363,10 +2407,7 @@ mod tests {
             .write(true)
             .open(runtime_dir.join("starter.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(starter.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(sys::flock_lock_ex(&starter, true).unwrap());
 
         assert!(!try_migrate_resource_layout(&layout, false).unwrap());
         assert!(layout.config_dir.join("skills/demo/SKILL.md").is_file());

@@ -9,11 +9,13 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::{
-    fs::File, fs::OpenOptions, os::fd::AsRawFd, os::unix::fs::OpenOptionsExt,
-    os::unix::fs::PermissionsExt, os::unix::process::CommandExt, path::PathBuf, process::Stdio,
+    fs::File, fs::OpenOptions, path::PathBuf, process::Stdio,
     time::Duration,
 };
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
 pub const PROTOCOL_VERSION: u16 = 3;
@@ -183,7 +185,7 @@ pub fn acquire_web_core(paths: &MiyuPaths) -> Result<WebCoreLease> {
 fn prepare_runtime_dir(paths: &MiyuPaths) -> Result<()> {
     let runtime_dir = paths.runtime_dir();
     std::fs::create_dir_all(&runtime_dir)?;
-    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))?;
+    crate::sys::set_secure_dir_permissions(&runtime_dir)?;
     Ok(())
 }
 
@@ -194,23 +196,18 @@ fn acquire_direct_core_at(lock_path: PathBuf) -> Result<DirectCoreLease> {
 }
 
 fn acquire_lock(lock_path: PathBuf) -> Result<File> {
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result != 0 {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    crate::sys::set_open_options_mode(&mut options, 0o600);
+    let lock_file = options.open(lock_path)?;
+    if !crate::sys::flock_lock_ex(&lock_file, true)? {
         bail!("Miyu Web core is starting or temporarily unavailable");
     }
     Ok(lock_file)
 }
 
 fn unlock(lock_file: &File) {
-    unsafe {
-        libc::flock(lock_file.as_raw_fd(), libc::LOCK_UN);
-    }
+    crate::sys::flock_unlock(lock_file);
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -442,10 +439,27 @@ impl Frame {
     }
 }
 
+#[cfg(unix)]
 pub async fn connect(path: &Path) -> Result<UnixStream> {
     UnixStream::connect(path)
         .await
         .with_context(|| format!("connecting to Miyu core at {}", path.display()))
+}
+
+#[cfg(not(unix))]
+pub async fn connect(path: &Path) -> Result<tokio::net::TcpStream> {
+    let port_path = path.with_extension("port");
+    let content = tokio::fs::read_to_string(&port_path)
+        .await
+        .with_context(|| format!("reading IPC port file at {}", port_path.display()))?;
+    let port: u16 = content
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid port number in {}", port_path.display()))?;
+    let addr = format!("127.0.0.1:{port}");
+    tokio::net::TcpStream::connect(&addr)
+        .await
+        .with_context(|| format!("connecting to Miyu core at {addr}"))
 }
 
 pub async fn daemon_info(paths: &MiyuPaths) -> Option<DaemonInfo> {
@@ -652,7 +666,7 @@ fn remap_managed_password(
 fn write_private_state(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path.parent().context("Miyu state file has no parent")?;
     std::fs::create_dir_all(parent)?;
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    crate::sys::set_secure_dir_permissions(parent)?;
     let temporary = parent.join(format!(
         ".{}.tmp-{}-{}",
         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -660,11 +674,10 @@ fn write_private_state(path: &Path, contents: &[u8]) -> Result<()> {
         rand::random::<u64>()
     ));
     let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        crate::sys::set_open_options_mode(&mut options, 0o600);
+        let mut file = options.open(&temporary)?;
         std::io::Write::write_all(&mut file, contents)?;
         file.sync_all()?;
         std::fs::rename(&temporary, path)?;
@@ -1047,16 +1060,11 @@ fn linux_process_state(pid: u32) -> Option<(char, u64)> {
 
 fn acquire_starter(paths: &MiyuPaths) -> Result<StarterLease> {
     prepare_runtime_dir(paths)?;
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(paths.daemon_start_lock())?;
-    let result = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    crate::sys::set_open_options_mode(&mut options, 0o600);
+    let lock_file = options.open(paths.daemon_start_lock())?;
+    crate::sys::flock_lock_ex(&lock_file, false)?;
     Ok(StarterLease { lock_file })
 }
 
@@ -1080,6 +1088,7 @@ fn start_daemon_process(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {
@@ -1109,7 +1118,10 @@ fn append_daemon_process_args(command: &mut std::process::Command, launch: &Daem
     }
 }
 
-pub async fn send<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()> {
+pub async fn send<T: Serialize>(
+    stream: &mut (impl AsyncWriteExt + Unpin),
+    value: &T,
+) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > MAX_FRAME_BYTES {
         bail!("IPC frame exceeds the 24 MiB limit");
@@ -1120,7 +1132,9 @@ pub async fn send<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()
     Ok(())
 }
 
-pub async fn receive<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<Option<T>> {
+pub async fn receive<T: DeserializeOwned>(
+    stream: &mut (impl AsyncReadExt + Unpin),
+) -> Result<Option<T>> {
     let length = match stream.read_u32().await {
         Ok(length) => length as usize,
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),

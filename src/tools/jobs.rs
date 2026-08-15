@@ -9,6 +9,13 @@
 use super::{CommandOutputStream, ToolProgress, ToolRegistry, ToolSpec};
 use crate::i18n::agent_text as t;
 use crate::paths::MiyuPaths;
+
+#[cfg(unix)]
+use libc::{SIGKILL, SIGTERM};
+#[cfg(not(unix))]
+const SIGTERM: i32 = 15;
+#[cfg(not(unix))]
+const SIGKILL: i32 = 9;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -278,14 +285,22 @@ fn next_job_id() -> String {
     }
 }
 
-fn signal_process_group(pid: u32, signal: i32) {
+fn signal_process_group(_pid: u32, _signal: i32) {
+    #[cfg(unix)]
     unsafe {
-        libc::killpg(pid as i32, signal);
+        libc::killpg(_pid as i32, _signal);
     }
 }
 
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+fn process_alive(_pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(_pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Kill process groups recorded by predecessors that are no longer alive.
@@ -318,7 +333,7 @@ pub fn sweep_stale_jobs(paths: &MiyuPaths) {
                     "清理已死亡 Miyu 进程遗留的后台任务"
                 )
             );
-            signal_process_group(entry.pid, libc::SIGKILL);
+            signal_process_group(entry.pid, SIGKILL);
         }
     }
     let _ = write_ledger(paths, &kept);
@@ -400,7 +415,7 @@ pub fn shutdown_all() {
     for kind in &running {
         match kind {
             JobKind::Command { pid } => {
-                signal_process_group(*pid, libc::SIGTERM);
+                signal_process_group(*pid, SIGTERM);
                 pids.push(*pid);
             }
             JobKind::Subagent { abort } => abort.abort(),
@@ -410,7 +425,7 @@ pub fn shutdown_all() {
         std::thread::sleep(Duration::from_millis(300));
         for pid in pids {
             if process_alive(pid) {
-                signal_process_group(pid, libc::SIGKILL);
+                signal_process_group(pid, SIGKILL);
             }
         }
     }
@@ -454,6 +469,7 @@ pub async fn spawn_background(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log.try_clone()?))
         .stderr(std::process::Stdio::from(log));
+    #[cfg(unix)]
     process.process_group(0);
     let mut child = process.spawn().context("failed to spawn the background job")?;
     let pid = child.id().context("background job has no pid")?;
@@ -984,14 +1000,14 @@ async fn stop_one(job_id: &str) -> Result<String> {
             // SIGKILL escalation are detached — waiting them out inline is
             // what made Ctrl+C feel frozen, and it bought nothing: the job was
             // marked terminal above and has already left `overview()`.
-            signal_process_group(pid, libc::SIGTERM);
+            signal_process_group(pid, SIGTERM);
             tokio::spawn(async move {
                 let deadline = Instant::now() + STOP_GRACE;
                 while process_alive(pid) && Instant::now() < deadline {
                     tokio::time::sleep(STATUS_POLL).await;
                 }
                 if process_alive(pid) {
-                    signal_process_group(pid, libc::SIGKILL);
+                    signal_process_group(pid, SIGKILL);
                 }
             });
         }

@@ -3767,6 +3767,14 @@ impl AppConfig {
         }
     }
 
+    pub fn has_configured_llm(&self) -> bool {
+        self.active_provider_model_choices().iter().any(|choice| {
+            self.providers
+                .iter()
+                .any(|p| p.id == choice.provider_id && p.api_key.as_deref().map_or(false, |k| !k.trim().is_empty()))
+        })
+    }
+
     pub fn init_files(paths: &MiyuPaths) -> Result<()> {
         paths.create_dirs()?;
         if !paths.config_file.exists() {

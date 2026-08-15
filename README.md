@@ -45,20 +45,29 @@ miyu config
 
 ## 如何安装？
 
+- Windows (原生支持 Windows 10 / 11)
+
+  ![](./pics/windows-terminal.png)
+
+  支持单文件绿色部署或源码编译，完整说明请参阅 **[Windows 专属指南与使用文档](README_WINDOWS.md)**：
+  ```powershell
+  # 源码编译安装
+  cargo install --path .
+  ```
+
 - Arch Linux
 
   ```
   yay -S miyu
   ```
 
-- 从源码构建
+- 从源码构建 (Linux / macOS)
 
   ```
   git clone https://github.com/SHORiN-KiWATA/Miyu.git
   cd Miyu
   cargo build --release
   ```
-
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。
 

@@ -452,7 +452,7 @@ impl SessionTurnTicket {
                     if self
                         .state
                         .waiting
-                        .try_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
                             (waiting < self.state.max_queued).then_some(waiting + 1)
                         })
                         .is_err()

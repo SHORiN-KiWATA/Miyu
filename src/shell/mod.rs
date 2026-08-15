@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -97,17 +98,17 @@ fn write_text_atomically(path: &Path, contents: &str) -> Result<()> {
         .context("shell startup file has no parent directory")?;
     let mode = fs::symlink_metadata(path)
         .ok()
-        .map(|metadata| metadata.permissions().mode() & 0o7777)
+        .map(|metadata| crate::sys::get_permissions_mode(&metadata.permissions()))
         .unwrap_or(0o600);
     let temporary = parent.join(format!(
         ".miyu-hook-{}-{}",
         std::process::id(),
         rand::random::<u64>()
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(mode)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    crate::sys::set_open_options_mode(&mut options, mode);
+    let mut file = options
         .open(&temporary)
         .with_context(|| {
             format!(
@@ -455,7 +456,7 @@ fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };
-    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    crate::sys::is_executable(&metadata, Some(path))
 }
 
 #[cfg(test)]

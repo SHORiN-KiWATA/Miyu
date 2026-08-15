@@ -1506,7 +1506,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::Web(args)) => run_web(&paths, args).await,
         Some(Command::Daemon(args)) => run_daemon_command(&paths, args).await,
         None => {
-            let message = join_message(cli.message);
+            let message = join_message(cli.message.clone());
             if message.is_empty() && io::stdin().is_terminal() {
                 if session_arg.is_some() || continue_session {
                     bail!(
@@ -1517,7 +1517,29 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                         )
                     );
                 }
-                run_repl(&paths, mode).await
+                if let Ok(config) = AppConfig::load_or_default(&paths) {
+                    if !config.has_configured_llm() {
+                        println!(
+                            "{}\n",
+                            t(
+                                "No active provider API key configured. Launching interactive configuration...",
+                                "检测到尚未配置有效的大模型 API Key，即将为你自动打开交互配置界面..."
+                            )
+                        );
+                        std::thread::sleep(Duration::from_millis(1200));
+                        crate::config_tui::run(&paths)?;
+                    }
+                }
+                let res = run_repl(&paths, mode).await;
+                #[cfg(windows)]
+                {
+                    if io::stdout().is_terminal() {
+                        let mut line = String::new();
+                        println!("\n{}", t("Press Enter to exit...", "按下 Enter 键退出程序..."));
+                        let _ = io::stdin().read_line(&mut line);
+                    }
+                }
+                res
             } else {
                 let session =
                     one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
@@ -2548,6 +2570,15 @@ fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
         t("Preparing data directory", "正在准备数据目录"),
         &paths.data_dir.display().to_string(),
     )?;
+    if let Ok(installed) = paths.ensure_bin_installed() {
+        if installed {
+            print_init_step(
+                interactive,
+                t("Registering Windows PATH", "注册全局 PATH 环境变量"),
+                &paths.bin_dir().display().to_string(),
+            )?;
+        }
+    }
     if interactive {
         println!("\n{}\n", t("Initialization complete.", "初始化完成。"));
     } else {
@@ -2912,9 +2943,12 @@ fn inline_pop_select(turns: &[Turn]) -> Result<Option<Vec<bool>>> {
             &query,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -3822,9 +3856,12 @@ fn inline_fuzzy_select(items: &[String], mut active: Vec<bool>) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -3908,9 +3945,12 @@ fn inline_fuzzy_select_single(items: &[String], initial: usize) -> Result<Option
             &active,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c')
                     if modifiers.contains(KeyModifiers::CONTROL)
@@ -4227,11 +4267,14 @@ fn inline_single_select_deletable(
             confirm_label,
         )?;
         let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         else {
             continue;
         };
+        if kind == KeyEventKind::Release {
+            continue;
+        }
         if let Some(index) = confirming {
             // Only an explicit yes deletes; every other key backs out.
             let confirmed = matches!(code, KeyCode::Char('y') | KeyCode::Char('Y'));
@@ -4518,7 +4561,10 @@ fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
                 if link_path.exists() || link_path.is_symlink() {
                     std::fs::remove_file(&link_path)?;
                 }
+                #[cfg(unix)]
                 std::os::unix::fs::symlink(&path, &link_path)?;
+                #[cfg(windows)]
+                std::os::windows::fs::symlink_file(&path, &link_path).or_else(|_| std::fs::copy(&path, &link_path).map(|_| ()))?;
             }
             print!("[Image 1: {}]", filename);
             io::stdout().flush()?;
@@ -4797,6 +4843,10 @@ async fn run_chat_with_images(
     Ok(())
 }
 
+#[cfg(not(unix))]
+fn drain_stdin() {}
+
+#[cfg(unix)]
 fn drain_stdin() {
     use std::os::fd::AsRawFd;
 
@@ -4830,6 +4880,7 @@ fn drain_stdin() {
 const STDIN_MAX_CHARS: usize = 50_000;
 const STDIN_TIMEOUT_SECS: u64 = 5;
 
+#[cfg(unix)]
 async fn append_stdin_if_piped(message: String) -> String {
     if io::stdin().is_terminal() {
         return message;
@@ -4876,6 +4927,33 @@ async fn append_stdin_if_piped(message: String) -> String {
         }
         buf.truncate(STDIN_MAX_CHARS);
         Ok(String::from_utf8_lossy(&buf).into_owned())
+    })
+    .await;
+
+    let stdin_content = match read_result {
+        Ok(Ok(content)) if !content.trim().is_empty() => content.trim().to_string(),
+        _ => return message,
+    };
+
+    if message.is_empty() {
+        stdin_content
+    } else {
+        format!("{message}\n\n---\n(stdin)\n{stdin_content}")
+    }
+}
+
+#[cfg(not(unix))]
+async fn append_stdin_if_piped(message: String) -> String {
+    if io::stdin().is_terminal() {
+        return message;
+    }
+    let read_result = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+        if buf.len() > STDIN_MAX_CHARS {
+            buf.truncate(STDIN_MAX_CHARS);
+        }
+        Ok(buf)
     })
     .await;
 
@@ -7013,6 +7091,7 @@ async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMode) -> Result<()> {
     // exit path at the bottom never runs, so stop this session's background
     // jobs from a signal task before dying. SIGKILL still leaks them — the
     // daemon keeps those running and their completion wakes queue up.
+    #[cfg(unix)]
     {
         let paths = paths.clone();
         let feed = jobs_shared.clone();
@@ -8692,9 +8771,12 @@ fn inline_variant_select(
             variant_scroll,
         )?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;
@@ -8748,9 +8830,12 @@ fn inline_single_variant_select(
         scroll = inline_fuzzy_scroll(item.cursor, scroll, visible.min(item.options.len()));
         draw_inline_single_variant(&mut session.stdout, anchor_y, menu_lines, &item, scroll)?;
         if let Event::Key(KeyEvent {
-            code, modifiers, ..
+            code, modifiers, kind, ..
         }) = event::read()?
         {
+            if kind == KeyEventKind::Release {
+                continue;
+            }
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_inline_fuzzy(&mut session.stdout, anchor_y, menu_lines)?;

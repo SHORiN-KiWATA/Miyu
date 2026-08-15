@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -539,11 +540,10 @@ fn lock_thinking_variant_preferences(paths: &MiyuPaths) -> Result<File> {
                 lock_path.display()
             )
         })?;
-    let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
+    if !crate::sys::flock_lock_ex(&lock, false)? {
         return Err(std::io::Error::last_os_error()).with_context(|| {
             format!(
-                "failed to lock thinking variant state: {}",
+                "failed to lock thinking variant file: {}",
                 lock_path.display()
             )
         });
