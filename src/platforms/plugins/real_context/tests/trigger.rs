@@ -6,13 +6,41 @@ use crate::platforms::plugins::real_context::*;
 #[test]
 fn explicit_direct_trigger_precedes_moderation_only_candidates() {
     assert_eq!(
-        select_trigger(true, true, true, true, true),
+        select_trigger(true, true, Some(TriggerKind::Supersede), true, true),
         Some(TriggerKind::Direct)
     );
     assert_eq!(
-        select_trigger(false, true, true, true, true),
+        select_trigger(false, true, Some(TriggerKind::Supersede), true, true),
         Some(TriggerKind::Moderation)
     );
+}
+
+/// 覆盖继承保留原始触发:标签是好感度归类、`<qq-join-in>` 注入与判官加分的
+/// 判据。一律写 Supersede 的旧行为让概率承诺被顶替后白拿直呼好感、注入哑火。
+#[test]
+fn a_takeover_inherits_the_original_trigger() {
+    for origin in [
+        TriggerKind::Probability,
+        TriggerKind::Direct,
+        TriggerKind::Moderation,
+        TriggerKind::Continuation,
+        TriggerKind::Supersede,
+    ] {
+        assert_eq!(
+            select_trigger(false, false, Some(origin), true, true),
+            Some(origin)
+        );
+    }
+    // 不继承时维持原有的续聊/概率次序。
+    assert_eq!(
+        select_trigger(false, false, None, true, true),
+        Some(TriggerKind::Continuation)
+    );
+    assert_eq!(
+        select_trigger(false, false, None, false, true),
+        Some(TriggerKind::Probability)
+    );
+    assert_eq!(select_trigger(false, false, None, false, false), None);
 }
 
 #[test]
@@ -35,11 +63,11 @@ fn direct_trigger_judgement_respects_takeover_and_privileged_bypass() {
 #[test]
 fn skipped_social_judgement_preserves_moderation_only_trigger() {
     assert_eq!(
-        select_trigger_for_policy(false, true, true, true, true, true),
+        select_trigger_for_policy(false, true, true, Some(TriggerKind::Supersede), true, true),
         Some(TriggerKind::Moderation)
     );
     assert_eq!(
-        select_trigger_for_policy(true, true, true, true, true, true),
+        select_trigger_for_policy(true, true, true, Some(TriggerKind::Supersede), true, true),
         Some(TriggerKind::Direct)
     );
 }
@@ -156,6 +184,13 @@ async fn correction_within_window_supersedes_committed_reply_and_moves_reactions
         .await
         .unwrap();
     assert!(decision.should_reply, "承诺沿用,补救消息应直接回复");
+    assert_eq!(
+        context
+            .plugin_value(TRIGGER_KEY)
+            .and_then(|value| value.as_str().and_then(TriggerKind::parse)),
+        Some(TriggerKind::Direct),
+        "顶替回合应沿用原始触发标签"
+    );
     let calls = recorded.lock().unwrap().clone();
     assert!(
         calls.contains(&("message-1".to_string(), "289".to_string(), false)),
@@ -165,7 +200,7 @@ async fn correction_within_window_supersedes_committed_reply_and_moves_reactions
         calls.contains(&("message-2".to_string(), "289".to_string(), true)),
         "新消息应贴上表情: {calls:?}"
     );
-    // pending 已刷新:承诺保持、目标并入两条消息
+    // pending 已刷新:承诺保持、目标并入两条消息、原始触发随链传递
     let runtime = plugin.runtime.lock().unwrap();
     let pending = runtime
         .sessions
@@ -173,10 +208,147 @@ async fn correction_within_window_supersedes_committed_reply_and_moves_reactions
         .and_then(|session| session.pending.get(&first.sender_id))
         .expect("补救后 pending 应保留以支持链式覆盖");
     assert!(pending.committed);
+    assert_eq!(pending.trigger, TriggerKind::Direct);
     assert_eq!(pending.targets.len(), 2);
     assert_eq!(
         pending.reactions,
         vec![("message-2".to_string(), "289".to_string())]
+    );
+}
+
+/// 概率承诺被顶替:标签保持 Probability,`<qq-join-in>` 注入照发。
+///
+/// 08-31 主排查:泄漏主力正是覆盖回合——判官放行的概率承诺一被同发送者的
+/// 快发消息顶替,标签就被改写成 Supersede,注入哑火,她面对一条明显不是说给
+/// 自己的消息、又没有任何"为什么叫你"的说明,只好把「没@我就先旁听」说出口。
+#[tokio::test]
+async fn takeover_of_a_probability_commitment_keeps_the_join_in_notice() {
+    let (_temp, context) = test_context(Arc::new(ReactionAdapter {
+        reactions: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let plugin = RealContextPlugin::new();
+    let settings = RealContextPluginSettings::default();
+    let first = inbound_event();
+    plugin.register_committed_pending(
+        &runtime_session_key(&context),
+        &first.sender_id,
+        TriggerKind::Probability,
+        Vec::new(),
+        vec![active_reply_target(&first)],
+    );
+    let mut correction = inbound_event();
+    correction.message_id = "message-2".to_string();
+    correction.text = "接着刚才那句再补一条".to_string();
+    let mut decision = TriggerDecision {
+        should_reply: false,
+        content: correction.text.clone(),
+        response_target: None,
+    };
+    plugin
+        .decide_group_trigger(&context, &correction, &mut decision, &settings)
+        .await
+        .unwrap();
+
+    assert!(decision.should_reply);
+    assert_eq!(
+        context
+            .plugin_value(TRIGGER_KEY)
+            .and_then(|value| value.as_str().and_then(TriggerKind::parse)),
+        Some(TriggerKind::Probability),
+        "概率承诺被顶替后标签不得改写成 Supersede"
+    );
+    {
+        let runtime = plugin.runtime.lock().unwrap();
+        let pending = runtime
+            .sessions
+            .get(&runtime_session_key(&context))
+            .and_then(|session| session.pending.get(&first.sender_id))
+            .expect("顶替后 pending 应保留以支持链式覆盖");
+        assert_eq!(pending.trigger, TriggerKind::Probability, "链式覆盖应传递原始触发");
+    }
+
+    let mut input = empty_turn_input();
+    plugin
+        .inject_context(&context, &mut input, &settings)
+        .await
+        .unwrap();
+    assert!(
+        input
+            .turn_system_context
+            .iter()
+            .any(|block| block.starts_with("<qq-join-in>")),
+        "顶替回合应照发 <qq-join-in> 注入"
+    );
+}
+
+/// 判官还在判(未承诺)时,新消息不得沿用承诺免判直回。
+///
+/// 旧行为:`preempt_inbound` 不看 committed 就移植目标,回落路径把"判断中"
+/// 当成"承诺已成立"——08-31 三条「没@我就先旁听」泄漏全是这么强起的。
+/// 测试环境没有可用的判官模型,判官路会立刻失败并丢弃;免判路则会置
+/// should_reply、写 TRIGGER_KEY、登记承诺——三个观测点足以区分两条路。
+#[tokio::test]
+async fn an_uncommitted_takeover_goes_back_to_the_judge_not_the_bypass() {
+    let (_temp, context) = test_context(Arc::new(ReactionAdapter {
+        reactions: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let plugin = RealContextPlugin::new();
+    let settings = RealContextPluginSettings::default();
+    let first = inbound_event();
+    let (cancel, _receiver) = tokio::sync::watch::channel(false);
+    plugin
+        .runtime
+        .lock()
+        .unwrap()
+        .session_mut(&runtime_session_key(&context), Instant::now())
+        .pending
+        .insert(
+            first.sender_id.clone(),
+            PendingReply {
+                generation: 7,
+                started: Instant::now(),
+                trigger: TriggerKind::Probability,
+                committed: false,
+                reactions: Vec::new(),
+                targets: vec![active_reply_target(&first)],
+                cancel,
+            },
+        );
+
+    let mut followup = inbound_event();
+    followup.message_id = "message-2".to_string();
+    followup.text = "这句其实是说给别人的".to_string();
+
+    // 未承诺的 pending 不该被接管:不移植目标,也就没有免判回落。
+    assert!(!plugin.preempt_inbound(&context, &followup).unwrap());
+    assert!(active_targets_from_context(&context).is_empty());
+
+    let mut decision = TriggerDecision {
+        should_reply: false,
+        content: followup.text.clone(),
+        response_target: None,
+    };
+    plugin
+        .decide_group_trigger(&context, &followup, &mut decision, &settings)
+        .await
+        .unwrap();
+
+    assert!(
+        !decision.should_reply,
+        "判官不可用时应丢弃,而不是免判直回"
+    );
+    assert!(
+        context.plugin_value(TRIGGER_KEY).is_none(),
+        "免判路才会写 TRIGGER_KEY"
+    );
+    let runtime = plugin.runtime.lock().unwrap();
+    assert!(
+        runtime
+            .sessions
+            .get(&runtime_session_key(&context))
+            .and_then(|session| session.pending.get(&first.sender_id))
+            .is_none(),
+        "判官失败应丢弃 pending,免判路则会登记承诺"
     );
 }
 
@@ -392,8 +564,9 @@ async fn an_exhausted_reply_quota_still_records_the_trigger() {
 
 /// 只有"概率抽中且判官放行"的回合才注入,其余触发一律不给。
 ///
-/// `TRIGGER_KEY == Probability` 只在判官通过后才写,覆盖继承那条路写的是
-/// Supersede——所以这个判据严格等价于"该不该回已经判过了,答案是回"。
+/// `TRIGGER_KEY == Probability` 只在判官通过后才写,或从这样一次放行的承诺
+/// 覆盖继承而来(覆盖保留原始触发)——两种来源都满足"该不该回已经判过了,
+/// 答案是回"。裸的 Supersede 只剩"原始触发不可考"的回退一种来源,不注入。
 #[tokio::test]
 async fn only_a_judge_approved_probability_turn_gets_the_join_in_notice() {
     for (trigger, wants) in [

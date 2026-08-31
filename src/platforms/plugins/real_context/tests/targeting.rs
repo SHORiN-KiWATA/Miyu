@@ -116,7 +116,9 @@ fn supersede_inherits_targets_only_for_the_same_sender() {
                 generation: 1,
                 started: Instant::now(),
                 trigger: TriggerKind::Probability,
-                committed: false,
+                // 接管只对已承诺的回复开放;未承诺的场景见 trigger.rs 的
+                // an_uncommitted_takeover_goes_back_to_the_judge_not_the_bypass。
+                committed: true,
                 reactions: Vec::new(),
                 targets: vec![target],
                 cancel,

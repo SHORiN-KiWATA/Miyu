@@ -128,9 +128,16 @@ impl PlatformPlugin for RealContextPlugin {
                 .sessions
                 .get(&session_key)
                 .and_then(|session| session.pending.get(&event.sender_id));
-            let Some(pending) =
-                pending.filter(|pending| now.duration_since(pending.started) <= supersede_window)
-            else {
+            // 只接管已承诺的回复(直触发,或判官已放行)。未承诺 = 判官还在
+            // 判,没有任何生成可接管;这里一旦放行,没有活跃回合可顶替时的
+            // 回落路径会把移植进上下文的目标当成"承诺已成立"免判直回
+            // (inject.rs 的 preempted_targets)——08-31 取证:当天三条
+            // 「没@我就先旁听」全是这么强起的。按 `PendingReply::committed`
+            // 的设计语义,未承诺的覆盖走常规入场:取消旧判断、对新消息
+            // 重新判断。
+            let Some(pending) = pending.filter(|pending| {
+                pending.committed && now.duration_since(pending.started) <= supersede_window
+            }) else {
                 return Ok(false);
             };
             pending.generation

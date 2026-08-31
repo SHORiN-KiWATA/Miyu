@@ -124,6 +124,7 @@ impl RealContextPlugin {
             continuation,
             inherited,
             inherited_committed,
+            inherited_trigger,
             old_reactions,
             mut inherited_targets,
             heat,
@@ -140,11 +141,20 @@ impl RealContextPlugin {
             });
             let inherited = settings.active_reply_supersede_enable
                 && (!preempted_targets.is_empty() || pending.is_some());
-            // 承诺已成立(preempt 回落 = 生成早已开始;或旧 pending 已 committed)
-            // 时,补救消息直接顶替,不再重新判断。
+            // 承诺已成立(preempt 回落——preempt_inbound 只放行已承诺的
+            // pending;或旧 pending 已 committed)时,补救消息直接顶替,不再
+            // 重新判断。未承诺(判官还在判)的覆盖走下面的判官路重判。
             let inherited_committed = inherited
                 && (!preempted_targets.is_empty()
                     || pending.is_some_and(|pending| pending.committed));
+            // 原始触发跟着继承走:顶替与重判都拿它当标签(好感度归类、
+            // <qq-join-in> 注入、判官加分都认标签)。pending 已被消费或过期、
+            // 只剩移植目标时不可考,由调用处回退 Supersede。
+            let inherited_trigger = if inherited {
+                pending.map(|pending| pending.trigger)
+            } else {
+                None
+            };
             let old_reactions = if inherited {
                 pending
                     .map(|pending| pending.reactions.clone())
@@ -167,6 +177,7 @@ impl RealContextPlugin {
                 continuation,
                 inherited,
                 inherited_committed,
+                inherited_trigger,
                 old_reactions,
                 inherited_targets,
                 session.heat,
@@ -203,7 +214,7 @@ impl RealContextPlugin {
             active_judgement_allowed,
             system_triggered,
             moderation_candidate,
-            inherited,
+            inherited.then(|| inherited_trigger.unwrap_or(TriggerKind::Supersede)),
             continuation,
             probabilistic,
         );

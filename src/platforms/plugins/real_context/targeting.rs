@@ -113,7 +113,7 @@ impl TriggerKind {
 pub(in crate::platforms::plugins::real_context) fn select_trigger(
     system_triggered: bool,
     moderation_candidate: bool,
-    inherited: bool,
+    inherited: Option<TriggerKind>,
     continuation: bool,
     probabilistic: bool,
 ) -> Option<TriggerKind> {
@@ -121,8 +121,12 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger(
         Some(TriggerKind::Direct)
     } else if moderation_candidate {
         Some(TriggerKind::Moderation)
-    } else if inherited {
-        Some(TriggerKind::Supersede)
+    } else if let Some(origin) = inherited {
+        // 覆盖继承保留原始触发。这个标签是好感度归类(mod.rs 的
+        // direct_interaction)、`<qq-join-in>` 注入与判官加分的判据:一律写成
+        // Supersede 会让概率承诺被顶替后白拿直呼好感、注入哑火(08-29 定位,
+        // 08-31 修)。调用方在原始触发不可考时才传 Supersede 兜底。
+        Some(origin)
     } else if continuation {
         Some(TriggerKind::Continuation)
     } else if probabilistic {
@@ -136,7 +140,7 @@ pub(in crate::platforms::plugins::real_context) fn select_trigger_for_policy(
     active_judgement_allowed: bool,
     system_triggered: bool,
     moderation_candidate: bool,
-    inherited: bool,
+    inherited: Option<TriggerKind>,
     continuation: bool,
     probabilistic: bool,
 ) -> Option<TriggerKind> {
@@ -539,8 +543,9 @@ pub(in crate::platforms::plugins::real_context) fn restore_trigger_decision(
 /// 概率抽中且判官放行的那一轮，给一句注入。
 ///
 /// `TRIGGER_KEY == Probability` 严格等价于"概率抽中 + 判官放行"：这个值只在
-/// 判官通过后才写(inject.rs)，覆盖继承那条路写的是 Supersede。所以拿到它就
-/// 意味着**该不该回已经判过了，答案是回**。
+/// 判官通过后才写(inject.rs)，或从这样一次放行的承诺覆盖继承而来(08-31 起
+/// 覆盖保留原始触发——承诺只可能来自判官放行，所以"判过了，答案是回"对继承
+/// 回合同样成立)。Supersede 只在原始触发不可考时作回退，不再吃掉这句注入。
 ///
 /// 08-31 用户点名：她在这种回合里反复说「没提到我 不用回」——判官刚判定该回，
 /// 她自己又推翻一遍；而会话历史里已经攒了十几条同样的话，她在照抄自己。
