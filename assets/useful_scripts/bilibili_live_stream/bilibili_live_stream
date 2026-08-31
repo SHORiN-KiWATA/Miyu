@@ -763,9 +763,11 @@ def cache_dir():
     if system == "Windows":
         root = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
     elif system == "Darwin":
-        root = os.path.expanduser("~/Library/Caches")
+        root = os.environ.get("MIYU_SCRIPT_CACHE_DIR") or os.path.expanduser("~/Library/Caches")
     else:
-        root = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+        root = (os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+                or os.environ.get("XDG_CACHE_HOME")
+                or os.path.expanduser("~/.cache"))
     path = os.path.join(root, APP_NAME)
     legacy = os.path.join(root, LEGACY_APP_NAME)
     # 脚本改名前登录过的人，把老缓存目录整个搬过来，省得白登一次

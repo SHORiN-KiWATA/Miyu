@@ -34,8 +34,12 @@ import urllib.parse
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+# 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu（或运维）把所有脚本的中间
+# 产物集中到一处；不设时退回 XDG 默认，脚本单独拿去用也不会往奇怪的地方写。
 DATA_DIR = os.path.join(
-    os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+    os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
     "zhihu-search")
 DEFAULT_PROFILE = os.path.join(DATA_DIR, "profile")
 PROFILE_DIR = os.environ.get("ZH_PROFILE_DIR", DEFAULT_PROFILE)
@@ -349,7 +353,7 @@ class Session:
         if "unhuman" in url or "安全验证" in title:
             raise Blocked(
                 "被知乎风控拦截(网易易盾验证页)。境外 IP 下这很常见。"
-                "请运行 `zhihu-search login` 在有头窗口里手动过一次验证码。")
+                f"请运行 `{login_command_hint('zhihu-search')}` 在有头窗口里手动过一次验证码。")
         # 被顶到登录页 = 登录态失效，和风控是两回事，别混成一个提示
         if "/signin" in url or not self.logged_in():
             raise NotLoggedIn("未登录知乎或登录态已失效。请运行 `zhihu-search login`。")
@@ -664,6 +668,71 @@ def do_status():
         }
 
 
+LOGIN_STATUS_PATH = os.path.join(DATA_DIR, "login-status.json")
+
+def login_command_hint(tool):
+    """给出**能真正生效**的登录命令。
+
+    Miyu 调脚本时会设 MIYU_SCRIPT_CACHE_DIR(指向 ~/.miyu/cache),登录态落在
+    那儿。用户照着裸命令在终端跑,会登到 ~/.cache/<tool> 去——登了等于没登。
+    变量在场时把它带进命令里。
+    """
+    root = os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    if not root:
+        return f"{tool} login"
+    return f"MIYU_SCRIPT_CACHE_DIR={root} {tool} login"
+
+
+
+def _write_login_status(**fields):
+    """登录进度写文件，供 `login --check` 读。
+
+    不能让 check 去开浏览器查：登录窗口开着时 profile 被 flock 独占
+    (见 Session._acquire)，check 会一直等锁直到超时。
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        fields.setdefault("updated_at", int(time.time()))
+        with open(LOGIN_STATUS_PATH, "w") as f:
+            json.dump(fields, f)
+    except Exception:
+        pass
+
+
+def read_login_status():
+    try:
+        with open(LOGIN_STATUS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"state": "unknown"}
+
+
+def start_login(timeout=300):
+    """开一个后台进程去弹登录窗口，**立刻返回**。
+
+    调用方(AI 或人)拿到返回值就去提示用户过验证码，之后轮询
+    `login --check`。原来是单次阻塞调用等满 300 秒——正好顶到 Miyu 脚本工具
+    的超时上限(index.rs 的 .min(300))，一秒余量都没有，而且整轮对话被卡住。
+    """
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        raise RuntimeError("登录需要图形界面（当前没有 DISPLAY/WAYLAND_DISPLAY）。"
+                           "请在桌面会话里运行，或设置 DISPLAY 后重试。")
+    status = read_login_status()
+    if status.get("state") == "waiting" and time.time() - status.get("updated_at", 0) < timeout:
+        return {"state": "waiting", "message": "登录窗口已经开着了，去窗口里完成验证",
+                "hint": "完成后用 login --check 查状态"}
+    _write_login_status(state="waiting", message="正在打开登录窗口")
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "login", "--blocking",
+         "--timeout", str(timeout)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"state": "waiting",
+            "message": "浏览器窗口正在打开。请在窗口里完成安全验证并扫码/登录。",
+            "hint": f"完成后用 login --check 查状态（窗口最多等 {timeout} 秒）"}
+
+
 def do_login(timeout=300):
     """有头窗口，人工过验证码 + 登录。登录态落在持久化 profile 里，只做一次。"""
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
@@ -689,8 +758,11 @@ def do_login(timeout=300):
                     pass
                 print(f"[✓] 登录成功{f'：{nick}' if nick else ''}", file=sys.stderr)
                 print(f"    登录态已保存在 {PROFILE_DIR}", file=sys.stderr)
+                _write_login_status(state="done", logged_in=True, name=nick)
                 return {"logged_in": True, "name": nick, "profile": PROFILE_DIR}
             time.sleep(2)
+    _write_login_status(state="timeout", logged_in=False,
+                        message="窗口等待超时，未完成登录")
     raise RuntimeError("超时未完成登录")
 
 
@@ -1143,6 +1215,13 @@ def main():
     ap.add_argument("--action", default=None,
                     choices=["search", "question", "answer", "article", "doctor"])
     ap.add_argument("--format", choices=("md", "json"), default="md")
+    # login 的三态开关。默认(都不给)= 开窗口就返回,不阻塞。
+    ap.add_argument("--check", action="store_true",
+                    help="配合 login:只查一次登录进度就返回")
+    ap.add_argument("--blocking", action="store_true",
+                    help="配合 login:留在前台等到登录完成(后台子进程自己用)")
+    ap.add_argument("--timeout", type=int, default=300,
+                    help="配合 login:窗口等待上限(秒)")
     # 帮助自己渲染：argparse 用 len() 量宽度，中文会算成一半，
     # 结果就是列对不齐 + 长行不换行。解析归它，排版归我们。
     ap.format_usage = lambda: USAGE
@@ -1171,7 +1250,14 @@ def main():
         sys.exit(1)
 
     if verb == "login":
-        do_login()
+        # 默认非阻塞:开窗口就返回,调用方轮询 --check。--blocking 是后台子进程
+        # 自己走的那一支(start_login 拉起来的),不给人用。
+        if args.blocking:
+            do_login(timeout=args.timeout)
+        elif args.check:
+            emit(read_login_status(), fmt)
+        else:
+            emit(start_login(timeout=args.timeout), fmt)
         return
     if verb in ("doctor", "status"):
         emit({"kind": "doctor", "diagnosis": diagnose()}, fmt)

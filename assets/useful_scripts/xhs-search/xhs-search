@@ -32,8 +32,12 @@ import urllib.parse
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+# 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu（或运维）把所有脚本的中间
+# 产物集中到一处；不设时退回 XDG 默认，脚本单独拿去用也不会往奇怪的地方写。
 DATA_DIR = os.path.join(
-    os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+    os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
     "xhs-search")
 PROFILE_DIR = os.environ.get("XHS_PROFILE_DIR", os.path.join(DATA_DIR, "profile"))
 LOCK_WAIT = int(os.environ.get("XHS_LOCK_WAIT", "60"))    # 等 profile 锁的上限(秒)
@@ -555,7 +559,78 @@ def do_status():
     # 游客会话也有 user_id, 但带 guest=true, 搜不了东西
     ok = bool(me.get("user_id")) and not me.get("guest")
     return {"logged_in": ok, "nickname": me.get("nickname"), "user_id": me.get("user_id"),
-            "hint": None if ok else "运行: xhs-search login"}
+            "hint": None if ok else f"运行: {login_command_hint('xhs-search')}"}
+
+
+LOGIN_STATUS_PATH = os.path.join(DATA_DIR, "login-status.json")
+
+def login_command_hint(tool):
+    """给出**能真正生效**的登录命令。
+
+    Miyu 调脚本时会设 MIYU_SCRIPT_CACHE_DIR(指向 ~/.miyu/cache),登录态落在
+    那儿。用户照着裸命令在终端跑,会登到 ~/.cache/<tool> 去——登了等于没登。
+    变量在场时把它带进命令里。
+    """
+    root = os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    if not root:
+        return f"{tool} login"
+    return f"MIYU_SCRIPT_CACHE_DIR={root} {tool} login"
+
+
+
+def _write_login_status(**fields):
+    """登录进度写文件，供 `login --check` 读。
+
+    check 不能去开浏览器：登录窗口开着时 profile 被 flock 独占，check 会一直
+    等锁到超时。
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        fields.setdefault("updated_at", int(time.time()))
+        with open(LOGIN_STATUS_PATH, "w") as f:
+            json.dump(fields, f)
+    except Exception:
+        pass
+
+
+def read_login_status():
+    try:
+        with open(LOGIN_STATUS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"state": "unknown"}
+
+
+def start_login(timeout_s=600, qr_wait=25):
+    """拉起后台登录、等二维码出来就返回，不等人扫。
+
+    原来是单次阻塞调用等满 600 秒——Miyu 脚本工具的超时上限是 300 秒
+    (index.rs 的 .min(300))，必被砍断，而且整轮对话卡住。现在第一步只负责
+    把二维码交出来，调用方(AI)把图发给用户，再轮询 `login --check`。
+    """
+    status = read_login_status()
+    if status.get("state") == "waiting" and time.time() - status.get("updated_at", 0) < timeout_s:
+        return status
+    png_path = os.path.join(DATA_DIR, "login-qr.png")
+    for stale in (png_path, LOGIN_STATUS_PATH):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+    _write_login_status(state="waiting", message="正在获取二维码")
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "login", "--blocking",
+         "--timeout", str(timeout_s)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + qr_wait
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        cur = read_login_status()
+        if cur.get("state") in ("qr_ready", "done", "failed"):
+            return cur
+    return {"state": "waiting", "message": "二维码还没出来，稍后再用 login --check 查"}
 
 
 def do_login(timeout_s=600):
@@ -596,6 +671,9 @@ def do_login(timeout_s=600):
         png = _save_qr_png(b.page)
         if png:
             print(f"\n二维码图片: {png}", file=sys.stderr)
+        _write_login_status(state="qr_ready", qr_png=png or None,
+                            qr_url=(qr or {}).get("url"),
+                            message="扫这个二维码登录小红书，或在手机上打开链接")
         if qr:
             # 手机上直接点开这个链接也能登录, 不一定非要扫码
             print(f"或在手机上打开: {qr['url']}\n", file=sys.stderr)
@@ -613,8 +691,12 @@ def do_login(timeout_s=600):
                 info = _whoami(b)
                 if info.get("user_id") and not info.get("guest"):
                     print(f"\n登录成功: {info.get('nickname')} ({info.get('user_id')})", file=sys.stderr)
+                    _write_login_status(state="done", logged_in=True,
+                                        nickname=info.get("nickname"),
+                                        user_id=info.get("user_id"))
                     return {"logged_in": True, "nickname": info.get("nickname"),
                             "user_id": info.get("user_id")}
+        _write_login_status(state="timeout", logged_in=False, message="超时未完成扫码")
         raise RuntimeError("超时未完成扫码")
 
 
@@ -840,7 +922,7 @@ def stdin_json_mode(raw):
         else:
             out = do_note(query, max(0, min(limit or 0, 100)))
     except NotLoggedIn as e:
-        die(str(e), {"fix": "在桌面会话里运行: xhs-search login 扫码登录"})
+        die(str(e), {"fix": f"运行: {login_command_hint('xhs-search')}（会给出二维码）"})
     except RuntimeError as e:
         die(str(e))
     except Exception as e:
@@ -943,7 +1025,15 @@ def main():
     n.add_argument("--comments", type=int, default=0)
 
     for name in ("login", "status", "doctor", "setup"):
-        sub.add_parser(name, add_help=False)
+        pp = sub.add_parser(name, add_help=False)
+        if name == "login":
+            # 默认(都不给)= 拉起后台登录、拿到二维码就返回,不等人扫。
+            pp.add_argument("--check", action="store_true",
+                            help="只查一次登录进度就返回")
+            pp.add_argument("--blocking", action="store_true",
+                            help="留在前台等到扫码完成(后台子进程自己用)")
+            pp.add_argument("--timeout", type=int, default=600,
+                            help="等待扫码上限(秒)")
     for pp in sub.choices.values():
         pp.add_argument("--json", action="store_true")
     ap.add_argument("--json", action="store_true")
@@ -967,7 +1057,12 @@ def main():
         elif cmd == "note":
             render(do_note(a.ref, min(max(a.comments, 0), 100)), a.json, "note")
         elif cmd == "login":
-            render(do_login(), a.json, "raw")
+            if getattr(a, "blocking", False):
+                render(do_login(timeout_s=a.timeout), a.json, "raw")
+            elif getattr(a, "check", False):
+                render(read_login_status(), a.json, "raw")
+            else:
+                render(start_login(timeout_s=a.timeout), a.json, "raw")
         elif cmd == "status":
             render(do_status(), a.json, "raw")
         elif cmd == "doctor":
@@ -976,7 +1071,7 @@ def main():
             render(do_setup(), True, "raw")
         return 0
     except NotLoggedIn as e:
-        print(json.dumps({"error": str(e), "fix": "运行: xhs-search login"},
+        print(json.dumps({"error": str(e), "fix": f"运行: {login_command_hint('xhs-search')}"},
                          ensure_ascii=False, indent=1))
         return 1
     except Exception as e:
