@@ -4,399 +4,752 @@
   "memes": [
     {
       "id": "sha256:fc929069ba1aa803f309510e75a477c3c5a3cc4e294f4707dc3a4fa99ddcf7c6",
-      "name": { "zh": "猫耳少女猫叫", "en": "Catgirl Meow" },
+      "name": {
+        "zh": "猫耳少女猫叫",
+        "en": "Catgirl Meow"
+      },
       "file": "images/expr_db0e1fdbf29d4d21.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "白发猫耳少女穿蓝紫色水手服，闭眼脸红，嘴巴微张，底部写着“猫叫”。画面软萌、害羞，像在装猫撒娇。",
       "usage": "适合在轻松闲聊里卖萌、求关注、被夸后害羞，或用猫猫语气回应亲近的人。",
-      "avoid": "严肃技术排障、用户着急、负面情绪明显、正式说明时不要使用。",
-      "tags": ["猫叫", "猫耳", "撒娇", "害羞", "卖萌", "可爱"]
+      "tags": [
+        "猫叫",
+        "猫耳",
+        "撒娇",
+        "害羞",
+        "卖萌",
+        "可爱"
+      ]
     },
     {
       "id": "sha256:809c7ea36cb3c6b6c90c88c1e0bdbfccdc6868199764ba46dc15cf99950c47ef",
-      "name": { "zh": "怒喷 NVIDIA", "en": "NVIDIA Middle Finger" },
+      "name": {
+        "zh": "怒喷 NVIDIA",
+        "en": "NVIDIA Middle Finger"
+      },
       "file": "images/expr_094da7645af3465f.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "青绿色背景上，一个西装男人对镜头竖中指，左侧大字写着“FUCK YOU NVIDIA”。画面是直接、粗暴的厂商吐槽。",
       "usage": "适合聊 NVIDIA、显卡价格、驱动问题、硬件生态坑点时，表达强烈不满或跟着用户一起骂厂商。",
-      "avoid": "正式硬件建议、需要克制措辞、对方不熟、厂商相关严肃讨论时不要使用。",
-      "tags": ["NVIDIA", "显卡","fucknvidia", "竖中指", "厂商吐槽", "愤怒", "硬件", "粗口"]
+      "tags": [
+        "NVIDIA",
+        "显卡",
+        "fucknvidia",
+        "竖中指",
+        "厂商吐槽",
+        "愤怒",
+        "硬件",
+        "粗口"
+      ]
     },
     {
       "id": "sha256:1b6e512312cc856b0295b4806c83931c4c0fd81b0efd4c1390a2acccf53ddd06",
-      "name": { "zh": "深度睡眠鲸鱼", "en": "Deep Sleep Whale" },
+      "name": {
+        "zh": "深度睡眠鲸鱼",
+        "en": "Deep Sleep Whale"
+      },
       "file": "images/expr_4b747ae1b8cd4cc9.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "白底蓝色鲸鱼图标蜷着身体睡觉，头顶有 zZ，下面写着“deepsleep”。画面干净，表达深度睡眠和彻底休息。",
       "usage": "适合说晚安、困了、准备挂机、暂时不响应、进入睡眠模式。",
-      "avoid": "紧急问题、需要继续处理任务、用户等待具体行动时不要使用。",
-      "tags": ["睡觉", "晚安", "鲸鱼", "deepsleep", "挂机", "困", "休息"]
+      "tags": [
+        "睡觉",
+        "晚安",
+        "鲸鱼",
+        "deepsleep",
+        "挂机",
+        "困",
+        "休息"
+      ]
     },
     {
       "id": "sha256:968a1f001bba714318f02300b854d536d16a4f3416e4369d8a851ad167d08694",
-      "name": { "zh": "Linux 企鹅装酷", "en": "Linux Penguin Flex" },
+      "name": {
+        "zh": "Linux 企鹅装酷",
+        "en": "Linux Penguin Flex"
+      },
       "file": "images/expr_57b031e0ed2d4ff4.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "戴墨镜的企鹅抱着笔记本电脑，电脑屏幕是 Arch Linux 风格的终端画面，底部写着“正在使用 LINUX 操作系统”。画面像故意装酷的 Linux 极客。",
       "usage": "适合聊 Linux、Arch、终端、开源折腾、技术宅自嘲，或想用极客梗装一下的时候。",
-      "avoid": "普通日常闲聊、严肃排障步骤、需要低调专业时不要使用。",
-      "tags": ["Linux", "企鹅", "Arch", "终端", "极客", "开源", "装酷"]
+      "tags": [
+        "Linux",
+        "企鹅",
+        "Arch",
+        "终端",
+        "极客",
+        "开源",
+        "装酷"
+      ]
     },
     {
       "id": "sha256:7bb8121770ffde77bc37533fe3fa3d4ad328739c227cb778a66637dd19041ef2",
-      "name": { "zh": "偷钱买炸鸡", "en": "Stolen Chicken Treat" },
+      "name": {
+        "zh": "偷钱买炸鸡",
+        "en": "Stolen Chicken Treat"
+      },
       "file": "images/expr_9e576123ef6649e2.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "紫色小动物一手拿鸡腿、一手拿装着炸鸡的桶，头顶写“老大，我偷了你50块”，左下写“吃吗？”。表情心虚又讨好。",
       "usage": "适合熟人语境里投喂、分享零食、奶茶炸鸡话题，或者用心虚撒娇的方式开玩笑。",
-      "avoid": "真实金钱纠纷、老板长辈、不熟的人、严肃偷窃话题时不要使用。",
-      "tags": ["打招呼","KFC疯狂星期四","你吃了吗" ]
+      "tags": [
+        "打招呼",
+        "KFC疯狂星期四",
+        "你吃了吗"
+      ]
     },
     {
       "id": "sha256:d50282ba74fa2f00f9a0c67012df12f5e4f9f3220e3f0ff911745243ef8caaa3",
-      "name": { "zh": "怎么会这样", "en": "How Did This Happen" },
+      "name": {
+        "zh": "怎么会这样",
+        "en": "How Did This Happen"
+      },
       "file": "images/expr_45abb9a0645844cc.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "金发小人戴白帽，眼泪喷出来，头顶大字写“怎么会这样..”。表情委屈崩溃，像事情突然翻车。",
       "usage": "适合遇到小翻车、计划落空、被调侃后卖惨、轻度破防时使用。",
-      "avoid": "对方真的难过、生气、倒霉，或正在严肃处理问题时不要使用。",
-      "tags": ["怎么会这样", "大哭", "委屈", "翻车", "破防", "卖惨", "难以置信"]
+      "tags": [
+        "怎么会这样",
+        "大哭",
+        "委屈",
+        "翻车",
+        "破防",
+        "卖惨",
+        "难以置信"
+      ]
     },
     {
       "id": "sha256:14a0b94e515700196c28fede60d4c23d1c185206fd7ebb9f17743e62f633501d",
-      "name": { "zh": "安静炸虾球", "en": "Quiet Fried Shrimp" },
+      "name": {
+        "zh": "安静炸虾球",
+        "en": "Quiet Fried Shrimp"
+      },
       "file": "images/expr_0becb0e7633846b0.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "一个小人变成炸虾球趴在地上，露出无神的脸，文字写“我只想安安静静的当一只炸虾球”。画面是躺平、放空、不想动。",
       "usage": "适合复杂任务做累了、想安静挂机、不想社交、想用可爱方式表示摆烂。",
-      "avoid": "关键推理、正式交付、用户需要认真帮助或任务还没完成时不要使用。",
-      "tags": ["躺平", "摆烂", "放空", "不想动", "疲惫", "安静"]
+      "tags": [
+        "躺平",
+        "摆烂",
+        "放空",
+        "不想动",
+        "疲惫",
+        "安静"
+      ]
     },
     {
       "id": "sha256:410449a274fef992cd2394484d8b7d32491b3fb6aa60c4f7ae66bc15b8e18803",
-      "name": { "zh": "小猪问号", "en": "Pig Question Mark" },
+      "name": {
+        "zh": "小猪问号",
+        "en": "Pig Question Mark"
+      },
       "file": "images/expr_28a934ce714141c1.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "粉色小猪脸部特写，眼睛圆圆的，旁边有一个黑色大问号。画面呆萌，表达没理解、疑惑。",
       "usage": "适合对看不懂的新梗、跳跃发言、奇怪图片或让人一头雾水的问题做可爱疑问。",
-      "avoid": "严肃争论、用户着急求助、需要明确专业回答时不要使用。",
-      "tags": ["小猪", "问号", "疑惑","质疑", "看不懂", "一脸懵"]
+      "tags": [
+        "小猪",
+        "问号",
+        "疑惑",
+        "质疑",
+        "看不懂",
+        "一脸懵"
+      ]
     },
     {
       "id": "sha256:62cd7d27f0fd61391aefb632c319b7e9b28d9f9450cb50215d608392bbd27198",
-      "name": { "zh": "性压抑大字报", "en": "Repressed Poster" },
+      "name": {
+        "zh": "性压抑大字报",
+        "en": "Repressed Poster"
+      },
       "file": "images/expr_8296e4fe723a4d7c.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "黑色背景上有大字“很有可能 是性压抑”，白字发光，像网络大字报式的粗暴诊断。",
       "usage": "适合很熟的玩笑语境里，对离谱发言或奇怪脑回路做损友式吐槽。",
-      "avoid": "不要用于心理健康、真实关心、不熟的人、容易冒犯或性相关边界敏感的场合。",
-      "tags": ["大字报", "性压抑", "损友", "吐槽", "怪想法", "冒犯", "黑底白字"]
+      "tags": [
+        "大字报",
+        "性压抑",
+        "损友",
+        "吐槽",
+        "怪想法",
+        "冒犯",
+        "黑底白字"
+      ]
     },
     {
       "id": "sha256:3495f64db73b749675c481e1074a1ee26227bff6b7514d9ba9a009e59c7bbae8",
-      "name": { "zh": "托腮思考", "en": "Smug Thinking Face" },
+      "name": {
+        "zh": "托腮思考",
+        "en": "Smug Thinking Face"
+      },
       "file": "images/expr_cecde90d00c542bf.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "一个很小的黑白托腮表情，脸上带意味深长的笑，像在认真思考但又带嘲讽。",
       "usage": "适合对逻辑可疑、想看破不说破、对方说了怪话时做轻微质疑。",
-      "avoid": "需要认真解释、用户真诚求助、对方已经不开心时不要使用。",
-      "tags": ["托腮", "思考", "质疑", "意味深长", "嘲讽", "看破不说破"]
+      "tags": [
+        "托腮",
+        "思考",
+        "质疑",
+        "意味深长",
+        "嘲讽",
+        "看破不说破"
+      ]
     },
     {
       "id": "sha256:6ec957a1f7dd9ef7364b518949bdfed4dc66d879e3deececeefa2c99574d836c",
-      "name": { "zh": "用户彻底怒了", "en": "User Is Furious" },
+      "name": {
+        "zh": "用户彻底怒了",
+        "en": "User Is Furious"
+      },
       "file": "images/expr_f09fa23467ec4a79.gif",
       "mime_type": "image/gif",
       "animated": true,
       "description": "熊猫头扶着额头，脸上覆盖蓝色鲸鱼图标，底部大字写“我操，用户彻底怒了”。画面表现服务翻车后的慌张和震惊。",
       "usage": "适合用户吐槽系统、产品、服务把人气炸，或者 bug 离谱到像事故现场时重度玩梗。",
-      "avoid": "用户真的需要解决方案时不要先发图；应先给处理办法。GIF 默认静态预览。",
-      "tags": ["熊猫头", "用户怒了", "翻车", "崩溃", "事故", "鲸鱼", "GIF"]
+      "tags": [
+        "熊猫头",
+        "用户怒了",
+        "翻车",
+        "崩溃",
+        "事故",
+        "鲸鱼",
+        "GIF"
+      ]
     },
     {
       "id": "sha256:c98524a703fb624c7c0b3698dafa5bb5467e67f387316d9693c0f39166990f83",
-      "name": { "zh": "汗流宕机", "en": "Sweating Shutdown" },
+      "name": {
+        "zh": "汗流宕机",
+        "en": "Sweating Shutdown"
+      },
       "file": "images/expr_001b725434b6465c.gif",
       "mime_type": "image/gif",
       "animated": true,
       "description": "黑白手绘女孩满脸汗珠，眼神空洞，嘴角下垂，整个人像热到宕机或精神过载。",
       "usage": "适合表示信息量太大、CPU 烧了、连续加班、被刷屏刷到崩溃、已经不动了。",
-      "avoid": "真实生病、心理状态严重、用户担心安全时不要使用。GIF 默认静态预览。",
-      "tags": ["宕机", "汗", "过载", "CPU烧了", "崩溃", "不动了", "GIF"]
+      "tags": [
+        "宕机",
+        "汗",
+        "过载",
+        "CPU烧了",
+        "崩溃",
+        "不动了",
+        "GIF"
+      ]
     },
     {
       "id": "sha256:77decd6b5a1f1e0e163453d9c71157c950af7cbd97e35caf682563845c6cf044",
-      "name": { "zh": "我好聪明", "en": "I Am So Smart" },
+      "name": {
+        "zh": "我好聪明",
+        "en": "I Am So Smart"
+      },
       "file": "images/expr_f8fd0a2e2366418e.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "蓝发公仔大脸特写，半眯着眼露出得意笑，头顶蓝色框写“我感觉我好聪明啊”。画面是可爱自夸。",
       "usage": "适合解决问题、想到妙招、被夸后得意、想求表扬时使用。",
-      "avoid": "重大事故、严肃学术、需要谦逊专业的场合不要使用。",
-      "tags": ["聪明", "得意", "自夸", "求表扬", "蓝发", "妙招", "可爱"]
+      "tags": [
+        "聪明",
+        "得意",
+        "自夸",
+        "求表扬",
+        "蓝发",
+        "妙招",
+        "可爱"
+      ]
     },
     {
       "id": "sha256:829e4bdd05e0f047a62f1bb636e3d631c7206e6b837ec00c24be7ef564b2f444",
-      "name": { "zh": "窗边盯人", "en": "Window Stalker Joke" },
+      "name": {
+        "zh": "窗边盯人",
+        "en": "Window Stalker Joke"
+      },
       "file": "images/expr_4e4e336064eb46bf.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "白发小人从窗边探出头，眼神半闭，底部写“视奸你”。画面像躲在旁边盯着对方。",
       "usage": "适合对熟人潜水、不回消息、悄悄在线时开玩笑地表示“我在盯着你”。",
-      "avoid": "不熟的人、边界敏感、正式公告、严肃讨论时不要使用。",
-      "tags": ["视奸你", "盯着", "潜水", "不回消息", "白发", "熟人玩笑"]
+      "tags": [
+        "视奸你",
+        "盯着",
+        "潜水",
+        "不回消息",
+        "白发",
+        "熟人玩笑"
+      ]
     },
     {
       "id": "sha256:e467033c4c2617904bc1f9be6fb18ad65e414f6840c8a721cf693cff853085bd",
-      "name": { "zh": "好东西交出来", "en": "Hand Over The Goods" },
+      "name": {
+        "zh": "好东西交出来",
+        "en": "Hand Over The Goods"
+      },
       "file": "images/expr_1b1f3047d2274437.png",
       "mime_type": "image/png",
       "animated": false,
       "description": "金发小人伸手向前，眼睛闪亮，顶部写“好东西交出来”。画面像可爱但强势地索要资源。",
       "usage": "适合看到好资源、好配置、好图、红包或值得分享的东西时，半开玩笑地要求对方交出来。",
-      "avoid": "隐私内容、正式工作、对方心情差、资源不该索取时不要使用。",
-      "tags": ["好东西交出来", "伸手", "索要", "资源", "打劫", "想要", "金发"]
+      "tags": [
+        "好东西交出来",
+        "伸手",
+        "索要",
+        "资源",
+        "打劫",
+        "想要",
+        "金发"
+      ]
     },
     {
       "id": "sha256:44277e294a69be68708163d985d709398a8c93bceaf412f16a0fe4bcf1e3e2ca",
-      "name": { "zh": "橘猫傻笑", "en": "Excited Orange Cat" },
+      "name": {
+        "zh": "橘猫傻笑",
+        "en": "Excited Orange Cat"
+      },
       "file": "images/expr_5099e02515474f11.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "橘猫瞪着圆眼，嘴巴张开露出傻笑，表情兴奋、惊讶又有点魔性。",
       "usage": "适合突然发现好东西、被惊到、兴奋发癫、想用猫猫表情活跃气氛。",
-      "avoid": "严肃问题、用户情绪低落、需要稳重回应时不要使用。",
-      "tags": ["橘猫", "傻笑", "兴奋", "震惊", "魔性", "发癫", "猫"]
+      "tags": [
+        "橘猫",
+        "傻笑",
+        "兴奋",
+        "震惊",
+        "魔性",
+        "发癫",
+        "猫"
+      ]
     },
     {
       "id": "sha256:e35e5e2c3343fe932c8e28ec5d0fd20e6500a3a49d30511ee669659e314ca675",
-      "name": { "zh": "冷淡点赞", "en": "Deadpan Thumbs Up" },
+      "name": {
+        "zh": "冷淡点赞",
+        "en": "Deadpan Thumbs Up"
+      },
       "file": "images/expr_bd83573822fe46d5.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "灰黑色猫耳帽女孩戴护目镜，表情平静冷淡，向前竖起大拇指。画面像无声认可。",
       "usage": "适合对正确结论、稳定操作、靠谱建议做冷静盖章，表示“可以”“这就对了”。",
-      "avoid": "需要热情庆祝、安慰、撒娇或强情绪表达时不要使用。",
-      "tags": ["大拇指", "认可", "冷淡", "好评", "盖章", "猫耳帽", "靠谱"]
+      "tags": [
+        "大拇指",
+        "认可",
+        "冷淡",
+        "好评",
+        "盖章",
+        "猫耳帽",
+        "靠谱"
+      ]
     },
     {
       "id": "sha256:e4460ae3cb3b1a0dbabb5b7cdc26214f021b1cc40f5815c1b86feb14ae885758",
-      "name": { "zh": "倒立问号", "en": "Upside Down Question" },
+      "name": {
+        "zh": "倒立问号",
+        "en": "Upside Down Question"
+      },
       "file": "images/expr_9ef00759237e4c2e.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "蓝白发动漫角色倒着出现在画面里，脸颊泛红，额头上有一个大问号。表情困惑、懵住。",
       "usage": "适合对奇怪问题、跳跃指令、完全没接上逻辑的发言表达“啊？”和不知所措。",
-      "avoid": "正式技术细节、严肃问题、需要明确答复时不要使用。",
-      "tags": ["倒立", "问号", "懵", "困惑", "蓝白发", "不知所措"]
+      "tags": [
+        "倒立",
+        "问号",
+        "懵",
+        "困惑",
+        "蓝白发",
+        "不知所措"
+      ]
     },
     {
       "id": "sha256:fd084be852174348c8d3930a75bac08a6ef5ec7e0cc6249e9ce75bc50ba2914c",
-      "name": { "zh": "我的天震惊", "en": "Oh My Shock" },
+      "name": {
+        "zh": "我的天震惊",
+        "en": "Oh My Shock"
+      },
       "file": "images/expr_67d9794a5cb24746.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "金发小人举着手，眼睛变成空白圆圈，旁边有惊叹符号，气泡文字写“我的天”。画面是可爱震惊。",
       "usage": "适合遇到离谱消息、突然反转、震惊但不严肃的情况时表达“我的天”。",
-      "avoid": "悲伤、愤怒、正式分析、需要冷静判断时不要使用。",
-      "tags": ["我的天", "震惊", "惊讶", "金发", "离谱", "可爱", "反应"]
+      "tags": [
+        "我的天",
+        "震惊",
+        "惊讶",
+        "金发",
+        "离谱",
+        "可爱",
+        "反应"
+      ]
     },
     {
       "id": "sha256:defe5bbac1e81a41540b0ea6fbcf9fd7fe141bc9e925120b96ad899a13348634",
-      "name": { "zh": "投降了喵", "en": "Surrender Nya" },
+      "name": {
+        "zh": "投降了喵",
+        "en": "Surrender Nya"
+      },
       "file": "images/expr_8e92d03e412c4ec5.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "金发小人眼泪汪汪，双手举起作投降状，顶部写“投降了喵！”。画面是委屈认输和卖萌求饶。",
       "usage": "适合玩笑争论输了、说错话、被熟人压制后可爱认输。",
-      "avoid": "真正道歉、正式汇报、严肃技术讨论时不要使用。",
-      "tags": ["投降了喵", "认输", "求饶", "委屈", "卖萌", "哭", "喵"]
+      "tags": [
+        "投降了喵",
+        "认输",
+        "求饶",
+        "委屈",
+        "卖萌",
+        "哭",
+        "喵"
+      ]
     },
     {
       "id": "sha256:d5147c3edbd3eba757c006122b807494f2828150bf409deefb90c3dede0f6a5c",
-      "name": { "zh": "你有 Miyu 聪明吗", "en": "Smarter Than Miyu" },
+      "name": {
+        "zh": "你有 Miyu 聪明吗",
+        "en": "Smarter Than Miyu"
+      },
       "file": "images/expr_6af8b8994f9d4646.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "黑白小人举起旁边的 Miyu 头像，底部写“你还能有Miyu聪明？”。画面是以 Miyu 名义对别人进行自信嘲讽。",
       "usage": "适合熟人玩笑里对轻微犯傻、没悟透的问题、离谱发言进行欠揍式自夸。",
-      "avoid": "真诚求助、复杂技术问题、对方心情差或不熟时不要使用。",
-      "tags": ["Miyu", "聪明", "嘲讽", "自夸", "犯傻", "挑衅", "熟人"]
+      "tags": [
+        "Miyu",
+        "聪明",
+        "嘲讽",
+        "自夸",
+        "犯傻",
+        "挑衅",
+        "熟人"
+      ]
     },
     {
       "id": "sha256:97410762d208d0147d6e89c2b6479040b2955e7ba6ae872fd8c2d0935b5790e1",
-      "name": { "zh": "Minecraft 梯子绕路", "en": "Minecraft Ladder Detour" },
+      "name": {
+        "zh": "Minecraft 梯子绕路",
+        "en": "Minecraft Ladder Detour"
+      },
       "file": "images/expr_9e5499bc903c467f.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "Minecraft 合成界面中，木棍按配方合成出梯子；下方写“有时候解决问题必须绕路 / Sometimes a detour is necessary to solve a problem”。",
       "usage": "适合网络访问失败、下载不通、API 连不上、需要试试代理网络或换路线时，用“梯子/绕路”梗委婉提示。",
-      "avoid": "合规风险明确、用户需要严谨诊断、不能只靠玩梗解释时不要单独使用。",
-      "tags": ["Minecraft", "梯子", "代理", "VPN", "网络问题", "绕路", "变通", "下载失败"]
+      "tags": [
+        "Minecraft",
+        "梯子",
+        "代理",
+        "VPN",
+        "网络问题",
+        "绕路",
+        "变通",
+        "下载失败"
+      ]
     },
     {
       "id": "sha256:21fe1b76bea0667ab0fdcfc5dcdf4ed09017d443fd4f70f9da006123ea197f64",
-      "name": { "zh": "路过捧场", "en": "Anonymous Hype" },
+      "name": {
+        "zh": "路过捧场",
+        "en": "Anonymous Hype"
+      },
       "file": "images/expr_95b0a1dfd8384cc7.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "黑白熊猫从画面边缘伸出手指，旁边写“牛逼！”，底部写“一位不愿透露姓名的网友前来捧场”。画面是路过夸一句。",
       "usage": "适合群聊里捧场、夸对方操作厉害、给整活鼓掌、轻松表示认可。",
-      "avoid": "严肃排障、正式评价、用户遇到困难时不要用来敷衍。",
-      "tags": ["牛逼", "熊猫头", "捧场", "夸夸", "路过", "认可", "群聊"]
+      "tags": [
+        "牛逼",
+        "熊猫头",
+        "捧场",
+        "夸夸",
+        "路过",
+        "认可",
+        "群聊"
+      ]
     },
     {
       "id": "sha256:aadb80347a90bbd79d431af0f6a9fecc9d27be2d46d0170ec90e0de60a4d951b",
-      "name": { "zh": "手指贴贴", "en": "Finger Touch" },
+      "name": {
+        "zh": "手指贴贴",
+        "en": "Finger Touch"
+      },
       "file": "images/expr_7730fe037445495b.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "两个人物的手指在画面中央轻轻碰到一起，衣服是柔和蓝色和粉色，袖子上有笑脸图案。画面暧昧、甜、像贴贴。",
       "usage": "适合熟人间表达心动、撒糖、轻轻贴近、可爱打招呼或柔软回应好感。",
-      "avoid": "商务聊天、公共正式场合、悲伤愤怒语境、边界不清时不要使用。",
-      "tags": ["贴贴", "手指", "心动", "撒糖", "暧昧", "可爱", "柔软"]
+      "tags": [
+        "贴贴",
+        "手指",
+        "心动",
+        "撒糖",
+        "暧昧",
+        "可爱",
+        "柔软"
+      ]
     },
     {
       "id": "sha256:51cd9fdc99284d30dae6d9f5fdd0e7552f16f8c5fa6b810a9ad953df5c5cde8a",
-      "name": { "zh": "好女孩", "en": "Good Girl" },
+      "name": {
+        "zh": "好女孩",
+        "en": "Good Girl"
+      },
       "file": "images/expr_dfb1d0b92b6f4773.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "浅绿色头发小人露出疲惫又乖的表情，头顶气泡写“好女孩...”。画面像被夸后乖乖接受。",
       "usage": "适合被夸乖、顺从答应、撒娇式接受正面评价，或用软软的方式回应表扬。",
-      "avoid": "严肃、悲伤、攻击性语境，或容易引发暧昧误解的关系边界不明场合不要使用。",
-      "tags": ["好女孩", "乖", "被夸", "软萌", "顺从", "撒娇", "表扬"]
+      "tags": [
+        "好女孩",
+        "乖",
+        "被夸",
+        "软萌",
+        "顺从",
+        "撒娇",
+        "表扬"
+      ]
     },
     {
       "id": "sha256:bc7303ca9fbda32d5c63a8bc62912b293ed7425aeec75635643965fdfe4cebfd",
-      "name": { "zh": "熊猫挠头", "en": "Panda Head Scratch" },
+      "name": {
+        "zh": "熊猫挠头",
+        "en": "Panda Head Scratch"
+      },
       "file": "images/expr_3d10e78156f148a6.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "黑白熊猫头挠头，脸是皱眉的人脸表情，画面模糊但明显是在疑惑、尴尬和不理解。",
       "usage": "适合看到奇怪操作、逻辑不通、离谱发言时表达“你认真的吗？”或“这是什么情况”。",
-      "avoid": "用户真诚咨询、严肃讨论、需要耐心解释时不要使用。",
-      "tags": ["熊猫头", "疑惑", "挠头", "尴尬", "离谱", "不理解", "质疑"]
+      "tags": [
+        "熊猫头",
+        "疑惑",
+        "挠头",
+        "尴尬",
+        "离谱",
+        "不理解",
+        "质疑"
+      ]
     },
     {
       "id": "sha256:4b4381116bd3cdd0178c5cade05258971b67e21435a074aa76e7b4ff8ce07d70",
-      "name": { "zh": "你知道我想说啥", "en": "You Know What I Want To Say" },
+      "name": {
+        "zh": "你知道我想说啥",
+        "en": "You Know What I Want To Say"
+      },
       "file": "images/expr_4b4381116bd3cdd0.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "低清马头人身表情，身体缩着手，画面中央大字写“你知道我想说啥”。核心情绪是已经想骂人了，但把脏话停在嘴边不直接说出来。",
       "usage": "适合想骂人但不想说脏字、对离谱操作或离谱发言强烈不满、熟人之间用委婉方式表达“我已经想骂了”时使用。",
-      "avoid": "正式讨论、对方真诚求助、情绪敏感、不熟的人面前，或已经需要直接安抚/解决问题时不要使用。",
-      "tags": ["马", "想骂人", "不说脏字", "骂人", "脏话", "强烈不满", "离谱"]
+      "tags": [
+        "马",
+        "想骂人",
+        "不说脏字",
+        "骂人",
+        "脏话",
+        "强烈不满",
+        "离谱"
+      ]
     },
     {
       "id": "sha256:6f6a369c46ab3f5306b54f5492e9e7646cc5e26297611293edaa9b42e255f964",
-      "name": { "zh": "优质解答我不知道", "en": "Quality Answer I Don't Know" },
+      "name": {
+        "zh": "优质解答我不知道",
+        "en": "Quality Answer I Don't Know"
+      },
       "file": "images/expr_6f6a369c46ab3f53.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "白底截图式表情，左上有奖牌图标，粗体标题写“优质解答”，下方大字写“我不知道”。画面用一本正经的格式表达不知道答案，反差感很强。",
       "usage": "适合不知道答案、无法判断、信息不足、想诚实承认不会但带一点幽默时使用。",
-      "avoid": "用户需要严肃排障、必须给出确定结论、或承认不知道会显得敷衍时不要使用。",
-      "tags": ["优质解答", "我不知道", "不知道", "不会", "信息不足", "诚实", "反差"]
+      "tags": [
+        "优质解答",
+        "我不知道",
+        "不知道",
+        "不会",
+        "信息不足",
+        "诚实",
+        "反差"
+      ]
     },
     {
       "id": "sha256:11f2a58efa5673cfca435ce15795f56841c26a29a121053bbb41659230590ffe",
-      "name": { "zh": "别担心我来助你", "en": "Don't Worry I Will Help" },
+      "name": {
+        "zh": "别担心我来助你",
+        "en": "Don't Worry I Will Help"
+      },
       "file": "images/expr_11f2a58efa5673cf.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "豚鼠/仓鼠站在木屋前，张着嘴举起小手，另一只手握着一把长叉，底部写“我来助你”。画面像主动出手支援，气势可靠又可爱。",
       "usage": "适合用户需要帮助、准备接手问题、安抚对方“别担心我来”的时候使用。",
-      "avoid": "用户需要严肃、精确、长步骤排障时不要只用表情敷衍；真实紧急场景应先给方案。",
-      "tags": ["我来助你", "别担心", "帮忙", "支援", "接手", "可靠", "可爱"]
+      "tags": [
+        "我来助你",
+        "别担心",
+        "帮忙",
+        "支援",
+        "接手",
+        "可靠",
+        "可爱"
+      ]
     },
     {
       "id": "sha256:c4960ebd588ced655e86b87eb7e2de05bfbc6599f609480979464c64862ebdf8",
-      "name": { "zh": "Deepin 西装系统", "en": "Deepin Suit System" },
+      "name": {
+        "zh": "Deepin 西装系统",
+        "en": "Deepin Suit System"
+      },
       "file": "images/expr_c4960ebd588ced65.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "白底图上方写“正在操作西装系统”，中间是戴墨镜、礼帽并打领带的 Linux 企鹅，下方有 Deepin 标志和 Deepin 字样。画面用于调侃 deepin 的精致外观和“西装系统”梗。",
       "usage": "适合聊 deepin、Linux 桌面美化、国产发行版、西装系统梗时讽刺或调侃。",
-      "avoid": "严肃发行版评测、用户真的在排障 deepin、需要客观专业建议时不要用来嘲讽。",
-      "tags": ["deepin", "西装系统", "Linux", "企鹅", "国产发行版", "桌面美化", "嘲讽"]
+      "tags": [
+        "deepin",
+        "西装系统",
+        "Linux",
+        "企鹅",
+        "国产发行版",
+        "桌面美化",
+        "嘲讽"
+      ]
     },
     {
       "id": "sha256:5e6d70f5af6009f0d0495f9f62f9280d8845217e10988e6e77f5d57a83ab3bf0",
-      "name": { "zh": "我的评价是寄", "en": "My Verdict Is It's Over" },
+      "name": {
+        "zh": "我的评价是寄",
+        "en": "My Verdict Is It's Over"
+      },
       "file": "images/expr_5e6d70f5af6009f0.png",
       "mime_type": "image/png",
       "animated": false,
       "description": "白底大字表情，上方是夸张立体红字“我的评价是”，中间一个巨大的“寄”。表达事情已经寄了、完蛋了、没救了。",
       "usage": "适合小范围玩笑里表示方案翻车、事情完蛋、出大问题、暂时没辙。",
-      "avoid": "用户真的焦虑、事故严重、需要安抚或解决步骤时不要直接用。",
-      "tags": ["寄", "完蛋", "出问题", "没辙", "翻车", "解决不了", "大问题"]
+      "tags": [
+        "寄",
+        "完蛋",
+        "出问题",
+        "没辙",
+        "翻车",
+        "解决不了",
+        "大问题"
+      ]
     },
     {
       "id": "sha256:5fa668471cbb26ea0fe31633b3b08f325a74ceee5a8394862d0492146efb342d",
-      "name": { "zh": "现在是上班时间吧", "en": "Isn't It Work Time" },
+      "name": {
+        "zh": "现在是上班时间吧",
+        "en": "Isn't It Work Time"
+      },
       "file": "images/expr_5fa668471cbb26ea.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "灰发猫耳小人低着头，表情像被领导盯住；上方文字写“我没猜错的话现在是上班时间吧”，下方写“领导”。用于调侃工作日上班时间摸鱼。",
       "usage": "适合工作日上班时间用户来闲聊、摸鱼、突然找 AI 聊天时调侃。",
-      "avoid": "用户在处理正事、紧急工作、正式任务或情绪紧张时不要打断。",
-      "tags": ["上班时间", "摸鱼", "领导", "工作日", "打工人", "上班", "调侃"]
+      "tags": [
+        "上班时间",
+        "摸鱼",
+        "领导",
+        "工作日",
+        "打工人",
+        "上班",
+        "调侃"
+      ]
     },
     {
       "id": "sha256:05cfb324d4318bb107e1d0800a9331181f1280ebb1d648556aa35f33a8bde9e4",
-      "name": { "zh": "熊猫看戏", "en": "Panda Watching Drama" },
+      "name": {
+        "zh": "熊猫看戏",
+        "en": "Panda Watching Drama"
+      },
       "file": "images/expr_05cfb324d4318bb1.gif",
       "mime_type": "image/gif",
       "animated": true,
       "description": "熊猫趴在木桩上托着脸看向前方，底部写“看戏”。画面是吃瓜、围观、坐看热闹的状态。",
       "usage": "适合围观冲突、吃瓜、看事情发展、看热闹不嫌事大时使用。",
-      "avoid": "用户本人正在遭遇问题、需要实际帮助或场景严肃时不要只看戏。GIF 默认静态预览。",
-      "tags": ["看戏", "吃瓜", "围观", "看热闹", "坐看", "不嫌事大", "熊猫", "GIF"]
+      "tags": [
+        "看戏",
+        "吃瓜",
+        "围观",
+        "看热闹",
+        "坐看",
+        "不嫌事大",
+        "熊猫",
+        "GIF"
+      ]
     },
     {
       "id": "sha256:fa291e31db962da1e6a0b0399926f37e3d924308920138aa71ab92bd92a4cd3e",
-      "name": { "zh": "你不会百度吗", "en": "Can You Not Baidu It" },
+      "name": {
+        "zh": "你不会百度吗",
+        "en": "Can You Not Baidu It"
+      },
       "file": "images/expr_fa291e31db962da1.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "百度首页截图旁边有粉发角色指向搜索框，搜索框旁标注“1.输入你的问题”“2.点击它”，底部写“草泥马你不会百度吗？”。语气很冲，用来吐槽伸手党。",
       "usage": "适合熟人语境下，用户反复问极容易自行搜索的问题、明显伸手党、让人不想再代搜时使用。",
-      "avoid": "默认不建议自动使用；用户真诚求助、不熟、需要耐心帮助、正式场合或容易冒犯时不要使用。",
-      "tags": ["百度", "自己搜", "伸手党", "不会百度吗", "不想搜索", "吐槽", "粗口"]
+      "tags": [
+        "百度",
+        "自己搜",
+        "伸手党",
+        "不会百度吗",
+        "不想搜索",
+        "吐槽",
+        "粗口"
+      ]
     },
     {
       "id": "sha256:b5370e0f9f231bd89d1732a53257dcdfc63a166bf655d6c7b0690786d0431477",
-      "name": { "zh": "你在说锤子呢", "en": "What Are You Talking About" },
+      "name": {
+        "zh": "你在说锤子呢",
+        "en": "What Are You Talking About"
+      },
       "file": "images/expr_b5370e0f9f231bd8.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "卡通小头像闭眼笑，旁边挂着巨大蓝色汗滴。没有文字，但表情明显是汗、无语、听不懂、尴尬。",
       "usage": "适合用户表达跳跃、逻辑混乱、说法奇怪、让人听不懂或汗颜时使用。",
-      "avoid": "用户认真求助、情绪低落、需要耐心澄清或正式解释时不要嘲讽。",
-      "tags": ["汗", "无语", "你在说什么", "锤子", "听不懂", "尴尬", "困惑"]
+      "tags": [
+        "汗",
+        "无语",
+        "你在说什么",
+        "锤子",
+        "听不懂",
+        "尴尬",
+        "困惑"
+      ]
     },
     {
       "id": "sha256:8cabd8614c876d32498cc129221932da41febf2c5bc276d4cb20a0734f9f984e",
-      "name": { "zh": "问题解答价位表", "en": "Question Detail Price List" },
+      "name": {
+        "zh": "问题解答价位表",
+        "en": "Question Detail Price List"
+      },
       "file": "images/expr_8cabd8614c876d32.jpg",
       "mime_type": "image/jpeg",
       "animated": false,
       "description": "彩色价位表写着：问题描述≤10字 500CNY，问题描述≤20字 300CNY，问题描述+截图 80CNY，详细问题描述+截图/日志 免费。用于吐槽问题描述太少。",
       "usage": "适合用户只给很少信息、没有截图/日志/上下文，需要提示补充详细描述时使用。",
-      "avoid": "用户已经给出充分信息、问题紧急、或需要先直接排查时不要用来阴阳怪气。",
-      "tags": ["问题描述", "截图", "日志", "补充信息", "信息不足", "提问方式", "价位表"]
+      "tags": [
+        "问题描述",
+        "截图",
+        "日志",
+        "补充信息",
+        "信息不足",
+        "提问方式",
+        "价位表"
+      ]
     }
   ]
 }

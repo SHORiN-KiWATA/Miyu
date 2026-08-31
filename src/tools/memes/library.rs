@@ -34,7 +34,6 @@ pub(crate) struct MemeItem {
     pub(crate) animated: bool,
     pub(crate) description: String,
     pub(crate) usage: String,
-    pub(crate) avoid: String,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,7 +380,6 @@ pub(crate) fn score_meme(item: &MemeItem, query: &str, tags: &[String]) -> f32 {
     let name = normalize(&format!("{} {}", item.name.zh, item.name.en));
     let description = normalize(&item.description);
     let usage = normalize(&item.usage);
-    let avoid = normalize(&item.avoid);
     let tag_text = normalize(&item.tags.join(" "));
     let mut score: f32 = 0.0;
     for term in terms {
@@ -396,9 +394,6 @@ pub(crate) fn score_meme(item: &MemeItem, query: &str, tags: &[String]) -> f32 {
         }
         if description.contains(&term) {
             score += 1.2;
-        }
-        if !avoid.is_empty() && avoid.contains(&term) {
-            score -= 2.5;
         }
     }
     let haystack = format!("{name} {description} {usage} {tag_text}");

@@ -197,9 +197,6 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
         if !meme.item.usage.is_empty() {
             line.push_str(&format!(" | usage: {}", meme.item.usage));
         }
-        if !meme.item.avoid.is_empty() {
-            line.push_str(&format!(" | avoid: {}", meme.item.avoid));
-        }
         if meme.item.animated {
             line.push_str(" [animated]");
         }
@@ -280,7 +277,6 @@ mod tests {
             animated: false,
             description: "戴墨镜的企鹅抱着终端".to_string(),
             usage: "适合 Linux 话题".to_string(),
-            avoid: String::new(),
             tags: vec!["Linux".to_string(), "企鹅".to_string()],
             origin: None,
         };
@@ -582,7 +578,6 @@ mod tests {
                 animated: false,
                 description: "测试表情".to_string(),
                 usage: "测试".to_string(),
-                avoid: String::new(),
                 tags: Vec::new(),
                 origin: None,
             },
@@ -594,6 +589,8 @@ mod tests {
     fn accepted_classification() -> MemeClassification {
         MemeClassification {
             save: true,
+            // 兼容字段:模型仍可能吐 avoid,收下即丢(见 crud.rs 的说明)
+            avoid: String::new(),
             confidence: 100,
             positive_gates: PositiveGates {
                 chat_reaction: true,
@@ -617,7 +614,6 @@ mod tests {
             },
             description: "一只卡通猫开心地挥手。".to_string(),
             usage: "适合轻松打招呼。".to_string(),
-            avoid: "严肃场景不要使用。".to_string(),
             tags: vec!["开心".to_string(), "猫".to_string()],
         }
     }

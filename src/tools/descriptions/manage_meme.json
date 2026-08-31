@@ -42,10 +42,6 @@
         "type": "string",
         "description": "When to use it."
       },
-      "avoid": {
-        "type": "string",
-        "description": "When not to use it."
-      },
       "tags": {
         "type": "array",
         "items": {

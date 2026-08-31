@@ -23,7 +23,6 @@ pub(crate) const MAX_DESCRIPTION_CHARS: usize = 500;
 
 pub(crate) const MAX_USAGE_CHARS: usize = 500;
 
-pub(crate) const MAX_AVOID_CHARS: usize = 500;
 
 pub(crate) const MAX_TAGS: usize = 16;
 
@@ -137,7 +136,6 @@ pub(in crate::tools::memes) fn validate_classification(
         MAX_DESCRIPTION_CHARS,
     )?;
     validate_text_field("usage", &classification.usage, 1, MAX_USAGE_CHARS)?;
-    validate_text_field("avoid", &classification.avoid, 0, MAX_AVOID_CHARS)?;
     validate_tags(&classification.tags, true)?;
     Ok(())
 }
@@ -304,7 +302,6 @@ pub(crate) fn has_supplied_metadata(args: &Value) -> bool {
         "name_en",
         "description",
         "usage",
-        "avoid",
         "tags",
     ]
     .iter()
@@ -352,13 +349,6 @@ pub(crate) fn item_from_args(
     validate_text_field("name.en", &name.en, 0, MAX_NAME_CHARS)?;
     validate_text_field("description", &description, 1, MAX_DESCRIPTION_CHARS)?;
     validate_text_field("usage", &usage, 1, MAX_USAGE_CHARS)?;
-    let avoid = args
-        .get("avoid")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    validate_text_field("avoid", &avoid, 0, MAX_AVOID_CHARS)?;
     validate_tags(&tags, false)?;
     Ok(MemeItem {
         id,
@@ -368,7 +358,6 @@ pub(crate) fn item_from_args(
         animated,
         description,
         usage,
-        avoid,
         tags,
         origin: None,
     })
@@ -394,7 +383,6 @@ pub(in crate::tools::memes) fn item_from_classification(
         animated,
         description: classification.description,
         usage: classification.usage,
-        avoid: classification.avoid,
         tags: classification.tags,
         origin,
     };
@@ -433,9 +421,6 @@ pub(crate) fn apply_updates(item: &mut MemeItem, args: &Value) {
         .filter(|value| !value.is_empty())
     {
         item.usage = value.to_string();
-    }
-    if let Some(value) = args.get("avoid").and_then(Value::as_str).map(str::trim) {
-        item.avoid = value.to_string();
     }
     if args.get("tags").is_some() {
         item.tags = string_array(args.get("tags"));
