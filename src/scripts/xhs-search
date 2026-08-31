@@ -22,6 +22,7 @@ xhs-search — 小红书笔记检索 CLI
 import argparse
 import json
 import os
+import random
 import select
 import signal
 import shutil
@@ -30,8 +31,9 @@ import sys
 import time
 import urllib.parse
 
-UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+# 窗口尺寸。不设 viewport, 让 outerWidth/innerHeight 保持真实浏览器该有的边框差
+# ——两者完全相等在真实浏览器里不可能出现, 是一眼可辨的自动化特征。
+WINDOW_SIZE = (1440, 900)
 # 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu（或运维）把所有脚本的中间
 # 产物集中到一处；不设时退回 XDG 默认，脚本单独拿去用也不会往奇怪的地方写。
 DATA_DIR = os.path.join(
@@ -50,6 +52,11 @@ QUIET = False
 
 
 class NotLoggedIn(RuntimeError):
+    pass
+
+
+class RateLimited(RuntimeError):
+    """本地限速拦下的, 不是站点报的错 —— 调用方不该当故障重试。"""
     pass
 
 
@@ -128,12 +135,25 @@ def find_system_chromium():
     return None, None
 
 
+# Playwright 驱动 JS 求值要开 CDP 的 Runtime 域, 页面能从执行上下文的侧信道探到,
+# 这是目前反爬最主要的自动化特征, 页内 JS 注入补不掉。patchright 是官方的 drop-in
+# 补丁版, 从驱动层绕开 Runtime.enable(代价: Console API 不可用, 本脚本不依赖)。
+# 没装就退回 playwright: 功能完全一样, 只是隐蔽性差。
+_DRIVERS = ("patchright", "playwright")
+
+
+def driver_name():
+    for mod in _DRIVERS:
+        try:
+            __import__(mod)
+            return mod
+        except ImportError:
+            continue
+    return None
+
+
 def playwright_available():
-    try:
-        import playwright  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return driver_name() is not None
 
 
 def chromium_bundled():
@@ -141,9 +161,142 @@ def chromium_bundled():
     return os.path.isdir(cache) and any(d.startswith("chromium") for d in os.listdir(cache))
 
 
+_XVFB = None
+_ON_XVFB = False
+
+
+def _stop_display():
+    global _XVFB
+    if _XVFB is not None:
+        try:
+            _XVFB.terminate()
+            _XVFB.wait(timeout=3)
+        except Exception:
+            pass
+        _XVFB = None
+
+
+def ensure_display():
+    """返回 True 表示可以按 headed 启动浏览器。
+
+    headless 模式有两个躲不掉的硬特征: WebGL 回落到 SwiftShader 软件渲染,
+    以及 outerWidth/outerHeight 等于 inner。所以默认起一块 Xvfb 虚拟屏跑真
+    headed —— 浏览器以为自己有屏幕, 用户桌面上却看不到窗口。
+    XHS_HEADED=1 时改用真实显示, 让人能看见窗口(排查登录用)。
+    """
+    global _XVFB, _ON_XVFB
+    if os.environ.get("XHS_HEADED") == "1":
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if _XVFB is not None:
+        return True
+    if not shutil.which("Xvfb"):
+        # 没有 Xvfb 就只能二选一: 有真显示就用(会弹窗, 但比 headless 隐蔽)。
+        return bool(os.environ.get("DISPLAY"))
+    import atexit
+    for num in range(99, 130):
+        if os.path.exists("/tmp/.X%d-lock" % num):
+            continue
+        try:
+            proc = subprocess.Popen(
+                ["Xvfb", ":%d" % num, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return bool(os.environ.get("DISPLAY"))
+        # 固定 sleep 是竞态: 赌输时 Chrome 连不上虚拟屏, 行为不确定(实测会拿到真实
+        # 显示器分辨率)。改成等它的 socket 真出现。
+        sock = "/tmp/.X11-unix/X%d" % num
+        deadline = time.time() + 10
+        while time.time() < deadline and proc.poll() is None and not os.path.exists(sock):
+            time.sleep(0.05)
+        if proc.poll() is None and os.path.exists(sock):
+            os.environ["DISPLAY"] = ":%d" % num
+            # Chrome 的 ozone 只要看见 WAYLAND_DISPLAY 就走 Wayland 后端, 完全无视
+            # DISPLAY —— 虚拟屏会被绕过, 窗口直接弹到用户桌面上。必须摘掉。
+            os.environ.pop("WAYLAND_DISPLAY", None)
+            _XVFB = proc
+            _ON_XVFB = True
+            atexit.register(_stop_display)
+            return True
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        break
+    return bool(os.environ.get("DISPLAY"))
+
+
+# ---- 行为层 ----------------------------------------------------------------
+# 指纹只是风控的一半; 另一半是行为序列。固定间隔、固定滚动距离、连续高频检索,
+# 这些特征跟浏览器多真实无关, 光靠反检测补丁盖不住。
+PACE_FILE = os.path.join(DATA_DIR, "pace.json")
+MIN_GAP_S = float(os.environ.get("XHS_MIN_GAP") or 20)      # 两次检索最小间隔
+# 每日上限默认不设: 小红书自己就有当日检索上限, 我们再压一道只会先于站点把人拦住。
+# 想要本地闸的设 XHS_DAILY_CAP=N 即可。
+DAILY_CAP = int(os.environ.get("XHS_DAILY_CAP") or 0)
+
+
+def jitter(ms, spread=0.35):
+    """把固定等待摊成一个区间。机器等得比人准, 这是最廉价的行为特征。"""
+    return int(ms * (1.0 + random.uniform(-spread, spread)))
+
+
+def _load_pace():
+    try:
+        with open(PACE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def throttle(kind="search"):
+    """按最小间隔限速; 设了 XHS_DAILY_CAP 时再加一道每日上限。返回实际等待秒数。"""
+    now = time.time()
+    pace = _load_pace()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    if pace.get("day") != day:
+        pace = {"day": day, "count": 0, "last": 0.0}
+    if DAILY_CAP and pace.get("count", 0) >= DAILY_CAP:
+        raise RateLimited(
+            "今日已检索 %d 次, 达到 XHS_DAILY_CAP 设定的上限 %d。"
+            % (pace["count"], DAILY_CAP))
+    waited = 0.0
+    gap = now - float(pace.get("last") or 0)
+    need = MIN_GAP_S * random.uniform(0.8, 1.4) - gap
+    if need > 0:
+        waited = min(need, MIN_GAP_S * 2)
+        time.sleep(waited)
+    pace["last"] = time.time()
+    pace["count"] = int(pace.get("count") or 0) + 1
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp = PACE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(pace, f)
+        os.replace(tmp, PACE_FILE)
+    except OSError:
+        pass
+    return waited
+
+
+def _has_render_node():
+    try:
+        return any(n.startswith("renderD") for n in os.listdir("/dev/dri"))
+    except OSError:
+        return False
+
+
 def launch_kwargs():
-    kw = {"headless": os.environ.get("XHS_HEADED") != "1",
-          "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"]}
+    headed = ensure_display()
+    args = ["--no-sandbox", "--disable-blink-features=AutomationControlled",
+            "--window-size=%d,%d" % WINDOW_SIZE]
+    if _ON_XVFB:
+        # 虚拟屏上必须锁死 x11 后端(见 ensure_display 里摘 WAYLAND_DISPLAY 的原因)。
+        args.append("--ozone-platform=x11")
+        # Xvfb 里没有 GLX, Chrome 的 WebGL 会直接创建失败(比 SwiftShader 更可疑)。
+        # ANGLE 走 Vulkan 不经过 X, 能直接用 /dev/dri 上的真显卡。
+        if _has_render_node():
+            args += ["--use-gl=angle", "--use-angle=vulkan"]
+    kw = {"headless": not headed, "args": args}
     if shutil.which("google-chrome") or shutil.which("google-chrome-stable"):
         kw["channel"] = "chrome"
     elif shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable"):
@@ -201,7 +354,10 @@ class Browser:
             self._lockf = None
 
     def __enter__(self):
-        from playwright.sync_api import sync_playwright
+        if driver_name() == "patchright":
+            from patchright.sync_api import sync_playwright
+        else:
+            from playwright.sync_api import sync_playwright
         self._acquire()
         os.makedirs(PROFILE_DIR, exist_ok=True)
         kill_orphan_chrome()
@@ -211,11 +367,15 @@ class Browser:
                 os.unlink(os.path.join(PROFILE_DIR, name))
             except OSError:
                 pass
+        # 必须先算好 launch_kwargs: 它内部会起虚拟屏并改写 DISPLAY/WAYLAND_DISPLAY,
+        # 而 driver 进程在 start() 那一刻就把环境拷贝走了 —— 顺序反了的话 Chrome
+        # 继承的还是旧环境, 会绕开虚拟屏跑到用户真实桌面上。
+        kwargs = launch_kwargs()
         self._pw = sync_playwright().start()
         self.ctx = self._pw.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR, user_agent=UA, locale="zh-CN",
-            timezone_id="Asia/Shanghai", viewport={"width": 1440, "height": 900},
-            **launch_kwargs())
+            user_data_dir=PROFILE_DIR, locale="zh-CN",
+            timezone_id="Asia/Shanghai", no_viewport=True,
+            **kwargs)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         return self
 
@@ -261,7 +421,7 @@ class Browser:
             # 只等 commit: 登录态下这些页面常有长期挂起的子资源, 等 domcontentloaded
             # 会一直挂到超时, 但内容其实早就在渲染了。
             self.page.goto(url, wait_until="commit", timeout=60000)
-            self.page.wait_for_timeout(settle)
+            self.page.wait_for_timeout(jitter(settle))
             if before_scroll:
                 # reset 交给钩子在"切换动作刚发生"的那一刻调用: 切换前抓到的是旧排序
                 # 的结果, 必须丢掉; 但切换后到达的必须留下, 所以时机只能由钩子决定。
@@ -270,14 +430,21 @@ class Browser:
                     payloads.clear()
 
                 before_scroll(self.page, reset)
-                self.page.wait_for_timeout(settle)
+                self.page.wait_for_timeout(jitter(settle))
             drain()
             for _ in range(max_scrolls):
                 if got() >= want:
                     break
                 before = len(payloads)
-                self.page.mouse.wheel(0, 4000)
-                self.page.wait_for_timeout(settle)
+                # 人不会一次滚 4000px 再精确停 2.5 秒: 拆成几段不等长的滚动,
+                # 偶尔往回带一点(看漏了往回翻是很常见的动作)。
+                for _ in range(random.randint(3, 5)):
+                    self.page.mouse.wheel(0, random.randint(700, 1300))
+                    self.page.wait_for_timeout(random.randint(90, 320))
+                if random.random() < 0.25:
+                    self.page.mouse.wheel(0, -random.randint(150, 400))
+                    self.page.wait_for_timeout(random.randint(150, 450))
+                self.page.wait_for_timeout(jitter(settle))
                 drain()
                 if len(payloads) == before:  # 一轮没新数据, 到底了
                     break
@@ -341,6 +508,7 @@ def parse_ref(ref):
 # ---------------------------------------------------------------- 命令
 
 def do_search(keyword, limit, sort, ntype):
+    throttle("search")
     # 「综合」和「全部」不用点任何东西, 天生就是生效的; 其余的要靠点击, 点不动就降级。
     eff = {"sort": "综合" if SORTS.get(sort) is None else None,
            "type": "全部" if TYPES.get(ntype) is None else None,
@@ -461,6 +629,7 @@ def _comment(c):
 
 
 def do_note(ref, want_comments):
+    throttle("note")
     """笔记正文不走接口: 它 SSR 在 window.__INITIAL_STATE__ 里, 评论也在同一个 store,
     滚动时 store 自己会增长。直接读 store 比拼 API 的 snake_case 和 SSR 的 camelCase 干净。"""
     nid, token = parse_ref(ref)
@@ -682,12 +851,7 @@ def do_login(timeout_s=600):
         print(f"等待扫码({timeout_s}s)...", file=sys.stderr)
         for _ in range(timeout_s):
             b.page.wait_for_timeout(1000)
-            try:
-                me = b.page.evaluate(
-                    "() => { const m = document.cookie.match(/web_session=([^;]+)/); return m ? m[1] : ''; }")
-            except Exception:
-                me = ""
-            if me and not _login_modal_visible(b.page):
+            if _has_session_cookie(b) and not _login_modal_visible(b.page):
                 info = _whoami(b)
                 if info.get("user_id") and not info.get("guest"):
                     print(f"\n登录成功: {info.get('nickname')} ({info.get('user_id')})", file=sys.stderr)
@@ -698,6 +862,15 @@ def do_login(timeout_s=600):
                             "user_id": info.get("user_id")}
         _write_login_status(state="timeout", logged_in=False, message="超时未完成扫码")
         raise RuntimeError("超时未完成扫码")
+
+
+def _has_session_cookie(b):
+    """web_session 带 HttpOnly, document.cookie 里永远读不到 —— 拿页面 JS 判断登录
+    会恒为假, 扫码明明成功了也只会一路等到超时。只能从浏览器上下文取。"""
+    try:
+        return any(c.get("name") == "web_session" and c.get("value") for c in b.ctx.cookies())
+    except Exception:
+        return False
 
 
 def _login_modal_visible(page):
@@ -817,6 +990,22 @@ def preflight():
     return not problems, problems
 
 
+def stealth_warnings():
+    """能跑 ≠ 够隐蔽。这些不算故障, 但会显著提高账号被风控标记的概率。"""
+    warns = []
+    if driver_name() != "patchright":
+        warns.append("用的是 playwright 而非 patchright: CDP Runtime.enable 会暴露自动化特征 "
+                     "→ pip install --user patchright")
+    if not shutil.which("Xvfb") and not os.environ.get("DISPLAY"):
+        warns.append("没有 Xvfb 也没有显示器, 只能 headless 运行: WebGL 会回落到 SwiftShader "
+                     "软件渲染, 是明显的自动化特征 → 安装 xorg-server-xvfb")
+    if shutil.which("Xvfb") and not _has_render_node():
+        warns.append("/dev/dri 下没有渲染节点: 虚拟屏里 WebGL 会创建失败, 这本身是异常特征")
+    if not (shutil.which("google-chrome") or shutil.which("google-chrome-stable")):
+        warns.append("没装 Google Chrome, 退回 Chromium: 指纹与普通用户不同 → 建议装 google-chrome")
+    return warns
+
+
 def do_doctor():
     ok, problems = preflight()
     name, path = find_system_chromium()
@@ -828,17 +1017,32 @@ def do_doctor():
             problems.append(f"浏览器启动失败: {e}")
             ok = False
     return {"ok": ok, "playwright": playwright_available(),
+            "driver": driver_name(), "stealth_warnings": stealth_warnings(),
             "system_browser": name, "browser_path": path,
             "bundled_chromium": chromium_bundled(),
             "profile_dir": PROFILE_DIR, "logged_in": logged, "problems": problems}
 
 
+def _pip_install(pkgs):
+    """PEP 668 的发行版(Arch/Debian)会拦 pip; --user 装到家目录是安全的, 加旗标放行。"""
+    base = [sys.executable, "-m", "pip", "install", "--user"]
+    r = subprocess.run(base + pkgs, capture_output=True, text=True)
+    if r.returncode != 0 and "externally-managed-environment" in (r.stderr or ""):
+        r = subprocess.run(base + ["--break-system-packages"] + pkgs,
+                           capture_output=True, text=True)
+    return r
+
+
 def do_setup():
     steps = []
     if not playwright_available():
-        r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "playwright", "qrcode"],
-                           capture_output=True, text=True)
+        r = _pip_install(["playwright", "qrcode"])
         steps.append({"step": "pip install playwright qrcode", "ok": r.returncode == 0,
+                      "output": (r.stderr or r.stdout)[-400:]})
+    if driver_name() != "patchright":
+        # 隐蔽性关键项, 但装不上不致命 —— 退回 playwright 功能一样。
+        r = _pip_install(["patchright"])
+        steps.append({"step": "pip install patchright (反检测, 可选)", "ok": r.returncode == 0,
                       "output": (r.stderr or r.stdout)[-400:]})
     if not chromium_bundled() and not find_system_chromium()[0]:
         r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
@@ -923,6 +1127,10 @@ def stdin_json_mode(raw):
             out = do_note(query, max(0, min(limit or 0, 100)))
     except NotLoggedIn as e:
         die(str(e), {"fix": f"运行: {login_command_hint('xhs-search')}（会给出二维码）"})
+    except RateLimited as e:
+        # 必须排在 RuntimeError 前面, 否则会被当成普通故障 —— 调用方一重试就把
+        # 账号往风控上送, 正是这道闸要防的事。
+        die(str(e), {"rate_limited": True, "retryable": False})
     except RuntimeError as e:
         die(str(e))
     except Exception as e:
@@ -1072,6 +1280,10 @@ def main():
         return 0
     except NotLoggedIn as e:
         print(json.dumps({"error": str(e), "fix": f"运行: {login_command_hint('xhs-search')}"},
+                         ensure_ascii=False, indent=1))
+        return 1
+    except RateLimited as e:
+        print(json.dumps({"error": str(e), "rate_limited": True, "retryable": False},
                          ensure_ascii=False, indent=1))
         return 1
     except Exception as e:

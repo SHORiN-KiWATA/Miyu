@@ -1,6 +1,68 @@
 {
   "scripts": [
     {
+      "id": "bilibili_live_stream",
+      "display_name": "哔哩哔哩直播控制",
+      "description": "控制哔哩哔哩直播间：改直播标题、改分区、开播并取得推流地址与推流码（可直接填 OBS / ffmpeg）、下播。command=status 查直播间状态（只读）；areas 查分区（只读且不用登录，search 搜关键词、parent 列某父分区）；update 改标题/分区（title 与 area 可一起给，一次请求要么全成要么全不成）；start 开播；stop 下播；login/logout 管凭据。分区可直接写中文名、拼音或\"父分区/子分区\"，脚本自己解析成 id。★ start 会让直播间立刻对外可见并给粉丝推送开播通知，是不可静默撤销的对外动作，调用前必须先获得用户明确同意；update 在直播中改动会立刻被观众看到。未登录时返回 kind=auth，引导用户跑 login（两步扫码，二维码写成 PNG 返回路径）。",
+      "path": "bilibili_live_stream",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "status",
+              "areas",
+              "update",
+              "start",
+              "stop",
+              "login",
+              "logout"
+            ],
+            "description": "要执行的操作。只读的是 status 和 areas"
+          },
+          "title": {
+            "type": "string",
+            "description": "新的直播标题。用于 update；给 start 则开播前顺手改掉"
+          },
+          "area": {
+            "type": "string",
+            "description": "新的分区，写法随意：数字 id(371)、子分区名(虚拟日常)、拼音(xunirichang)或\"父分区/子分区\"(虚拟主播/虚拟日常)。用于 update；给 start 则开播前顺手改掉。歧义时报错并在 error.detail.candidates 里给候选"
+          },
+          "search": {
+            "type": "string",
+            "description": "仅 areas：在子分区的名字、拼音和父分区名里搜关键词"
+          },
+          "parent": {
+            "type": "string",
+            "description": "仅 areas：只列这个父分区（名字或 id）下的子分区"
+          },
+          "refresh": {
+            "type": "boolean",
+            "description": "仅 areas：忽略本地缓存(默认存一天)，重新拉一次分区列表"
+          },
+          "cookie": {
+            "type": "string",
+            "description": "仅 login：改用浏览器 Cookie 直接登录，形如 \"SESSDATA=..; bili_jct=..\"。正常走扫码就行，不用给"
+          },
+          "json": {
+            "type": "boolean",
+            "description": "输出完整 JSON。默认是精简纯文本摘要，省 token"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false
+      },
+      "timeout_seconds": 120,
+      "always_loaded": false,
+      "load_policy": "group",
+      "groups": [
+        "streaming"
+      ]
+    },
+    {
       "id": "crack_search",
       "display_name": "游戏破解状态查询",
       "description": "通过游戏名或关键词搜索游戏破解状态。优先搜索 crackrelease.com（收录较全），无结果时回退 isitcracked.com 补充。返回是否已破解、DRM保护、破解日期、发布日期、场景组等。支持英文游戏名搜索效果最佳。",
@@ -65,6 +127,221 @@
       "load_policy": "group",
       "groups": [
         "shopping"
+      ]
+    },
+    {
+      "id": "hotel_deals",
+      "display_name": "酒店比价",
+      "description": "查某地酒店价格。查房只要三个参数：location(地区名，必填) + checkin + checkout，返回最便宜的房源列表（含每晚价、总价、评分、跨平台价差），想知道哪天去最划算就用 action=sweep 扫未来 N 天，会直接告诉你最便宜是哪天、周末溢价多少。日期支持 '+7'(7天后)、'10-15'、'2026-10-15' 三种写法。nights 默认 1，所以表里每个价都是每晚价，search 和 sweep 的结果可以直接横向比。Google 源零依赖必定可用；Booking 源需要 playwright 且会限流，失败时自动降级到只用 Google，不影响出结果。价格趋势有两种：sweep 看『哪天入住便宜』(跑一次就有)，trend 看『房价这几天涨还是跌』(需要先攒几天历史，没数据会明说)。\n\n重要：location 传中日韩文字时结果会漂移。Google 走英文站、中文地名只能模糊匹配，实测搜『苏州金鸡湖』返回的最低价那家在昆山南站、离目标 30 多公里——价格是真的但地方是错的，且输出不报错、看起来完全正常。所以传中日韩文字时输出必带一条 warning，此时别直接把最低价报给用户；要么改用英文地名(如 'Jinji Lake Suzhou')重跑，要么两种都跑取交集。同理，报结论前先看 sources_failed：少一个数据源时价格表本身看不出异常，但最低价可能因此偏高。\n\n输出默认 Markdown（警告和失败的源在末尾『注意』小节）；format=json 时是带上下文的对象：{query, sources_ok, sources_failed, warnings, returned, total, offers[]}，房源在 offers 字段里而不是顶层数组。",
+      "path": "hotel-deals",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "地区名，如 'Tokyo'、'Jinji Lake Suzhou'、'东京'。除 action=places/doctor 外必填。优先用英文地名——中日韩文地名会漂移，见上文"
+          },
+          "checkin": {
+            "type": "string",
+            "description": "入住日，如 '+7'(7天后)、'10-15'、'2026-10-15'。search 默认 7 天后；action=sweep 时表示从哪天开始扫，默认明天"
+          },
+          "checkout": {
+            "type": "string",
+            "description": "退房日，写法同 checkin。默认入住次日。action=search 专用"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "search",
+              "sweep",
+              "trend",
+              "places",
+              "doctor"
+            ],
+            "description": "search=查指定日期的最低价(默认)；sweep=扫未来N天找最便宜的入住日；trend=看历史涨跌；places=历史库里有哪些地区；doctor=环境自检"
+          },
+          "nights": {
+            "type": "integer",
+            "description": "住几晚，默认 1（保持每晚价可比）"
+          },
+          "days": {
+            "type": "integer",
+            "description": "action=sweep 时扫多少天，默认 30"
+          },
+          "adults": {
+            "type": "integer",
+            "description": "入住人数，默认 2"
+          },
+          "rooms": {
+            "type": "integer",
+            "description": "几间房，默认 1"
+          },
+          "currency": {
+            "type": "string",
+            "description": "币种，默认 CNY"
+          },
+          "region": {
+            "type": "string",
+            "description": "Google 地区码，默认 jp。查日本以外要改，如 kr/th/us"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "google",
+                "booking"
+              ]
+            },
+            "description": "数据源，默认两个都用；只要快可以只给 ['google'](零依赖不开浏览器)"
+          },
+          "top": {
+            "type": "integer",
+            "description": "显示几条，默认 20"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "md",
+              "json"
+            ],
+            "description": "输出格式，默认 md(省 token 且易读)；需要逐字段处理时用 json"
+          },
+          "no_record": {
+            "type": "boolean",
+            "description": "不把本次结果写进价格历史库。只是随手查一次就传 true；想让 trend 以后有数据可看就别传"
+          }
+        },
+        "additionalProperties": false
+      },
+      "timeout_seconds": 300,
+      "always_loaded": false,
+      "load_policy": "group",
+      "groups": [
+        "research"
+      ]
+    },
+    {
+      "id": "xhs_search",
+      "display_name": "小红书搜索",
+      "description": "检索小红书(RED)笔记。**query 传关键词就是搜索，传笔记链接就是看正文**，action 可以不传。搜索返回标题/作者/点赞/收藏/评论数/链接，不含正文(避免塞爆上下文)——想看正文就把返回的 url 再传一次；sort 可选 综合/最新/最多点赞/最多评论/最多收藏，type 可选 全部/视频/图文。传链接时返回正文、标签、图片，limit>0 时一并返回评论。\n\n评论区常比正文更有料(真实体验、价格、避雷)，而**楼中楼比主楼更有料**：小红书的问答几乎全发生在楼中楼里——主楼是「求名字」「多少钱」，博主的回答在该条评论的 replies 数组里。所以读评论时务必连 replies 一起读，只看主楼会得到一堆没有答案的提问。\n\n重要，报结论前先看这几个字段：\n· warnings —— 有内容就说明结果有折扣，照着它说的调整或向用户说明，别当没看见。\n· degraded / sort / sort_requested —— sort 和 type 返回的是**实际生效值**。站点改版时筛选可能点不动而悄悄退回综合排序，此时 degraded=true，别再把第一条当成「点赞最多」的那条。\n· truncated —— true 表示抓到一半被限频截断，返回的是残缺结果，不能据此判断「就这么多」，隔一阵再试。\n· comments_count 是站点口径(含楼中楼)，跟 comments_returned + replies_returned 对不上是正常的，不是抓漏了；真要更多就加大 limit，comments_has_more=false 说明已经到底。\n\naction=status 查登录态。小红书搜索接口强制登录，必须先在桌面运行 `xhs-search login` 扫码登录一次(终端直接出二维码)，登录态之后自动续期。一次调用约 10-30 秒(要开真实浏览器)，且搜索有账号级日频上限，别做无谓的重复搜索。参数名/sort/type 拼错会直接报错而不是静默用默认值。出错时返回 error 与 fix 字段，把 fix 的内容告诉用户即可，用户会自行处理。",
+      "path": "xhs-search",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "关键词(如 '手冲咖啡')就是搜索；笔记链接(形如 https://www.xiaohongshu.com/explore/xxx?xsec_token=...)就是看正文。用搜索结果里返回的 url 最稳妥——它带了必需的 xsec_token。action=status 时不用给"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "search",
+              "note",
+              "status"
+            ],
+            "description": "通常不用传：按 query 是关键词还是链接自动判断。只有查登录态时才需要显式传 status"
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "综合",
+              "最新",
+              "最多点赞",
+              "最多评论",
+              "最多收藏"
+            ],
+            "description": "仅 action=search 有效，默认综合"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "全部",
+              "视频",
+              "图文"
+            ],
+            "description": "仅 action=search 有效，默认全部"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "搜索: 结果条数(1-100，默认20)；看正文: 主楼评论条数(0-100，默认0 即不取评论)。注意这个数只管主楼，每条主楼的楼中楼回复会一并返回、不占这个额度"
+          }
+        },
+        "additionalProperties": false
+      },
+      "timeout_seconds": 300,
+      "always_loaded": false,
+      "load_policy": "group",
+      "groups": [
+        "research",
+        "shopping"
+      ]
+    },
+    {
+      "id": "zhihu_search",
+      "display_name": "知乎搜索",
+      "description": "检索中文问答平台——知乎。",
+      "path": "zhihu-search",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "关键词，或知乎链接，或纯数字问题 id"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "搜索结果条数(1-50，默认10)；query 是问题时表示取几条回答(1-20，默认5)"
+          },
+          "full": {
+            "type": "boolean",
+            "description": "搜索时是否连正文一起返回。默认在 limit<=5 时自动为 true。设 false 可强制只要摘要"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "md",
+              "json"
+            ],
+            "description": "输出格式，默认 md(省 token 且易读)；需要逐字段处理时用 json"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "general",
+              "answer",
+              "article",
+              "people",
+              "video"
+            ],
+            "description": "搜索范围，默认 general(综合)。找人用 people"
+          },
+          "max_chars": {
+            "type": "integer",
+            "description": "每条正文最大字数。默认单条取全文 8000、多条 3000"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "search",
+              "question",
+              "answer",
+              "article",
+              "doctor"
+            ],
+            "description": "通常不用给——脚本按 query 自动判断。仅在需要强制(如把链接当关键词搜)或自检(doctor)时使用"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "timeout_seconds": 300,
+      "always_loaded": false,
+      "load_policy": "group",
+      "groups": [
+        "research"
       ]
     }
   ]
