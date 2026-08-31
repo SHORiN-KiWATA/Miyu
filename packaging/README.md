@@ -7,6 +7,21 @@
   `miyu-<版本>-<rel>-x86_64.pkg.tar.zst`，上传到 GitHub Release
 - `arch/miyu/` — AUR 二进制包装包（下载上述 Release 资产 + Noto 字体），
   AUR `miyu` 的真相源
+- `freebsd/miyu/` — FreeBSD port（`deskutils/miyu`）。首次使用需在
+  FreeBSD 机器上 `make makesum` 生成 distinfo（含 524 个 crate 的校验和），
+  之后 `make install`。系统资产装到 `/usr/local/share/miyu/`，运行时由
+  `src/paths.rs` 的 `system_share_dir()` 按平台前缀解析，亦可用
+  `MIYU_SYSTEM_PREFIX` 覆盖
+
+## FreeBSD 移植说明
+
+- 源码本身对非 Linux/macOS 的 Unix 已有回退路径（进程存活检测走
+  `kill(pid, 0)`，剪贴板/通知走外部命令），`cargo check
+  --target x86_64-unknown-freebsd` 可零警告通过
+- 音频（rodio → cpal）只有 ALSA 后端，依赖 FreeBSD 的
+  `audio/alsa-lib` 移植（其会把 ALSA 调用翻译到 OSS `/dev/dsp`）
+- 技能的原子目录交换（Linux `renameat2` RENAME_EXCHANGE / macOS
+  `renameatx_np`）在 FreeBSD 上退化为带回滚的非原子 rename 交换
 
 ## 发布流程（Arch）
 

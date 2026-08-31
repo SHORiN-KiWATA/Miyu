@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::i18n::text as t;
-use crate::paths::MiyuPaths;
+use crate::paths::{system_share_dir, MiyuPaths};
 use crate::tools::knowledge_base::KnowledgeBase;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -225,7 +225,7 @@ fn import_snapshot(
 fn default_kb_source_dir() -> PathBuf {
     std::env::var_os("MIYU_DEFAULT_KB_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/default-kb"))
+        .unwrap_or_else(|| system_share_dir().join("default-kb"))
 }
 
 fn state_file(paths: &MiyuPaths) -> PathBuf {

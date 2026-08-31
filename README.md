@@ -59,6 +59,27 @@ miyu config
   yay -S miyu
   ```
 
+- FreeBSD
+
+  使用 `packaging/freebsd/miyu` 中的 port 构建（首次需在 FreeBSD 机器上
+  运行 `make makesum` 生成校验和）：
+
+  ```
+  cd packaging/freebsd/miyu
+  make makesum && make install
+  ```
+
+  或手动从源码构建。需要先安装 Rust 1.89+ 以及依赖：
+  `pkg install rust alsa-lib ripgrep chafa`
+  （音频播放走 rodio → cpal 的 ALSA 后端，FreeBSD 上由 `audio/alsa-lib`
+  翻译到 OSS）。然后：
+
+  ```
+  git clone https://github.com/SHORiN-KiWATA/Miyu.git
+  cd Miyu
+  cargo build --release
+  ```
+
 - 从源码构建
 
   ```
