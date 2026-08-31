@@ -1,4 +1,4 @@
-use super::{require_ai_confirmation, PlatformPlugin, PlatformTurnInput, PluginDescriptor};
+use super::{PlatformPlugin, PlatformTurnInput, PluginDescriptor};
 use crate::config::QqMessageRecallPluginSettings;
 use crate::platforms::{
     ConversationKind, OutboundMessage, PlatformInboundEvent, PlatformInboundEventKind,
@@ -137,7 +137,7 @@ impl MessageRecallPlugin {
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
                 let raw = self
-                    .withdraw_one(context.clone(), &args, Some(id.clone()), true)
+                    .withdraw_one(context.clone(), &args, Some(id.clone()))
                     .await?;
                 let item: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
                 if !item
@@ -159,24 +159,23 @@ impl MessageRecallPlugin {
             })
             .to_string());
         }
-        self.withdraw_one(context, &args, None, false).await
+        self.withdraw_one(context, &args, None).await
     }
 
-    /// 单条撤回。`forced_id`=批量路径逐条指定的目标(跳过回复定向);
-    /// `in_batch`=批量内不走他人消息的确认流(逐条 token 无法批处理),
-    /// 提示模型单独撤。
+    /// 单条撤回。`forced_id`=批量路径逐条指定的目标,它会压过回复定向;
+    /// 不传则退回"显式参数 → 回复目标"的老规矩。
+    /// 撤他人消息只看两件事:必须是群、且 Miyu 是该群管理员。不再做二次确认。
     async fn withdraw_one(
         &self,
         context: Arc<PlatformTurnContext>,
         args: &Value,
         forced_id: Option<String>,
-        in_batch: bool,
     ) -> Result<String> {
         let explicit = match forced_id {
-            Some(id) => Some(id),
+            Some(_) => None,
             None => explicit_id(args)?,
         };
-        let target = match select_target(explicit, reply_id(&context)) {
+        let target = match resolve_target(forced_id, explicit, reply_id(&context)) {
             Ok(target) => target,
             Err(error) => {
                 return failure_response(
@@ -255,27 +254,6 @@ impl MessageRecallPlugin {
                     json!({ "message_id": id }),
                 );
             }
-            if in_batch {
-                return failure_response(
-                    "confirmation_required",
-                    false,
-                    "批量撤回只支持 Miyu 自己的消息；他人消息需要单独撤回并走确认流程。",
-                    json!({ "message_id": id }),
-                );
-            }
-            if let Some(prompt) = require_ai_confirmation(
-                &context,
-                "qq_withdraw_message",
-                &json!({
-                    "message_id": id,
-                    "reason": reason.clone(),
-                    "target_source": target.source.as_str(),
-                }),
-            )
-            .await?
-            {
-                return Ok(prompt);
-            }
         }
         if let Err(error) = context.delete_message(id).await {
             if self.recorded_recalled(&context, id) {
@@ -348,7 +326,7 @@ impl PlatformPlugin for MessageRecallPlugin {
         registry.register(
             ToolSpec::new(
                 "qq_withdraw_message",
-                "Recall QQ messages in the current conversation. If the current user message replies to a target, omit message_id and the trusted reply target is used. Without a reply, message_id is required; pass message_ids to withdraw several own messages in one call. Never guess a recent message and never retry with another target after a failure.",
+                "Recall QQ messages in the current conversation. Works on your own messages and, in a group where you are an admin, on other people's. If the current user message replies to a target, omit message_id and the trusted reply target is used. Otherwise pass message_id, or message_ids to withdraw several at once — ids come from the [msg=...] marker on each history line. Explicit ids in message_ids are used as given and are not overridden by the reply target. Never guess a recent message and never retry with another target after a failure.",
                 schema(),
                 move |args| {
                     let plugin = plugin.clone();
@@ -373,7 +351,7 @@ impl PlatformPlugin for MessageRecallPlugin {
                 return Ok(());
             }
             input.system_context.push(
-                "<qq-recall-rule>Withdraw messages with qq_withdraw_message. When the current message replies to a target, omit message_id and the trusted reply target is used. Without a reply, an explicit message_id is required; several own messages go in one call via message_ids. Phrases like \"that message\" cannot identify a target; ask the user to reply to it. After a failure, never withdraw a different message and never claim success.</qq-recall-rule>"
+                "<qq-recall-rule>Withdraw messages with qq_withdraw_message. It covers your own messages and, in a group where you are an admin, other people's. When the current message replies to a target, omit message_id and the trusted reply target is used. Otherwise pass an explicit message_id, or message_ids for several at once; every history line carries its id in the [msg=...] marker, so several messages from one person can be withdrawn in a single call. Phrases like \"that message\" with no id and no reply cannot identify a target; ask the user to reply to it. After a failure, never withdraw a different message and never claim success.</qq-recall-rule>"
                     .to_string(),
             );
             Ok(())
@@ -520,10 +498,9 @@ fn schema() -> Value {
             "message_ids": {
                 "type": "array",
                 "items": { "type": ["string", "integer"] },
-                "description": "Withdraw several messages in one call (at most 20, own messages only). Overrides message_id and the reply target."
+                "description": "Withdraw several messages in one call (at most 20). Each id is used exactly as given: this overrides both message_id and the reply target. Ids come from the [msg=...] marker on history lines."
             },
             "reason": { "type": "string", "maxLength": 500 }
-            ,"confirmation_token": { "type": "string" }
         },
         "additionalProperties": false
     })
@@ -586,6 +563,23 @@ fn reply_id(context: &PlatformTurnContext) -> Option<String> {
         .inbound_event()
         .and_then(|event| event.reply_to_message_id.clone())
         .filter(|id| !id.is_empty())
+}
+
+/// 批量逐条指定的 `forced_id` 必须压过回复定向:否则当前消息只要带引用,
+/// 一批 N 个 id 会被回复目标全部覆盖 —— 表现为"同一条消息撤了 N 次"。
+/// 没有 `forced_id` 时维持原规矩(见 `select_target`)。
+fn resolve_target(
+    forced_id: Option<String>,
+    explicit: Option<String>,
+    reply: Option<String>,
+) -> Result<RecallTarget> {
+    if let Some(message_id) = forced_id {
+        return Ok(RecallTarget {
+            message_id,
+            source: TargetSource::Argument,
+        });
+    }
+    select_target(explicit, reply)
 }
 
 fn select_target(explicit: Option<String>, reply: Option<String>) -> Result<RecallTarget> {
@@ -743,6 +737,27 @@ mod tests {
 
         let target = select_target(None, Some("quoted-target-id".to_string())).unwrap();
         assert_eq!(target.message_id, "quoted-target-id");
+        assert_eq!(target.source, TargetSource::Reply);
+    }
+
+    #[test]
+    fn batch_ids_are_not_hijacked_by_the_reply_target() {
+        // 回归:曾经批量路径也走回复定向,当前消息带引用时,传进去的每个 id
+        // 都被回复目标顶掉 —— 一批 20 条撤的全是被引用的那一条。
+        for id in ["batch-1", "batch-2"] {
+            let target = resolve_target(
+                Some(id.to_string()),
+                None,
+                Some("quoted-target-id".to_string()),
+            )
+            .unwrap();
+            assert_eq!(target.message_id, id);
+            assert_eq!(target.source, TargetSource::Argument);
+        }
+        // 非批量仍旧由引用说了算
+        let target = resolve_target(None, Some("model-guess".to_string()), Some("quoted".into()))
+            .unwrap();
+        assert_eq!(target.message_id, "quoted");
         assert_eq!(target.source, TargetSource::Reply);
     }
 
