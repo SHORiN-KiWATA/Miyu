@@ -392,14 +392,19 @@ impl GroupManagementPlugin {
         );
         let mut bridge_error = None;
         if let Err(error) = context.set_group_kick(user_id, blacklist).await {
-            // NapCat reports a successful kick as `status=failed, retcode=100,
-            // detail=kick member failed: <protobuf>` — and that protobuf starts
-            // `08 00`, field 1 varint 0, the platform's own success code. The
-            // member really is gone; only the envelope says otherwise. Asking
-            // the server who is in the group settles it without having to
-            // pattern-match a bridge's error text, and a genuine failure (an
-            // unresolvable UIN, missing permission) still leaves the member in
-            // place and is still reported as a failure.
+            // NapCat 违反 OneBot v11:踢成功了照样返回
+            // `status=failed, retcode=100, detail=kick member failed: u_<uid>`。
+            // 规范要求成功是 status=ok/retcode=0,所以调用方只能判失败——
+            // 它把底层 QQ 抛的异常直接冒泡了(NapCat 源码 SetGroupKick._handle
+            // 调 GroupApi.kickMember 后不接异常)。
+            //
+            // 08-30 更正:这里原先写着"detail 是 protobuf、开头 08 00 是平台的
+            // 成功码"——那是错的。把 `u_` 后面那段 base64url 解出来是 16 字节
+            // 随机 UID(NapCat 的内部 uid 格式),不是 protobuf,也没有 08 00。
+            // 整套核验当初就建立在这个误判上。
+            //
+            // 所以判成败只能靠事实:问服务器这个人还在不在群里。真失败(UIN 解
+            // 析不出、没权限)时成员仍在,照样报失败。
             // 08-24 追加、08-25 二版:成员表是最终一致的,snowluma 的缓存滞后
             // 实测可超 5 秒——轮询成员表会把真成功误判成失败(批量踢人实录)。
             // 权威判据换成 group_decrease 通知台账(踢成功 1-2 秒内必达),
@@ -635,6 +640,23 @@ impl PlatformPlugin for Arc<GroupManagementPlugin> {
         event: &'a PlatformInboundEvent,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            // 事实簿记必须先于"自己干的不重复记"那道早退:谁离开了群跟谁动的手
+            // 无关,而踢人核验的权威判据正是这份台账。
+            //
+            // 08-30 取证:Miyu 自己踢人时 operator_id 就是她自己,整条
+            // group_decrease 通知在下面那行被丢掉,台账永远拿不到数据。于是
+            // kick_one 的核验轮询 6 次全落空、退到成员表兜底,而 NapCat 那边
+            // 成员缓存还没刷新——核验判"人还在",报出假失败。核验是 08-24 加
+            // 的,写了两版,但从上线起就没有可能生效过,因为它唯一的数据源被这
+            // 行早退掐死了。
+            if event.kind == PlatformInboundEventKind::GroupDecrease {
+                context.forget_group_member(&event.sender_id);
+                crate::platforms::activity::record_group_removal(
+                    &context.conversation.scope_key(),
+                    &event.sender_id,
+                );
+            }
+            // 审计日志才需要这道闸:自己干的事工具已经记过,通知再记一遍是重复。
             if event.operator_id.as_deref() == Some(context.conversation.account_id.as_str()) {
                 return Ok(());
             }
@@ -675,15 +697,7 @@ impl PlatformPlugin for Arc<GroupManagementPlugin> {
                     .await?;
                 }
                 PlatformInboundEventKind::GroupDecrease => {
-                    // Whoever left is gone regardless of how: drop them from
-                    // the per-turn roster cache so a later kick/mute in this
-                    // same turn cannot validate against a stale entry.
-                    context.forget_group_member(&event.sender_id);
-                    // 移除台账:踢人核验的权威判据(成员表缓存滞后时靠它定成败)。
-                    crate::platforms::activity::record_group_removal(
-                        &context.conversation.scope_key(),
-                        &event.sender_id,
-                    );
+                    // 成员缓存与移除台账已在上面(早退之前)登记过。
                     if event.notice_sub_type.as_deref() != Some("kick") {
                         return Ok(());
                     }
@@ -917,5 +931,138 @@ mod tests {
         assert_eq!(response["success"], false);
         assert_eq!(response["operation_succeeded"], false);
         assert_eq!(response["do_not_retry"], false);
+    }
+}
+
+#[cfg(test)]
+mod removal_ledger_tests {
+    use super::*;
+    use crate::paths::MiyuPaths;
+    use crate::platforms::{PlatformAdapter, PlatformConversation, PlatformTurnContext};
+    use crate::state::StateStore;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    struct NoopAdapter;
+
+    impl PlatformAdapter for NoopAdapter {
+        fn send<'a>(
+            &'a self,
+            _message: crate::platforms::OutboundMessage,
+        ) -> futures_util::future::BoxFuture<'a, Result<crate::platforms::SendReceipt>> {
+            Box::pin(async { Ok(crate::platforms::SendReceipt::default()) })
+        }
+
+        fn bot_display_name<'a>(&'a self) -> futures_util::future::BoxFuture<'a, Result<String>> {
+            Box::pin(async { Ok("Miyu".to_string()) })
+        }
+    }
+
+    fn group_context(root: &std::path::Path) -> PlatformTurnContext {
+        let paths = MiyuPaths {
+            root_dir: root.to_path_buf(),
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("fish"),
+            bash_hook_file: root.join("bash"),
+            zsh_hook_file: root.join("zsh"),
+            scripts_dir: root.join("scripts"),
+            system_scripts_dir: root.join("system-scripts"),
+        };
+        // 台账是进程级全局表,同一个会话 id 会串扰。
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        PlatformTurnContext::new(
+            PlatformConversation {
+                platform: "onebot".to_string(),
+                account_id: "10000".to_string(),
+                kind: ConversationKind::Group,
+                conversation_id: format!("9000{}", NEXT.fetch_add(1, AtomicOrdering::Relaxed)),
+            },
+            "20000".to_string(),
+            "tester".to_string(),
+            false,
+            crate::config::AppConfig::default(),
+            paths.clone(),
+            StateStore::new(&paths).unwrap(),
+            Arc::new(NoopAdapter),
+            Arc::new(crate::platforms::plugins::PlatformPluginRegistry::default()),
+        )
+    }
+
+    fn decrease_event(
+        conversation: &PlatformConversation,
+        user_id: &str,
+        operator_id: &str,
+    ) -> PlatformInboundEvent {
+        PlatformInboundEvent {
+            kind: PlatformInboundEventKind::GroupDecrease,
+            conversation: conversation.clone(),
+            conversation_display_name: None,
+            message_id: String::new(),
+            sender_id: user_id.to_string(),
+            sender_display_name: "被踢的人".to_string(),
+            operator_id: Some(operator_id.to_string()),
+            timestamp: 0,
+            received_at: std::time::Instant::now(),
+            message_position: None,
+            ingress_order: None,
+            text: String::new(),
+            reply_to_message_id: None,
+            replied_message: None,
+            mentioned_user_ids: Vec::new(),
+            mentioned_users: Vec::new(),
+            mentioned_bot: false,
+            media: Vec::new(),
+            notice_sub_type: Some("kick".to_string()),
+            duration_seconds: None,
+        }
+    }
+
+    /// Miyu 自己踢人时,移除台账也必须记上。
+    ///
+    /// 台账是踢人核验唯一的权威判据:NapCat 踢成功也返回
+    /// `status=failed, retcode=100`(违反 OneBot v11),核验靠"这个人还在不在群
+    /// 里"来定成败。而 `observe_inbound` 开头有一道「自己干的不重复记审计」的
+    /// 早退,它同时把事实簿记一起挡了——于是核验在**唯一需要它的场景**下永远
+    /// 拿不到数据,三次真实踢人全部报出假失败(08-30 取证)。
+    #[tokio::test]
+    async fn a_self_operated_kick_still_lands_in_the_removal_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = group_context(temp.path());
+        let scope = context.conversation.scope_key();
+        let plugin = Arc::new(GroupManagementPlugin::new());
+
+        assert!(!crate::platforms::activity::recent_group_removal(
+            &scope, "70001"
+        ));
+
+        // operator == 机器人自己:正是 Miyu 执行踢人时收到的那种通知。
+        let event = decrease_event(&context.conversation, "70001", "10000");
+        plugin.observe_inbound(&context, &event).await.unwrap();
+
+        assert!(
+            crate::platforms::activity::recent_group_removal(&scope, "70001"),
+            "自己踢的人没有进移除台账，踢人核验会一直判假失败"
+        );
+    }
+
+    /// 别人踢的照样要记——这条原来就是对的，防止上面的改动只治了一半。
+    #[tokio::test]
+    async fn a_kick_by_someone_else_also_lands_in_the_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = group_context(temp.path());
+        let scope = context.conversation.scope_key();
+        let plugin = Arc::new(GroupManagementPlugin::new());
+
+        let event = decrease_event(&context.conversation, "70002", "30000");
+        let _ = plugin.observe_inbound(&context, &event).await;
+
+        assert!(crate::platforms::activity::recent_group_removal(
+            &scope, "70002"
+        ));
     }
 }
