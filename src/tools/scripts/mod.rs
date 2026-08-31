@@ -24,7 +24,7 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
     ];
     match scan_scripts(&dirs) {
         Ok(scan) => {
-            let specs = script_specs(&scan.entries, &paths.scripts_dir);
+            let specs = script_specs(&scan.entries, &paths.scripts_dir, &paths.cache_dir);
             if let Err(error) = registry.replace_script_tools(specs, scan.unregistered) {
                 tracing::warn!(error = %error, "failed to register Miyu script tools");
             }
@@ -39,6 +39,7 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
 async fn run_script(
     path_str: &str,
     scripts_dir: &Path,
+    cache_dir: &Path,
     args: &Value,
     timeout_secs: u64,
 ) -> Result<String> {
@@ -59,6 +60,11 @@ async fn run_script(
     };
 
     let mut command = Command::new(&script_path);
+    // 脚本的中间产物(登录 profile、会话快照、查询票据、二维码图)统一收进
+    // Miyu 自己的缓存目录,`miyu wipe` 清 ~/.miyu 时一并带走,不在用户的
+    // ~/.cache 下散落一堆。脚本单独拿到终端跑时这个变量不存在,退回 XDG
+    // 默认——两种用法各自有各自的登录态,互不覆盖。
+    command.env("MIYU_SCRIPT_CACHE_DIR", cache_dir);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());

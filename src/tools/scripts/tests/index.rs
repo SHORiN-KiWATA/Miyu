@@ -288,7 +288,7 @@ fn scan_drives_top_level_and_available_script_visibility() {
     .unwrap();
 
     let scan = scan_scripts(&[scripts_dir]).unwrap();
-    let specs = script_specs(&scan.entries, scripts_dir);
+    let specs = script_specs(&scan.entries, scripts_dir, scripts_dir);
     let mut registry = ToolRegistry::new();
     crate::tools::load_tools::register(&mut registry);
     registry

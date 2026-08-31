@@ -15,7 +15,7 @@ fn explicit_schema_defaults_to_lazy_loading() {
         load_policy: LoadPolicy::Summary,
         groups: Vec::new(),
     };
-    let spec = entry_to_spec(&entry, Path::new(".")).unwrap();
+    let spec = entry_to_spec(&entry, Path::new("."), Path::new(".")).unwrap();
     assert!(!spec.always_loaded);
     assert!(spec.is_script);
 }
@@ -110,4 +110,44 @@ fn make_executable_sets_x_bit() {
     make_executable(&script).unwrap();
     let perms = std::fs::metadata(&script).unwrap().permissions();
     assert_ne!(perms.mode() & 0o111, 0);
+}
+
+/// 脚本跑起来时必须带上 `MIYU_SCRIPT_CACHE_DIR`,指向 Miyu 自己的缓存目录。
+///
+/// 中间产物(登录 profile、会话快照、查询票据、二维码图)不该散落在用户的
+/// ~/.cache 下——`miyu wipe` 清 ~/.miyu 时应当一并带走。脚本单独在终端跑时
+/// 这个变量不存在,退回 XDG 默认。
+#[tokio::test]
+async fn a_script_run_points_the_cache_at_miyu() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path().join("scripts");
+    let cache_dir = temp.path().join("cache");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+
+    let script = scripts_dir.join("echo-cache");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s' \"$MIYU_SCRIPT_CACHE_DIR\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = super::super::run_script(
+        "echo-cache",
+        &scripts_dir,
+        &cache_dir,
+        &serde_json::json!({}),
+        30,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        out.contains(cache_dir.to_str().unwrap()),
+        "脚本没拿到 Miyu 的缓存目录：{out}"
+    );
 }

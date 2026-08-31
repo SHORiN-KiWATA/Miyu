@@ -11,3 +11,7 @@
 *.part
 *.old
 .claude
+
+# Python 脚本跑过就会生成，不进仓库
+__pycache__/
+*.pyc

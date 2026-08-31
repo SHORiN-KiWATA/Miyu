@@ -78,16 +78,20 @@ pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
             return;
         }
     };
-    let specs = script_specs(&scan.entries, &paths.scripts_dir);
+    let specs = script_specs(&scan.entries, &paths.scripts_dir, &paths.cache_dir);
     if let Err(error) = registry.replace_script_tools(specs, scan.unregistered) {
         tracing::warn!(error = %error, "failed to replace Miyu script tools");
     }
 }
 
-pub(crate) fn script_specs(entries: &[ScriptEntry], scripts_dir: &Path) -> Vec<ToolSpec> {
+pub(crate) fn script_specs(
+    entries: &[ScriptEntry],
+    scripts_dir: &Path,
+    cache_dir: &Path,
+) -> Vec<ToolSpec> {
     entries
         .iter()
-        .filter_map(|entry| entry_to_spec(entry, scripts_dir).ok())
+        .filter_map(|entry| entry_to_spec(entry, scripts_dir, cache_dir).ok())
         .collect()
 }
 
@@ -445,7 +449,11 @@ pub(crate) fn split_display_name_line(line: &str) -> Option<(DisplayNameKey, &st
     None
 }
 
-pub(crate) fn entry_to_spec(entry: &ScriptEntry, scripts_dir: &Path) -> Result<ToolSpec> {
+pub(crate) fn entry_to_spec(
+    entry: &ScriptEntry,
+    scripts_dir: &Path,
+    cache_dir: &Path,
+) -> Result<ToolSpec> {
     let id = entry.id.clone();
     if id.is_empty() {
         bail!("script id is empty");
@@ -482,11 +490,13 @@ pub(crate) fn entry_to_spec(entry: &ScriptEntry, scripts_dir: &Path) -> Result<T
         .min(300);
     let path_str = entry.path.clone();
     let scripts_dir = scripts_dir.to_path_buf();
+    let cache_dir = cache_dir.to_path_buf();
 
     let spec = ToolSpec::new(id, description, parameters, move |args| {
         let path_str = path_str.clone();
         let scripts_dir = scripts_dir.clone();
-        async move { run_script(&path_str, &scripts_dir, &args, timeout).await }
+        let cache_dir = cache_dir.clone();
+        async move { run_script(&path_str, &scripts_dir, &cache_dir, &args, timeout).await }
     })
     .writes()
     .with_display_name(display_name)

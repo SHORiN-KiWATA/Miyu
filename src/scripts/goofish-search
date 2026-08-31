@@ -32,8 +32,36 @@ APP_KEY = "34839810"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "goofish")
+# 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu(或运维)把所有脚本的中间产物
+# 集中到一处;不设时退回 XDG 默认,脚本单独拿去用也不会往奇怪的地方写。
+#
+# 08-30 之前这里写死 ~/.local/share/goofish:变量名叫 CACHE_DIR 却指向数据
+# 目录,而且既不认 XDG_CACHE_HOME 也没有工具名前缀。会话快照和查询票据都是
+# 可再生的中间产物,该在缓存里。
+CACHE_DIR = os.path.join(
+    os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
+    "goofish-search")
+LEGACY_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "goofish")
 SESSION_PATH = os.path.join(CACHE_DIR, "session.json")
+
+
+def migrate_legacy_cache():
+    """把旧的 ~/.local/share/goofish 搬到缓存目录。
+
+    只在用默认路径、且新位置还不存在时做一次——会话快照过期只是重新初始化,
+    但监控票据丢了就是真丢了。
+    """
+    if os.environ.get("MIYU_SCRIPT_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME"):
+        return
+    if os.path.isdir(CACHE_DIR) or not os.path.isdir(LEGACY_CACHE_DIR):
+        return
+    try:
+        os.makedirs(os.path.dirname(CACHE_DIR), exist_ok=True)
+        shutil.move(LEGACY_CACHE_DIR, CACHE_DIR)
+    except Exception:
+        pass  # 搬不动就用新目录从头来,不该因为搬家失败卡住整个脚本
 SESSION_TTL = 25 * 60  # 会话快照有效期
 COOLDOWN = 180  # RGV587 冷却秒数
 SEARCH_API = "mtop.taobao.idlemtopsearch.pc.search"
@@ -596,6 +624,7 @@ KNOWN_CMDS = {"search", "monitor-init", "monitor-query", "doctor", "setup"}
 
 def main():
     global QUIET
+    migrate_legacy_cache()  # 必须在任何读写缓存之前
     # Miyu script 工具模式: 无参数 + stdin 非终端 → 按 stdin JSON 处理
     if len(sys.argv) == 1 and not sys.stdin.isatty():
         stdin_json_mode()
