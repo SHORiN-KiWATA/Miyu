@@ -8,7 +8,7 @@
 - `arch/miyu/` — AUR 二进制包装包（下载上述 Release 资产 + Noto 字体），
   AUR `miyu` 的真相源
 - `freebsd/miyu/` — FreeBSD port（`deskutils/miyu`）。首次使用需在
-  FreeBSD 机器上 `make makesum` 生成 distinfo（含 524 个 crate 的校验和），
+  FreeBSD 机器上 `make makesum` 生成 distinfo（含 521 个 crate 的校验和），
   之后 `make install`。系统资产装到 `/usr/local/share/miyu/`，运行时由
   `src/paths.rs` 的 `system_share_dir()` 按平台前缀解析，亦可用
   `MIYU_SYSTEM_PREFIX` 覆盖
