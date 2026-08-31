@@ -800,6 +800,13 @@ impl RealContextPlugin {
         // 会在每个主动插话的回合永久多带 ~45 token,只增不减,而
         // `[SystemInfo:` 那个"字节相同就跳过"的去重够不着它。要再做,先解决
         // 恒定块的去重,别直接往这儿加。
+        if let Some(notice) = context
+            .plugin_value(TRIGGER_KEY)
+            .and_then(|value| value.as_str().and_then(TriggerKind::parse))
+            .and_then(probability_reply_notice)
+        {
+            input.turn_system_context.push(notice.to_string());
+        }
         if let Some(warning) = identity_warning(context, settings) {
             input.turn_system_context.push(warning);
         }

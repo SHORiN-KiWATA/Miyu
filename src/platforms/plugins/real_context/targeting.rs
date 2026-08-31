@@ -536,6 +536,30 @@ pub(in crate::platforms::plugins::real_context) fn restore_trigger_decision(
     *decision = fallback.clone();
 }
 
+/// 概率抽中且判官放行的那一轮，给一句注入。
+///
+/// `TRIGGER_KEY == Probability` 严格等价于"概率抽中 + 判官放行"：这个值只在
+/// 判官通过后才写(inject.rs)，覆盖继承那条路写的是 Supersede。所以拿到它就
+/// 意味着**该不该回已经判过了，答案是回**。
+///
+/// 08-31 用户点名：她在这种回合里反复说「没提到我 不用回」——判官刚判定该回，
+/// 她自己又推翻一遍；而会话历史里已经攒了十几条同样的话，她在照抄自己。
+///
+/// 模型可见面恒英文(与其它 `<qq-*>` 块一致)。原话是中文的
+/// 「即使该消息没有艾特你，也回复一条符合上下文、符合当前聊天氛围、符合话题
+/// 走向的消息」，翻译时让步结构原样保留。
+///
+/// 措辞是让步句，不是孤立陈述。08-29 第一版写的是 `Nobody called you this
+/// turn`——把"没被点名"作为一个事实单独摆出来、让她自己得结论，实测她原话回
+/// 「没被艾特不接（笑）」。让步句把结论堵死：承认没艾特，紧接着要求照样回。
+pub(in crate::platforms::plugins::real_context) fn probability_reply_notice(
+    trigger: TriggerKind,
+) -> Option<&'static str> {
+    matches!(trigger, TriggerKind::Probability).then_some(
+        "<qq-join-in>Even though this message does not @-mention you, still reply with one message that fits the context, the mood of the room and where the topic is heading.</qq-join-in>",
+    )
+}
+
 pub(in crate::platforms::plugins::real_context) fn identity_warning(
     context: &PlatformTurnContext,
     settings: &RealContextPluginSettings,

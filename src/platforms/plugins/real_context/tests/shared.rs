@@ -175,3 +175,14 @@ impl PlatformAdapter for ReactionAdapter {
         })
     }
 }
+
+pub(super) fn empty_turn_input() -> PlatformTurnInput {
+    PlatformTurnInput {
+        content: "当前输入".to_string(),
+        memory_content: "当前输入".to_string(),
+        system_context: Vec::new(),
+        turn_system_context: Vec::new(),
+        context_images: Vec::new(),
+        context_files: Vec::new(),
+    }
+}

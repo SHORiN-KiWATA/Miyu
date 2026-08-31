@@ -389,3 +389,61 @@ async fn an_exhausted_reply_quota_still_records_the_trigger() {
         Some(TriggerKind::Direct),
     );
 }
+
+/// 只有"概率抽中且判官放行"的回合才注入,其余触发一律不给。
+///
+/// `TRIGGER_KEY == Probability` 只在判官通过后才写,覆盖继承那条路写的是
+/// Supersede——所以这个判据严格等价于"该不该回已经判过了,答案是回"。
+#[tokio::test]
+async fn only_a_judge_approved_probability_turn_gets_the_join_in_notice() {
+    for (trigger, wants) in [
+        (TriggerKind::Probability, true),
+        (TriggerKind::Continuation, false),
+        (TriggerKind::Supersede, false),
+        (TriggerKind::Direct, false),
+        (TriggerKind::Moderation, false),
+    ] {
+        let (_temp, context) = availability_context(BotSendAvailability::Available);
+        context.set_plugin_value(TRIGGER_KEY, Value::String(trigger.as_str().to_string()));
+        let mut input = empty_turn_input();
+        RealContextPlugin::new()
+            .inject_context(&context, &mut input, &RealContextPluginSettings::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            input
+                .turn_system_context
+                .iter()
+                .any(|block| block.starts_with("<qq-join-in>")),
+            wants,
+            "{trigger:?} 的注入有无不符预期"
+        );
+    }
+}
+
+/// 措辞必须是让步句:承认没艾特,紧接着要求照样回。
+///
+/// 08-29 第一版把"没被点名"作为孤立事实单独摆出来
+/// (`Nobody called you this turn`),让她自己得结论——实测她原话回
+/// 「没被艾特不接（笑）」。差别不在提不提,在提完之后有没有把结论堵死。
+#[test]
+fn the_join_in_notice_concedes_and_then_overrides() {
+    let notice = probability_reply_notice(TriggerKind::Probability).unwrap();
+    assert!(
+        notice.contains("Even though this message does not @-mention you"),
+        "缺少让步:{notice}"
+    );
+    assert!(
+        notice.contains("still reply with one message"),
+        "让步之后必须紧跟要求:{notice}"
+    );
+    assert!(
+        notice.contains("the mood of the room"),
+        "要求必须落在读空气上:{notice}"
+    );
+    assert!(
+        notice.is_ascii(),
+        "模型可见面恒英文,与其它 <qq-*> 块一致:{notice}"
+    );
+}
