@@ -29,4 +29,4 @@
 | `/usr/share/miyu/fonts/` | 长回复转图片的渲染字体 | Noto 上游（AUR 包装包下载；发布资产不含字体） | 长文转图静默退化为纯文本 |
 | `/usr/share/miyu/memes/miyu/` | 内置表情库 | `src/memes/miyu/` | 默认人格无内置表情 |
 | `/usr/share/miyu/default-kb/` | 默认知识库 | 本仓库 `kb/` + Shorin Wiki 仓库，运行时 `miyu update-default-kb` 更新 | 默认知识库为空 |
-| `/usr/share/miyu/scripts/` | 系统级脚本 | `src/scripts/` | 无内置脚本 |
+| `/usr/share/miyu/scripts/personas/default/` | 内置脚本（属默认人格 Miyu） | `src/scripts/personas/default/` | 无内置脚本 |

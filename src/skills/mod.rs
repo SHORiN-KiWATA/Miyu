@@ -23,6 +23,11 @@ use yaml_rust2::{Yaml, YamlLoader};
 /// 人格拿到的是纯净状态(09-01)。唯一例外是 `platform_wide=true` 的
 /// skill-creator:它是"如何扩展自己"的元能力,任何人格(包括从白板捏起的)
 /// 想给自己加技能都得用它,归人格等于锁死自定义角色的自我扩展入口。
+///
+/// 源码布局与脚本对齐:平台级(skill-creator)在 `src/skills/` 顶层,人格级在
+/// `src/skills/personas/default/`。技能是 `include_str!` 编译进二进制的,目录
+/// 只是组织形式;运行时门控靠 `platform_wide` 标记,不靠目录(与脚本层用
+/// 目录做隐式门不同——脚本是磁盘扫描,技能是编译常量)。
 const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
     (
         "skill-creator",
@@ -31,12 +36,12 @@ const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
     ),
     (
         "linux-input-method-diagnose",
-        include_str!("../skills/linux-input-method-diagnose.md"),
+        include_str!("../skills/personas/default/linux-input-method-diagnose.md"),
         false,
     ),
     (
         "linux-game-compatibility",
-        include_str!("../skills/linux-game-compatibility.md"),
+        include_str!("../skills/personas/default/linux-game-compatibility.md"),
         false,
     ),
 ];

@@ -165,6 +165,16 @@ impl AppConfig {
         self.persona_scripts_dir(paths, self.prompt.active_persona.trim())
     }
 
+    /// 内置(system)层的当前人格脚本目录。内置脚本装在
+    /// `<system>/personas/<人格>/` 下,自定义人格的子目录不存在=天然拿不到
+    /// 内置——人格门是**隐式**的,与 data 层的 personas/ 约定完全一致。
+    pub fn active_persona_system_scripts_dir(&self, paths: &MiyuPaths) -> PathBuf {
+        paths
+            .system_scripts_dir
+            .join("personas")
+            .join(self.active_persona_scope())
+    }
+
     /// Sanitized scope name of the active persona; also the namespace key for
     /// sessions and per-persona state directories.
     pub fn active_persona_scope(&self) -> String {

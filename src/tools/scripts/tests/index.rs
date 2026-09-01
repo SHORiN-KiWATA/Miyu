@@ -472,37 +472,45 @@ async fn lifecycle_mutations_replace_and_remove_all_same_id_entries() {
     }));
 }
 
-/// 内置脚本默认属于 Miyu 出厂人格:默认人格的扫描目录含内置(system)层,
-/// 自定义人格只剩全局+人格两层——换人格即得纯净(09-01)。覆盖顺序低→高
-/// 保证人格 > 全局 > 内置。
+/// 四层扫描根:内置(system)与全局(data)各含「顶层 + personas/<人格>」。
+/// 内置脚本装在 `<system>/personas/default/`——默认人格解析到该目录,自定义
+/// 人格解析到不存在的 `<system>/personas/alter`,天然拿不到内置(隐式门,
+/// 09-01)。覆盖顺序低→高:内置平台 < 内置人格 < 全局 < 全局人格。
 #[test]
-fn script_scan_dirs_gate_builtins_to_the_default_persona() {
+fn script_scan_roots_resolve_persona_substructure_per_layer() {
     let temp = tempfile::tempdir().unwrap();
     let mut paths = crate::paths::MiyuPaths::new().unwrap();
     paths.system_scripts_dir = temp.path().join("system");
     paths.scripts_dir = temp.path().join("data/scripts");
 
     let default_config = crate::config::AppConfig::default();
-    let persona_dir = default_config.active_persona_scripts_dir(&paths);
-    let dirs = script_scan_dirs(&default_config, &paths, &persona_dir);
+    let roots = script_scan_roots(&default_config, &paths);
     assert_eq!(
-        dirs,
+        roots,
         vec![
-            paths.system_scripts_dir.as_path(),
-            paths.scripts_dir.as_path(),
-            persona_dir.as_path(),
+            paths.system_scripts_dir.clone(),
+            paths.system_scripts_dir.join("personas/default"),
+            paths.scripts_dir.clone(),
+            paths.scripts_dir.join("personas/default"),
         ],
-        "默认人格应含内置层,且顺序低→高"
+        "默认人格:四层,内置人格层解析到 personas/default"
     );
 
     let mut custom = crate::config::AppConfig::default();
     custom.prompt.active_persona = "alter".to_string();
-    let custom_persona_dir = custom.active_persona_scripts_dir(&paths);
-    let custom_dirs = script_scan_dirs(&custom, &paths, &custom_persona_dir);
+    let custom_roots = script_scan_roots(&custom, &paths);
     assert_eq!(
-        custom_dirs,
-        vec![paths.scripts_dir.as_path(), custom_persona_dir.as_path()],
-        "自定义人格不含内置层"
+        custom_roots,
+        vec![
+            paths.system_scripts_dir.clone(),
+            paths.system_scripts_dir.join("personas/alter"),
+            paths.scripts_dir.clone(),
+            paths.scripts_dir.join("personas/alter"),
+        ],
+        "自定义人格:内置人格层指向不存在的 personas/alter,扫不到内置"
     );
-    assert!(custom_persona_dir.ends_with("personas/alter"));
+    // 顶层(平台)两层无论人格都在;差异只在 personas/<人格> 这一维。
+    assert_eq!(roots[0], custom_roots[0]);
+    assert_eq!(roots[2], custom_roots[2]);
+    assert_ne!(roots[1], custom_roots[1]);
 }

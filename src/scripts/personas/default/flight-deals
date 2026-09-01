@@ -1,0 +1,1695 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 显示名称：机票比价
+# 描述：查两地之间的机票价格。给出发地、目的地和日期就出结果，返回按价格排的航班列表（含航司、起降时间、总时长、中转机场与中转时长）。不确定哪天走划算就用 action=sweep 扫一个日期窗口，直接告诉你哪天走哪天回最便宜、比最贵省多少。零依赖，一次查询一秒左右。
+# Description: Look up flight prices between two places. Give origin, destination and dates to get a price-sorted list of itineraries with airline, times, duration and layovers. Use action=sweep to scan a date window and find the cheapest departure/return combination. No dependencies.
+"""
+flight-deals — 机票比价 CLI
+
+Google 航班把航线/日期/舱位/人数编在一个叫 tfs 的参数里(base64url 过的
+protobuf)，自己拼得出来，所以查任意行程只要一条 HTTP 请求，不用开浏览器 ——
+这是本脚本零依赖、且能几秒钟扫完几十个日期组合的前提。
+
+查票只要三样 —— 从哪、到哪、哪天走:
+  flight-deals -f 上海 -t 东京 -d 2026-10-01 -r 2026-10-07
+  flight-deals -f 上海 -t 东京 -d +30                 默认往返，玩 7 天
+  flight-deals -f PVG  -t TYO -d +30 --one-way        单程
+  flight-deals -f 上海 -t 东京 -d +30 --nonstop --seat business
+
+其他功能各是一个动作:
+  flight-deals sweep -f 上海 -t 东京 -w 09-29..10-08 --days 5-7
+                                     国庆窗口里，哪天走哪天回最便宜
+  flight-deals trend -f 上海 -t 东京 这条航线的底价这几天是涨还是跌
+  flight-deals trend                 历史库里攒了哪些航线
+  flight-deals airports 东京         东京有哪些机场、三字码是什么
+  flight-deals doctor                环境自检
+
+参数全具名(airports 的关键词除外)，位置无关；动作省略时默认 search。
+
+出发地和目的地必须显式给出，脚本不猜 —— 猜错了输出看起来完全正常，
+比直接报错危险得多。
+"""
+import argparse
+import ast
+import base64
+import html as _html
+import json
+import os
+import re
+import sqlite3
+import statistics
+import sys
+import unicodedata
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
+
+UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+
+# 缓存根目录。`MIYU_SCRIPT_CACHE_DIR` 让 Miyu(或运维)把所有脚本的产物集中到
+# 一处；不设时退回 XDG 默认，脚本单独拿去用也不会往奇怪的地方写。
+# 跟 hotel-deals 一个规矩：历史库严格说是数据不是中间产物，但一个目录管完更清楚。
+DATA_DIR = os.path.join(
+    os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    or os.environ.get("XDG_CACHE_HOME")
+    or os.path.join(os.path.expanduser("~"), ".cache"),
+    "flight-deals")
+DB_PATH = os.environ.get("FD_DB", os.path.join(DATA_DIR, "history.db"))
+
+SPARK = "▁▂▃▄▅▆▇█"
+SYMBOL = {"CNY": "¥", "JPY": "JP¥", "USD": "$", "EUR": "€", "HKD": "HK$",
+          "KRW": "₩", "GBP": "£", "TWD": "NT$", "SGD": "S$", "AUD": "A$"}
+
+SEATS = {"economy": 1, "premium": 2, "business": 3, "first": 4}
+SEAT_CN = {1: "经济舱", 2: "超级经济舱", 3: "商务舱", 4: "头等舱"}
+TRIP_ROUND, TRIP_ONEWAY = 1, 2
+
+
+class Failed(RuntimeError):
+    """带「下一步」建议的失败。"""
+
+    def __init__(self, msg, hint=""):
+        super().__init__(msg)
+        self.hint = hint
+
+
+# ---------------------------------------------------------------- Google tfs 参数
+
+def _varint(n):
+    out = b""
+    while True:
+        chunk = n & 0x7F
+        n >>= 7
+        out += bytes([chunk | (0x80 if n else 0)])
+        if not n:
+            return out
+
+
+def _tag(field, wire):
+    return _varint((field << 3) | wire)
+
+
+def _uint(field, n):
+    return _tag(field, 0) + _varint(n)
+
+
+def _sub(field, body):
+    return _tag(field, 2) + _varint(len(body)) + body
+
+
+def _pstr(field, text):
+    raw = text.encode()
+    return _tag(field, 2) + _varint(len(raw)) + raw
+
+
+def build_tfs(legs, seat=1, adults=1, children=0, trip=TRIP_ROUND, max_stops=None):
+    """拼出 google.com/travel/flights 的 tfs 参数。
+
+    实测(2026-09)结构::
+
+        3 { 2:<yyyy-mm-dd>  5:<最大经停数>  13{2:<出发机场码>}… 14{2:<到达机场码>}… }
+          每程一段；往返给两段(去程+回程)，顺序即行程顺序
+        9:<舱位 1经济 2超经 3商务 4头等>
+        8:1 每位乘客一个(1成人 2儿童 3占座婴儿 4怀抱婴儿)
+        19:<1往返 2单程>
+
+    最容易踩的坑：机场码在 Airport 消息的 **field 2**，不是 field 1。
+    写成 field 1 时 Google 不报错，而是静默退化成「没指定航线」的落地页 ——
+    HTTP 200、页面正常、结果 0 条。所以 google_search() 必须能分辨
+    「落地页」和「真的没航班」，见那里的 _RESULTS_MARK。
+    """
+    body = b""
+    for day, from_codes, to_codes in legs:
+        leg = _pstr(2, day.isoformat() if hasattr(day, "isoformat") else str(day))
+        if max_stops is not None:
+            leg += _uint(5, max_stops)
+        leg += b"".join(_sub(13, _pstr(2, c)) for c in from_codes)
+        leg += b"".join(_sub(14, _pstr(2, c)) for c in to_codes)
+        body += _sub(3, leg)
+    body += _uint(9, seat)
+    body += b"".join(_uint(8, 1) for _ in range(adults))
+    body += b"".join(_uint(8, 2) for _ in range(children))
+    body += _uint(19, trip)
+    return base64.urlsafe_b64encode(body).decode().rstrip("=")
+
+
+# ---------------------------------------------------------------- 机场表
+
+# 一行一个机场：三字码|机场中文名|机场英文名|城市中文|城市英文|别名(逗号分隔)
+#
+# 这张表只求准，不求全 —— 硬凑数量必然掺进记错的码，而错码的后果是「查了另一
+# 座城市的票，输出完全正常」。表里没有的地方，用户直接写三字码就能用(见
+# resolve())，所以覆盖率不足最多是多打三个字母，不会给出错误答案。
+AIRPORT_TABLE = """
+PEK|首都|Beijing Capital|北京|Beijing|京
+PKX|大兴|Beijing Daxing|北京|Beijing|京
+PVG|浦东|Shanghai Pudong|上海|Shanghai|沪
+SHA|虹桥|Shanghai Hongqiao|上海|Shanghai|沪
+CAN|白云|Guangzhou Baiyun|广州|Guangzhou|穗
+SZX|宝安|Shenzhen Bao'an|深圳|Shenzhen|
+CTU|双流|Chengdu Shuangliu|成都|Chengdu|蓉
+TFU|天府|Chengdu Tianfu|成都|Chengdu|蓉
+CKG|江北|Chongqing Jiangbei|重庆|Chongqing|渝
+XIY|咸阳|Xi'an Xianyang|西安|Xian|
+HGH|萧山|Hangzhou Xiaoshan|杭州|Hangzhou|
+NKG|禄口|Nanjing Lukou|南京|Nanjing|
+WUH|天河|Wuhan Tianhe|武汉|Wuhan|
+CSX|黄花|Changsha Huanghua|长沙|Changsha|
+TAO|胶东|Qingdao Jiaodong|青岛|Qingdao|
+DLC|周水子|Dalian Zhoushuizi|大连|Dalian|
+SHE|桃仙|Shenyang Taoxian|沈阳|Shenyang|
+HRB|太平|Harbin Taiping|哈尔滨|Harbin|
+CGQ|龙嘉|Changchun Longjia|长春|Changchun|
+TSN|滨海|Tianjin Binhai|天津|Tianjin|
+TNA|遥墙|Jinan Yaoqiang|济南|Jinan|
+CGO|新郑|Zhengzhou Xinzheng|郑州|Zhengzhou|
+KMG|长水|Kunming Changshui|昆明|Kunming|
+KWE|龙洞堡|Guiyang Longdongbao|贵阳|Guiyang|
+NNG|吴圩|Nanning Wuxu|南宁|Nanning|
+HAK|美兰|Haikou Meilan|海口|Haikou|
+SYX|凤凰|Sanya Phoenix|三亚|Sanya|
+XMN|高崎|Xiamen Gaoqi|厦门|Xiamen|
+FOC|长乐|Fuzhou Changle|福州|Fuzhou|
+JJN|晋江|Quanzhou Jinjiang|泉州|Quanzhou|
+WNZ|龙湾|Wenzhou Longwan|温州|Wenzhou|
+NGB|栎社|Ningbo Lishe|宁波|Ningbo|
+HFE|新桥|Hefei Xinqiao|合肥|Hefei|
+KHN|昌北|Nanchang Changbei|南昌|Nanchang|
+TYN|武宿|Taiyuan Wusu|太原|Taiyuan|
+SJW|正定|Shijiazhuang Zhengding|石家庄|Shijiazhuang|
+LHW|中川|Lanzhou Zhongchuan|兰州|Lanzhou|
+INC|河东|Yinchuan Hedong|银川|Yinchuan|
+XNN|曹家堡|Xining Caojiabao|西宁|Xining|
+URC|地窝堡|Urumqi Diwopu|乌鲁木齐|Urumqi|
+LXA|贡嘎|Lhasa Gonggar|拉萨|Lhasa|
+HET|白塔|Hohhot Baita|呼和浩特|Hohhot|
+ZUH|金湾|Zhuhai Jinwan|珠海|Zhuhai|
+SWA|潮汕|Jieyang Chaoshan|汕头|Shantou|潮汕,揭阳
+KWL|两江|Guilin Liangjiang|桂林|Guilin|
+LJG|三义|Lijiang Sanyi|丽江|Lijiang|
+DYG|荷花|Zhangjiajie Hehua|张家界|Zhangjiajie|
+WUX|硕放|Wuxi Shuofang|无锡|Wuxi|
+CZX|奔牛|Changzhou Benniu|常州|Changzhou|
+YNT|蓬莱|Yantai Penglai|烟台|Yantai|
+WEH|大水泊|Weihai Dashuibo|威海|Weihai|
+XUZ|观音|Xuzhou Guanyin|徐州|Xuzhou|
+LYA|北郊|Luoyang Beijiao|洛阳|Luoyang|
+MIG|南郊|Mianyang Nanjiao|绵阳|Mianyang|
+ZHA|吴川|Zhanjiang|湛江|Zhanjiang|
+BHY|福成|Beihai Fucheng|北海|Beihai|
+YNJ|朝阳川|Yanji Chaoyangchuan|延吉|Yanji|
+KHG|喀什|Kashgar|喀什|Kashgar|
+DNH|莫高|Dunhuang Mogao|敦煌|Dunhuang|
+JZH|黄龙|Jiuzhaigou Huanglong|九寨沟|Jiuzhaigou|
+HKG|香港国际|Hong Kong|香港|Hong Kong|港,hongkong
+MFM|澳门国际|Macau|澳门|Macau|
+TPE|桃园|Taipei Taoyuan|台北|Taipei|
+TSA|松山|Taipei Songshan|台北|Taipei|
+KHH|小港|Kaohsiung|高雄|Kaohsiung|
+NRT|成田|Tokyo Narita|东京|Tokyo|东京都
+HND|羽田|Tokyo Haneda|东京|Tokyo|东京都
+KIX|关西|Osaka Kansai|大阪|Osaka|
+ITM|伊丹|Osaka Itami|大阪|Osaka|
+NGO|中部|Nagoya Chubu|名古屋|Nagoya|
+FUK|福冈|Fukuoka|福冈|Fukuoka|
+CTS|新千岁|Sapporo New Chitose|札幌|Sapporo|北海道
+OKA|那霸|Okinawa Naha|冲绳|Okinawa|那霸
+HIJ|广岛|Hiroshima|广岛|Hiroshima|
+SDJ|仙台|Sendai|仙台|Sendai|
+KOJ|鹿儿岛|Kagoshima|鹿儿岛|Kagoshima|
+NGS|长崎|Nagasaki|长崎|Nagasaki|
+KMJ|熊本|Kumamoto|熊本|Kumamoto|
+TAK|高松|Takamatsu|高松|Takamatsu|
+HKD|函馆|Hakodate|函馆|Hakodate|
+ICN|仁川|Seoul Incheon|首尔|Seoul|汉城
+GMP|金浦|Seoul Gimpo|首尔|Seoul|汉城
+PUS|金海|Busan Gimhae|釜山|Busan|
+CJU|济州|Jeju|济州|Jeju|济州岛
+TAE|大邱|Daegu|大邱|Daegu|
+BKK|素万那普|Bangkok Suvarnabhumi|曼谷|Bangkok|
+DMK|廊曼|Bangkok Don Mueang|曼谷|Bangkok|
+HKT|普吉|Phuket|普吉|Phuket|普吉岛
+CNX|清迈|Chiang Mai|清迈|Chiang Mai|
+KBV|甲米|Krabi|甲米|Krabi|
+USM|苏梅|Koh Samui|苏梅岛|Koh Samui|
+SIN|樟宜|Singapore Changi|新加坡|Singapore|坡
+KUL|吉隆坡国际|Kuala Lumpur|吉隆坡|Kuala Lumpur|
+PEN|槟城|Penang|槟城|Penang|
+BKI|亚庇|Kota Kinabalu|亚庇|Kota Kinabalu|沙巴
+CGK|苏加诺哈达|Jakarta Soekarno-Hatta|雅加达|Jakarta|
+DPS|伍拉莱|Bali Denpasar|巴厘岛|Bali|巴厘
+MNL|尼诺阿基诺|Manila|马尼拉|Manila|
+CEB|麦克坦|Cebu|宿务|Cebu|
+KLO|卡利博|Kalibo|长滩岛|Boracay|
+HAN|内排|Hanoi Noi Bai|河内|Hanoi|
+SGN|新山一|Ho Chi Minh City|胡志明市|Ho Chi Minh City|西贡
+DAD|岘港|Da Nang|岘港|Da Nang|
+CXR|金兰|Nha Trang Cam Ranh|芽庄|Nha Trang|
+PQC|富国|Phu Quoc|富国岛|Phu Quoc|
+PNH|金边|Phnom Penh|金边|Phnom Penh|
+REP|暹粒|Siem Reap|暹粒|Siem Reap|吴哥
+VTE|瓦岱|Vientiane|万象|Vientiane|
+RGN|仰光|Yangon|仰光|Yangon|
+DEL|英迪拉甘地|Delhi|新德里|Delhi|德里
+BOM|贾特拉帕蒂|Mumbai|孟买|Mumbai|
+KTM|特里布万|Kathmandu|加德满都|Kathmandu|
+CMB|班达拉奈克|Colombo|科伦坡|Colombo|
+MLE|马累|Male|马尔代夫|Maldives|马累
+DXB|迪拜国际|Dubai|迪拜|Dubai|
+AUH|阿布扎比|Abu Dhabi|阿布扎比|Abu Dhabi|
+DOH|哈马德|Doha|多哈|Doha|
+IST|伊斯坦布尔|Istanbul|伊斯坦布尔|Istanbul|
+TLV|本古里安|Tel Aviv|特拉维夫|Tel Aviv|
+LHR|希思罗|London Heathrow|伦敦|London|
+LGW|盖特威克|London Gatwick|伦敦|London|
+STN|斯坦斯特德|London Stansted|伦敦|London|
+MAN|曼彻斯特|Manchester|曼彻斯特|Manchester|
+EDI|爱丁堡|Edinburgh|爱丁堡|Edinburgh|
+CDG|戴高乐|Paris Charles de Gaulle|巴黎|Paris|
+ORY|奥利|Paris Orly|巴黎|Paris|
+NCE|蔚蓝海岸|Nice|尼斯|Nice|
+FRA|法兰克福|Frankfurt|法兰克福|Frankfurt|
+MUC|慕尼黑|Munich|慕尼黑|Munich|
+BER|勃兰登堡|Berlin Brandenburg|柏林|Berlin|
+AMS|史基浦|Amsterdam Schiphol|阿姆斯特丹|Amsterdam|
+BRU|布鲁塞尔|Brussels|布鲁塞尔|Brussels|
+FCO|菲乌米奇诺|Rome Fiumicino|罗马|Rome|
+MXP|马尔彭萨|Milan Malpensa|米兰|Milan|
+VCE|马可波罗|Venice|威尼斯|Venice|
+BCN|埃尔普拉特|Barcelona|巴塞罗那|Barcelona|
+MAD|巴拉哈斯|Madrid|马德里|Madrid|
+LIS|波特拉|Lisbon|里斯本|Lisbon|
+ZRH|苏黎世|Zurich|苏黎世|Zurich|
+GVA|日内瓦|Geneva|日内瓦|Geneva|
+VIE|维也纳|Vienna|维也纳|Vienna|
+PRG|布拉格|Prague|布拉格|Prague|
+BUD|布达佩斯|Budapest|布达佩斯|Budapest|
+WAW|肖邦|Warsaw|华沙|Warsaw|
+CPH|哥本哈根|Copenhagen|哥本哈根|Copenhagen|
+ARN|阿兰达|Stockholm Arlanda|斯德哥尔摩|Stockholm|
+OSL|加勒穆恩|Oslo|奥斯陆|Oslo|
+HEL|万塔|Helsinki|赫尔辛基|Helsinki|
+DUB|都柏林|Dublin|都柏林|Dublin|
+ATH|雅典|Athens|雅典|Athens|
+KEF|凯夫拉维克|Reykjavik Keflavik|雷克雅未克|Reykjavik|冰岛
+SVO|谢列梅捷沃|Moscow Sheremetyevo|莫斯科|Moscow|
+LED|普尔科沃|Saint Petersburg|圣彼得堡|Saint Petersburg|
+JFK|肯尼迪|New York JFK|纽约|New York|
+EWR|纽瓦克|Newark|纽约|New York|
+LGA|拉瓜迪亚|New York LaGuardia|纽约|New York|
+LAX|洛杉矶国际|Los Angeles|洛杉矶|Los Angeles|
+SFO|旧金山国际|San Francisco|旧金山|San Francisco|三藩市
+SEA|西雅图塔科马|Seattle Tacoma|西雅图|Seattle|
+ORD|奥黑尔|Chicago O'Hare|芝加哥|Chicago|
+BOS|洛根|Boston Logan|波士顿|Boston|
+IAD|杜勒斯|Washington Dulles|华盛顿|Washington|
+ATL|哈茨菲尔德|Atlanta|亚特兰大|Atlanta|
+MIA|迈阿密国际|Miami|迈阿密|Miami|
+DFW|达福|Dallas Fort Worth|达拉斯|Dallas|
+IAH|布什|Houston Bush|休斯顿|Houston|
+LAS|哈里里德|Las Vegas|拉斯维加斯|Las Vegas|
+DEN|丹佛国际|Denver|丹佛|Denver|
+HNL|丹尼尔井上|Honolulu|檀香山|Honolulu|夏威夷
+YVR|温哥华国际|Vancouver|温哥华|Vancouver|
+YYZ|皮尔逊|Toronto Pearson|多伦多|Toronto|
+YUL|特鲁多|Montreal|蒙特利尔|Montreal|
+YYC|卡尔加里|Calgary|卡尔加里|Calgary|
+SYD|金斯福德|Sydney|悉尼|Sydney|
+MEL|墨尔本|Melbourne|墨尔本|Melbourne|
+BNE|布里斯班|Brisbane|布里斯班|Brisbane|
+PER|珀斯|Perth|珀斯|Perth|
+AKL|奥克兰|Auckland|奥克兰|Auckland|
+CHC|基督城|Christchurch|基督城|Christchurch|
+CAI|开罗国际|Cairo|开罗|Cairo|
+JNB|坦博|Johannesburg|约翰内斯堡|Johannesburg|
+NBO|肯雅塔|Nairobi|内罗毕|Nairobi|
+GRU|瓜鲁柳斯|Sao Paulo|圣保罗|Sao Paulo|
+EZE|埃塞萨|Buenos Aires|布宜诺斯艾利斯|Buenos Aires|
+MEX|贝尼托华雷斯|Mexico City|墨西哥城|Mexico City|
+LIM|钱恰约|Lima|利马|Lima|
+"""
+
+
+class Airport:
+    __slots__ = ("code", "name_cn", "name_en", "city_cn", "city_en", "aliases")
+
+    def __init__(self, code, name_cn, name_en, city_cn, city_en, aliases):
+        self.code, self.name_cn, self.name_en = code, name_cn, name_en
+        self.city_cn, self.city_en, self.aliases = city_cn, city_en, aliases
+
+    def as_dict(self):
+        return {"code": self.code, "airport": self.name_cn, "airport_en": self.name_en,
+                "city": self.city_cn, "city_en": self.city_en}
+
+
+def _load_airports():
+    out = []
+    for line in AIRPORT_TABLE.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        code, name_cn, name_en, city_cn, city_en, aliases = (line.split("|") + [""])[:6]
+        out.append(Airport(code, name_cn, name_en, city_cn, city_en,
+                           [a for a in aliases.split(",") if a]))
+    return out
+
+
+AIRPORTS = _load_airports()
+
+
+def _key(s):
+    """归一化到「能对得上」的形式：全角转半角、大小写不敏感、去掉分隔符。"""
+    return re.sub(r"[\s\-_·・'’.]+", "", unicodedata.normalize("NFKC", s).casefold())
+
+
+def _index():
+    """别名 -> 机场列表。城市名一对多(上海 -> PVG+SHA)，机场名一对一。"""
+    idx = {}
+    for a in AIRPORTS:
+        keys = [a.city_cn, a.city_en, *a.aliases]        # 城市级：聚合同城机场
+        for k in keys:
+            idx.setdefault(_key(k), []).append(a)
+    for a in AIRPORTS:
+        for k in (a.code, a.name_cn, a.name_en):         # 机场级：精确到单个航站
+            idx.setdefault(_key(k), [a])
+    return idx
+
+
+AIRPORT_INDEX = _index()
+
+_IATA = re.compile(r"^[A-Za-z]{3}$")
+
+
+class Place:
+    """一次解析的结果：用户写的那个词 + 它对应的机场码。"""
+
+    def __init__(self, query, codes, label, airports=(), passthrough=False):
+        self.query, self.codes, self.label = query, codes, label
+        self.airports, self.passthrough = list(airports), passthrough
+
+    def as_dict(self):
+        return {"query": self.query, "label": self.label, "codes": self.codes,
+                "airports": [a.as_dict() for a in self.airports]}
+
+
+def resolve(text, what="地点"):
+    """把「上海」「Tokyo」「PVG」解析成机场码列表。
+
+    只做精确匹配。模糊匹配是这类脚本最毒的坑 —— hotel-deals 里搜「苏州金鸡湖」
+    返回了 30 公里外昆山的酒店，价格是真的、排版正常、没有任何报错。机票同理：
+    把「宁波」模糊到「南宁」，用户看不出来。所以匹配不上就报错并给候选，
+    绝不猜。
+
+    表里没有的地方也不该被挡住：任何三个字母都当成 IATA 码原样放行(passthrough)，
+    真假交给 Google 判 —— 码是假的时它会退化成落地页，google_search() 会把那种
+    情况报成硬错误。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise Failed(f"没给{what}", "出发地和目的地都必须写明，例如 -f 上海 -t 东京")
+
+    hit = AIRPORT_INDEX.get(_key(raw))
+    if hit:
+        codes = [a.code for a in hit]
+        if len(hit) == 1:
+            a = hit[0]
+            label = f"{a.city_cn} {a.code}" if _key(raw) == _key(a.code) else \
+                    f"{a.city_cn}{a.name_cn} {a.code}"
+        else:
+            label = f"{hit[0].city_cn} {'/'.join(codes)}"
+        return Place(raw, codes, label, hit)
+
+    if _IATA.match(raw):
+        code = raw.upper()
+        return Place(raw, [code], f"{code}（表里没有，按 IATA 码直接用）",
+                     passthrough=True)
+
+    near = candidates(raw)
+    hint = ("直接写三字码也行，例如 -t NRT；"
+            f"或跑 flight-deals airports {raw} 查一下")
+    if near:
+        hint = "可能是：" + "、".join(near[:8]) + "。" + hint
+    raise Failed(f"不认识的{what}「{raw}」", hint)
+
+
+def candidates(text, limit=12):
+    """含子串的候选。只用来写进报错里帮人纠正，绝不参与自动选择。"""
+    k = _key(text)
+    out = []
+    for a in AIRPORTS:
+        blob = _key("".join([a.code, a.name_cn, a.name_en, a.city_cn, a.city_en,
+                             *a.aliases]))
+        if k and (k in blob or blob.startswith(k)):
+            out.append(f"{a.city_cn}{a.name_cn} {a.code}")
+    return out[:limit]
+
+
+def route_key(origin, dest):
+    """历史库里认航线用的键。用码而不是用户写的词，"上海"和"PVG"才能并到一起。"""
+    return f"{','.join(sorted(origin.codes))}>{','.join(sorted(dest.codes))}"
+
+
+# ---------------------------------------------------------------- 数据结构
+
+class Itin:
+    """一个行程（往返时是「去程航班 + 往返总价」）。price 是该行程的起价。"""
+
+    __slots__ = ("price", "currency", "round_trip", "stops", "airlines",
+                 "dep_airport", "dep_at", "arr_airport", "arr_at",
+                 "duration_min", "layovers", "url", "variants")
+
+    def __init__(self, price, currency, round_trip, stops, airlines,
+                 dep_airport, dep_at, arr_airport, arr_at, duration_min,
+                 layovers, url=None):
+        self.price, self.currency, self.round_trip = price, currency, round_trip
+        self.stops, self.airlines = stops, airlines
+        self.dep_airport, self.dep_at = dep_airport, dep_at
+        self.arr_airport, self.arr_at = arr_airport, arr_at
+        self.duration_min, self.layovers, self.url = duration_min, layovers, url
+        self.variants = 1        # 同价同航司的其他时刻被折叠进来的条数，见 fold()
+
+    def as_dict(self):
+        return {
+            "price": self.price, "currency": self.currency,
+            "price_is": "round_trip_total" if self.round_trip else "one_way",
+            "stops": self.stops, "airlines": self.airlines,
+            "depart_airport": self.dep_airport,
+            "depart_at": self.dep_at.isoformat() if self.dep_at else None,
+            "arrive_airport": self.arr_airport,
+            "arrive_at": self.arr_at.isoformat() if self.arr_at else None,
+            "duration_min": self.duration_min,
+            "layovers": [{"duration_min": d, "place": p, "change_airport": x}
+                         for d, p, x in self.layovers],
+            "same_price_departures": self.variants,
+            "url": self.url}
+
+
+def fmt_dur(minutes):
+    if minutes is None:
+        return "—"
+    h, m = divmod(int(minutes), 60)
+    return f"{h}h{m:02d}m" if m else f"{h}h"
+
+
+# ---------------------------------------------------------------- 解析 aria-label
+
+# 卡片把整段行程写在一个 aria-label 里，首屏 HTML 就有。实测(2026-09)样例：
+#   From 5677 Chinese yuan. 1 stop flight with China Eastern and Air France.
+#   Leaves Chengdu Shuangliu International Airport at 1:30 PM on Thursday,
+#   October 1 and arrives at Aéroport de Paris-Charles de Gaulle at 5:50 AM on
+#   Friday, October 2. Total duration 22 hr 20 min.  Layover (1 of 1) is a
+#   5 hr layover at Shanghai Pudong International Airport in Shanghai.
+# 往返时价格那句变成 "From 5764 Chinese yuan round trip total."
+_CARD = re.compile(r'aria-label="(From [^"]+)"')
+_L_PRICE = re.compile(r"^From ([\d,]+(?:\.\d+)?) ([A-Za-z][A-Za-z .]*?)"
+                      r"(\s+round trip total)?\.")
+_L_STOPS = re.compile(r"(?:^|\.\s*)(Nonstop|(\d+)\s+stops?) flight with ([^.]+)\.")
+_L_LEG = re.compile(r"Leaves (.+?) at (\d{1,2}:\d{2}\s*[AP]M) on ([^,]+, \w+ \d{1,2})"
+                    r" and arrives at (.+?) at (\d{1,2}:\d{2}\s*[AP]M)"
+                    r" on ([^,]+, \w+ \d{1,2})\.")
+_L_DUR = re.compile(r"Total duration ([^.]+?)\.")
+# 中转有两种句式，实测都出现过：
+#   …layover at Shanghai Pudong International Airport in Shanghai.
+#   …layover in Taipei City. Transfer here from Taiwan Taoyuan to Taipei Songshan.
+# 后一种是「中转要换机场」，对行程可行性影响极大(得跨城跑一趟)，必须显示出来。
+# 只写 "at" 那版正则的话，换机场的中转会静默变成一个空白的中转格。
+_L_LAYOVER = re.compile(r"Layovers? \(\d+ of \d+\) is an? (.+?) layover "
+                        r"(?:at (?P<ap>[^.]+?)(?: in (?P<city1>[^.]+))?"
+                        r"|in (?P<city2>[^.]+))\."
+                        r"(?P<xfer>\s*Transfer here from [^.]+\.)?")
+# 只有真的出了结果列表的页面才有排序控件。tfs 拼错时 Google 不报错，而是返回
+# 一张促销落地页 —— 两者都是 HTTP 200、都能解析出 0 条，靠这个标记区分。
+_RESULTS_MARK = re.compile(r'aria-label="Sorted by [^"]*"')
+
+_DUR = re.compile(r"(?:(\d+)\s*hr)?\s*(?:(\d+)\s*min)?")
+
+
+def parse_duration(text):
+    m = _DUR.search(text.strip())
+    if not m or not (m.group(1) or m.group(2)):
+        return None
+    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["January", "February", "March", "April", "May", "June", "July", "August",
+     "September", "October", "November", "December"], 1)}
+
+
+def parse_when(daytext, timetext, ref):
+    """把 "Thursday, October 1" + "8:05 PM" 还原成 datetime。
+
+    页面上不带年份 —— 跨年行程(12/31 走 1/1 到)会被解析成往回退一年，所以年份
+    必须靠出发日 ref 推：取「不早于 ref 前一天」的最近那个年份。
+    """
+    m = re.search(r"(\w+)\s+(\d{1,2})$", daytext.strip())
+    if not m or m.group(1) not in _MONTHS:
+        return None
+    month, day = _MONTHS[m.group(1)], int(m.group(2))
+    # Google 在时刻和 AM/PM 之间用的是 U+202F 窄不换行空格，不是普通空格 ——
+    # replace(" ", "") 清不掉它，strptime 会直接抛 ValueError 把整次查询带崩。
+    t = datetime.strptime(re.sub(r"\s+", "", timetext).upper(), "%I:%M%p").time()
+    for year in (ref.year, ref.year + 1):
+        try:
+            d = date(year, month, day)
+        except ValueError:
+            continue
+        if d >= ref - timedelta(days=1):
+            return datetime.combine(d, t)
+    return None
+
+
+def dedupe(itins):
+    """同一趟航班在页面上会被写进不止一个 aria-label（列表一次、详情锚点一次），
+    照单全收会让结果表里连着好几行完全相同 —— 看起来像脚本坏了。按「价格 + 起降
+    时刻 + 航司 + 时长」认同一趟；这几项全同却是两个航班的情况(共享航班号)在
+    aria-label 里本来就分辨不出来，留一行反而更诚实。"""
+    seen, out = set(), []
+    for it in itins:
+        key = (it.price, it.dep_at, it.arr_at, tuple(it.airlines), it.stops,
+               it.duration_min)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
+def fold(itins):
+    """把「同价格 + 同航司 + 同经停数」的多个起飞时刻折成一条，留最快的那个。
+
+    实测上海→东京往返，前八条里有七条是同一家航司的同一个价格、只差起飞时刻，
+    把「直飞最低价」这种真正影响决策的选项整个挤出了视野。折叠后 --top 15
+    能覆盖十几种**不同的**选择，而不是一个选择的十几个时刻。
+
+    折掉的条数记在 variants 上并显示出来 —— 直接删掉会让人以为只有一班。"""
+    groups = {}
+    for it in itins:
+        key = (it.price, tuple(it.airlines), it.stops)
+        keep = groups.get(key)
+        if keep is None:
+            groups[key] = it
+        else:
+            keep.variants += 1
+            # 同价时留最快的：时长是这组里唯一还有区别的东西
+            if (it.duration_min or 1 << 30) < (keep.duration_min or 1 << 30):
+                it.variants = keep.variants
+                groups[key] = it
+    return sorted(groups.values(), key=lambda i: (i.price, i.duration_min or 1 << 30))
+
+
+def parse_card(label, currency, ref_day, url=None):
+    """把一条 aria-label 解析成 Itin。解析不出价格就返回 None。"""
+    m = _L_PRICE.match(label)
+    if not m:
+        return None
+    price = float(m.group(1).replace(",", ""))
+    round_trip = bool(m.group(3))
+
+    stops, airlines = None, []
+    if s := _L_STOPS.search(label):
+        stops = 0 if s.group(1) == "Nonstop" else int(s.group(2))
+        airlines = [x.strip() for x in re.split(r",| and ", s.group(3)) if x.strip()]
+
+    dep_ap = dep_at = arr_ap = arr_at = None
+    if g := _L_LEG.search(label):
+        dep_ap, arr_ap = g.group(1).strip(), g.group(4).strip()
+        dep_at = parse_when(g.group(3), g.group(2), ref_day)
+        arr_at = parse_when(g.group(6), g.group(5), ref_day)
+
+    duration = None
+    if d := _L_DUR.search(label):
+        duration = parse_duration(d.group(1))
+
+    # 中转地优先用句尾那个城市名。机场全称("Hong Kong International Airport")
+    # 在表格里放不下，靠取首个单词缩写会把「Hong Kong」截成「Hong」。
+    layovers = []
+    for m in _L_LAYOVER.finditer(label):
+        place = (m.group("city1") or m.group("city2") or m.group("ap") or "").strip()
+        layovers.append((parse_duration(m.group(1)), place, bool(m.group("xfer"))))
+
+    return Itin(price, currency, round_trip, stops, airlines, dep_ap, dep_at,
+                arr_ap, arr_at, duration, layovers, url)
+
+
+# ---------------------------------------------------------------- 数据源：Google
+
+FLIGHTS_URL = "https://www.google.com/travel/flights"
+# 结果页视图描述符。跟查询内容无关，是个常量，照抄浏览器发的那个就行。
+TFU = "EgQIABABIgA"
+
+
+def flights_url(origin, dest, depart, ret, seat, adults, children, currency,
+                max_stops, region="us"):
+    trip = TRIP_ONEWAY if ret is None else TRIP_ROUND
+    legs = [(depart, origin.codes, dest.codes)]
+    if ret is not None:
+        legs.append((ret, dest.codes, origin.codes))
+    tfs = build_tfs(legs, seat, adults, children, trip, max_stops)
+    return FLIGHTS_URL + "?" + urllib.parse.urlencode({
+        "tfs": tfs,
+        # 固定英文站：卡片的 aria-label 只有英文站是这套句式，换 hl 会整套解析失效。
+        "hl": "en", "gl": region, "curr": currency, "tfu": TFU})
+
+
+def google_search(origin, dest, depart, ret=None, seat=1, adults=1, children=0,
+                  currency="CNY", max_stops=None, limit=60, region="us", timeout=40):
+    """纯 HTTP 抓 Google 航班。行程信息都在卡片的 aria-label 上，首屏 HTML 就有。"""
+    url = flights_url(origin, dest, depart, ret, seat, adults, children,
+                      currency, max_stops, region)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            page = r.read().decode("utf-8", "replace")
+    except Exception as exc:
+        raise Failed(f"Google 请求失败：{exc}", "检查网络后重试")
+
+    has_results = bool(_RESULTS_MARK.search(page))
+    itins = []
+    for raw in _CARD.findall(page):
+        it = parse_card(_html.unescape(raw), currency, depart, url)
+        if it is not None:
+            itins.append(it)
+
+    itins = dedupe(itins)
+
+    if not itins:
+        # 三种「零结果」必须分清楚，否则调用方会把「参数没生效」当成「没航班」。
+        if not has_results:
+            bad = [p.query for p in (origin, dest) if p.passthrough]
+            raise Failed(
+                f"Google 没认出这条航线（{origin.label} → {dest.label}）",
+                (f"机场码 {'、'.join(bad)} 可能不存在，核对一下；" if bad else "")
+                + "或跑 flight-deals airports <地名> 查正确的三字码")
+        return []                      # 页面正常但真的一班都没有
+    if not has_results:
+        raise Failed("页面结构变了：解析出了价格，却找不到结果列表标记",
+                     "多半是 Google 改版，需要更新脚本里的 _RESULTS_MARK/_L_* 正则")
+
+    itins.sort(key=lambda i: i.price)
+    return itins[:limit]
+
+
+# ---------------------------------------------------------------- 价格历史
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY,
+    observed_at TEXT NOT NULL, route TEXT NOT NULL,
+    origin TEXT NOT NULL, dest TEXT NOT NULL,
+    depart TEXT NOT NULL, ret TEXT, one_way INTEGER NOT NULL,
+    seat INTEGER NOT NULL, adults INTEGER NOT NULL,
+    currency TEXT NOT NULL, price REAL NOT NULL,
+    stops INTEGER, airlines TEXT, duration_min INTEGER);
+CREATE INDEX IF NOT EXISTS idx_obs_route ON observations (route, depart, observed_at);
+"""
+
+
+def db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    return conn
+
+
+def record(origin, dest, itins, seat, adults):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    key = route_key(origin, dest)
+    rows = []
+    for it in itins:
+        if it.price is None or it.dep_at is None:
+            continue
+        rows.append((now, key, origin.label, dest.label,
+                     it.dep_at.date().isoformat(),
+                     None if it.round_trip is False else None,
+                     0 if it.round_trip else 1, seat, adults, it.currency,
+                     it.price, it.stops, ",".join(it.airlines), it.duration_min))
+    with db() as conn:
+        conn.executemany(
+            "INSERT INTO observations (observed_at, route, origin, dest, depart,"
+            " ret, one_way, seat, adults, currency, price, stops, airlines,"
+            " duration_min) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    return len(rows)
+
+
+def floor_history(route, depart=None):
+    sql = ("SELECT observed_at, MIN(price) AS floor, currency FROM observations"
+           " WHERE route = ?")
+    args = [route]
+    if depart:
+        sql += " AND depart = ?"
+        args.append(depart.isoformat())
+    sql += " GROUP BY substr(observed_at, 1, 13) ORDER BY observed_at"
+    with db() as conn:
+        return [(r["observed_at"], r["floor"], r["currency"])
+                for r in conn.execute(sql, args)]
+
+
+def known_routes():
+    with db() as conn:
+        return list(conn.execute(
+            "SELECT route, origin, dest, COUNT(*) n, MAX(observed_at) last"
+            " FROM observations GROUP BY route ORDER BY last DESC"))
+
+
+# ---------------------------------------------------------------- 扫日期窗口
+
+def plan_trips(window, day_specs, one_way):
+    """列出窗口里所有值得一查的行程。
+
+    刻意不做「出发日 × 返程日」的笛卡尔积 —— 那里面绝大多数组合(当天往返、
+    玩二十天)没人会考虑，白白多花几十次请求。真实请求是「国庆这几天里去玩
+    五到七天」，所以按「窗口内滑动一段固定时长」来枚举，组合数从平方降到线性。
+
+    返程日必须落在窗口内：窗口就是「这段时间我能出门」的意思。
+    """
+    start, end = window
+    trips = []
+    day = start
+    while day <= end:
+        if one_way:
+            trips.append((day, None))
+        else:
+            for n in day_specs:
+                back = day + timedelta(days=n)
+                if back <= end:
+                    trips.append((day, back))
+        day += timedelta(days=1)
+    return trips
+
+
+def sweep(origin, dest, trips, seat, adults, children, currency, max_stops,
+          workers=6, progress=None):
+    """并发扫一批行程，每个只取当天最低价。实测 16 个组合 6 并发 ~4.5 秒，无限流。"""
+
+    def one(trip):
+        depart, ret = trip
+        try:
+            itins = google_search(origin, dest, depart, ret, seat, adults,
+                                  children, currency, max_stops, limit=60)
+        except Failed as exc:               # 单个组合失败不该拖垮整张表
+            return {"depart": depart, "ret": ret, "floor": None,
+                    "error": str(exc)[:70]}
+        if not itins:
+            return {"depart": depart, "ret": ret, "floor": None, "error": "无航班"}
+        best = itins[0]
+        prices = [i.price for i in itins]
+        direct = [i for i in itins if i.stops == 0]
+        return {"depart": depart, "ret": ret, "floor": best.price,
+                "median": statistics.median(prices), "count": len(itins),
+                "direct_floor": direct[0].price if direct else None,
+                "airlines": "/".join(best.airlines[:2]),
+                "stops": best.stops, "duration_min": best.duration_min,
+                "error": None}
+
+    out, done = {}, 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for res in pool.map(one, trips):
+            out[(res["depart"], res["ret"])] = res
+            done += 1
+            if progress:
+                progress(done, len(trips))
+    return [out[t] for t in trips]
+
+
+# ---------------------------------------------------------------- 输出
+
+def wcwidth(s):
+    """CJK 字符占两格，不算宽度表格会错位。"""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in str(s))
+
+
+def pad(s, width, align="<"):
+    s = str(s)
+    gap = width - wcwidth(s)
+    if gap < 0:
+        out = ""
+        for c in s:
+            if wcwidth(out + c) > width - 1:
+                break
+            out += c
+        return out + "…" + " " * (width - wcwidth(out) - 1)
+    return (" " * gap + s) if align == ">" else (s + " " * gap)
+
+
+def table(headers, rows, aligns=None, md=False):
+    """对齐的纯文本表格；md=True 出 Markdown。"""
+    if not rows:
+        return ""
+    aligns = aligns or ["<"] * len(headers)
+    widths = [max(wcwidth(h), max(wcwidth(r[i]) for r in rows))
+              for i, h in enumerate(headers)]
+    if md:
+        sep = ["---:" if a == ">" else "---" for a in aligns]
+        lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(sep) + " |"]
+        lines += ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]
+        return "\n".join(lines)
+    out = ["  ".join(pad(h, widths[i], aligns[i]) for i, h in enumerate(headers)).rstrip(),
+           "  ".join("─" * widths[i] for i in range(len(headers)))]
+    out += ["  ".join(pad(c, widths[i], aligns[i])
+                      for i, c in enumerate(r)).rstrip() for r in rows]
+    return "\n".join(out)
+
+
+def money(v, currency):
+    return "—" if v is None else f"{SYMBOL.get(currency, currency + ' ')}{v:,.0f}"
+
+
+def week_cn(d):
+    return "一二三四五六日"[d.weekday()]
+
+
+def sparkline(values):
+    real = [v for v in values if v is not None]
+    if not real:
+        return ""
+    lo, hi = min(real), max(real)
+    span = hi - lo
+    return "".join(
+        " " if v is None else
+        SPARK[len(SPARK) // 2] if span == 0 else
+        SPARK[int((v - lo) / span * (len(SPARK) - 1))]
+        for v in values)
+
+
+def price_note(one_way, adults, children, seat):
+    who = f"{adults} 成人" + (f" + {children} 儿童" if children else "")
+    kind = "单程" if one_way else "往返总价"
+    return f"价格为{kind}起价（{who}，{SEAT_CN[seat]}），实际下单价可能更高"
+
+
+def render_search(itins, origin, dest, depart, ret, seat, adults, children,
+                  currency, top, fmt, url, warnings=()):
+    """出报表。
+
+    warnings 一定要进 stdout：程序调用时通常只收 stdout，写进 stderr 的提醒
+    等于没写 —— 「机场码是猜的」和「机场码是查表来的」输出会长得一模一样。
+    """
+    one_way = ret is None
+    if fmt == "json":
+        return json.dumps({
+            "query": {"origin": origin.as_dict(), "destination": dest.as_dict(),
+                      "depart": depart.isoformat(),
+                      "return": ret.isoformat() if ret else None,
+                      "one_way": one_way, "seat": SEATS_INV[seat],
+                      "adults": adults, "children": children,
+                      "currency": currency},
+            "price_means": "round_trip_total" if not one_way else "one_way_total",
+            "warnings": list(warnings),
+            "returned": min(top, len(itins)), "total": len(itins),
+            "url": url,
+            "itineraries": [i.as_dict() for i in itins[:top]],
+        }, ensure_ascii=False, indent=2)
+
+    md = fmt == "md"
+    span = f"{depart} 走" + (f" · {ret} 回（{(ret - depart).days} 天）" if ret else " · 单程")
+    head = f"{origin.label} → {dest.label}   {span}"
+
+    rows = []
+    for i, it in enumerate(itins[:top], 1):
+        stop_txt = "直飞" if it.stops == 0 else (f"{it.stops} 转" if it.stops else "—")
+        if it.layovers:
+            stop_txt += " " + "/".join(
+                f"{ap}{fmt_dur(d)}" + ("(换机场)" if x else "")
+                for d, ap, x in it.layovers[:2])
+        dep = it.dep_at.strftime("%m-%d %H:%M") if it.dep_at else "—"
+        if it.variants > 1:
+            dep += f" +{it.variants - 1}"
+        rows.append([str(i), money(it.price, currency),
+                     "/".join(it.airlines[:2]) or "—", dep,
+                     it.arr_at.strftime("%m-%d %H:%M") if it.arr_at else "—",
+                     fmt_dur(it.duration_min), stop_txt])
+    body = table(["#", "价格", "航司", "起飞", "到达", "时长", "中转"],
+                 rows, [">", ">", "<", "<", "<", ">", "<"], md)
+
+    parts = [f"# {head}" if md else head, "", body]
+    if itins:
+        cheapest = itins[0]
+        fastest = min((i for i in itins if i.duration_min), default=None,
+                      key=lambda i: i.duration_min)
+        direct = [i for i in itins if i.stops == 0]
+        summary = [f"最低 {money(cheapest.price, currency)}"
+                   f"（{'/'.join(cheapest.airlines[:2]) or '?'}，{fmt_dur(cheapest.duration_min)}）"]
+        if direct:
+            summary.append(f"直飞最低 {money(direct[0].price, currency)}")
+        if fastest and fastest is not cheapest:
+            summary.append(f"最快 {fmt_dur(fastest.duration_min)}"
+                           f" {money(fastest.price, currency)}")
+        parts += ["", " · ".join(summary)]
+
+    notes = [price_note(one_way, adults, children, seat)]
+    if any(i.variants > 1 for i in itins[:top]):
+        notes.append("起飞时刻后的 +N 表示同价同航司还有 N 个别的起飞时刻，"
+                     "表里只留了最快的那班（要全部时刻加 --no-fold）")
+    notes += warnings
+    parts += ["", "## 注意" if md else "注意", ""] + [f"- {n}" for n in notes]
+    if url:
+        parts += ["", f"在 Google 航班里打开：{url}"]
+    return "\n".join(parts)
+
+
+def render_sweep(series, origin, dest, window, one_way, seat, adults, children,
+                 currency, fmt, warnings=()):
+    if fmt == "json":
+        days = [{**d, "depart": d["depart"].isoformat(),
+                 "ret": d["ret"].isoformat() if d["ret"] else None} for d in series]
+        return json.dumps({
+            "query": {"origin": origin.as_dict(), "destination": dest.as_dict(),
+                      "window": [window[0].isoformat(), window[1].isoformat()],
+                      "one_way": one_way, "seat": SEATS_INV[seat],
+                      "adults": adults, "children": children, "currency": currency},
+            "price_means": "round_trip_total" if not one_way else "one_way_total",
+            "warnings": list(warnings),
+            "scanned": sum(1 for d in series if d["floor"] is not None),
+            "total": len(series),
+            "trips": days,
+        }, ensure_ascii=False, indent=2)
+
+    md = fmt == "md"
+    valid = [d for d in series if d["floor"] is not None]
+    lo = min((d["floor"] for d in valid), default=None)
+
+    rows = []
+    for d in series:
+        when = f"{d['depart']:%m-%d}(周{week_cn(d['depart'])})"
+        back = f"{d['ret']:%m-%d}(周{week_cn(d['ret'])})" if d["ret"] else "单程"
+        days = str((d["ret"] - d["depart"]).days) if d["ret"] else "—"
+        if d["floor"] is None:
+            rows.append([when, back, days, "—", "—", "—", d.get("error", "")])
+            continue
+        rows.append([when, back, days, money(d["floor"], currency),
+                     money(d.get("direct_floor"), currency), str(d.get("count", "")),
+                     (d.get("airlines") or "") + (" ◀" if d["floor"] == lo else "")])
+    body = table(["出发", "返程", "天数", "最低价", "直飞最低", "航班", "最便宜的航司"],
+                 rows, ["<", "<", ">", ">", ">", ">", "<"], md)
+
+    title = (f"{origin.label} → {dest.label}   "
+             f"{window[0]} ~ {window[1]} 窗口内 {len(series)} 个行程")
+    parts = [f"# {title}" if md else title, "", body]
+
+    if not valid:
+        return "\n".join(parts + ["", "一个有效报价都没扫到。",
+                                  "先用 search 查单个日期确认这条航线本身能查通。"])
+
+    best = min(valid, key=lambda d: d["floor"])
+    worst = max(valid, key=lambda d: d["floor"])
+    floors = [d["floor"] for d in valid]
+    spread = (worst["floor"] - best["floor"]) / best["floor"] * 100 if best["floor"] else 0
+    missing = len(series) - len(valid)
+    b_back = f" · {best['ret']} 回" if best["ret"] else " · 单程"
+    parts += [
+        "", f"走势  {sparkline([d['floor'] for d in series])}",
+        f"最便宜  {best['depart']}（周{week_cn(best['depart'])}）走{b_back}  "
+        f"{money(best['floor'], currency)}"
+        + (f" · {best['airlines']}" if best.get("airlines") else "")
+        + (f" · {fmt_dur(best['duration_min'])}" if best.get("duration_min") else ""),
+        f"最贵    {worst['depart']} 走  {money(worst['floor'], currency)}"
+        f"  贵 {spread:.0f}%（差 {money(worst['floor'] - best['floor'], currency)}）",
+        f"中位 {money(statistics.median(floors), currency)}"
+        f" · {len(valid)}/{len(series)} 个行程有报价"
+        + (f" · {missing} 个失败" if missing else ""),
+    ]
+    notes = [price_note(one_way, adults, children, seat), *warnings]
+    parts += ["", "## 注意" if md else "注意", ""] + [f"- {n}" for n in notes]
+    return "\n".join(parts)
+
+
+SEATS_INV = {v: k for k, v in SEATS.items()}
+
+
+# ---------------------------------------------------------------- 子命令
+
+def parse_day(s):
+    """接受 2026-10-15、10-15，或 +7(从今天起 N 天后)。"""
+    s = str(s).strip()
+    if s.startswith("+"):
+        try:
+            return date.today() + timedelta(days=int(s[1:]))
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"看不懂的日期：{s}（+7 表示 7 天后）")
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m-%d", "%m/%d"):
+        try:
+            d = datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+        if "%Y" not in fmt:
+            d = d.replace(year=date.today().year)
+            if d < date.today():
+                d = d.replace(year=d.year + 1)
+        return d
+    raise argparse.ArgumentTypeError(
+        f"看不懂的日期：{s}（能写 2026-10-15、10-15、或 +7 表示 7 天后）")
+
+
+def parse_window(s):
+    """接受 09-29..10-08 / 2026-09-29..2026-10-08 / +30..+45。"""
+    parts = re.split(r"\.\.|~|到", str(s).strip())
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"看不懂的窗口：{s}（写成 起始..结束，例如 09-29..10-08）")
+    start, end = parse_day(parts[0]), parse_day(parts[1])
+    if end < start:
+        raise argparse.ArgumentTypeError(f"窗口结束 {end} 早于开始 {start}")
+    return (start, end)
+
+
+def parse_days(s):
+    """接受 5 或 5-7(玩 5 到 7 天都看看)。返回天数列表。"""
+    s = str(s).strip()
+    if m := re.fullmatch(r"(\d+)\s*[-~]\s*(\d+)", s):
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b:
+            a, b = b, a
+        if b - a > 30:
+            raise argparse.ArgumentTypeError(f"天数区间 {s} 太宽了，最多跨 30 天")
+        return list(range(a, b + 1))
+    if s.isdigit():
+        return [int(s)]
+    raise argparse.ArgumentTypeError(f"看不懂的天数：{s}（写 5 或 5-7）")
+
+
+def resolve_pair(a):
+    return resolve(a.origin, "出发地"), resolve(a.dest, "目的地")
+
+
+def passthrough_warnings(*places):
+    return [f"「{p.query}」不在内置机场表里，按 IATA 码 {p.codes[0]} 直接查的；"
+            "如果结果不是你要的城市，换个写法或核对三字码。"
+            for p in places if p.passthrough]
+
+
+def seat_of(a):
+    return SEATS[a.seat]
+
+
+def cmd_search(a):
+    origin, dest = resolve_pair(a)
+    depart = a.depart or date.today() + timedelta(days=14)
+    days = parse_days(a.days) if a.days else [7]
+    if len(days) > 1:
+        raise Failed(f"search 的 --days 只能给一个数字，你给了 {a.days}",
+                     f"想一次比几种时长，用 sweep：sweep -f {a.origin} -t {a.dest}"
+                     f" -w {depart}..{depart + timedelta(days=max(days) + 3)}"
+                     f" --days {a.days}")
+    ret = None if a.one_way else (a.ret or depart + timedelta(days=days[0]))
+    if ret is not None and ret <= depart:
+        raise Failed(f"返程日 {ret} 不晚于出发日 {depart}",
+                     "去掉 --return 改用 --days，或加 --one-way 查单程")
+    if depart < date.today():
+        raise Failed(f"出发日 {depart} 已经过去了", "查未来的日期，或写 +14 表示两周后")
+
+    max_stops = 0 if a.nonstop else a.max_stops
+    seat = seat_of(a)
+    itins = google_search(origin, dest, depart, ret, seat, a.adults, a.children,
+                          a.currency, max_stops, a.limit, a.region)
+    if not a.no_fold:
+        itins = fold(itins)
+    url = flights_url(origin, dest, depart, ret, seat, a.adults, a.children,
+                      a.currency, max_stops, a.region)
+    if not itins:
+        raise Failed(f"{origin.label} → {dest.label} 在 {depart} 没有可售航班",
+                     "换个日期，或去掉 --nonstop 让中转航班也进来")
+
+    warnings = passthrough_warnings(origin, dest)
+    print(render_search(itins, origin, dest, depart, ret, seat, a.adults,
+                        a.children, a.currency, a.top, a.format, url, warnings))
+    if not a.no_record:
+        n = record(origin, dest, itins, seat, a.adults)
+        print(f"\n已记录 {n} 条到价格历史", file=sys.stderr)
+    return 0
+
+
+def cmd_sweep(a):
+    origin, dest = resolve_pair(a)
+    window = a.window or (date.today() + timedelta(days=14),
+                          date.today() + timedelta(days=28))
+    if window[1] < date.today():
+        raise Failed(f"窗口 {window[0]}..{window[1]} 整个都在过去", "查未来的日期")
+    days = parse_days(a.days) if a.days else [5, 6, 7]
+    trips = plan_trips(window, days, a.one_way)
+    if not trips:
+        span = (window[1] - window[0]).days
+        raise Failed(
+            f"窗口只有 {span + 1} 天，装不下 {min(days)} 天的行程",
+            f"把窗口拉长(-w {window[0]}..{window[0] + timedelta(days=max(days) + 2)})"
+            "，或把 --days 改小")
+    if len(trips) > a.max_queries:
+        raise Failed(
+            f"这个窗口要查 {len(trips)} 个行程，超过上限 {a.max_queries}",
+            "缩小 --window、把 --days 收成单个数字，或调大 --max-queries")
+
+    seat = seat_of(a)
+    max_stops = 0 if a.nonstop else a.max_stops
+    quiet = a.format == "json" or not sys.stderr.isatty()
+
+    def progress(done, total):
+        if not quiet:
+            print(f"\r扫描中… {done}/{total}", end="", file=sys.stderr, flush=True)
+
+    series = sweep(origin, dest, trips, seat, a.adults, a.children, a.currency,
+                   max_stops, a.workers, progress)
+    if not quiet:
+        print("\r" + " " * 28 + "\r", end="", file=sys.stderr, flush=True)
+
+    warnings = passthrough_warnings(origin, dest)
+    print(render_sweep(series, origin, dest, window, a.one_way, seat, a.adults,
+                       a.children, a.currency, a.format, warnings))
+    if not a.no_record:
+        with db() as conn:
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            key = route_key(origin, dest)
+            conn.executemany(
+                "INSERT INTO observations (observed_at, route, origin, dest,"
+                " depart, ret, one_way, seat, adults, currency, price, stops,"
+                " airlines, duration_min) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(now, key, origin.label, dest.label, d["depart"].isoformat(),
+                  d["ret"].isoformat() if d["ret"] else None,
+                  1 if a.one_way else 0, seat, a.adults, a.currency, d["floor"],
+                  d.get("stops"), d.get("airlines"), d.get("duration_min"))
+                 for d in series if d["floor"] is not None])
+        print(f"\n已记录 {sum(1 for d in series if d['floor'] is not None)}"
+              " 条到价格历史", file=sys.stderr)
+    return 0
+
+
+def cmd_trend(a):
+    # 不给航线就是「历史库里都有啥」—— 单开一个动作不值得，语义也自洽。
+    if not a.origin and not a.dest:
+        rows = known_routes()
+        if a.format == "json":
+            print(json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("历史库还是空的。先查一次票就会自动记下来：")
+            print("  flight-deals -f 上海 -t 东京 -d +30")
+            return 0
+        print(table(["航线", "出发地", "目的地", "观测数", "最近一次"],
+                    [[r["route"], r["origin"], r["dest"], str(r["n"]), r["last"][:16]]
+                     for r in rows], ["<", "<", "<", ">", "<"],
+                    a.format == "md"))
+        return 0
+    if not (a.origin and a.dest):
+        raise Failed("trend 要么两个都不给(列出所有航线)，要么出发地和目的地都给",
+                     "例如 trend -f 上海 -t 东京，或直接 trend")
+
+    origin, dest = resolve_pair(a)
+    rows = floor_history(route_key(origin, dest), a.depart)
+    if a.format == "json":
+        print(json.dumps({"route": route_key(origin, dest),
+                          "history": [{"observed_at": t, "floor": v, "currency": c}
+                                      for t, v, c in rows]},
+                         ensure_ascii=False, indent=2))
+        return 0
+    if len(rows) < 2:
+        print(f"{origin.label} → {dest.label} 目前只有 {len(rows)} 个观测点，"
+              "还画不出趋势。")
+        print("趋势要靠每天跑一次攒出来，比如挂个 cron：")
+        print(f"  0 9 * * * {os.path.abspath(__file__)} -f {a.origin} -t {a.dest}"
+              f" -d {a.depart or '+30'} >/dev/null 2>&1")
+        return 0
+    vals = [v for _, v, _ in rows]
+    cur = rows[-1][2]
+    first, last = vals[0], vals[-1]
+    delta = (last - first) / first * 100 if first else 0
+    arrow = "↑" if delta > 1 else "↓" if delta < -1 else "→"
+    print(f"{origin.label} → {dest.label} 底价历史  {sparkline(vals)}")
+    print(f"最早 {rows[0][0][:16]}  {money(first, cur)}")
+    print(f"最新 {rows[-1][0][:16]}  {money(last, cur)}  {arrow} {delta:+.1f}%")
+    print(f"区间 {money(min(vals), cur)} ~ {money(max(vals), cur)}"
+          f" · {len(rows)} 个观测点")
+    return 0
+
+
+def cmd_airports(a):
+    q = a.query or a.query_pos
+    if not q:
+        raise Failed("airports 要给一个关键词", "例如 flight-deals airports 东京")
+    hit = AIRPORT_INDEX.get(_key(q))
+    found = list(hit) if hit else []
+    if not found:
+        # 精确匹配不上时才退到子串搜 —— 这里是「帮人查码」，列出候选由人来挑，
+        # 跟 resolve() 里「绝不猜」并不矛盾。
+        seen, found = set(), []
+        for a_ in AIRPORTS:
+            blob = _key("".join([a_.code, a_.name_cn, a_.name_en, a_.city_cn,
+                                 a_.city_en, *a_.aliases]))
+            if _key(q) in blob and a_.code not in seen:
+                seen.add(a_.code)
+                found.append(a_)
+    if a.format == "json":
+        print(json.dumps({"query": q, "exact": bool(hit),
+                          "airports": [x.as_dict() for x in found]},
+                         ensure_ascii=False, indent=2))
+        return 0
+    if not found:
+        print(f"内置机场表里没有「{q}」。")
+        print("表只收常用机场，没收全。知道三字码的话可以直接用，例如 -t NRT。")
+        return 1
+    print(table(["三字码", "机场", "Airport", "城市", "City"],
+                [[x.code, x.name_cn, x.name_en, x.city_cn, x.city_en] for x in found],
+                None, a.format == "md"))
+    if hit and len(found) > 1:
+        print(f"\n写「{q}」会同时查这 {len(found)} 个机场：{'、'.join(x.code for x in found)}")
+    return 0
+
+
+def cmd_doctor(a):
+    ok = True
+    print(f"python      {sys.version.split()[0]}")
+    print(f"机场表      {len(AIRPORTS)} 个机场 / "
+          f"{len({x.city_cn for x in AIRPORTS})} 座城市")
+    print(f"历史库      {DB_PATH}"
+          f"{'  (还没建)' if not os.path.exists(DB_PATH) else ''}")
+
+    probe_day = date.today() + timedelta(days=30)
+    try:
+        o, d = resolve("上海"), resolve("东京")
+        itins = google_search(o, d, probe_day, probe_day + timedelta(days=7))
+        if itins:
+            b = itins[0]
+            print(f"google      ✅ 可用，抓到 {len(itins)} 条"
+                  f"（最低 {money(b.price, 'CNY')}，零依赖）")
+        else:
+            ok = False
+            print("google      ❌ 请求成功但一条航班都没有（上海→东京不该没有）")
+    except Failed as exc:
+        ok = False
+        print(f"google      ❌ {exc}")
+        if exc.hint:
+            print(f"            下一步：{exc.hint}")
+
+    # 解析器是全脚本最脆的一环：Google 一改 aria-label 句式，抓取会「成功」
+    # 但字段全空。拿一条实测样本当金标准回归，改版时 doctor 立刻报红。
+    sample = ("From 5677 Chinese yuan. 1 stop flight with China Eastern and Air "
+              "France. Leaves Chengdu Shuangliu International Airport at 1:30 PM "
+              "on Thursday, October 1 and arrives at Aéroport de Paris-Charles de "
+              "Gaulle at 5:50 AM on Friday, October 2. Total duration 22 hr 20 "
+              "min.  Layover (1 of 1) is a 5 hr layover at Shanghai Pudong "
+              "International Airport in Shanghai. Select flight")
+    # 换机场中转是另一套句式，单独回归 —— 只测 "layover at" 那版的话，
+    # "layover in … Transfer here from …" 挂掉时 doctor 依然全绿。
+    xfer_sample = ("From 6607 Chinese yuan round trip total. 1 stop flight with "
+                   "EVA Air. Leaves Shanghai Pudong International Airport at "
+                   "8:05\u202fPM on Thursday, October 1 and arrives at Haneda "
+                   "Airport at 11:30\u202fAM on Friday, October 2. Total duration "
+                   "14 hr 25 min.  Layover (1 of 1) is a 9 hr 20 min layover in "
+                   "Taipei City. Transfer here from Taiwan Taoyuan International "
+                   "Airport to Taipei Songshan Airport. Select flight")
+    it = parse_card(sample, "CNY", date(2026, 10, 1))
+    bad = []
+    xf = parse_card(xfer_sample, "CNY", date(2026, 10, 1))
+    if not xf or xf.layovers != [(560, "Taipei City", True)]:
+        bad.append(f"换机场中转实得 {xf.layovers if xf else None}")
+    if not it:
+        bad.append("整条解析不出来")
+    else:
+        for field, want in (("price", 5677.0), ("stops", 1), ("duration_min", 1340)):
+            got = getattr(it, field)
+            if got != want:
+                bad.append(f"{field} 期望 {want} 实得 {got}")
+        if it.airlines != ["China Eastern", "Air France"]:
+            bad.append(f"airlines 实得 {it.airlines}")
+        if it.layovers != [(300, "Shanghai", False)]:
+            bad.append(f"layovers 实得 {it.layovers}")
+        if not it.dep_at or it.dep_at.strftime("%Y-%m-%d %H:%M") != "2026-10-01 13:30":
+            bad.append(f"dep_at 实得 {it.dep_at}")
+    if bad:
+        ok = False
+        print(f"解析器      ❌ {len(bad)} 项对不上：{'；'.join(bad)}")
+        print("            下一步：Google 改了 aria-label 句式，更新 _L_* 正则")
+    else:
+        print("解析器      ✅ 金标准样本七个字段全对")
+
+    stale = stale_help_flags()
+    if stale:
+        ok = False
+        print(f"帮助文本    ❌ 提到了 {len(stale)} 个不存在的参数（改名忘了改文档）")
+        for flag, line in sorted(stale.items()):
+            print(f"            {flag}  (L{line})")
+    else:
+        print("帮助文本    ✅ 提到的参数都真实存在")
+    return 0 if ok else 1
+
+
+# ---------------------------------------------------------------- 参数
+
+ACTIONS = ("search", "sweep", "trend", "airports", "doctor")
+
+EPILOG = """\
+查票通常只要三样 —— 从哪、到哪、哪天走：
+  flight-deals -f 上海 -t 东京 -d 2026-10-01 -r 2026-10-07
+  flight-deals -f 上海 -t 东京 -d +30              默认往返，玩 7 天
+  flight-deals -f 上海 -t 东京 -d +30 --one-way    单程
+  flight-deals -f 上海 -t 东京 -d +30 --nonstop --seat business
+
+其他功能各是一个动作：
+  flight-deals sweep -f 上海 -t 东京 -w 09-29..10-08 --days 5-7
+                                        窗口里哪天走哪天回最便宜
+  flight-deals trend -f 上海 -t 东京    这条航线底价这几天涨还是跌
+  flight-deals trend                    历史库里攒了哪些航线
+  flight-deals airports 东京            东京有哪些机场、三字码是什么
+  flight-deals doctor                   环境自检
+
+参数全是具名的，位置无关；动作省略时默认 search，写在哪都认。
+日期三种写法：2026-10-15 / 10-15(过了就算明年) / +7(7 天后)
+出发地和目的地必须写明，脚本不猜 —— 猜错了输出看起来完全正常。
+"""
+
+
+def build_parser():
+    ap = argparse.ArgumentParser(
+        prog="flight-deals",
+        description="查两地之间的机票价格，扫日期窗口找最便宜的走法。",
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG)
+    sub = ap.add_subparsers(dest="cmd", metavar="<动作>")
+
+    def route(g, required=True):
+        g.add_argument("-f", "--from", "--origin", dest="origin",
+                       required=required, metavar="<出发地>",
+                       help="出发城市或机场，如 上海 / Shanghai / PVG。必填，不猜")
+        g.add_argument("-t", "--to", "--dest", "--destination", dest="dest",
+                       required=required, metavar="<目的地>",
+                       help="目的城市或机场，如 东京 / Tokyo / NRT。必填，不猜")
+
+    def who(g):
+        g.add_argument("--adults", type=int, default=1, metavar="<人数>",
+                       help="成人数（默认 1）")
+        g.add_argument("--children", type=int, default=0, metavar="<人数>",
+                       help="2-11 岁儿童数（默认 0）")
+        g.add_argument("--seat", choices=tuple(SEATS), default="economy",
+                       metavar="<舱位>",
+                       help="economy/premium/business/first（默认 economy）")
+
+    def filt(g):
+        g.add_argument("--nonstop", action="store_true", help="只看直飞")
+        g.add_argument("--max-stops", type=int, default=None, metavar="<次数>",
+                       help="最多转几次（--nonstop 等同 0）")
+
+    def money_opts(g):
+        g.add_argument("--currency", default="CNY", metavar="<币种>",
+                       help="币种（默认 CNY）")
+        g.add_argument("--region", default="us", metavar="<地区码>",
+                       help="Google 地区码（默认 us；一般不用改）")
+
+    def output(g):
+        # 定在子命令上而不是顶层：这样 `-f 上海 --json` 这种自然写法能用，
+        # argparse 的顶层选项必须写在子命令前面，太反直觉。
+        g.add_argument("--format", choices=("auto", "table", "md", "json"),
+                       default="auto", metavar="<格式>",
+                       help="table/md/json；默认 auto=终端出表格、管道出 markdown")
+        g.add_argument("--json", dest="as_json", action="store_true",
+                       help="等同 --format json")
+
+    # ---- search：从哪、到哪、哪天走
+    s = sub.add_parser(
+        "search", help="查指定日期的航班和价格（默认动作）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="查指定日期的航班，按价格排序。\n"
+                    "通常只要 --from / --to / --depart 三个参数，默认往返玩 7 天。")
+    g = s.add_argument_group("核心参数（通常只用这三个）")
+    route(g)
+    g.add_argument("-d", "--depart", type=parse_day, metavar="<日期>",
+                   help="出发日（默认 14 天后）")
+    g = s.add_argument_group("可选")
+    g.add_argument("-r", "--return", dest="ret", type=parse_day, metavar="<日期>",
+                   help="返程日（默认出发后 --days 天）")
+    g.add_argument("--days", metavar="<天数>",
+                   help="玩几天，用来算返程日（默认 7）。给了 --return 就不用它")
+    g.add_argument("--one-way", action="store_true", help="只查单程")
+    who(g)
+    filt(g)
+    money_opts(g)
+    g.add_argument("--top", type=int, default=15, metavar="<条数>",
+                   help="显示几条（默认 15）")
+    g.add_argument("--limit", type=int, default=60, metavar="<条数>",
+                   help="最多取几条（默认 60）")
+    g.add_argument("--no-fold", action="store_true",
+                   help="不折叠同价同航司的不同起飞时刻，每个时刻各占一行")
+    g.add_argument("--no-record", action="store_true", help="不写价格历史")
+    output(g)
+    s.set_defaults(func=cmd_search)
+
+    # ---- sweep：不知道哪天走划算，扫一个窗口
+    w = sub.add_parser(
+        "sweep", help="扫一个日期窗口，看哪天走哪天回最便宜",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="在一个日期窗口内滑动行程，找最便宜的走法。\n"
+                    "例：国庆能出门的日子是 9/29~10/8，想玩 5 到 7 天 ——\n"
+                    "  sweep -f 上海 -t 东京 -w 09-29..10-08 --days 5-7\n"
+                    "返程日必须也落在窗口内（窗口 = 这段时间我能出门）。")
+    g = w.add_argument_group("核心参数")
+    route(g)
+    g.add_argument("-w", "--window", type=parse_window, metavar="<起..止>",
+                   help="日期窗口，如 09-29..10-08（默认 14 天后起的两周）")
+    g.add_argument("--days", metavar="<天数>",
+                   help="玩几天，可给区间，如 5 或 5-7（默认 5-7）。--one-way 时忽略")
+    g = w.add_argument_group("可选")
+    g.add_argument("--one-way", action="store_true",
+                   help="只扫单程（这时只枚举出发日）")
+    who(g)
+    filt(g)
+    money_opts(g)
+    g.add_argument("--workers", type=int, default=6, metavar="<并发>",
+                   help="并发请求数（默认 6）")
+    g.add_argument("--max-queries", type=int, default=60, metavar="<上限>",
+                   help="最多查几个行程，超了直接报错而不是闷头跑（默认 60）")
+    g.add_argument("--no-record", action="store_true", help="不写价格历史")
+    output(g)
+    w.set_defaults(func=cmd_sweep)
+
+    # ---- trend：看攒下来的历史
+    t = sub.add_parser(
+        "trend", help="看某条航线底价的涨跌；不给航线就列出所有航线",
+        description="看同一航线的底价随观测时间怎么变。需要先攒几天数据。\n"
+                    "不给 --from/--to 时列出历史库里有哪些航线。")
+    g = t.add_argument_group("参数")
+    route(g, required=False)
+    g.add_argument("-d", "--depart", type=parse_day, metavar="<日期>",
+                   help="只看某个出发日的历史")
+    output(g)
+    t.set_defaults(func=cmd_trend)
+
+    # ---- airports：查三字码
+    ar = sub.add_parser("airports", help="查地名对应的机场和三字码",
+                        description="查一个地名对应哪些机场。精确命中就列出该城市"
+                                    "全部机场，否则按子串给候选。")
+    ar.add_argument("query_pos", nargs="?", metavar="<关键词>",
+                    help="地名或三字码，如 东京 / Tokyo / NRT")
+    ar.add_argument("-q", "--query", metavar="<关键词>",
+                    help="同上（给程序调用用；命令行直接写在动作后面即可）")
+    output(ar.add_argument_group("可选"))
+    ar.set_defaults(func=cmd_airports)
+
+    d = sub.add_parser("doctor", help="环境自检",
+                       description="检查 Google 源能不能抓、解析器有没有被改版打挂、"
+                                   "帮助文本里的参数是否都还存在。")
+    d.set_defaults(func=cmd_doctor, format="table", as_json=False)
+    return ap
+
+
+def option_strings(ap, values_only=False):
+    """把 parser 里的选项名全捞出来。
+
+    从 parser 自己身上问，比在别处手抄一份选项表可靠 —— 加了新选项不会忘同步。
+    values_only=True 时只要「后面得跟一个值」的那些，用来在 normalize_argv 里
+    分辨某个词是动作还是选项的值（`--to search`）。
+    """
+    flags, stack = set(), [ap]
+    while stack:
+        cur = stack.pop()
+        for act in cur._actions:
+            if isinstance(act, argparse._SubParsersAction):
+                stack.extend(act.choices.values())
+            elif act.option_strings and not (values_only and act.nargs == 0):
+                flags.update(act.option_strings)
+    return flags
+
+
+def value_flags(ap):
+    return option_strings(ap, values_only=True)
+
+
+def normalize_argv(argv, ap):
+    """把动作词挪到最前面，没写动作就补 search。
+
+    argparse 要求子命令必须是第一个词，但既然对外说了「参数位置无关」，
+    动作也该随便放。省略时默认 search，让最常用的操作能写成
+    `flight-deals -f 上海 -t 东京 -d +30`。
+    """
+    if not argv or argv[0] in ACTIONS or argv[0] in ("-h", "--help"):
+        return argv
+
+    vflags = value_flags(ap)
+    skip_next, action, rest = False, None, []
+    for tok in argv:
+        if skip_next:                       # 这个词是上一个选项的值，别当动作
+            skip_next = False
+        elif tok in vflags:
+            skip_next = True
+        elif action is None and tok in ACTIONS:
+            action = tok
+            continue
+        rest.append(tok)
+    return [action or "search"] + rest
+
+
+# ---------------------------------------------------------------- 程序调用入口
+
+def json_keys(ap):
+    """从 parser 反推 {参数名: (flag, 是不是开关)}。
+
+    跟 option_strings() 一个道理：现问 parser 要，而不是在别处手抄一份，
+    这样加了新选项、改了名字，JSON 入口不会悄悄跟 CLI 走散。
+    """
+    keys, stack = {}, [ap]
+    while stack:
+        cur = stack.pop()
+        for act in cur._actions:
+            if isinstance(act, argparse._SubParsersAction):
+                stack.extend(act.choices.values())
+                continue
+            for flag in act.option_strings:
+                if flag.startswith("--") and flag != "--help":
+                    keys.setdefault(flag[2:].replace("-", "_"), (flag, act.nargs == 0))
+            if act.dest and act.dest not in ("help", argparse.SUPPRESS):
+                for flag in act.option_strings:
+                    if flag.startswith("--"):
+                        keys.setdefault(act.dest, (flag, act.nargs == 0))
+                        break
+    return keys
+
+
+def argv_from_json(payload, ap):
+    """把 {"origin": "上海", "dest": "东京"} 摊成一行 argv。
+
+    工具层（Miyu 之类）调脚本时是把参数打成 JSON 从 stdin 喂进来的，argv 是空的。
+    没有这个入口，脚本会当成「没给动作」直接打印帮助然后退出 —— 更糟的是退出码 0，
+    调用方拿到一坨帮助文本还以为查询成功了。
+    """
+    if not isinstance(payload, dict):
+        raise Failed("stdin 里的 JSON 得是一个对象",
+                     '例如 {"origin": "上海", "dest": "东京", "depart": "+30"}')
+
+    known = json_keys(ap)
+    action = payload.get("action") or payload.get("cmd") or "search"
+    if action not in ACTIONS:
+        raise Failed(f"未知动作 {action!r}", f"可选：{'、'.join(ACTIONS)}")
+
+    argv, unknown = [action], []
+    for key, val in payload.items():
+        if key in ("action", "cmd") or val is None:
+            continue
+        hit = known.get(key) or known.get(str(key).replace("-", "_"))
+        if hit is None:
+            unknown.append(key)
+            continue
+        flag, is_switch = hit
+        if is_switch:                       # store_true：给了真值才带上这个 flag
+            if val:
+                argv.append(flag)
+            continue
+        vals = val if isinstance(val, (list, tuple)) else [val]
+        argv.append(flag)
+        argv.extend(str(v) for v in vals)
+
+    if unknown:
+        # 静默忽略拼错的参数最坑：调用方以为限定生效了，其实拿的是默认值的结果。
+        guess = ", ".join(sorted(known)[:12])
+        raise Failed(f"不认识这些参数：{', '.join(map(repr, unknown))}",
+                     f"可用参数有 {guess} 等；完整列表跑 doctor 或看 --help")
+    return argv
+
+
+def read_json_stdin():
+    """stdin 上有 JSON 就取回来，没有则返回 None（照常走 CLI）。"""
+    if sys.stdin is None or sys.stdin.isatty():
+        return None
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"stdin 不是合法 JSON：{exc}",
+                     '喂一个对象进来，例如 {"origin": "上海", "dest": "东京"}')
+
+
+# 这些 -- 开头的词是给别的程序用的，不是本脚本的参数
+EXTERNAL_FLAGS = {"--nocapture", "-m"}
+
+
+def stale_help_flags():
+    """揪出帮助文本/提示语里提到、但 parser 根本没有的参数。
+
+    改参数名忘了改文档是个反复犯的错，而且只有用户撞上才会发现 ——
+    所以让 doctor 每次都对一遍。
+
+    只扫面向用户的字符串：help=/description=/epilog、print() 的内容、
+    报错提示、以及模块开头的用法块。函数自己的 docstring 是写给改代码的人看的，
+    里面举例用的参数名不该被当成承诺，跳过。
+    """
+    tree = ast.parse(open(__file__, encoding="utf-8").read())
+    internal = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            doc = node.body[0] if node.body else None
+            if isinstance(doc, ast.Expr) and isinstance(doc.value, ast.Constant):
+                internal.add(id(doc.value))
+
+    known = option_strings(build_parser()) | {"-h", "--help"} | EXTERNAL_FLAGS
+    stale = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in internal:
+            continue
+        for tok in re.split(r"[\s（）()「」,，;；:：/、]+", node.value):
+            tok = tok.rstrip(".。!！?？")
+            if re.fullmatch(r"--?[a-zA-Z][\w-]*", tok) and tok not in known:
+                stale.setdefault(tok, node.lineno)
+    return stale
+
+
+def main():
+    ap = build_parser()
+    argv = sys.argv[1:]
+    try:
+        if not argv:
+            payload = read_json_stdin()
+            if payload is not None:
+                argv = argv_from_json(payload, ap)
+    except Failed as exc:
+        print(f"失败：{exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"下一步：{exc.hint}", file=sys.stderr)
+        return 1
+
+    argv = normalize_argv(argv, ap)
+    if not argv:
+        ap.print_help()
+        return 2
+
+    a = ap.parse_args(argv)
+    if getattr(a, "as_json", False):
+        a.format = "json"
+    if getattr(a, "format", "auto") == "auto":
+        a.format = "table" if sys.stdout.isatty() else "md"
+
+    try:
+        return a.func(a)
+    except Failed as exc:
+        print(f"失败：{exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"下一步：{exc.hint}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n中断", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
