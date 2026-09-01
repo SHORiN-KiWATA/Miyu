@@ -49,68 +49,126 @@ def http_get(url, headers=None, timeout=REQUEST_TIMEOUT):
 # Source 1: crackrelease.com (web scraping)
 # ============================================================
 
+class CrackReleaseLayoutChanged(RuntimeError):
+    """搜索页拿回来了、却一条也解析不出——站点结构变了,不是没有结果。
+
+    2026-09-01 就栽在这上面:crackrelease 改版(品牌换成 CrackWatch,类名换成
+    crui-/gam- 前缀),旧正则抽出 0 条,脚本却把它说成"未找到结果",于是看起来
+    像数据源没数据。解析失败必须与真·无结果区分开,不能静默同化。
+    """
+
+
+# 搜索结果卡片:<article class="crui-search-game crui-search-game--cracked">
+SEARCH_CARD_RE = re.compile(
+    r'<article[^>]*class="[^"]*crui-search-game[^"]*"[^>]*>(.*?)</article>', re.S)
+CARD_LINK_RE = re.compile(
+    r'<h3[^>]*>\s*<a[^>]*href="(https://crackrelease\.com/[^"]+)"[^>]*>(.*?)</a>', re.S)
+# <span class="crui-search-game__status"><i></i>CRACKED<b>D+0</b></span>
+CARD_STATUS_RE = re.compile(
+    r'crui-search-game__status[^>]*>\s*(?:<i[^>]*>\s*</i>\s*)?([A-Za-z]+)\s*(?:<b[^>]*>\s*([^<]*?)\s*</b>)?', re.S)
+# 站点自己的空结果态,用来把"真没有"和"解析瞎了"分开
+SEARCH_EMPTY_MARKER = "crui-search-empty"
+
+
+def strip_tags(fragment):
+    return html_mod.unescape(re.sub(r"<[^>]+>", "", fragment)).strip()
+
+
 def search_crackrelease(query, max_details=5):
-    """Search crackrelease.com, return list of game dicts."""
-    search_url = f"https://crackrelease.com/?s={urllib.parse.quote(query)}&post_type=post"
+    """搜索 crackrelease.com,返回游戏信息列表。
+
+    列表页现在自带状态与 D±N,所以状态不再依赖详情页:详情页只用来补
+    DRM/日期/场景组,抓失败也只丢补充字段,不会把状态退化成 UNKNOWN。
+    """
+    search_url = f"https://crackrelease.com/?s={urllib.parse.quote(query)}&cr_type=games"
     resp = http_get(search_url)
     html_text = resp.read().decode("utf-8", errors="replace")
 
-    # Extract Games-only links (filter out News articles)
-    entries = re.findall(
-        r'(Games|News)</a>.*?<a[^>]*href="(https://crackrelease\.com/[^"]+)"[^>]*>([^<]+)</a>',
-        html_text, re.DOTALL
-    )
-    game_links = []
+    cards = []
     seen = set()
-    for cat, url, title in entries:
-        if cat != "Games":
+    for block in SEARCH_CARD_RE.findall(html_text):
+        link = CARD_LINK_RE.search(block)
+        if not link:
             continue
+        url = link.group(1)
         if url in seen:
             continue
         seen.add(url)
-        game_links.append((html_mod.unescape(title.strip()), url))
+        status_m = CARD_STATUS_RE.search(block)
+        cards.append({
+            "title": strip_tags(link.group(2)) or "未知",
+            "url": url,
+            "status": status_m.group(1).upper() if status_m else "UNKNOWN",
+            "status_note": (status_m.group(2) or "").strip() if status_m else "",
+        })
 
-    if not game_links:
-        return []
+    if not cards and SEARCH_EMPTY_MARKER not in html_text:
+        raise CrackReleaseLayoutChanged(
+            f"搜索页返回 {len(html_text)} 字节却解析出 0 个条目,且没有站点的空结果标记"
+            f"({SEARCH_EMPTY_MARKER})——crackrelease.com 的页面结构可能已变更,"
+            f"需要更新解析规则"
+        )
 
-    # Fetch detail pages
     results = []
-    for title, url in game_links[:max_details]:
+    for card in cards[:max_details]:
+        game = {
+            "title": card["title"],
+            "status": card["status"],
+            "status_note": card["status_note"],
+            "drm": "N/A",
+            "release_date": "N/A",
+            "crack_date": "N/A",
+            "scene_group": "N/A",
+            "source": "crackrelease.com",
+            "url": card["url"],
+        }
         time.sleep(DETAIL_DELAY)
         try:
-            info = parse_crackrelease_game_page(url)
-            results.append(info)
+            detail = parse_crackrelease_game_page(card["url"])
         except Exception:
-            # If detail page fails, still include basic info
-            results.append({
-                "title": title,
-                "status": "UNKNOWN",
-                "source": "crackrelease.com",
-                "url": url,
-                "drm": "N/A",
-                "release_date": "N/A",
-                "crack_date": "N/A",
-                "scene_group": "N/A",
-            })
+            detail = {}
+        # 详情页只补充:列表页的状态与标题更可靠,不让抓失败把它们冲掉。
+        for key in ("drm", "release_date", "crack_date", "scene_group"):
+            value = detail.get(key)
+            if value and value != "N/A":
+                game[key] = value
+        if game["title"] in ("未知", "") and detail.get("title"):
+            game["title"] = detail["title"]
+        if game["status"] == "UNKNOWN" and detail.get("status"):
+            game["status"] = detail["status"]
+        if not game["status_note"] and detail.get("status_note"):
+            game["status_note"] = detail["status_note"]
+        results.append(game)
     return results
 
 
+# 详情页:<h2 class="gam-game-title">Elden Ring</h2>
+DETAIL_TITLE_RE = re.compile(
+    r'<h[12][^>]*class="[^"]*gam-game-title[^"]*"[^>]*>(.*?)</h[12]>', re.S)
+# <span class="gam-status-pill"><i></i>CRACKED</span>
+DETAIL_STATUS_RE = re.compile(
+    r'gam-status-pill[^>]*>\s*(?:<i[^>]*>\s*</i>\s*)?([A-Za-z]+)', re.S)
+
+
 def parse_crackrelease_game_page(url):
-    """Parse a crackrelease.com game page, return game info dict."""
+    """解析 crackrelease.com 的游戏页,返回信息字典。"""
     resp = http_get(url)
     html_text = resp.read().decode("utf-8", errors="replace")
 
-    # Status: <h2>CRACKED</h2> etc.
-    status_m = re.search(r"<h2[^>]*>\s*(CRACKED|UNCRACKED|UNRELEASED)\s*</h2>", html_text, re.IGNORECASE)
+    status_m = DETAIL_STATUS_RE.search(html_text)
     status = status_m.group(1).upper() if status_m else "UNKNOWN"
 
     after_m = re.search(r"(AFTER\s+\d+\s+DAYS?|BEFORE\s+\d+\s+DAYS?)", html_text, re.IGNORECASE)
     after_text = after_m.group(1) if after_m else ""
 
-    # Parse label-value pairs
+    title_m = DETAIL_TITLE_RE.search(html_text)
+    if not title_m:
+        title_m = re.search(r"<h1[^>]*>(.*?)</h1>", html_text, re.S)
+    title = strip_tags(title_m.group(1)) if title_m else "未知"
+
+    # 标签-值对(DRM / 日期 / 场景组)的结构改版后仍然成立,原样保留。
     info = {}
     label_map = {
-        "GAME": "title",
         "RELEASE DATE": "release_date",
         "CRACK DATE": "crack_date",
         "DRM PROTECTION": "drm",
@@ -129,7 +187,7 @@ def parse_crackrelease_game_page(url):
                 info[key] = html_mod.unescape(val)
 
     return {
-        "title": info.get("title", "未知"),
+        "title": title,
         "status": status,
         "status_note": after_text,
         "drm": info.get("drm", "N/A"),
@@ -190,7 +248,10 @@ def search_isitcracked(query, limit=10):
 def format_status(status, note):
     label = STATUS_ICONS.get(status, status)
     if note:
-        label = f"{label} ({note.lower()})"
+        # 旧版详情页给的是 "AFTER 15 DAYS" 这类句子,小写读着顺;新版列表页给的
+        # 是 "D+15" 这种代号,小写会变成 "d+15",原样保留。
+        pretty = note if re.fullmatch(r"D[+-]\d+", note.strip(), re.IGNORECASE) else note.lower()
+        label = f"{label} ({pretty})"
     return label
 
 
@@ -254,8 +315,15 @@ def main():
 
     # --- Source 1: crackrelease.com ---
     cr_games = []
+    layout_warning = ""
     try:
         cr_games = search_crackrelease(query, max_details=limit)
+    except CrackReleaseLayoutChanged as e:
+        # 解析失败要说人话,并且要走 stdout——这条必须让读结果的人看见。
+        # 混进"未找到结果"正是这个脚本坏了却没人发现的原因。
+        layout_warning = f"⚠️ 主数据源 crackrelease.com 解析失败:{e}"
+        print(layout_warning)
+        print()
     except Exception as e:
         print(f"(crackrelease.com 不可用: {e})", file=sys.stderr)
 
@@ -269,6 +337,9 @@ def main():
             ic_games = search_isitcracked(query, limit=limit)
             if ic_games:
                 print_results(query, ic_games, "isitcracked.com")
+            elif layout_warning:
+                print(f'搜索 "{query}" — 回退源 isitcracked.com 也没有收录。')
+                print("注意：主数据源是解析失败而非无结果，上面的结论不代表该游戏未被收录。")
             else:
                 print(f'搜索 "{query}" — 两个数据源均未找到结果。')
                 print("建议：尝试用英文游戏名搜索，或更换关键词。")
