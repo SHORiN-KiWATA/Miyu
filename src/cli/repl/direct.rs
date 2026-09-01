@@ -394,6 +394,21 @@ pub(in crate::cli) async fn run_direct_repl(
             match run_persona_picker(paths, command_args) {
                 Ok(true) => {
                     reload_repl_config(paths, &state, &mut config, &mut client)?;
+                    // 人格是会话的命名空间维度:切人格后必须重绑到新人格的
+                    // 会话(与启动时 ensure_repl_session 同一条语义),否则 agent
+                    // 还挂在旧人格的会话上,人格提示词与历史命名空间错位。
+                    let persona = if mode == AgentMode::Dev {
+                        crate::state::DEV_PERSONA.to_string()
+                    } else {
+                        config.active_persona_scope()
+                    };
+                    let repl_session_id = state.ensure_repl_session(&persona)?;
+                    state.adopt_session(&repl_session_id);
+                    apply_session_model_override(&state, &mut config);
+                    client = OpenAiCompatibleClient::from_config(&config, paths)?;
+                    input_history = load_repl_input_history(&state, paths)?;
+                    cumulative_tokens =
+                        state.session_cumulative_token_totals().unwrap_or_default();
                     footer = ReplFooterStatus::from_config(
                         &config,
                         agent.effective_context_tokens()?,
