@@ -147,7 +147,7 @@ async fn parallel_task_calls_run_concurrently_and_map_outputs() {
     let mut events = Vec::new();
     let started = std::time::Instant::now();
     let outputs = agent
-        .execute_parallel_task_calls(&calls, &std::collections::BTreeSet::new(), &mut |event| {
+        .execute_parallel_task_calls(&calls, &mut |event| {
             match &event {
                 AgentEvent::ToolCall { call_id, .. } => events.push((call_id.clone(), "call")),
                 AgentEvent::ToolResult {
@@ -181,7 +181,7 @@ async fn parallel_task_calls_run_concurrently_and_map_outputs() {
 
     // Fewer than two task calls: empty map, serial path handles it.
     let single = agent
-        .execute_parallel_task_calls(&calls[..1], &std::collections::BTreeSet::new(), &mut |_| {
+        .execute_parallel_task_calls(&calls[..1], &mut |_| {
             Ok(())
         })
         .await

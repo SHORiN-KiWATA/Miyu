@@ -43,9 +43,9 @@ pub(in crate::config_tui) fn edit_settings(
         ),
         Field::new(
             t("Tool loading mode", "工具加载模式"),
-            config.tools.loading_mode.clone(),
+            normalize_tools_loading_mode(&config.tools.loading_mode),
         )
-        .choices(&["full", "hybrid", "stub"]),
+        .choices(&["full", "stub"]),
         Field::boolean(
             t("Remember loaded tools", "记住已加载工具"),
             config.tools.persist_loaded_tools,
@@ -179,9 +179,11 @@ pub(in crate::config_tui) fn parse_mixed_endpoint_display(value: &str) -> String
 }
 
 pub(in crate::config_tui) fn normalize_tools_loading_mode(value: &str) -> String {
+    // hybrid 档 09-01 删除;它和 lazy 同属懒加载家族,历史值一律归入需加载,
+    // 悄悄升成 full 会让旧配置的工具面字节数翻好几倍。
     match value.trim() {
-        "lazy" => "hybrid".to_string(),
-        value => value.to_string(),
+        "full" => "full".to_string(),
+        _ => "stub".to_string(),
     }
 }
 

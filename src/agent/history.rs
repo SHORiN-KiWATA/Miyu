@@ -27,18 +27,6 @@ impl Agent {
             );
             return Ok(Vec::new());
         };
-        let track_loaded_tool_sources = self.tools_enabled
-            && self.config.tools.persist_loaded_tools
-            && tools::is_hybrid_loading_mode(&self.config.tools.loading_mode);
-        if track_loaded_tool_sources {
-            self.effective_context_tokens()?;
-        }
-        let mut loaded_tool_sources = if track_loaded_tool_sources {
-            Some(self.state.load_session_loaded_tools_with_sources()?)
-        } else {
-            None
-        };
-        let expected_loaded_tools = loaded_tool_sources.clone();
         let mut total = usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
         let trigger = (context_window as f32 * self.trim_at_ratio).max(1.0) as usize;
         if total < trigger {
@@ -47,17 +35,6 @@ impl Agent {
 
         let target = (context_window as f32 * (1.0 - self.trim_batch_ratio)).max(1.0) as usize;
         let turns = self.state.load_visible_turns()?;
-        let mut loaded_tool_tokens = loaded_tool_sources
-            .as_ref()
-            .map(|items| {
-                self.tool_definition_tokens(
-                    &items
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect::<BTreeSet<_>>(),
-                )
-            })
-            .unwrap_or(0);
         let mut count = 0usize;
         for turn in turns
             .iter()
@@ -76,20 +53,6 @@ impl Agent {
                 turn_context_tokens(turn)
             };
             total = total.saturating_sub(turn_tokens);
-            if let Some(items) = loaded_tool_sources.as_mut() {
-                items.retain(|(_, source)| source.as_deref() != Some(turn.turn_id.as_str()));
-                let remaining = items
-                    .iter()
-                    .map(|(name, _)| name.clone())
-                    .collect::<BTreeSet<_>>();
-                let remaining_tokens = self.tool_definition_tokens(&remaining);
-                if remaining_tokens <= loaded_tool_tokens {
-                    total = total.saturating_sub(loaded_tool_tokens - remaining_tokens);
-                } else {
-                    total = total.saturating_add(remaining_tokens - loaded_tool_tokens);
-                }
-                loaded_tool_tokens = remaining_tokens;
-            }
             count += 1;
         }
         let turns = self.state.oldest_evictable_visible_turns(count)?;
@@ -116,12 +79,7 @@ impl Agent {
                 )
             );
         }
-        archive_and_delete_visible_turns_checked(
-            &self.state,
-            &self.memory,
-            &turns,
-            expected_loaded_tools.as_deref(),
-        )
+        archive_and_delete_visible_turns_checked(&self.state, &self.memory, &turns, None)
     }
 
     pub(in crate::agent) fn initial_loaded_tools(
@@ -342,13 +300,10 @@ impl Agent {
         if !self.tools_enabled {
             return Ok(Vec::new());
         }
-        let loaded = self.initial_loaded_tools(&[])?;
         let tools = self.tools.lock().unwrap();
         Ok(
-            if tools::is_stub_loading_mode(&self.config.tools.loading_mode) {
+            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.config)) {
                 tools.stub_definitions()
-            } else if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
-                tools.lazy_definitions(&loaded)
             } else {
                 tools.definitions()
             },

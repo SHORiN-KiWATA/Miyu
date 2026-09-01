@@ -204,6 +204,7 @@ pub(super) fn test_provider(id: &str, base_url: &str) -> ProviderConfig {
         models: Vec::new(),
         model_context_window: std::collections::HashMap::new(),
         model_temperature: std::collections::HashMap::new(),
+        model_tools_loading_mode: std::collections::HashMap::new(),
         model_modalities: std::collections::HashMap::new(),
         model_costs: std::collections::HashMap::new(),
         default_model: String::new(),

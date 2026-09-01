@@ -748,6 +748,7 @@ fn extra_body_roundtrip() {
         models: vec![],
         model_context_window: HashMap::new(),
         model_temperature: HashMap::new(),
+        model_tools_loading_mode: HashMap::new(),
         model_modalities: HashMap::new(),
         model_costs: HashMap::new(),
         default_model: String::new(),

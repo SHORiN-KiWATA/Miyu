@@ -173,6 +173,7 @@ async fn binary_image_reaches_vision_pool_then_text_model() {
         models: vec!["vision-model".to_string()],
         model_context_window: Default::default(),
         model_temperature: HashMap::new(),
+        model_tools_loading_mode: HashMap::new(),
         model_modalities: [(
             "vision-model".to_string(),
             vec!["text".to_string(), "image".to_string()],

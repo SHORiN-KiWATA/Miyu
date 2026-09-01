@@ -44,6 +44,8 @@ impl Agent {
         // opencode / Claude Code all converge on exactly one attempt).
         let mut overflow_recovery_attempted = false;
         let mut loaded_tools = self.initial_loaded_tools(messages)?;
+        // 已经给过契约提示的桩工具:同一工具反复失败不必每次都重发一遍 schema。
+        let mut contract_hinted = std::collections::BTreeSet::<String>::new();
         self.pending_remote_tool_calls.lock().unwrap().clear();
         let mut usage_accumulator = UsageAccumulator::default();
         // v7 cache write-grace: provider prefix-cache writes are async, so a
@@ -109,10 +111,10 @@ impl Agent {
 
             let definitions = if self.tools_enabled && !tool_limit_reached {
                 let tools = self.tools.lock().unwrap();
-                if tools::is_stub_loading_mode(&self.config.tools.loading_mode) {
+                // 有效模式按候选模型池解析(模型级覆盖,任一成员要 full 则整池
+                // full)——约束解码型模型吃不下空壳 stub(09-01)。
+                if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.config)) {
                     tools.stub_definitions()
-                } else if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
-                    tools.lazy_definitions(&loaded_tools)
                 } else {
                     tools.definitions()
                 }
@@ -618,7 +620,7 @@ impl Agent {
             let mut parallel_task_outputs = if defer_sibling_tools || repeat_skip {
                 std::collections::HashMap::new()
             } else {
-                self.execute_parallel_task_calls(&result.tool_calls, &loaded_tools, on_event)
+                self.execute_parallel_task_calls(&result.tool_calls, on_event)
                     .await?
             };
             for (call_index, call) in result.tool_calls.into_iter().enumerate() {
@@ -750,37 +752,6 @@ impl Agent {
                 // 模式级 ReadOnly 权限门随闲聊模式一并删除:拒绝层现在是
                 // registry 的单调 guard(软失败),不可用工具靠 registry 组合
                 // 不注册(平台 restricted 同理),未知工具在分发处软失败。
-                {
-                    let tools = self.tools.lock().unwrap();
-                    if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode)
-                        && call.function.name != "load_tools"
-                        && tools.requires_lazy_load(&call.function.name, &loaded_tools)
-                    {
-                        if tools.can_auto_load_direct_call(&call.function.name) {
-                            loaded_tools.insert(call.function.name.clone());
-                            if self.config.tools.persist_loaded_tools {
-                                self.state.add_session_loaded_tools(
-                                    &[call.function.name.clone()],
-                                    Some(current_turn_id),
-                                )?;
-                            }
-                        } else {
-                            let output = format!(
-                                "tool error: tool `{}` is not loaded yet. Call load_tools first with {{\"names\":[\"{}\"]}}.",
-                                call.function.name,
-                                call.function.name,
-                            );
-                            on_event(AgentEvent::ToolResult {
-                                call_id: call_id.clone(),
-                                name: event_name.clone(),
-                                ok: false,
-                                output: output.clone(),
-                            })?;
-                            messages.push(ChatMessage::tool(call.id, output));
-                            continue;
-                        }
-                    }
-                }
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
                 let tool_future = {
                     let tools = self.tools.lock().unwrap();
@@ -794,10 +765,29 @@ impl Agent {
                         },
                     )
                 };
+                // 桩工具失败时把真契约补进返回体(每个工具每回合只补一次)。
+                let mut attach_contract = |message: String| -> String {
+                    if !tools::is_stub_loading_mode(&self.config.tools.loading_mode) {
+                        return message;
+                    }
+                    if !contract_hinted.insert(call.function.name.clone()) {
+                        return message;
+                    }
+                    let tools = self.tools.lock().unwrap();
+                    if !tools.is_stub_presented(&call.function.name) {
+                        return message;
+                    }
+                    match tools.contract_text(&call.function.name) {
+                        Some(contract) => format!(
+                            "{message}\n\nThis tool was declared with an empty parameter shell, so its real schema follows. Call it again with these arguments at the top level.{contract}"
+                        ),
+                        None => message,
+                    }
+                };
                 let tool_future = match tool_future {
                     Ok(f) => f,
                     Err(err) => {
-                        let output = format!("tool error: {err}");
+                        let output = attach_contract(format!("tool error: {err}"));
                         on_event(AgentEvent::ToolResult {
                             call_id: call_id.clone(),
                             name: event_name.clone(),
@@ -826,13 +816,14 @@ impl Agent {
                                     while let Ok(progress) = progress_rx.try_recv() {
                                         emit_tool_progress(on_event, &call_id, &event_name, progress)?;
                                     }
+                                    let output = attach_contract(format!("tool error: {err}"));
                                     on_event(AgentEvent::ToolResult {
                                         call_id: call_id.clone(),
                                         name: event_name.clone(),
                                         ok: false,
-                                        output: format!("tool error: {err}"),
+                                        output: output.clone(),
                                     })?;
-                                    (format!("tool error: {err}"), false)
+                                    (output, false)
                                 }
                             };
                         }

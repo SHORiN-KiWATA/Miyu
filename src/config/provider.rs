@@ -108,6 +108,12 @@ pub struct ProviderConfig {
     /// 菜单里的温度曾误写供应商全局,牵连所有模型。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_temperature: HashMap<String, f32>,
+    /// 按模型工具加载模式覆盖("full"/"stub");缺项回退全局
+    /// `tools.loading_mode`。约束解码型模型(如 bigmodel glm-5.3-flash)把
+    /// 参数生成硬限制在声明 schema 内,吃不下空壳 stub,给它们单独配 full。
+    /// 池级解析取最保守,见 `tools::effective_tools_loading_mode`(09-01)。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_tools_loading_mode: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_modalities: HashMap<String, Vec<String>>,
     /// 手动模型价格,键为模型名;设了就覆盖 models.dev 目录价。
@@ -276,6 +282,7 @@ impl ProviderConfig {
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
             model_costs: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
@@ -297,6 +304,7 @@ impl ProviderConfig {
             models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
             model_costs: HashMap::new(),
             default_model: String::new(),
@@ -369,6 +377,7 @@ impl ProviderConfig {
             models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
             model_costs: HashMap::new(),
             default_model: String::new(),
@@ -390,6 +399,7 @@ impl ProviderConfig {
             models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
             model_costs: HashMap::new(),
             default_model: String::new(),

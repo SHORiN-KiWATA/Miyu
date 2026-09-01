@@ -200,9 +200,9 @@ pub(in crate::agent) fn estimate_result_tokens(result: &ChatResult) -> usize {
 /// 维度让碰撞必须两项同时撞上。真撞了后果也只是 token **估**值偏一点（这个
 /// 数只用于溢出记账，不参与请求组装），不会动到字节纯度。
 ///
-/// 表有上限：hybrid/lazy 模式下每种「已装载工具子集」是一个不同的键，一次
-/// 会话里会攒出好些个。满了整表清空——重建一次 38 ms，而不是留个逐出策略
-/// 在这儿养 bug。
+/// 表有上限：不同模式/注册面各是一个键（hybrid 档在世时每种「已装载工具
+/// 子集」还各占一个，09-01 删档后键少了，上限留着防御）。满了整表清空——
+/// 重建一次 38 ms，而不是留个逐出策略在这儿养 bug。
 static TOOL_TOKEN_CACHE: std::sync::LazyLock<
     std::sync::Mutex<rustc_hash::FxHashMap<(u64, usize), usize>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(rustc_hash::FxHashMap::default()));

@@ -467,9 +467,10 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }
-    if uses_load_tools(&config.tools.loading_mode) {
-        load_tools::register(&mut registry);
-    }
+    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
+    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
+    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
+    load_tools::register(&mut registry);
     registry
 }
 
@@ -534,22 +535,60 @@ pub(crate) fn rescope_platform_memory_tools(
     }
 }
 
-pub fn is_hybrid_loading_mode(mode: &str) -> bool {
-    matches!(mode.trim(), "hybrid" | "lazy")
-}
-
 /// Stub loading mode (v7 §八点七): every lazy tool stays registered as a
 /// permanently visible stub (real name + one-line summary + permissive
 /// parameter shell), so the provider-visible tools array is byte-constant for
 /// the whole session; full contracts are fetched on demand through
 /// `load_tools` as a tool result that rides the conversation tail.
+///
+/// "hybrid"/"lazy"(按已加载集合增长声明数组的旧档)09-01 删除,历史配置值
+/// 按「需加载」处理——它们同属懒加载家族,悄悄升成 full 会让旧配置的工具面
+/// 字节数翻好几倍。
 pub fn is_stub_loading_mode(mode: &str) -> bool {
-    mode.trim() == "stub"
+    matches!(mode.trim(), "stub" | "hybrid" | "lazy")
 }
 
-/// Modes that need the `load_tools` catalog tool registered.
-pub fn uses_load_tools(mode: &str) -> bool {
-    is_hybrid_loading_mode(mode) || is_stub_loading_mode(mode)
+/// 本次请求的有效工具加载模式,按候选模型池解析。
+///
+/// 单成员规则:模型级覆盖(`provider.model_tools_loading_mode`)优先,缺项回退
+/// 全局 `tools.loading_mode`。池级规则:任一成员要求 full 则整池 full——
+/// 一次请求只有一张工具面,而命中哪个模型(以及故障转移换给谁)是发送时才
+/// 决定的,这张脸必须让池里任何成员都能用;full 全兼容,stub 只是省 token 的
+/// 优化,「就高不就低」恒安全。多模态池并入候选:带图回合可能路由过去,
+/// 工具面跟着请求走。
+///
+/// 背景(09-01):约束解码型供应商(实测 bigmodel glm-5.3-flash)把工具参数
+/// 生成硬限制在声明 schema 内,空壳 stub 让它永远只能发 `{}`,契约文本在
+/// 对话里也救不回(裸 API 8/8 复现)。给这类模型配模型级 full,其余照旧 stub。
+pub fn effective_tools_loading_mode(config: &AppConfig) -> String {
+    let canonical = |mode: &str| {
+        if mode.trim() == "full" {
+            "full"
+        } else {
+            "stub"
+        }
+    };
+    let global = canonical(&config.tools.loading_mode);
+    let candidates = config
+        .active_provider_models
+        .iter()
+        .flatten()
+        .chain(config.active_multimodal_provider_models.iter().flatten());
+    let mut any = false;
+    for entry in candidates {
+        any = true;
+        let mode = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == entry.provider_id)
+            .and_then(|provider| provider.model_tools_loading_mode.get(&entry.model))
+            .map(|mode| canonical(mode))
+            .unwrap_or(global);
+        if mode == "full" {
+            return "full".to_string();
+        }
+    }
+    if any { "stub" } else { global }.to_string()
 }
 
 /// Build/Dev 模式工具目录:极简开发形态,"模型可见表面积最小化"。
@@ -592,9 +631,10 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }
-    if uses_load_tools(&config.tools.loading_mode) {
-        load_tools::register(&mut registry);
-    }
+    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
+    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
+    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
+    load_tools::register(&mut registry);
     registry
 }
 
@@ -638,9 +678,10 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
             tracing::warn!(error = %error, "failed to register skills for restricted platform registry");
         }
     }
-    if uses_load_tools(&config.tools.loading_mode) {
-        load_tools::register(&mut registry);
-    }
+    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
+    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
+    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
+    load_tools::register(&mut registry);
     registry
 }
 
@@ -716,6 +757,62 @@ mod tests {
             string_list(Some(&json!("[not json"))),
             vec!["[not json".to_string()]
         );
+    }
+
+    /// 有效加载模式按候选池取最保守:任一成员要 full 则整池 full——一次请求
+    /// 只有一张工具面,命中与故障转移都在发送时才定,这张脸必须全员可用。
+    /// 约束解码型模型(实测 bigmodel glm-5.3-flash)吃不下空壳 stub,是模型级
+    /// full 覆盖存在的理由(09-01)。
+    #[test]
+    fn effective_loading_mode_takes_the_most_conservative_pool_member() {
+        use crate::config::ActiveProviderModelConfig;
+        let mut config = AppConfig::default();
+        config.tools.loading_mode = "stub".to_string();
+        let provider_id = config.providers[0].id.clone();
+        let pick = |model: &str| ActiveProviderModelConfig {
+            provider_id: provider_id.clone(),
+            model: model.to_string(),
+        };
+
+        // 空池回退全局。
+        config.active_provider_models = None;
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+
+        // 全员跟随全局(需加载)。
+        config.active_provider_models = Some(vec![pick("lenient-a"), pick("lenient-b")]);
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+
+        // 混进一个模型级 full,整池升 full。
+        config.providers[0]
+            .model_tools_loading_mode
+            .insert("locked".to_string(), "full".to_string());
+        config
+            .active_provider_models
+            .as_mut()
+            .unwrap()
+            .push(pick("locked"));
+        assert_eq!(effective_tools_loading_mode(&config), "full");
+
+        // 多模态池同样参与候选(带图回合可能路由过去,工具面跟请求走)。
+        config.active_provider_models = Some(vec![pick("lenient-a")]);
+        config.active_multimodal_provider_models = Some(vec![pick("locked")]);
+        assert_eq!(effective_tools_loading_mode(&config), "full");
+        config.active_multimodal_provider_models = None;
+
+        // 模型级覆盖压过全局:全局 full,钉死的单模型显式需加载 → stub。
+        config.tools.loading_mode = "full".to_string();
+        config.providers[0]
+            .model_tools_loading_mode
+            .insert("thrifty".to_string(), "stub".to_string());
+        config.active_provider_models = Some(vec![pick("thrifty")]);
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+
+        // 已删档的 hybrid/lazy 旧值按需加载处理,不悄悄升 full。
+        config.tools.loading_mode = "hybrid".to_string();
+        config.active_provider_models = Some(vec![pick("lenient-a")]);
+        assert_eq!(effective_tools_loading_mode(&config), "stub");
+        assert!(is_stub_loading_mode("hybrid"));
+        assert!(is_stub_loading_mode("lazy"));
     }
 
     /// 回归:dev 模式要有看图(vision_analyze),且随 vision 插件开关走。

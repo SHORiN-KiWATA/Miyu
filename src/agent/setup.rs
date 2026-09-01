@@ -380,8 +380,7 @@ impl Agent {
         let (messages, _) = self.chat_messages("", "")?;
         let mut tokens = overflow::estimate_messages_tokens(&messages) as u64;
         if self.tools_enabled {
-            let loaded_tools = self.initial_loaded_tools(&messages)?;
-            tokens = tokens.saturating_add(self.tool_definition_tokens(&loaded_tools) as u64);
+            tokens = tokens.saturating_add(self.tool_definition_tokens() as u64);
         }
         Ok(tokens)
     }
@@ -398,18 +397,14 @@ impl Agent {
         self.state.session_cumulative_token_totals()
     }
 
-    pub(in crate::agent) fn tool_definition_tokens(
-        &self,
-        loaded_tools: &BTreeSet<String>,
-    ) -> usize {
+    pub(in crate::agent) fn tool_definition_tokens(&self) -> usize {
         let tools = self.tools.lock().unwrap();
-        let definitions = if tools::is_stub_loading_mode(&self.config.tools.loading_mode) {
-            tools.stub_definitions()
-        } else if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode) {
-            tools.lazy_definitions(loaded_tools)
-        } else {
-            tools.definitions()
-        };
+        let definitions =
+            if tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.config)) {
+                tools.stub_definitions()
+            } else {
+                tools.definitions()
+            };
         estimate_tool_definition_tokens(&definitions)
     }
 

@@ -12,12 +12,11 @@ impl Agent {
     /// Runs a batch's `task` tool calls concurrently, in waves bounded by
     /// `tools.subagent_concurrency`. Subagents are independent by design, so
     /// fanning them out preserves semantics while collapsing wall-clock time.
-    /// Batches with fewer than two task calls — or a not-yet-loaded task tool
-    /// (hybrid lazy loading) — return an empty map and take the serial path.
+    /// Batches with fewer than two task calls return an empty map and take the
+    /// serial path.
     pub(in crate::agent) async fn execute_parallel_task_calls<F>(
         &self,
         calls: &[crate::llm::ToolCall],
-        loaded_tools: &std::collections::BTreeSet<String>,
         on_event: &mut F,
     ) -> Result<std::collections::HashMap<usize, GroupTaskOutput>>
     where
@@ -32,14 +31,6 @@ impl Agent {
             .collect();
         if eligible.len() < 2 {
             return Ok(outputs);
-        }
-        {
-            let tools = self.tools.lock().unwrap();
-            if tools::is_hybrid_loading_mode(&self.config.tools.loading_mode)
-                && tools.requires_lazy_load("task", loaded_tools)
-            {
-                return Ok(outputs);
-            }
         }
 
         struct Slot {

@@ -89,7 +89,10 @@ pub(crate) fn default_true() -> bool {
 
 pub(crate) fn default_tools_loading_mode() -> String {
     // v7 §八点七 stub mode: byte-constant tools array + on-demand contracts.
-    // "hybrid" (grow the tools array on load) and "full" remain available.
+    // "full" remains available and can be set per model
+    // (provider.model_tools_loading_mode) for schema-strict providers; the
+    // old "hybrid" tier (grow the tools array on load) was removed 09-01 and
+    // legacy values fall back to stub.
     "stub".to_string()
 }
 

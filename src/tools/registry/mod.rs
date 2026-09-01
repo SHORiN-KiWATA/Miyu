@@ -228,17 +228,26 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn requires_lazy_load(&self, name: &str, loaded: &BTreeSet<String>) -> bool {
-        self.tools
-            .get(name)
-            .map(|tool| !tool.always_loaded && !loaded.contains(name))
-            .unwrap_or(false)
+    /// stub 模式下声明给模型的参数壳是空的(`{"type":"object"}`),真契约只以
+    /// 文本形式出现在 load_tools 的返回里。有的模型信声明的 schema 而不是对话
+    /// 里的文本,于是发一个空的 `{}` 上来,撞出一句看不懂要什么的校验错。
+    /// 失败时把契约补进返回体,让它一个来回自己纠正 —— 这是对话尾部,不动被
+    /// 缓存的工具前缀。
+    pub fn contract_text(&self, name: &str) -> Option<String> {
+        let tool = self.tools.get(name)?;
+        let definition = tool.definition();
+        let schema = serde_json::to_string(&definition.function.parameters).ok()?;
+        Some(format!(
+            "\n\n### {}\n{}\nschema: {schema}",
+            definition.function.name, definition.function.description
+        ))
     }
 
-    pub fn can_auto_load_direct_call(&self, name: &str) -> bool {
+    /// 该工具这轮是不是以桩的形态(空参数壳)发给模型的。
+    pub fn is_stub_presented(&self, name: &str) -> bool {
         self.tools
             .get(name)
-            .map(|tool| tool.load_policy == LoadPolicy::Summary && !tool.always_loaded)
+            .map(|tool| !tool.always_loaded)
             .unwrap_or(false)
     }
 
@@ -575,6 +584,34 @@ mod tests {
         )
     }
 
+    /// 桩工具在 stub 模式下声明的是空参数壳,失败时必须能从返回体拿到真
+    /// schema —— 否则信声明不信对话文本的模型会一直发 `{}`,撞出一句
+    /// "todos array is required" 却不知道要什么(08-31 实测四连失败)。
+    #[test]
+    fn stub_presented_tools_can_hand_back_their_real_contract() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolSpec::new(
+            "todo_like",
+            "keeps a list",
+            json!({"type":"object","properties":{"todos":{"type":"array"}}}),
+            |_| async { Ok(String::new()) },
+        )
+        .with_always_loaded(false));
+        assert!(registry.is_stub_presented("todo_like"));
+        // 常驻工具带着真 schema 发出去,不需要这条补救
+        registry.register(ToolSpec::new(
+            "resident",
+            "always there",
+            json!({"type":"object"}),
+            |_| async { Ok(String::new()) },
+        ));
+        assert!(!registry.is_stub_presented("resident"));
+        let contract = registry.contract_text("todo_like").expect("contract");
+        assert!(contract.contains("todo_like"));
+        assert!(contract.contains("todos"), "真 schema 必须在里面: {contract}");
+        assert!(registry.contract_text("nope").is_none());
+    }
+
     /// 兜底超时:未声明 timeout_seconds 的慢工具被中止,错误走普通
     /// tool error 路径(轮次存活),不会无限挂死回合。
     #[tokio::test]
@@ -863,24 +900,6 @@ mod tests {
 
         let loaded = BTreeSet::from(["custom_lazy_tool".to_string()]);
         assert!(names(registry.lazy_definitions(&loaded)).contains("custom_lazy_tool"));
-    }
-
-    #[test]
-    fn lazy_gate_requires_load_for_on_demand_builtin_tools() {
-        let mut registry = ToolRegistry::new();
-        registry.register(
-            ToolSpec::new(
-                "custom_lazy_tool",
-                "old",
-                json!({"type":"object","properties":{}}),
-                |_| async { Ok(String::new()) },
-            )
-            .with_always_loaded(false),
-        );
-        assert!(registry.requires_lazy_load("custom_lazy_tool", &BTreeSet::new()));
-
-        let loaded = BTreeSet::from(["custom_lazy_tool".to_string()]);
-        assert!(!registry.requires_lazy_load("custom_lazy_tool", &loaded));
     }
 
     #[test]

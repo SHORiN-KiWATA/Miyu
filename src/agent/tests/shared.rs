@@ -60,6 +60,7 @@ pub(super) fn queue_test_config(base_url: String) -> AppConfig {
             models: vec!["test-model".to_string()],
             model_context_window: Default::default(),
             model_temperature: HashMap::new(),
+            model_tools_loading_mode: HashMap::new(),
             model_modalities: Default::default(),
             model_costs: Default::default(),
             default_model: "test-model".to_string(),

@@ -655,6 +655,7 @@ pub(in crate::config_tui) fn edit_provider_form(
             models: provider.models.clone(),
             model_context_window: provider.model_context_window.clone(),
             model_temperature: provider.model_temperature.clone(),
+            model_tools_loading_mode: provider.model_tools_loading_mode.clone(),
             model_modalities: provider.model_modalities.clone(),
             model_costs: provider.model_costs.clone(),
             default_model: provider.default_model.clone(),
@@ -767,6 +768,19 @@ pub(in crate::config_tui) fn edit_model_form(
             ),
             price_text(cost.and_then(|c| c.cache_read)),
         ),
+        // 按模型工具加载模式覆盖:约束解码型模型(实测 bigmodel glm-5.3-flash)
+        // 把参数生成硬限制在声明 schema 内,吃不下空壳 stub,要单独配完整。
+        // 池级解析取最保守(tools::effective_tools_loading_mode)。
+        Field::new(
+            t("Tool loading mode", "工具加载模式"),
+            provider
+                .model_tools_loading_mode
+                .get(model)
+                .map(|mode| crate::config_tui::settings::normalize_tools_loading_mode(mode))
+                .unwrap_or_default(),
+        )
+        .choices(&["", "full", "stub"])
+        .empty_choice_label(t("inherit global", "跟随全局")),
     ];
     loop {
         if !run_form(stdout, t(" EDIT MODEL ", " 编辑模型 "), &mut fields)? {
@@ -857,6 +871,17 @@ pub(in crate::config_tui) fn edit_model_form(
             }
             Err(_) => {
                 provider.model_temperature.remove(model);
+            }
+        }
+        match fields[9].value.trim() {
+            "" => {
+                provider.model_tools_loading_mode.remove(model);
+            }
+            mode => {
+                provider.model_tools_loading_mode.insert(
+                    model.to_string(),
+                    crate::config_tui::settings::normalize_tools_loading_mode(mode),
+                );
             }
         }
         return Ok(true);
