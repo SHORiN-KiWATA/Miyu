@@ -874,9 +874,34 @@ pub(in crate::web) async fn handle_ipc_turn(
             }
         };
         if record.kind == "resync_required" {
+            // 共享事件广播缓冲(4096 条/4MB)被**别的会话**的密集事件冲爆、本
+            // 连接一时落后时,replay 会返回 resync。以前这里直接给前端发
+            // 「the turn was cancelled」并断流——可本连接的回合仍在 daemon 里
+            // 好好跑着,于是并发的另一个会话被误报「已取消」(09-01 跨会话
+            // 误取消根因:两个会话并行,一个刷屏把另一个的事件挤出缓冲)。
+            //
+            // 正确做法:从最新事件处**续流**,不谎报取消。丢失的中间 chunk
+            // 不再渲染(前端可能有一小段空白),但回合正常收尾,run.completed
+            // 照常到达。只有回合确已结束(连终态事件都被挤掉)时才收尾——
+            // 且发的是「刷新可见」而非「已取消」,前端据此重取最终状态。
+            last_id = serde_json::from_str::<Value>(&record.data)
+                .ok()
+                .and_then(|data| data.get("latest_event_id").and_then(Value::as_u64))
+                .unwrap_or(last_id);
+            let still_running = state
+                .manager
+                .lock()
+                .unwrap()
+                .active_runs
+                .contains_key(&run_id);
+            if still_running {
+                continue;
+            }
             ipc::send(
                 stream,
-                &IpcFrame::error("Miyu core event history was exhausted; the turn was cancelled"),
+                &IpcFrame::error(
+                    "Miyu core event history was exhausted; the reply already finished — refresh to see it",
+                ),
             )
             .await?;
             break;

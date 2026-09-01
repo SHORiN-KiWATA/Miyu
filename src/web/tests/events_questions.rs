@@ -19,6 +19,33 @@ fn stale_event_cursor_receives_resync_marker() {
     assert!(next > replay[0].id);
 }
 
+/// resync 后从 `latest_event_id` 续读能收到后续事件——这是 handle_ipc_turn
+/// 「resync 时续流而非误报已取消」修复(09-01 跨会话误取消)的核心前提:一个
+/// 会话的密集事件把另一会话的游标挤出共享缓冲时,后者的回合仍在跑,应从
+/// resync 标记带的 `latest_event_id` 继续,最终照常收到 run.completed。
+#[test]
+fn resync_marker_carries_a_cursor_that_resumes_the_stream() {
+    let events = EventHub::new();
+    for index in 0..=EVENT_CAPACITY {
+        events.publish("flood", json!({ "index": index }));
+    }
+    let replay = events.replay_after(0);
+    assert_eq!(replay[0].kind, "resync_required");
+    // 修复就是从这个 latest_event_id 续流,而不是断流报「已取消」。
+    let cursor: u64 = serde_json::from_str::<serde_json::Value>(&replay[0].data)
+        .ok()
+        .and_then(|value| value.get("latest_event_id").and_then(|id| id.as_u64()))
+        .unwrap_or(replay[0].id);
+    assert_eq!(cursor, replay[0].id, "resync 标记应带最新游标");
+
+    // 续读:此后发布的事件应能从该游标取到,不再立刻二次 resync。
+    let after = events.publish("run.completed", json!({ "run_id": "r1" }));
+    let resumed = events.replay_after(cursor);
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].id, after);
+    assert_eq!(resumed[0].kind, "run.completed");
+}
+
 #[test]
 fn replay_after_cursor_is_ordered_and_exclusive() {
     let events = EventHub::new();
