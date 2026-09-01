@@ -88,12 +88,16 @@ pub(crate) fn default_true() -> bool {
 }
 
 pub(crate) fn default_tools_loading_mode() -> String {
-    // v7 §八点七 stub mode: byte-constant tools array + on-demand contracts.
-    // "full" remains available and can be set per model
-    // (provider.model_tools_loading_mode) for schema-strict providers; the
-    // old "hybrid" tier (grow the tools array on load) was removed 09-01 and
-    // legacy values fall back to stub.
-    "stub".to_string()
+    // 默认 full(09-01 定稿):对 Miyu 这个 ~60 工具量级的目录,stub 的省 token
+    // 优势本就薄(两模式缓存命中率一样,stub 只是常驻块更小,而这优势随 load
+    // 的工具增多被尾部契约吃掉),且约束解码型模型(glm-5.3-flash)吃不下空壳。
+    // full 更可靠(免 load 舞蹈/免"先调用后报错")、选工具准确度实测持平。想省
+    // 的模型仍可按模型级 provider.model_tools_loading_mode 单独降回 stub。
+    //
+    // stub(v7 §八点七):byte-constant 工具数组 + 按需取契约。claude-code 桥、
+    // tool-call 桥、mcp_serve 桥都直接读 registry 真 spec,不受本模式影响。
+    // 旧 "hybrid" 档 09-01 删除,历史值回退 stub。
+    "full".to_string()
 }
 
 pub(crate) fn default_subagent_concurrency() -> usize {
