@@ -90,6 +90,9 @@ impl OpenAiCompatibleClient {
         let workdir = crate::tools::workspace::effective_workdir();
         let miyu_session = crate::tools::workspace::try_session();
         let miyu_session = miyu_session.as_deref();
+        // 续传按工具面档位隔离:桥每轮按触发者身份重算工具面,两档共用一条
+        // claude 会话会让清单逐轮增删,模型读成"工具掉线"(见 session 模块头)。
+        let host_tools = host_tools_face(miyu_session);
         let chain = session::prefix_chain(&self.provider.id, &model, &system_prompt, &conversation);
         let resumable = if ephemeral {
             None
@@ -98,6 +101,7 @@ impl OpenAiCompatibleClient {
                 &self.provider.id,
                 &model,
                 miyu_session,
+                host_tools,
                 &chain,
                 conversation.len(),
             )
@@ -160,6 +164,7 @@ impl OpenAiCompatibleClient {
                         &self.provider.id,
                         &model,
                         miyu_session,
+                        host_tools,
                         conversation.len() + 1,
                         next_hash,
                         claude_session.clone(),
@@ -263,6 +268,17 @@ impl OpenAiCompatibleClient {
     }
 }
 
+/// 本轮经 MCP 桥暴露的工具面档位。判据与桥完全同源:桥问工具时走
+/// `attach_owner_turn_tools` → `apply_platform_turn_scope`,取的就是这个活体
+/// 平台上下文的 `host_tools_allowed()`。非平台会话(REPL/WebUI/回合外)没有
+/// 登记,按全量底座记——那些路径本来就只有 owner 一档。
+fn host_tools_face(miyu_session: Option<&str>) -> bool {
+    miyu_session
+        .and_then(crate::platforms::live_turn_context)
+        .map(|context| context.host_tools_allowed())
+        .unwrap_or(true)
+}
+
 /// Miyu 工具经 MCP stdio 桥挂给 claude:`miyu mcp-serve` 打回 daemon,与
 /// `miyu tool-call` 同一条会话→模式→registry 解析链。没有会话作用域(测试
 /// /直连辅助请求)就不挂桥。
@@ -278,9 +294,15 @@ const RELAY_MIYU_TOOLS_NOTE: &str = "\n<relay-environment-tools>\nThe mcp__miyu_
 /// job/alarm **不剔**:claude 自己的后台/定时机制
 /// 活在单次进程里,中转每轮一进程、轮末即杀,活不过回合;Miyu 的 job 走
 /// daemon 常驻 + 完成唤醒开新轮,才是这套架构下唯一能跟进的后台。
+///
+/// `read` / `edit` **不剔**,尽管它们看着就是原生 Read/Edit 的同义词:08-21
+/// 三域合并之后这两件已经不只管文件,`read` 认 `kb:`(知识库)与
+/// `artifact:`(WebUI 工作区)前缀、`edit` 对应地改这两处,原生工具够不着这
+/// 两个域。名单里原来写的是它们改名前的 `read_file` / `apply_patch`,改名那
+/// 天起就没匹配上任何工具——所以"两件重复工具一直挂在桥上"是既成事实,而
+/// 不是回归;这里删掉死名字并留下判断,免得下一个人照着旧名字"修好"它,
+/// 反手把 kb:/artifact: 从中转这条线上摘掉。
 const BRIDGE_DUPLICATE_TOOLS: &[&str] = &[
-    "read_file",
-    "apply_patch",
     "run_command",
     "web_search",
     "web_fetch",
@@ -361,6 +383,45 @@ pub(crate) fn forget_claude_code_session(miyu_session: &str) {
                     "failed to remove a claude-side transcript (best effort)"
                 ),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bridge_dedup_tests {
+    use super::BRIDGE_DUPLICATE_TOOLS;
+
+    /// 去重名单里的每个名字都必须真的是一件已注册工具。名单是纯字符串,
+    /// 改名不会让它报错——`read_file` / `apply_patch` 就是这么在 08-21 三域
+    /// 合并里变成死条目、白挂了两件重复工具上桥的(09-01 转录取证)。
+    #[test]
+    fn every_deduplicated_name_is_a_real_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let paths = crate::paths::MiyuPaths {
+            root_dir: root.to_path_buf(),
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("config/fish/conf.d/miyu.fish"),
+            bash_hook_file: root.join("config/shell/bash-hook.sh"),
+            zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
+            scripts_dir: root.join("config/scripts"),
+            system_scripts_dir: root.join("data/scripts"),
+        };
+        let mut config = crate::config::AppConfig::default();
+        config.plugins.web.enabled = true;
+        config.skills.allow_command_execution = true;
+        let registry = crate::tools::builtin_registry(&config, &paths);
+        for name in BRIDGE_DUPLICATE_TOOLS {
+            assert!(
+                registry.contains(name),
+                "去重名单里的 {name} 不是任何已注册工具——多半是工具改名后忘了跟着改"
+            );
         }
     }
 }
