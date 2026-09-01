@@ -103,7 +103,7 @@ pub fn register_authoring(registry: &mut ToolRegistry, config: AppConfig, paths:
                     "scope": {
                         "type": "string",
                         "enum": ["global", "persona"],
-                        "description": "global is available to every persona; persona belongs to the current persona. Required for update/delete, defaults to global for create."
+                        "description": "global is available to every persona; persona belongs to the current persona. Required for update/delete; for create it defaults to persona (choose global only to share the skill with every persona)."
                     },
                     "draft_id": {
                         "type": "string",
@@ -248,7 +248,13 @@ fn skill_metadata_xml(metadata: &crate::skills::SkillMetadata) -> String {
 fn create_skill(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
     let name = required_string(&args, "name")?;
     let description = required_string(&args, "description")?;
-    let scope = SkillScope::parse(args.get("scope").and_then(Value::as_str))?;
+    // 创建默认落当前人格,不再默认 global(09-01)。在某人格对话里学会/创作的
+    // 技能默认属于那个人格,漏给所有人格要显式选 global——尤其自动学习的技能,
+    // 默认 global 会让 QQ 线学的习惯出现在别人的自定义人格里。
+    let scope = match args.get("scope").and_then(Value::as_str) {
+        Some(value) if !value.trim().is_empty() => SkillScope::parse(Some(value))?,
+        _ => SkillScope::Persona,
+    };
     let draft = skills::create_draft(config, paths, &name, &description, scope)?;
     Ok(serde_json::to_string_pretty(&json!({
         "ok": true,

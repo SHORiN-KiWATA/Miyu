@@ -154,6 +154,17 @@ impl AppConfig {
             .join(persona_scope_name(persona))
     }
 
+    pub fn persona_scripts_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+        paths
+            .scripts_dir
+            .join("personas")
+            .join(persona_scope_name(persona))
+    }
+
+    pub fn active_persona_scripts_dir(&self, paths: &MiyuPaths) -> PathBuf {
+        self.persona_scripts_dir(paths, self.prompt.active_persona.trim())
+    }
+
     /// Sanitized scope name of the active persona; also the namespace key for
     /// sessions and per-persona state directories.
     pub fn active_persona_scope(&self) -> String {

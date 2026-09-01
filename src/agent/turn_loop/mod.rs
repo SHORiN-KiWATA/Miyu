@@ -76,7 +76,7 @@ impl Agent {
             if self.config.skills.enabled {
                 if self.mode == AgentMode::Normal {
                     let mut registry = self.tools.lock().unwrap();
-                    tools::rescan_scripts(&mut registry, &self.paths);
+                    tools::rescan_scripts(&mut registry, &self.config, &self.paths);
                     tools::register_script_display_names(&registry);
                 }
                 let current_fingerprint = {

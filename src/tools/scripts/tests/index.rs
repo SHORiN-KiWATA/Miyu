@@ -471,3 +471,38 @@ async fn lifecycle_mutations_replace_and_remove_all_same_id_entries() {
             && raw_entry_field(entry, "path") == Some("new.sh")
     }));
 }
+
+/// 内置脚本默认属于 Miyu 出厂人格:默认人格的扫描目录含内置(system)层,
+/// 自定义人格只剩全局+人格两层——换人格即得纯净(09-01)。覆盖顺序低→高
+/// 保证人格 > 全局 > 内置。
+#[test]
+fn script_scan_dirs_gate_builtins_to_the_default_persona() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut paths = crate::paths::MiyuPaths::new().unwrap();
+    paths.system_scripts_dir = temp.path().join("system");
+    paths.scripts_dir = temp.path().join("data/scripts");
+
+    let default_config = crate::config::AppConfig::default();
+    let persona_dir = default_config.active_persona_scripts_dir(&paths);
+    let dirs = script_scan_dirs(&default_config, &paths, &persona_dir);
+    assert_eq!(
+        dirs,
+        vec![
+            paths.system_scripts_dir.as_path(),
+            paths.scripts_dir.as_path(),
+            persona_dir.as_path(),
+        ],
+        "默认人格应含内置层,且顺序低→高"
+    );
+
+    let mut custom = crate::config::AppConfig::default();
+    custom.prompt.active_persona = "alter".to_string();
+    let custom_persona_dir = custom.active_persona_scripts_dir(&paths);
+    let custom_dirs = script_scan_dirs(&custom, &paths, &custom_persona_dir);
+    assert_eq!(
+        custom_dirs,
+        vec![paths.scripts_dir.as_path(), custom_persona_dir.as_path()],
+        "自定义人格不含内置层"
+    );
+    assert!(custom_persona_dir.ends_with("personas/alter"));
+}

@@ -463,7 +463,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     // claude_code 委托工具已移除(08-21 用户裁定);中转供应商那条线不受影响。
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
-    scripts::register(&mut registry, paths);
+    scripts::register(&mut registry, config, paths);
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
     }

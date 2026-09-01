@@ -15,19 +15,38 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yaml_rust2::scanner::{Scanner, Token, TokenType};
 use yaml_rust2::{Yaml, YamlLoader};
 
-/// Skills compiled into the binary: (name, raw SKILL.md). A user skill of
-/// the same name in the persona/global directories overrides the built-in.
-const BUILTIN_SKILLS: &[(&str, &str)] = &[
-    ("skill-creator", include_str!("../skills/skill-creator.md")),
+/// Skills compiled into the binary: (name, raw SKILL.md, platform_wide). A
+/// user skill of the same name in the persona/global directories overrides the
+/// built-in.
+///
+/// 内置技能默认属于 Miyu 这个出厂人格,只在默认人格下可见——别人换上自定义
+/// 人格拿到的是纯净状态(09-01)。唯一例外是 `platform_wide=true` 的
+/// skill-creator:它是"如何扩展自己"的元能力,任何人格(包括从白板捏起的)
+/// 想给自己加技能都得用它,归人格等于锁死自定义角色的自我扩展入口。
+const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
+    (
+        "skill-creator",
+        include_str!("../skills/skill-creator.md"),
+        true,
+    ),
     (
         "linux-input-method-diagnose",
         include_str!("../skills/linux-input-method-diagnose.md"),
+        false,
     ),
     (
         "linux-game-compatibility",
         include_str!("../skills/linux-game-compatibility.md"),
+        false,
     ),
 ];
+
+/// 内置资源(技能/脚本)默认只属于 Miyu 出厂人格。判据:`active_persona` 去空
+/// 白后为空 = scope "default" = Miyu 本人。非默认人格下,非平台级的内置资源
+/// 一律隐藏,换上自定义人格即得纯净状态。
+pub(crate) fn is_default_persona(config: &AppConfig) -> bool {
+    config.prompt.active_persona.trim().is_empty()
+}
 const MAX_SKILL_CATALOG_ENTRIES: usize = 256;
 const MAX_SKILL_ROOT_DIRECTORIES: usize = 1_024;
 const MAX_SKILL_RESOURCE_ENTRIES: usize = 256;
@@ -74,7 +93,11 @@ pub fn discover(config: &AppConfig, paths: &MiyuPaths) -> Result<Vec<SkillEntry>
             }
         }
     }
-    for (name, raw) in BUILTIN_SKILLS {
+    let default_persona = is_default_persona(config);
+    for (name, raw, platform_wide) in BUILTIN_SKILLS {
+        if !platform_wide && !default_persona {
+            continue;
+        }
         if !seen.contains(*name) {
             entries.push(SkillEntry {
                 metadata: parse_skill_metadata(raw, Some(name))?,
@@ -97,7 +120,14 @@ pub fn catalog_fingerprint(config: &AppConfig, paths: &MiyuPaths) -> Result<[u8;
             hash_metadata(&mut hasher, &directory.join("SKILL.md"))?;
         }
     }
-    for (_, raw) in BUILTIN_SKILLS {
+    // 指纹要把「本人格能看见哪些内置技能」也算进去:否则切换人格后目录没变、
+    // 指纹不变,而可见的内置集合已经变了,催化缓存会拿旧目录充数。
+    let default_persona = is_default_persona(config);
+    for (name, raw, platform_wide) in BUILTIN_SKILLS {
+        if !platform_wide && !default_persona {
+            continue;
+        }
+        hasher.update(name.as_bytes());
         hasher.update(raw.as_bytes());
     }
     Ok(*hasher.finalize().as_bytes())
@@ -138,10 +168,15 @@ pub fn load(name: &str, config: &AppConfig, paths: &MiyuPaths) -> Result<LoadedS
             files,
         });
     }
+    // 非默认人格看不见非平台级内置技能,自然也加载不了——与 discover 的
+    // 可见性保持一致,不然模型照着历史 load 能把隐藏技能捞回来。
+    let default_persona = is_default_persona(config);
     let raw = BUILTIN_SKILLS
         .iter()
-        .find(|(builtin_name, _)| *builtin_name == name)
-        .map(|(_, raw)| *raw)
+        .find(|(builtin_name, _, platform_wide)| {
+            *builtin_name == name && (*platform_wide || default_persona)
+        })
+        .map(|(_, raw, _)| *raw)
         .with_context(|| format!("skill not found: {name}"))?;
     let (metadata, body) = parse_skill_document(raw, Some(name))?;
     Ok(LoadedSkill {
@@ -268,6 +303,48 @@ mod tests {
             .unwrap();
         assert_eq!(creator.source, SkillSource::Persona);
         assert_eq!(creator.metadata.description, "persona");
+    }
+
+    /// 内置技能默认属于 Miyu 出厂人格:默认人格看得见非平台级内置技能,
+    /// 自定义人格只剩平台级(skill-creator)。
+    #[test]
+    fn builtin_skills_are_persona_gated_except_platform_wide() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+
+        let default_config = AppConfig::default();
+        let names: BTreeSet<String> = discover(&default_config, &paths)
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.source == SkillSource::BuiltIn)
+            .map(|entry| entry.metadata.name)
+            .collect();
+        assert!(names.contains("skill-creator"));
+        assert!(names.contains("linux-game-compatibility"));
+
+        let mut custom = AppConfig::default();
+        custom.prompt.active_persona = "alter".to_string();
+        let custom_names: BTreeSet<String> = discover(&custom, &paths)
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.source == SkillSource::BuiltIn)
+            .map(|entry| entry.metadata.name)
+            .collect();
+        assert_eq!(
+            custom_names,
+            BTreeSet::from(["skill-creator".to_string()]),
+            "自定义人格只应看到平台级内置技能"
+        );
+
+        // 隐藏的内置技能连 load 都拒绝,不让模型照历史捞回。
+        assert!(load("linux-game-compatibility", &custom, &paths).is_err());
+        assert!(load("skill-creator", &custom, &paths).is_ok());
+
+        // 指纹随可见集合变化:换人格后目录没动,指纹也必须不同。
+        assert_ne!(
+            catalog_fingerprint(&default_config, &paths).unwrap(),
+            catalog_fingerprint(&custom, &paths).unwrap(),
+        );
     }
 
     #[test]

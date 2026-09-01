@@ -17,11 +17,13 @@ use tokio::process::Command;
 const SCRIPT_TIMEOUT_SECS: u64 = 120;
 const MAX_SCRIPT_OUTPUT_CHARS: usize = 20_000;
 
-pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    let dirs = [
-        paths.system_scripts_dir.as_path(),
-        paths.scripts_dir.as_path(),
-    ];
+pub fn register(registry: &mut ToolRegistry, config: &crate::config::AppConfig, paths: &MiyuPaths) {
+    // 内置脚本默认属于 Miyu 出厂人格,只在默认人格下参与扫描——别人换上
+    // 自定义人格拿到的是纯净状态(09-01,与内置技能同规则)。全局层是本机
+    // 所有人格共享的用户脚本,不隐藏;人格层是当前人格专属。覆盖链细节见
+    // script_scan_dirs。
+    let persona_dir = config.active_persona_scripts_dir(paths);
+    let dirs = script_scan_dirs(config, paths, &persona_dir);
     match scan_scripts(&dirs) {
         Ok(scan) => {
             let specs = script_specs(&scan.entries, &paths.scripts_dir, &paths.cache_dir);

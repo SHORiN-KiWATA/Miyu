@@ -66,11 +66,30 @@ pub(crate) struct ScriptDisplayNames {
     pub(crate) en: Option<String>,
 }
 
-pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
-    let dirs = [
-        paths.system_scripts_dir.as_path(),
-        paths.scripts_dir.as_path(),
-    ];
+/// 覆盖链低→高:内置(system,仅默认人格) < 全局(scripts_dir) < 当前人格。
+/// scan_scripts 按顺序扫,后者同名覆盖前者。持有 persona 目录的 PathBuf,借出
+/// 引用切片(内置那层的 gate 见 register/rescan 各自的调用点说明)。
+pub(crate) fn script_scan_dirs<'a>(
+    config: &crate::config::AppConfig,
+    paths: &'a MiyuPaths,
+    persona_dir: &'a std::path::Path,
+) -> Vec<&'a Path> {
+    let mut dirs: Vec<&Path> = Vec::new();
+    if crate::skills::is_default_persona(config) {
+        dirs.push(paths.system_scripts_dir.as_path());
+    }
+    dirs.push(paths.scripts_dir.as_path());
+    dirs.push(persona_dir);
+    dirs
+}
+
+pub fn rescan_scripts(
+    registry: &mut ToolRegistry,
+    config: &crate::config::AppConfig,
+    paths: &MiyuPaths,
+) {
+    let persona_dir = config.active_persona_scripts_dir(paths);
+    let dirs = script_scan_dirs(config, paths, &persona_dir);
     let scan = match scan_scripts(&dirs) {
         Ok(scan) => scan,
         Err(error) => {
