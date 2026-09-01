@@ -552,10 +552,14 @@ pub fn is_stub_loading_mode(mode: &str) -> bool {
 ///
 /// 单成员规则:模型级覆盖(`provider.model_tools_loading_mode`)优先,缺项回退
 /// 全局 `tools.loading_mode`。池级规则:任一成员要求 full 则整池 full——
-/// 一次请求只有一张工具面,而命中哪个模型(以及故障转移换给谁)是发送时才
-/// 决定的,这张脸必须让池里任何成员都能用;full 全兼容,stub 只是省 token 的
-/// 优化,「就高不就低」恒安全。多模态池并入候选:带图回合可能路由过去,
-/// 工具面跟着请求走。
+/// 一次请求只有一张工具面,而命中主回合池里哪个模型(以及故障转移换给谁)是
+/// 发送时才决定的,这张脸必须让池里任何成员都能用;full 全兼容,stub 只是省
+/// token 的优化,「就高不就低」恒安全。
+///
+/// 只看**主回合池** `active_provider_models`——工具面是给主回合用的。多模态池
+/// (`active_multimodal_provider_models`)只喂看图子分析(describe.rs),从不处理
+/// 带工具的主回合;09-01 起初误把它并进候选,导致文本池是 opus(stub)、多模态池
+/// 里配了 full 的 glm 时,每个 opus 回合都被拖成 full(用户实测暴露)。
 ///
 /// 背景(09-01):约束解码型供应商(实测 bigmodel glm-5.3-flash)把工具参数
 /// 生成硬限制在声明 schema 内,空壳 stub 让它永远只能发 `{}`,契约文本在
@@ -569,13 +573,8 @@ pub fn effective_tools_loading_mode(config: &AppConfig) -> String {
         }
     };
     let global = canonical(&config.tools.loading_mode);
-    let candidates = config
-        .active_provider_models
-        .iter()
-        .flatten()
-        .chain(config.active_multimodal_provider_models.iter().flatten());
     let mut any = false;
-    for entry in candidates {
+    for entry in config.active_provider_models.iter().flatten() {
         any = true;
         let mode = config
             .providers
@@ -793,10 +792,16 @@ mod tests {
             .push(pick("locked"));
         assert_eq!(effective_tools_loading_mode(&config), "full");
 
-        // 多模态池同样参与候选(带图回合可能路由过去,工具面跟请求走)。
+        // 回归(09-01 用户暴露):多模态池【不】参与——它只喂看图子分析,不处理
+        // 带工具的主回合。文本池全需加载、多模态池里配了 full 的模型时,主回合
+        // 仍是需加载,不被拖成 full。
         config.active_provider_models = Some(vec![pick("lenient-a")]);
         config.active_multimodal_provider_models = Some(vec![pick("locked")]);
-        assert_eq!(effective_tools_loading_mode(&config), "full");
+        assert_eq!(
+            effective_tools_loading_mode(&config),
+            "stub",
+            "多模态池不该把文本主回合拖成 full"
+        );
         config.active_multimodal_provider_models = None;
 
         // 模型级覆盖压过全局:全局 full,钉死的单模型显式需加载 → stub。
