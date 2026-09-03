@@ -222,6 +222,125 @@
       ]
     },
     {
+      "id": "flight_deals",
+      "display_name": "机票比价",
+      "description": "查两地机票，只查单程（往返就对调 origin/dest 再查一次，两个单程价之和与联程票基本持平）。返回按价格升序的航班：价格、航司、航班号、起降时间、时长、中转。价格是各票种最低的『起价』。输出末尾附『各航司最低价』『各舱位最低价』供你决定怎么筛。\n\norigin/dest 必须由用户明确给出，不要替用户猜；用户只说「去东京」先问从哪出发。用户没定死日期时用 action=sweep 扫窗口，不要自己猜一天跑 search。零依赖，search 约 2 秒，sweep 约 3 秒。",
+      "path": "flight-deals",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "search",
+              "sweep",
+              "trend",
+              "airports"
+            ],
+            "description": "search=查指定日期（默认）；sweep=扫日期窗口找最便宜的走法；trend=看航线底价涨跌（不给 origin/dest 则列出历史库里所有航线）；airports=查地名对应的机场三字码"
+          },
+          "origin": {
+            "type": "string",
+            "description": "出发城市/机场：中文、英文或三字码，如 '上海'、'PVG'。城市名会连同城机场一起查（上海=PVG+SHA）。除 action=airports 和「trend 列全部航线」外必填"
+          },
+          "dest": {
+            "type": "string",
+            "description": "目的城市/机场，写法同 origin，如 '东京'、'NRT'（东京=NRT+HND）"
+          },
+          "depart": {
+            "type": "string",
+            "description": "出发日：'+30'（30 天后）、'10-01'、'2026-10-01'。search 默认 14 天后；trend 时表示只看该出发日的历史"
+          },
+          "window": {
+            "type": "string",
+            "description": "sweep 的日期窗口，如 '09-29..10-08'，含义是「这段时间能出门」，返程也须落在窗口内。默认 14 天后起两周"
+          },
+          "days": {
+            "type": "string",
+            "description": "sweep 玩几天，如 '5' 或 '5-7'。给了才连回程一起扫并算组合；不给只扫去程"
+          },
+          "query": {
+            "type": "string",
+            "description": "action=airports 要查的地名或三字码"
+          },
+          "seat": {
+            "type": [
+              "string",
+              "array"
+            ],
+            "items": {
+              "type": "string",
+              "enum": [
+                "economy",
+                "premium",
+                "business",
+                "first",
+                "all"
+              ]
+            },
+            "description": "舱位，默认 economy；可给数组一次比几个，或 'all'"
+          },
+          "adults": {
+            "type": "integer",
+            "description": "成人数，默认 1"
+          },
+          "children": {
+            "type": "integer",
+            "description": "2-11 岁儿童数，默认 0"
+          },
+          "max_stops": {
+            "type": "integer",
+            "description": "最多中转几次，0=只看直飞。直飞常比中转贵，用户没要求别加，输出里已单列『直飞最低』"
+          },
+          "airline": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "只看这几家航司，中英文都认（'南航'、'ANA'）。不知道有哪些先不传，看输出的『各航司最低价』"
+          },
+          "depart_time": {
+            "type": "string",
+            "description": "只看这个时段起飞的，如 '08:00-18:00'。同价同航司常有十几班，按时段筛比翻页有效"
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "price",
+              "duration",
+              "depart",
+              "arrive",
+              "stops"
+            ],
+            "description": "排序，默认 price；找最快用 duration"
+          },
+          "top": {
+            "type": "integer",
+            "description": "search 显示几条（默认 15）；sweep 列几种走法（默认 8）"
+          },
+          "currency": {
+            "type": "string",
+            "description": "币种，默认 CNY"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "md",
+              "json"
+            ],
+            "description": "默认 md；要逐字段处理时用 json"
+          }
+        },
+        "additionalProperties": false
+      },
+      "timeout_seconds": 300,
+      "always_loaded": false,
+      "load_policy": "group",
+      "groups": [
+        "research"
+      ]
+    },
+    {
       "id": "xhs_search",
       "display_name": "小红书搜索",
       "description": "检索小红书(RED)笔记。**query 传关键词就是搜索，传笔记链接就是看正文**，action 可以不传。搜索返回标题/作者/点赞/收藏/评论数/链接，不含正文(避免塞爆上下文)——想看正文就把返回的 url 再传一次；sort 可选 综合/最新/最多点赞/最多评论/最多收藏，type 可选 全部/视频/图文。传链接时返回正文、标签、图片，limit>0 时一并返回评论。\n\n评论区常比正文更有料(真实体验、价格、避雷)，而**楼中楼比主楼更有料**：小红书的问答几乎全发生在楼中楼里——主楼是「求名字」「多少钱」，博主的回答在该条评论的 replies 数组里。所以读评论时务必连 replies 一起读，只看主楼会得到一堆没有答案的提问。\n\n重要，报结论前先看这几个字段：\n· warnings —— 有内容就说明结果有折扣，照着它说的调整或向用户说明，别当没看见。\n· degraded / sort / sort_requested —— sort 和 type 返回的是**实际生效值**。站点改版时筛选可能点不动而悄悄退回综合排序，此时 degraded=true，别再把第一条当成「点赞最多」的那条。\n· truncated —— true 表示抓到一半被限频截断，返回的是残缺结果，不能据此判断「就这么多」，隔一阵再试。\n· comments_count 是站点口径(含楼中楼)，跟 comments_returned + replies_returned 对不上是正常的，不是抓漏了；真要更多就加大 limit，comments_has_more=false 说明已经到底。\n\naction=status 查登录态。小红书搜索接口强制登录，必须先在桌面运行 `xhs-search login` 扫码登录一次(终端直接出二维码)，登录态之后自动续期。一次调用约 10-30 秒(要开真实浏览器)，且搜索有账号级日频上限，别做无谓的重复搜索。参数名/sort/type 拼错会直接报错而不是静默用默认值。出错时返回 error 与 fix 字段，把 fix 的内容告诉用户即可，用户会自行处理。",
