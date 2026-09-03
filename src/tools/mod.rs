@@ -731,6 +731,58 @@ pub(crate) fn build_tool_registry(
 mod tests {
     use super::*;
 
+    /// 工具 schema 的 token 预算:每件工具的 description + parameters 折成的
+    /// token 数封顶。这份东西每轮都进上下文(full 模式)或按需拉入(stub),
+    /// 膨胀是慢性的、靠肉眼发现不了——flight-deals 曾一件占到近 1.3k 字的参数
+    /// 说明(09-03)。超线的名字连同前十名一起打出来,好知道该修谁。
+    #[test]
+    fn tool_schemas_stay_within_the_token_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = crate::config::AppConfig::default();
+        config.plugins.web.enabled = true;
+        config.skills.allow_command_execution = true;
+        let registry = builtin_registry(&config, &paths);
+        let cost = |description: &str, parameters: &serde_json::Value| {
+            crate::token_estimate::estimate_tokens(description)
+                + crate::token_estimate::estimate_tokens(&parameters.to_string())
+        };
+        let mut rows: Vec<(String, usize)> = registry
+            .tool_names()
+            .iter()
+            .filter_map(|name| registry.get(name))
+            .map(|spec| (spec.name.clone(), cost(&spec.description, &spec.parameters)))
+            .collect();
+        // 内置脚本不在这份注册表里(装在系统脚本目录),直接读索引。
+        let index: serde_json::Value =
+            serde_json::from_str(include_str!("../scripts/personas/default/index.json")).unwrap();
+        for item in index["scripts"].as_array().into_iter().flatten() {
+            let id = item["id"].as_str().unwrap_or("?");
+            let description = item["description"].as_str().unwrap_or_default();
+            let parameters = item
+                .get("parameters")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            rows.push((format!("script:{id}"), cost(description, &parameters)));
+        }
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        let top: Vec<String> = rows
+            .iter()
+            .take(10)
+            .map(|(n, t)| format!("{n}={t}"))
+            .collect();
+        println!("schema token top10: {}", top.join(" "));
+        // 1000 = 现状最重的 hotel_deals(946)之上留一点头;要往下压先瘦
+        // hotel_deals 与 xhs_search 的参数说明,再收紧这个数。
+        const BUDGET: usize = 1000;
+        let over: Vec<&(String, usize)> =
+            rows.iter().filter(|(_, tokens)| *tokens > BUDGET).collect();
+        assert!(
+            over.is_empty(),
+            "这些工具的 schema 超过 {BUDGET} token 预算:{over:?};当前前十:{top:?}"
+        );
+    }
+
     /// 数组参数要容忍模型真会传的形状。线上实测:mimo-v2.5 把
     /// `reference_images` 传成了 `"[\"/path.png\"]"`——一个被 JSON 编码成
     /// 字符串的数组。只认真数组会让 job_ids / user_ids / tags / groups 这类
