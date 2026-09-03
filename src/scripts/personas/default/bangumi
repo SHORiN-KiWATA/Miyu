@@ -17,6 +17,7 @@
 import argparse
 import datetime as dt
 import json
+import socket
 import sys
 import urllib.error
 import urllib.parse
@@ -59,7 +60,7 @@ def request(path, method="GET", body=None, params=None):
     })
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise Failed("Bangumi 上没有这个条目", "确认 id 是否正确，或先用 search 查") from exc
@@ -68,6 +69,13 @@ def request(path, method="GET", body=None, params=None):
         raise Failed(f"Bangumi 接口出错（HTTP {exc.code}）") from exc
     except urllib.error.URLError as exc:
         raise Failed(f"连不上 Bangumi：{exc.reason}", "检查网络或代理") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        # 连接阶段的超时被 urllib 包成 URLError,读响应阶段的超时是裸 TimeoutError。
+        raise Failed(f"Bangumi 响应超时（{TIMEOUT}s）", "稍后再试或检查代理") from exc
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise Failed("Bangumi 返回的不是 JSON（可能是风控页或维护页）", "稍后再试") from exc
 
 
 # ---------------------------------------------------------------- helpers
@@ -145,15 +153,18 @@ def subject(subject_id):
     return request(f"/v0/subjects/{subject_id}")
 
 
-def episodes(subject_id, limit=200):
-    out, offset = [], 0
+def episodes(subject_id, limit=5000):
+    """翻完所有本篇(type=0)。长篇(海贼王/柯南)上千集,按 API 的 total 走到底;
+    limit 只是防失控的硬顶,不是分页大小。"""
+    out, offset, total = [], 0, None
     while True:
         data = request("/v0/episodes", params={"subject_id": subject_id, "type": 0,
-                                              "limit": min(limit, 100), "offset": offset})
+                                              "limit": 100, "offset": offset})
         chunk = data.get("data") or []
+        total = data.get("total") if total is None else total
         out.extend(chunk)
         offset += len(chunk)
-        if not chunk or offset >= (data.get("total") or 0) or offset >= limit:
+        if not chunk or offset >= (total or 0) or offset >= limit:
             break
     return out
 
@@ -367,6 +378,9 @@ def main():
             print(json.dumps(out, ensure_ascii=False, indent=2))
     except Failed as exc:
         print(f"错误：{exc}" + (f"\n提示：{exc.hint}" if exc.hint else ""), file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 —— 工具层不该看到 traceback
+        print(f"错误：脚本内部异常：{type(exc).__name__}: {exc}", file=sys.stderr)
         sys.exit(1)
 
 

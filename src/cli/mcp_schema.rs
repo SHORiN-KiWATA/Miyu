@@ -47,7 +47,8 @@ fn gemini_compatible(schema: Value) -> Value {
         }
         match key.as_str() {
             "type" => {
-                // 联合类型取第一个非 null 的;null 折成 nullable。
+                // 联合类型:有 array 就取 array(保住 items,数组形状仍可达),否则
+                // 取第一个非 null 的;null 折成 nullable。
                 let picked = match &value {
                     Value::Array(types) => {
                         if types.iter().any(|t| t.as_str() == Some("null")) {
@@ -55,7 +56,8 @@ fn gemini_compatible(schema: Value) -> Value {
                         }
                         types
                             .iter()
-                            .find(|t| t.as_str() != Some("null"))
+                            .find(|t| t.as_str() == Some("array"))
+                            .or_else(|| types.iter().find(|t| t.as_str() != Some("null")))
                             .cloned()
                             .unwrap_or(Value::String("string".into()))
                     }
@@ -103,6 +105,10 @@ fn gemini_compatible(schema: Value) -> Value {
             }
         }
     }
+    // items 只属于 array:联合类型折成别的类型后不能留一个孤儿 items。
+    if out.get("type").and_then(Value::as_str) != Some("array") {
+        out.remove("items");
+    }
     // required 里引用的属性要真的存在(属性可能刚被剔掉)。
     if let Some(Value::Array(required)) = out.get("required").cloned() {
         let present = out
@@ -140,7 +146,8 @@ mod tests {
                 "properties": {
                     "site": { "type": "string", "enum": ["a", "", "b"], "default": "a", "pattern": "^a" },
                     "seat": { "type": ["string", "array"], "items": { "type": "string" } },
-                    "flag": { "type": ["null", "boolean"] }
+                    "flag": { "type": ["null", "boolean"] },
+                    "orphan": { "type": ["string", "integer"], "items": { "type": "string" } }
                 },
                 "required": ["site", "gone"]
             }),
@@ -150,10 +157,13 @@ mod tests {
         assert_eq!(shaped["properties"]["site"]["enum"], json!(["a", "b"]));
         assert!(shaped["properties"]["site"].get("default").is_none());
         assert!(shaped["properties"]["site"].get("pattern").is_none());
-        assert_eq!(shaped["properties"]["seat"]["type"], "string");
+        assert_eq!(shaped["properties"]["seat"]["type"], "array");
+        assert!(shaped["properties"]["seat"].get("items").is_some());
         assert_eq!(shaped["properties"]["flag"]["type"], "boolean");
         assert_eq!(shaped["properties"]["flag"]["nullable"], true);
         assert_eq!(shaped["required"], json!(["site"]));
+        assert_eq!(shaped["properties"]["orphan"]["type"], "string");
+        assert!(shaped["properties"]["orphan"].get("items").is_none());
     }
 
     #[test]

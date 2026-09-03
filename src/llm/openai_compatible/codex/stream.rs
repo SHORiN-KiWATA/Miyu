@@ -22,8 +22,9 @@ pub(super) fn resume_lost(error: &anyhow::Error) -> bool {
 
 fn classify_codex_failure(text: &str) -> Option<HttpStatusFailure> {
     let lower = text.to_ascii_lowercase();
+    // 只认措辞,不认裸数字:错误文本里混着线程 id/时间戳/token 数,"401"
+    // "429" 这种子串随处可见,误判一次就是 10 分钟起的冷却(评审 09-03)。
     const RATE_LIMIT: &[&str] = &[
-        "429",
         "rate limit",
         "too many requests",
         "usage limit",
@@ -31,7 +32,6 @@ fn classify_codex_failure(text: &str) -> Option<HttpStatusFailure> {
         "insufficient_quota",
     ];
     const AUTH: &[&str] = &[
-        "401",
         "unauthorized",
         "not logged in",
         "please log in",

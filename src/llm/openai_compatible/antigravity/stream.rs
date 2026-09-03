@@ -11,7 +11,7 @@
 //!
 //! 超时/出错路径必须显式杀进程组:drop future 只是弃 promise,不杀子进程。
 
-use super::{AntigravityRuntime, ResumeTargetLost, AGENT_NAME, MCP_SERVER_NAME};
+use super::{AntigravityRuntime, ResumeTargetLost, MCP_SERVER_NAME};
 use crate::llm::openai_compatible::cli_relay::{
     hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
 };
@@ -76,6 +76,7 @@ pub(super) async fn run_agy_turn<F>(
     args: &[String],
     env: &[(String, Option<String>)],
     stdin_payload: &str,
+    expected_agent: &str,
     expected_conversation: Option<&str>,
     request_id: &str,
     on_chunk: &mut F,
@@ -124,11 +125,11 @@ where
                     .unwrap_or_default()
                     .to_string();
                 let agent = value.pointer("/init/agent").and_then(Value::as_str);
-                if agent != Some(AGENT_NAME) {
+                if agent != Some(expected_agent) {
                     // 代理没挂上 = 静默跑在 agy 自己的默认提示词上,人格全丢。
                     process.kill();
                     bail!(
-                        "agy did not load the `{AGENT_NAME}` persona agent (init.agent = {agent:?}); {}",
+                        "agy did not load the `{expected_agent}` persona agent (init.agent = {agent:?}); {}",
                         process.stderr_tail()
                     );
                 }

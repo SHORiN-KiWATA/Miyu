@@ -95,7 +95,10 @@ where
 
     let mut state = AnthropicStreamState::default();
     // claude 侧工具调用 id → 名称,tool_result 帧只带 id,收口事件靠它配名。
+    // 被隐藏的(桥问答)另记一份 id,收口时跳过;其余认不出名字的仍按 "tool"
+    // 发收口——少一张卡片总比丢掉错误文本好。
     let mut remote_tools: HashMap<String, String> = HashMap::new();
+    let mut hidden_tools: HashSet<String> = HashSet::new();
     let mut session_id: Option<String> = None;
     let mut final_frame: Option<Value> = None;
     while let Some(line) = process.next_line().await? {
@@ -121,11 +124,11 @@ where
             // 完整 assistant 帧带 tool_use 的完整入参 → 标准 tool.started
             // 卡片(claude 侧闭环执行,started/finished 都由流侧翻译)。
             Some("assistant") => {
-                emit_remote_tool_started(&value, &mut remote_tools, on_chunk)?;
+                emit_remote_tool_started(&value, &mut remote_tools, &mut hidden_tools, on_chunk)?;
             }
             // user 帧是 CLI 回填的工具结果 → tool.finished 收口。
             Some("user") => {
-                emit_remote_tool_finished(&value, &remote_tools, on_chunk)?;
+                emit_remote_tool_finished(&value, &remote_tools, &hidden_tools, on_chunk)?;
             }
             Some("stream_event") => {
                 if let Some(event) = value.get("event") {
@@ -242,6 +245,7 @@ where
 fn emit_remote_tool_started<F>(
     frame: &Value,
     remote_tools: &mut HashMap<String, String>,
+    hidden_tools: &mut HashSet<String>,
     on_chunk: &mut F,
 ) -> Result<()>
 where
@@ -264,6 +268,7 @@ where
         // claude 原生工具保持原名。
         let name = raw_name.strip_prefix("mcp__miyu__").unwrap_or(raw_name);
         if hidden_remote_tool(name) {
+            hidden_tools.insert(id);
             continue;
         }
         remote_tools.insert(id.clone(), name.to_string());
@@ -279,6 +284,7 @@ where
 fn emit_remote_tool_finished<F>(
     frame: &Value,
     remote_tools: &HashMap<String, String>,
+    hidden_tools: &HashSet<String>,
     on_chunk: &mut F,
 ) -> Result<()>
 where
@@ -296,10 +302,13 @@ where
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        // started 时被隐藏的工具(桥问答)没有登记,收口同样不发。
-        let Some(name) = remote_tools.get(&id).cloned() else {
+        if hidden_tools.contains(&id) {
             continue;
-        };
+        }
+        let name = remote_tools
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "tool".to_string());
         let ok = !block
             .get("is_error")
             .and_then(Value::as_bool)

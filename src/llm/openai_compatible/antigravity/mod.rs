@@ -27,6 +27,11 @@ use crate::llm::openai_compatible::*;
 
 pub(in crate::llm::openai_compatible) use setup::remove_conversation_files;
 
+/// 供应商在表单里被关掉时的清理:代理目录与全局 mcp_config 里的桥条目。
+pub(crate) fn remove_relay_files_now() {
+    setup::remove_relay_files(&setup::default_config_dir());
+}
+
 /// 客户端构造期解析好的运行时参数,端点间共享。
 pub(in crate::llm::openai_compatible) struct AntigravityRuntime {
     pub(in crate::llm::openai_compatible) binary: PathBuf,
@@ -63,9 +68,11 @@ impl AntigravityRuntime {
     }
 }
 
-/// 人格代理在 agy 侧的固定名字:内容按提示词改写(agy 每个进程都重读文件,
-/// 实测无缓存),用户的 /agents 面板里只多这一条。
-pub(in crate::llm::openai_compatible) const AGENT_NAME: &str = "miyu";
+/// 人格代理在 agy 侧的名字前缀:`miyu-<内容哈希>`。一个固定名字不够——代理
+/// 文件是全局的,别的会话/辅助请求(不同人格、不带环境事实、`tools: []`)
+/// 会在本轮 agy 还没拉起时把它改写掉,agy 启动时读到的就是别人的人格
+/// (评审 09-03)。按内容哈希各占一目录,互不相扰;旧目录按 mtime 过期回收。
+pub(in crate::llm::openai_compatible) const AGENT_PREFIX: &str = "miyu-";
 
 /// 全局 mcp_config.json 里桥条目的键。
 pub(in crate::llm::openai_compatible) const MCP_SERVER_NAME: &str = "miyu";
@@ -153,7 +160,12 @@ impl OpenAiCompatibleClient {
             &runtime.miyu_tools,
             self.claude_code_dev_mode,
         );
-        let agent_prompt = compose_agent_prompt(&system_prompt, scopes);
+        let agent_prompt = cli_relay::compose_prompt(
+            &system_prompt,
+            scopes,
+            RELAY_ENVIRONMENT_NOTE,
+            RELAY_MIYU_TOOLS_NOTE,
+        );
         let mut plan = ResumePlan::new(
             &self.provider.id,
             &model,
@@ -163,26 +175,37 @@ impl OpenAiCompatibleClient {
             miyu_session,
             host_tools,
         );
-        // 人格代理与桥注册落盘(内容不变就不写)。桥的 eager 名单 = 本轮工具
-        // 面减去与原生重复的;桥关着时名单为空,并且不给 MIYU_SESSION——
-        // mcp-serve 见到守卫而没有会话就只应答空工具表。
-        setup::ensure_agent_file(&runtime.config_dir, &agent_prompt, scopes.native_on)?;
-        let eager_tools: Vec<String> = if scopes.miyu_on && runtime.miyu_tools_eager {
-            tools
-                .iter()
-                .map(|tool| tool.function.name.clone())
-                .filter(|name| {
-                    !scopes.native_on || !BRIDGE_DUPLICATE_TOOLS.contains(&name.as_str())
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        setup::ensure_mcp_entry(&runtime.config_dir, &eager_tools)?;
+        // 人格代理落盘(按内容哈希,内容不变就不写)。桥只在「作用域开着且有
+        // 会话身份」时才注册:没有会话(回合作用域外/后台子代理)时桥本就应答空
+        // 表,写一份空 eager 名单只会覆盖别的会话正在用的那份。
+        let agent_name =
+            setup::ensure_agent_file(&runtime.config_dir, &agent_prompt, scopes.native_on)?;
+        let bridge_on = scopes.miyu_on && miyu_session.is_some();
+        if bridge_on {
+            let eager_tools: Vec<String> = if runtime.miyu_tools_eager {
+                tools
+                    .iter()
+                    .map(|tool| tool.function.name.clone())
+                    .filter(|name| {
+                        !scopes.native_on || !BRIDGE_DUPLICATE_TOOLS.contains(&name.as_str())
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            setup::ensure_mcp_entry(&runtime.config_dir, &eager_tools)?;
+        }
         let env = relay_env(scopes, miyu_session);
         let mut outcome = self
             .agy_turn(
-                &runtime, &model, &workdir, &env, &plan, request_id, on_chunk,
+                &runtime,
+                &model,
+                &workdir,
+                &env,
+                &agent_name,
+                &plan,
+                request_id,
+                on_chunk,
             )
             .await;
         if let Err(error) = &outcome {
@@ -192,7 +215,14 @@ impl OpenAiCompatibleClient {
                 plan.resume_lost("antigravity", request_id, error);
                 outcome = self
                     .agy_turn(
-                        &runtime, &model, &workdir, &env, &plan, request_id, on_chunk,
+                        &runtime,
+                        &model,
+                        &workdir,
+                        &env,
+                        &agent_name,
+                        &plan,
+                        request_id,
+                        on_chunk,
                     )
                     .await;
             }
@@ -215,6 +245,7 @@ impl OpenAiCompatibleClient {
         model: &str,
         workdir: &std::path::Path,
         env: &[(String, Option<String>)],
+        agent_name: &str,
         plan: &ResumePlan,
         request_id: &str,
         on_chunk: &mut F,
@@ -223,7 +254,7 @@ impl OpenAiCompatibleClient {
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
         let payload = render_stdin_line(plan.delta());
-        let args = self.antigravity_args(runtime, model, workdir, plan.resume_id());
+        let args = self.antigravity_args(runtime, model, workdir, agent_name, plan.resume_id());
         crate::llm::request_log::record(
             &self.provider.id,
             model,
@@ -238,6 +269,7 @@ impl OpenAiCompatibleClient {
             &args,
             env,
             &payload,
+            agent_name,
             plan.resume_id(),
             request_id,
             on_chunk,
@@ -250,6 +282,7 @@ impl OpenAiCompatibleClient {
         runtime: &AntigravityRuntime,
         model: &str,
         workdir: &std::path::Path,
+        agent_name: &str,
         resume: Option<&str>,
     ) -> Vec<String> {
         // `--print=`:print 旗标必须带参数(空串即可),否则它把下一个旗标吃成
@@ -276,7 +309,7 @@ impl OpenAiCompatibleClient {
         // 人格代理:恒挂。流侧校验 init.agent,没挂上视为错误(否则静默跑在
         // agy 自己 13.9k tok 的默认提示词上)。
         args.push("--agent".into());
-        args.push(AGENT_NAME.into());
+        args.push(agent_name.to_string());
         // 原生 run_command 默认跑在 agy 的 scratch 目录,不是进程 cwd;只有
         // --add-dir 过的目录才是它的工作区。只加一个:加两个时 cwd 在两者间随机。
         args.push("--add-dir".into());
@@ -289,18 +322,6 @@ impl OpenAiCompatibleClient {
         }
         args
     }
-}
-
-/// 代理文件正文 = Miyu 系统提示词 + 中转环境事实。
-fn compose_agent_prompt(system_prompt: &str, scopes: ToolScopes) -> String {
-    let mut prompt = system_prompt.to_string();
-    if scopes.native_on || scopes.miyu_on {
-        prompt.push_str(RELAY_ENVIRONMENT_NOTE);
-        if scopes.miyu_on {
-            prompt.push_str(RELAY_MIYU_TOOLS_NOTE);
-        }
-    }
-    prompt
 }
 
 /// 给 agy 进程的环境:它会原样继承给 MCP 子进程(实测),所以桥的会话身份

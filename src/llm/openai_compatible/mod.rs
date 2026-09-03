@@ -14,6 +14,7 @@ mod protocol;
 mod sse;
 mod variants;
 mod wire;
+pub(crate) use antigravity::remove_relay_files_now as remove_antigravity_relay_files;
 use antigravity::AntigravityRuntime;
 use claude_code::ClaudeCodeRuntime;
 pub(crate) use cli_relay::forget_relay_sessions;

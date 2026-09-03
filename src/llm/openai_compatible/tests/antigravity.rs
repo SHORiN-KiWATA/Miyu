@@ -94,6 +94,22 @@ fn read(dir: &std::path::Path, name: &str) -> String {
     std::fs::read_to_string(dir.join(name)).unwrap_or_default()
 }
 
+/// 代理目录按内容哈希命名(`miyu-<hash>`):测试里只关心唯一那份的内容。
+fn agent_file(dir: &std::path::Path) -> (String, String) {
+    let mut dirs: Vec<_> = std::fs::read_dir(dir.join("agyconfig/agents"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(dirs.len(), 1, "应只有一份代理目录");
+    let entry = dirs.pop().unwrap();
+    let name = entry.file_name().to_string_lossy().to_string();
+    assert!(name.starts_with("miyu-"), "{name}");
+    (
+        name.clone(),
+        std::fs::read_to_string(entry.path().join("agent.md")).unwrap(),
+    )
+}
+
 fn tool(name: &str) -> ToolDefinition {
     ToolDefinition {
         kind: "function",
@@ -183,13 +199,14 @@ async fn first_turn_writes_agent_and_bridge_then_translates_the_stream() {
     assert_eq!(finished.len(), 2, "{finished:?}");
 
     let args = read(dir.path(), "args.txt");
+    let (agent_name, agent) = agent_file(dir.path());
     for needle in [
         "--print=",
         "--input-format\nstream-json",
         "--output-format\nstream-json",
         "--dangerously-skip-permissions",
         "--model\ngemini-3.8-flash-high",
-        "--agent\nmiyu",
+        &format!("--agent\n{agent_name}"),
         "--add-dir\n",
         "--print-timeout\n600s",
     ] {
@@ -202,23 +219,18 @@ async fn first_turn_writes_agent_and_bridge_then_translates_the_stream() {
     assert_eq!(line["message"]["content"][0]["text"], "hello");
 
     // 代理文件:提示词 + 环境事实,白名单不含 ask_question。
-    let agent = read(dir.path(), "agyconfig/agents/miyu/agent.md");
-    assert!(agent.contains("name: miyu\n"), "{agent}");
+    assert!(agent.contains(&format!("name: {agent_name}\n")), "{agent}");
     assert!(agent.contains("  - run_command\n"));
     assert!(!agent.contains("ask_question\n"));
     assert!(agent.contains("persona prompt"));
     assert!(agent.contains("<relay-environment>"));
     assert!(agent.contains("<relay-environment-tools>"));
-    // MCP 注册:eager 名单 = 本轮工具面减去与原生重复的 run_command。
-    let mcp: serde_json::Value =
-        serde_json::from_str(&read(dir.path(), "agyconfig/mcp_config.json")).unwrap();
-    let entry = &mcp["mcpServers"]["miyu"];
-    assert_eq!(entry["args"], serde_json::json!(["mcp-serve"]));
-    assert_eq!(entry["tools"]["use_meme"]["eager"], true);
-    assert_eq!(entry["tools"]["alarm"]["eager"], true);
-    assert!(entry["tools"].get("run_command").is_none(), "{entry}");
-    assert_eq!(entry["env"]["MIYU_MCP_REQUIRE_SESSION"], "1");
-    // 测试里没有回合作用域(无 Miyu 会话)→ 桥的会话身份被抹掉。
+    // 测试里没有回合作用域(无 Miyu 会话)→ 不注册桥、不给会话身份:桥本就
+    // 应答空表,写一份空 eager 名单只会覆盖别的会话正在用的那份。
+    assert!(
+        !dir.path().join("agyconfig/mcp_config.json").exists(),
+        "无会话不该写 mcp_config"
+    );
     let env = read(dir.path(), "env.txt");
     assert!(!env.contains("MIYU_SESSION="), "{env}");
 }
@@ -238,12 +250,13 @@ async fn scopes_shape_the_agent_file_and_bridge_entry() {
     )
     .await;
     result.unwrap();
-    let agent = read(dir.path(), "agyconfig/agents/miyu/agent.md");
+    let (_, agent) = agent_file(dir.path());
     assert!(agent.contains("tools: []\n"), "{agent}");
     assert!(!agent.contains("<relay-environment>"), "无工具不附环境事实");
-    let mcp: serde_json::Value =
-        serde_json::from_str(&read(dir.path(), "agyconfig/mcp_config.json")).unwrap();
-    assert_eq!(mcp["mcpServers"]["miyu"]["tools"], serde_json::json!({}));
+    assert!(
+        !dir.path().join("agyconfig/mcp_config.json").exists(),
+        "桥关着不写 mcp_config"
+    );
 }
 
 /// 第二轮命中前缀:带 --conversation,stdin 只有增量、没有历史转写。
@@ -360,7 +373,7 @@ async fn auxiliary_scope_has_no_tools_and_no_resume() {
     ];
     let (result, _) = run(&client, messages.clone(), vec![tool("use_meme")]).await;
     result.unwrap();
-    let agent = read(dir.path(), "agyconfig/agents/miyu/agent.md");
+    let (_, agent) = agent_file(dir.path());
     assert!(agent.contains("tools: []\n"), "{agent}");
     let (result, _) = run(&client, messages, vec![tool("use_meme")]).await;
     result.unwrap();

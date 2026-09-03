@@ -85,6 +85,11 @@ pub(in crate::config_tui) fn edit_antigravity_provider_form(
         plugin.miyu_tools_eager = eager;
         plugin.idle_timeout_seconds = fields[6].value.trim().parse().unwrap_or(300);
         plugin.print_timeout_seconds = fields[7].value.trim().parse().unwrap_or(24 * 60 * 60);
+        if !enabled {
+            // 关掉即清理 agy 侧落盘物:代理目录与全局 mcp_config 的桥条目,
+            // 否则用户交互式开 agy 还会一直挂着一个指向旧二进制的 miyu 服务器。
+            crate::llm::remove_antigravity_relay_files();
+        }
         let mut updated = provider.clone();
         updated.enabled = enabled;
         let display_name = fields[1].value.trim();

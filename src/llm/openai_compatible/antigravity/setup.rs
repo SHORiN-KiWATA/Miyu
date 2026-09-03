@@ -5,7 +5,7 @@
 //! 只剩全局目录这条路,副作用是用户的 /agents 面板多一条 `miyu`、交互式 agy
 //! 也挂上 miyu 服务器(守卫 env 让它在没有会话时只应答空工具表)。
 
-use super::{AGENT_NAME, MCP_SERVER_NAME, NATIVE_TOOLS};
+use super::{AGENT_PREFIX, MCP_SERVER_NAME, NATIVE_TOOLS};
 use crate::llm::openai_compatible::*;
 use std::path::Path;
 
@@ -27,11 +27,20 @@ fn data_dir() -> Option<PathBuf> {
     Some(Path::new(&home).join(".gemini").join("antigravity-cli"))
 }
 
+/// 代理名 = 前缀 + 文件内容哈希(内容含 tools 白名单,原生开关变了也是新名)。
+pub(super) fn agent_name_for(file_text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file_text.hash(&mut hasher);
+    format!("{AGENT_PREFIX}{:016x}", hasher.finish())
+}
+
 /// 代理文件全文:frontmatter(`tools:` 白名单按原生开关给)+ 提示词正文。
+/// `name:` 留占位,由 [`ensure_agent_file`] 按内容哈希填。
 pub(super) fn render_agent_file(prompt: &str, native_on: bool) -> String {
     let mut text = String::new();
     text.push_str("---\n");
-    text.push_str(&format!("name: {AGENT_NAME}\n"));
+    text.push_str("name: {{AGENT_NAME}}\n");
     text.push_str("description: Miyu relay persona (managed by Miyu; rewritten whenever the prompt changes)\n");
     text.push_str("mainAgent: true\n");
     text.push_str("subagent: false\n");
@@ -49,23 +58,54 @@ pub(super) fn render_agent_file(prompt: &str, native_on: bool) -> String {
     text
 }
 
-/// 代理文件路径:`<config>/agents/miyu/agent.md`。
-pub(super) fn agent_file_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("agents").join(AGENT_NAME).join("agent.md")
+/// 代理文件路径:`<config>/agents/<name>/agent.md`。
+pub(super) fn agent_file_path(config_dir: &Path, name: &str) -> PathBuf {
+    config_dir.join("agents").join(name).join("agent.md")
 }
 
-/// 内容不变就不写:agy 每个进程都重读,写盘只在提示词/工具开关变化时发生。
-pub(super) fn ensure_agent_file(config_dir: &Path, prompt: &str, native_on: bool) -> Result<()> {
-    let path = agent_file_path(config_dir);
-    let wanted = render_agent_file(prompt, native_on);
-    if std::fs::read_to_string(&path).ok().as_deref() == Some(wanted.as_str()) {
-        return Ok(());
+/// 按内容哈希落盘,返回代理名。内容不变就不写(agy 每个进程都重读);
+/// 别的哈希目录只清**一小时前**的——可能正被一个还没拉起的 agy 引用。
+pub(super) fn ensure_agent_file(
+    config_dir: &Path,
+    prompt: &str,
+    native_on: bool,
+) -> Result<String> {
+    let body = render_agent_file(prompt, native_on);
+    let name = agent_name_for(&body);
+    let wanted = body.replace("{{AGENT_NAME}}", &name);
+    let path = agent_file_path(config_dir, &name);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(wanted.as_str()) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        write_atomically(&path, &wanted)?;
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+    prune_stale_agents(config_dir, &name);
+    Ok(name)
+}
+
+fn prune_stale_agents(config_dir: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(config_dir.join("agents")) else {
+        return;
+    };
+    let stale_after = std::time::Duration::from_secs(60 * 60);
+    for entry in entries.flatten() {
+        let dir_name = entry.file_name();
+        let dir_name = dir_name.to_string_lossy();
+        // 早期固定名 `miyu` 一并按过期规则回收。
+        if !(dir_name.starts_with(AGENT_PREFIX) || dir_name == "miyu") || dir_name == keep {
+            continue;
+        }
+        let stale = std::fs::metadata(entry.path().join("agent.md"))
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > stale_after);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
-    write_atomically(&path, &wanted)
 }
 
 pub(super) fn mcp_config_path(config_dir: &Path) -> PathBuf {
@@ -124,12 +164,18 @@ pub(super) fn ensure_mcp_entry(config_dir: &Path, eager_tools: &[String]) -> Res
     write_atomically(&path, &text)
 }
 
-/// 供应商禁用时的清理:删代理目录,摘掉桥条目(文件里别的东西不动)。
+/// 供应商禁用时的清理:删全部 `miyu-*` 代理目录(含早期固定名 `miyu`),
+/// 摘掉桥条目(文件里别的东西不动)。
 pub(crate) fn remove_relay_files(config_dir: &Path) {
-    let agent_dir = config_dir.join("agents").join(AGENT_NAME);
-    if agent_dir.exists() {
-        if let Err(error) = std::fs::remove_dir_all(&agent_dir) {
-            tracing::warn!(%error, path = %agent_dir.display(), "failed to remove the agy persona agent");
+    if let Ok(entries) = std::fs::read_dir(config_dir.join("agents")) {
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name();
+            let dir_name = dir_name.to_string_lossy();
+            if dir_name == "miyu" || dir_name.starts_with(AGENT_PREFIX) {
+                if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+                    tracing::warn!(%error, path = %entry.path().display(), "failed to remove an agy persona agent");
+                }
+            }
         }
     }
     let path = mcp_config_path(config_dir);
@@ -186,7 +232,12 @@ pub(in crate::llm::openai_compatible) fn remove_conversation_files(conversation_
 }
 
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
-    let tmp = path.with_extension("tmp");
+    // 临时名带进程号与纳秒:同一文件的并发写者各用各的,rename 才是原子点。
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))
 }
@@ -198,7 +249,7 @@ mod tests {
     #[test]
     fn agent_file_lists_native_allowlist_or_empties_it() {
         let on = render_agent_file("persona", true);
-        assert!(on.starts_with("---\nname: miyu\n"));
+        assert!(on.starts_with("---\nname: {{AGENT_NAME}}\n"));
         assert!(on.contains("tools:\n  - run_command\n"));
         assert!(!on.contains("ask_question"), "原生问答不进白名单");
         assert!(on.ends_with("---\n\npersona\n"));
@@ -209,14 +260,21 @@ mod tests {
     #[test]
     fn ensure_agent_file_writes_only_on_change() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_agent_file(dir.path(), "one", true).unwrap();
-        let path = agent_file_path(dir.path());
+        let name = ensure_agent_file(dir.path(), "one", true).unwrap();
+        assert!(name.starts_with("miyu-"));
+        let path = agent_file_path(dir.path(), &name);
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(&format!("name: {name}\n")));
         let first = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        ensure_agent_file(dir.path(), "one", true).unwrap();
+        assert_eq!(ensure_agent_file(dir.path(), "one", true).unwrap(), name);
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), first);
-        ensure_agent_file(dir.path(), "two", true).unwrap();
-        assert!(std::fs::read_to_string(&path).unwrap().ends_with("two\n"));
+        // 不同内容是另一个目录,旧的不立刻删(可能正被别的回合引用)。
+        let other = ensure_agent_file(dir.path(), "two", true).unwrap();
+        assert_ne!(other, name);
+        assert!(path.exists());
+        assert!(agent_file_path(dir.path(), &other).exists());
     }
 
     #[test]

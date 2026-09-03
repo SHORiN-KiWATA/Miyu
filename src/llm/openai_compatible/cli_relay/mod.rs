@@ -100,6 +100,24 @@ pub(in crate::llm::openai_compatible) fn shape_remote_output(name: &str, output:
     }
 }
 
+/// 系统提示词 + 中转环境事实(常量字节,前缀稳定):每轮一进程,自带后台/
+/// 通知活不过本轮——这是模型光靠自我认知猜不到的宿主事实。各线只差措辞。
+pub(in crate::llm::openai_compatible) fn compose_prompt(
+    system_prompt: &str,
+    scopes: ToolScopes,
+    environment_note: &str,
+    tools_note: &str,
+) -> String {
+    let mut prompt = system_prompt.to_string();
+    if scopes.native_on || scopes.miyu_on {
+        prompt.push_str(environment_note);
+        if scopes.miyu_on {
+            prompt.push_str(tools_note);
+        }
+    }
+    prompt
+}
+
 /// 桥进程要认得 daemon 的 home/runtime 目录,但必须**如实透传**(daemon 自己
 /// 有什么才给什么):runtime 目录推导对「显式设了 MIYU_HOME」与「没设」给出
 /// 不同路径(默认 home 显式设也会变成哈希子目录),无条件塞 MIYU_HOME 会让

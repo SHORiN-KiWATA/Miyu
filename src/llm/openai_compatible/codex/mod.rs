@@ -104,7 +104,12 @@ impl OpenAiCompatibleClient {
             &runtime.miyu_tools,
             self.claude_code_dev_mode,
         );
-        let prompt = compose_instructions(&system_prompt, scopes);
+        let prompt = cli_relay::compose_prompt(
+            &system_prompt,
+            scopes,
+            RELAY_ENVIRONMENT_NOTE,
+            RELAY_MIYU_TOOLS_NOTE,
+        );
         let mut plan = ResumePlan::new(
             &self.provider.id,
             &model,
@@ -264,19 +269,10 @@ fn codex_args(
     args
 }
 
-fn compose_instructions(system_prompt: &str, scopes: ToolScopes) -> String {
-    let mut prompt = system_prompt.to_string();
-    if scopes.native_on || scopes.miyu_on {
-        prompt.push_str(RELAY_ENVIRONMENT_NOTE);
-        if scopes.miyu_on {
-            prompt.push_str(RELAY_MIYU_TOOLS_NOTE);
-        }
-    }
-    prompt
-}
-
-/// 指令文件按内容哈希命名:同一份提示词只落一次盘,旧文件顺手清掉
-/// (目录里只保留当前这份,免得提示词每改一次就多一个孤儿)。
+/// 指令文件按内容哈希命名:同一份提示词只落一次盘。旧文件只清**一小时前**
+/// 的:目录是进程级共享的,别的会话/辅助请求(不同人格、不带环境事实)刚写的
+/// 那份可能正被一个还没拉起的 codex 引用,立刻删会让它对着不存在的文件启动
+/// (评审 09-03)。
 pub(in crate::llm::openai_compatible) fn ensure_instructions_file(
     dir: &std::path::Path,
     prompt: &str,
@@ -294,10 +290,20 @@ pub(in crate::llm::openai_compatible) fn ensure_instructions_file(
     std::fs::write(&tmp, prompt).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;
     if let Ok(entries) = std::fs::read_dir(dir) {
+        let stale_after = std::time::Duration::from_secs(60 * 60);
         for entry in entries.flatten() {
             let file = entry.file_name();
             let file = file.to_string_lossy();
-            if file.starts_with("instructions-") && file.ends_with(".md") && file != name {
+            if !(file.starts_with("instructions-") && file.ends_with(".md")) || file == name {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age > stale_after);
+            if stale {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -452,7 +458,21 @@ mod tests {
         let again = ensure_instructions_file(dir.path(), "one").unwrap();
         assert_eq!(one, again);
         let two = ensure_instructions_file(dir.path(), "two").unwrap();
-        assert!(!one.exists(), "旧指令文件应被清掉");
+        assert!(
+            one.exists(),
+            "刚写的指令文件可能正被别的回合引用,不能立刻删"
+        );
+        assert!(two.exists());
+        // 一小时前的才清。
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&one)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        ensure_instructions_file(dir.path(), "three").unwrap();
+        assert!(!one.exists(), "过期的旧指令文件应被清掉");
         assert!(two.exists());
     }
 

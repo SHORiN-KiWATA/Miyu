@@ -881,7 +881,9 @@ def parse_when(daytext, timetext, ref):
     # Google 在时刻和 AM/PM 之间用的是 U+202F 窄不换行空格，不是普通空格 ——
     # replace(" ", "") 清不掉它，strptime 会直接抛 ValueError 把整次查询带崩。
     t = datetime.strptime(re.sub(r"\s+", "", timetext).upper(), "%I:%M%p").time()
-    for year in (ref.year, ref.year + 1):
+    # 1 月 1 日出发、跨日期变更线「12 月 31 日」到达的行程,年份得往前一年找,
+    # 所以候选从 ref.year - 1 起;取「不早于 ref 前一天」的最近那个。
+    for year in (ref.year - 1, ref.year, ref.year + 1):
         try:
             d = date(year, month, day)
         except ValueError:
@@ -1867,7 +1869,16 @@ def cmd_sweep(a):
         window = (date.today(), window[1])
 
     # 不给 --days 就只扫去程(纯单程视角)；给了才连回程一起扫，并算出行程组合。
-    days = parse_days(a.days) if a.days else None
+    try:
+        days = parse_days(a.days) if a.days else None
+    except argparse.ArgumentTypeError as exc:
+        raise Failed(f"--days {exc}", "写 5 或 5-7") from exc
+    # 窗口尾巴超出售票视野的那几天不发请求:每天要白搭三次重试加退避,还照吃
+    # --max-queries,最后渲染成"—"再甩一句"航线不通"——真实原因只是还没开售。
+    horizon = date.today() + timedelta(days=BOOKING_HORIZON_DAYS)
+    if window[1] > horizon:
+        past_note.append(f"窗口尾巴 {window[1]} 超出售票视野，只扫到 {horizon}")
+        window = (window[0], horizon)
     all_days = [window[0] + timedelta(days=i)
                 for i in range((window[1] - window[0]).days + 1)]
     if days:
@@ -2580,19 +2591,36 @@ def argv_from_json(payload, ap):
         raise Failed("stdin 里的 JSON 得是一个对象",
                      '例如 {"origin": "上海", "dest": "东京", "depart": "+30"}')
 
-    known = json_keys(ap)
     action = payload.get("action") or payload.get("cmd") or "search"
     if action not in ACTIONS:
         raise Failed(f"未知动作 {action!r}", f"可选：{'、'.join(ACTIONS)}")
+    # 工具层的 schema 是一张扁平表(所有动作共用),但各子命令认的参数不同:
+    # search 才有 --airline/--depart-time/--sort、多舱位;把 search 专属键喂给
+    # sweep 会被 argparse 当"不认识的参数"整轮打回。所以按本动作的子命令取
+    # 参数表;别的动作才认的键不报错,提示一句"对这个动作无效"后忽略。
+    known_all = json_keys(ap)
+    sub = subparser_of(ap, action)
+    known = json_keys(sub) if sub else known_all
+    seat_multi = any(act.dest == "seat" and act.nargs == "+" for act in (sub or ap)._actions)
 
-    argv, unknown = [action], []
+    argv, unknown, ignored = [action], [], []
     for key, val in payload.items():
         if key in ("action", "cmd") or val is None:
             continue
-        hit = known.get(key) or known.get(str(key).replace("-", "_"))
+        norm = str(key).replace("-", "_")
+        hit = known.get(key) or known.get(norm)
         if hit is None:
-            unknown.append(key)
+            if known_all.get(key) or known_all.get(norm):
+                ignored.append(key)
+            else:
+                unknown.append(key)
             continue
+        if norm == "seat" and not seat_multi and isinstance(val, (list, tuple, str)):
+            # sweep/trend 一次只查一个舱位:数组取第一个真舱位,'all' 退回经济舱。
+            seats = [v for v in (val if isinstance(val, (list, tuple)) else [val]) if v != "all"]
+            if not seats or len(seats) > 1 or val == "all":
+                ignored.append(f"seat={val!r}(该动作只查一个舱位,按 {seats[0] if seats else 'economy'})")
+            val = seats[0] if seats else "economy"
         flag, is_switch = hit
         if is_switch:                       # store_true：给了真值才带上这个 flag
             if val:
@@ -2607,7 +2635,18 @@ def argv_from_json(payload, ap):
         guess = ", ".join(sorted(known)[:12])
         raise Failed(f"不认识这些参数：{', '.join(map(repr, unknown))}",
                      f"可用参数有 {guess} 等；完整列表跑 doctor 或看 --help")
+    if ignored:
+        # 键本身合法只是对这个动作无效:忽略但要说,免得调用方以为筛选生效了。
+        print(f"注意：{', '.join(ignored)} 对 action={action} 无效，已忽略", file=sys.stderr)
     return argv
+
+
+def subparser_of(ap, action):
+    """取某个动作的子命令 parser(json 入口按动作取参数表用)。"""
+    for act in ap._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            return act.choices.get(action)
+    return None
 
 
 def read_json_stdin():

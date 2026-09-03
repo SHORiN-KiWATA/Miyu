@@ -19,6 +19,11 @@ pub(in crate::llm::openai_compatible) struct RelayProcess {
     lines: Lines<BufReader<ChildStdout>>,
     stderr_tail: Arc<Mutex<String>>,
     stderr_task: tokio::task::JoinHandle<()>,
+    /// stdin 写入在独立任务里进行:先读 stdout 再等写完。CLI 在读 stdin 之前
+    /// 就退出(续传目标丢失、登录失败)时,大于管道缓冲的载荷会让同步 write_all
+    /// 永远等不到人读,或者拿到一个没有 stderr 尾巴的 EPIPE——两种都盖住了
+    /// 真正的报错措辞(评审 09-03)。
+    stdin_task: tokio::task::JoinHandle<()>,
     idle_timeout: Duration,
     /// 看门狗报错里的阶段名(`claude-code.stream` 这种)。
     stage: &'static str,
@@ -102,17 +107,23 @@ impl RelayProcess {
                 }
             })
         };
-        stdin
-            .write_all(stdin_payload.as_bytes())
-            .await
-            .with_context(|| format!("failed to write the {label} stdin payload"))?;
-        drop(stdin);
+        let stdin_task = {
+            let payload = stdin_payload.as_bytes().to_vec();
+            tokio::spawn(async move {
+                if let Err(error) = stdin.write_all(&payload).await {
+                    // 子进程先退出(EPIPE)属正常:真正的原因在 stdout/stderr 里。
+                    tracing::debug!(%error, "{label} closed stdin before the payload was written");
+                }
+                drop(stdin);
+            })
+        };
         Ok(Self {
             child,
             pid,
             lines: BufReader::new(stdout).lines(),
             stderr_tail,
             stderr_task,
+            stdin_task,
             idle_timeout,
             stage,
             label,
@@ -160,6 +171,7 @@ impl RelayProcess {
             }
         };
         self.stderr_task.abort();
+        self.stdin_task.abort();
         let code = exit
             .and_then(|status| status.code())
             .map(|code| code.to_string())

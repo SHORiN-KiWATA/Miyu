@@ -85,7 +85,12 @@ impl OpenAiCompatibleClient {
             &runtime.miyu_tools,
             self.claude_code_dev_mode,
         );
-        let prompt = compose_system_prompt(&system_prompt, scopes);
+        let prompt = cli_relay::compose_prompt(
+            &system_prompt,
+            scopes,
+            RELAY_ENVIRONMENT_NOTE,
+            RELAY_MIYU_TOOLS_NOTE,
+        );
         let mut plan = ResumePlan::new(
             &self.provider.id,
             &model,
@@ -224,19 +229,6 @@ impl OpenAiCompatibleClient {
         }
         args
     }
-}
-
-/// 系统提示词 + 中转环境说明(常量字节,前缀稳定):每轮一进程,自带后台/
-/// 通知活不过本轮——这是模型光靠自我认知猜不到的宿主事实。
-fn compose_system_prompt(system_prompt: &str, scopes: ToolScopes) -> String {
-    let mut prompt = system_prompt.to_string();
-    if scopes.native_on || scopes.miyu_on {
-        prompt.push_str(RELAY_ENVIRONMENT_NOTE);
-        if scopes.miyu_on {
-            prompt.push_str(RELAY_MIYU_TOOLS_NOTE);
-        }
-    }
-    prompt
 }
 
 /// 中转环境事实(声明式,不写指令;常量字节保证前缀稳定)。
