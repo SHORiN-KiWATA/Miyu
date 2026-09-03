@@ -1,5 +1,6 @@
 mod antigravity_form;
 mod claude_code_form;
+mod cli_catalog;
 mod codex_form;
 mod personas;
 mod platforms;
@@ -370,12 +371,14 @@ impl<'a> ProviderBrowser<'a> {
         self.fetch_seq += 1;
         if let Some(provider) = self.config.providers.get(self.provider_idx).cloned() {
             let seq = self.fetch_seq;
+            let cli_binary = cli_catalog::builtin_cli_binary(&self.config, &provider);
             let (tx, rx) = mpsc::channel();
             self.fetch_rx = Some(rx);
             self.loading = true;
             self.status = t("Fetching model list...", "正在获取模型列表...").to_string();
             std::thread::spawn(move || {
-                let result = fetch_models(&provider).map_err(|err| err.to_string());
+                let result =
+                    fetch_models(&provider, cli_binary.as_deref()).map_err(|err| err.to_string());
                 let _ = tx.send((seq, result));
             });
         } else {

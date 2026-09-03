@@ -87,6 +87,8 @@ pub const CLAUDE_CODE_PROTOCOL: &str = "claude-code";
 pub const ANTIGRAVITY_PROTOCOL: &str = "antigravity";
 /// Codex(OpenAI codex CLI)特殊供应商的内部协议标识。
 pub const CODEX_PROTOCOL: &str = "codex";
+/// Claude Code 预置模型:CLI 认的别名。
+pub const CLAUDE_CODE_PRESET_MODELS: &[&str] = &["fable", "opus", "sonnet", "haiku"];
 /// Codex 预置模型:`codex debug models` 的目录(09-03,codex 0.147)。
 pub const CODEX_PRESET_MODELS: &[&str] = &[
     "gpt-5.6-terra",
@@ -362,9 +364,9 @@ impl ProviderConfig {
         Self {
             enabled: false,
             protocol: CLAUDE_CODE_PROTOCOL.to_string(),
-            models: ["fable", "opus", "sonnet", "haiku"]
-                .into_iter()
-                .map(str::to_string)
+            models: CLAUDE_CODE_PRESET_MODELS
+                .iter()
+                .map(|name| name.to_string())
                 .collect(),
             default_model: "sonnet".to_string(),
             ..Self::template("claude-code", "Claude Code", "")
@@ -446,6 +448,21 @@ impl ProviderConfig {
             .unwrap_or("")
             .to_ascii_lowercase();
         host != "api.openai.com"
+    }
+
+    /// 内置 CLI 供应商的模型目录(没有 /models 端点,目录就是预置别名表)。
+    /// 配置里的 `models` 是"已激活"集合,不是目录——两者混为一谈时,用户
+    /// 只激活了一个模型,TUI 就只剩这一个可选(09-03 报"没有模型了")。
+    pub fn preset_model_catalog(&self) -> &'static [&'static str] {
+        if self.is_claude_code() {
+            CLAUDE_CODE_PRESET_MODELS
+        } else if self.is_antigravity() {
+            ANTIGRAVITY_PRESET_MODELS
+        } else if self.is_codex() {
+            CODEX_PRESET_MODELS
+        } else {
+            &[]
+        }
     }
 
     pub fn default_templates() -> Vec<Self> {
