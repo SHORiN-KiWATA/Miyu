@@ -148,6 +148,12 @@ pub struct ProviderConfig {
     pub model_tools_loading_mode: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_modalities: HashMap<String, Vec<String>>,
+    /// 工具结果(role=tool)能否直接带图片/视频块。留空按协议推断:
+    /// openai-chat 端点默认能(智谱 09-03 实测),OpenAI 官方端点与本机 CLI
+    /// 中转不能(前者 400,后者只传文本),anthropic 协议的下沉层暂未接图。
+    /// 不能的走"工具结果之后再补一条带图的用户消息"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_media: Option<bool>,
     /// 手动模型价格,键为模型名;设了就覆盖 models.dev 目录价。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_costs: HashMap<String, ModelCostConfig>,
@@ -316,6 +322,7 @@ impl ProviderConfig {
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: OPENCODE_DEFAULT_CHAT_MODEL.to_string(),
             timeout_seconds: default_timeout(),
@@ -338,6 +345,7 @@ impl ProviderConfig {
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
@@ -420,6 +428,26 @@ impl ProviderConfig {
         self.is_claude_code() || self.is_antigravity() || self.is_codex()
     }
 
+    /// 见 `tool_result_media` 字段。
+    pub fn tool_result_carries_media(&self) -> bool {
+        if let Some(explicit) = self.tool_result_media {
+            return explicit;
+        }
+        if self.is_builtin_cli_provider() || self.protocol.trim() == "anthropic" {
+            return false;
+        }
+        let host = self
+            .base_url
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        host != "api.openai.com"
+    }
+
     pub fn default_templates() -> Vec<Self> {
         let mut providers = vec![Self::default_opencodezen()];
         providers.extend([
@@ -462,6 +490,7 @@ impl ProviderConfig {
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),
@@ -484,6 +513,7 @@ impl ProviderConfig {
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: String::new(),
             timeout_seconds: default_timeout(),

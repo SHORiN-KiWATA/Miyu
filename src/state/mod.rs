@@ -36,9 +36,10 @@ pub use conversation_db::{
     PlatformAccessGrant, PlatformAccessGrantKey, PlatformMemeRefRecord, PlatformPluginScopeKey,
     PlatformSessionBinding, PlatformSessionBindingKey, PruneStats, QueuedPrompt,
     QueuedPromptAttachment, RedoCandidate, RedoInputKind, RedoStart, ReplayEntry, SessionOverview,
-    SessionRecord, ToolFlowCall, ToolFlowRound, ToolFootprint, Turn, TurnFollowup,
+    SessionRecord, ToolFlowCall, ToolFlowRound, ToolFootprint, Turn, TurnFollowup, TurnInlineMedia,
     TurnJournalEvent, TurnRedoCheckpointPayload, TurnReplay, TurnStatus, UserAttachment,
     UserAttachmentData, DEFAULT_MAX_GOAL_ROUNDS, GLOBAL_PLATFORM_ACCOUNT_SCOPE,
+    INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_TEXT, INLINE_MEDIA_KIND_VIDEO,
     USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
 };
 pub use usage::{

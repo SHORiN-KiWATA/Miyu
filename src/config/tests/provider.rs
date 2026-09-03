@@ -750,6 +750,7 @@ fn extra_body_roundtrip() {
         model_temperature: HashMap::new(),
         model_tools_loading_mode: HashMap::new(),
         model_modalities: HashMap::new(),
+        tool_result_media: None,
         model_costs: HashMap::new(),
         default_model: String::new(),
         timeout_seconds: 60,
@@ -1054,4 +1055,22 @@ fn a_stale_session_override_falls_back_instead_of_locking_the_entry() {
     let usable = config.usable_model_override(mixed).expect("还有可用条目");
     assert_eq!(usable.len(), 1);
     assert_eq!(usable[0].model, "deepseek-v4-flash-free");
+}
+
+/// 工具结果带图的能力推断:openai-chat 端点默认能,OpenAI 官方/本机 CLI/
+/// anthropic 协议不能,显式配置压过推断(09-03 智谱实测)。
+#[test]
+fn tool_result_media_capability_is_inferred_per_provider() {
+    let mut zhipu =
+        ProviderConfig::template("bigmodel", "智谱", "https://open.bigmodel.cn/api/paas/v4");
+    assert!(zhipu.tool_result_carries_media());
+    let openai = ProviderConfig::template("openai", "OpenAI", "https://api.openai.com/v1");
+    assert!(!openai.tool_result_carries_media());
+    assert!(!ProviderConfig::codex_template().tool_result_carries_media());
+    assert!(!ProviderConfig::antigravity_template().tool_result_carries_media());
+    let mut anthropic = ProviderConfig::template("a", "A", "https://api.anthropic.com");
+    anthropic.protocol = "anthropic".to_string();
+    assert!(!anthropic.tool_result_carries_media());
+    zhipu.tool_result_media = Some(false);
+    assert!(!zhipu.tool_result_carries_media());
 }

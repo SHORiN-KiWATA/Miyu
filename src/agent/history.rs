@@ -225,6 +225,8 @@ impl Agent {
             // dsh 形态回放:每轮 assistant 带原生 tool_calls(参数原样字节),
             // 随后各 call 的 role:"tool" 输出;最终回复照旧收尾。老回合
             // (无结构化流)退回 private_tool_memory 压扁兜底。
+            let inline_media = self.turn_inline_media_by_call(turn);
+            let tool_form = self.config.active_pool_tool_result_media();
             for round in replay_rounds(&turn.tool_flow) {
                 push_assistant_message_with_reasoning(
                     messages,
@@ -248,7 +250,17 @@ impl Agent {
                     false,
                 );
                 for call in &round.calls {
-                    messages.push(ChatMessage::tool(call.id.clone(), call.output.clone()));
+                    // 工具的媒体块(vision_analyze inline / 剪贴板图片 / 旁路
+                    // 描述)与活体同形态同位置回放。
+                    push_tool_result_with_media(
+                        messages,
+                        ChatMessage::tool(call.id.clone(), call.output.clone()),
+                        inline_media
+                            .get(call.id.as_str())
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        tool_form,
+                    );
                 }
             }
             push_assistant_context_messages(
@@ -263,6 +275,38 @@ impl Agent {
                 )));
             }
         }
+    }
+
+    /// 本回合各次工具调用之后追加的媒体块,按 call_id 归组。只有流里出现
+    /// 过会追加媒体的工具才查库,其余回合零开销。
+    fn turn_inline_media_by_call(
+        &self,
+        turn: &crate::state::Turn,
+    ) -> std::collections::HashMap<String, Vec<crate::state::TurnInlineMedia>> {
+        let mut grouped = std::collections::HashMap::new();
+        let relevant = turn.tool_flow.iter().any(|round| {
+            round
+                .calls
+                .iter()
+                .any(|call| INLINE_MEDIA_TOOLS.contains(&call.name.as_str()))
+        });
+        if !relevant {
+            return grouped;
+        }
+        match self.state.load_turn_inline_media(&turn.turn_id) {
+            Ok(items) => {
+                for item in items {
+                    grouped
+                        .entry(item.call_id.clone())
+                        .or_insert_with(Vec::new)
+                        .push(item);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(turn_id = %turn.turn_id, %error, "failed to load inline media for replay");
+            }
+        }
+        grouped
     }
 
     /// Byte-identical prefix of the live conversation covering exactly the

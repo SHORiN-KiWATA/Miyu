@@ -657,6 +657,7 @@ pub(in crate::config_tui) fn edit_provider_form(
             model_temperature: provider.model_temperature.clone(),
             model_tools_loading_mode: provider.model_tools_loading_mode.clone(),
             model_modalities: provider.model_modalities.clone(),
+            tool_result_media: provider.tool_result_media,
             model_costs: provider.model_costs.clone(),
             default_model: provider.default_model.clone(),
             timeout_seconds: timeout,

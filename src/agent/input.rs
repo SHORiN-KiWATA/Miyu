@@ -282,28 +282,37 @@ impl Agent {
         })
     }
 
-    pub(in crate::agent) async fn clipboard_image_message(
+    /// 当前模型看不了图时的退路:把媒体块里的图片交给视觉插件转述,换成
+    /// 一条 text 块(同样落库重放)。
+    pub(in crate::agent) async fn describe_inline_media(
         &self,
-        img: ClipboardImage,
-    ) -> Result<Option<ChatMessage>> {
-        if self.current_model_supports_vision() {
-            return Ok(Some(ChatMessage::user_parts(vec![
-                ChatContentPart::ImageUrl {
-                    image_url: ImageUrlContent {
-                        url: img.data_url().to_string(),
-                    },
-                },
-            ])));
+        items: Vec<crate::state::TurnInlineMedia>,
+    ) -> Result<Vec<crate::state::TurnInlineMedia>> {
+        let images = items
+            .iter()
+            .filter(|item| item.kind == crate::state::INLINE_MEDIA_KIND_IMAGE)
+            .filter_map(|item| {
+                item.data
+                    .clone()
+                    .map(|data| ClipboardImage::new(item.mime.clone(), data))
+            })
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            return Ok(Vec::new());
         }
-
-        let images = vec![&img];
-        let description = self
-            .describe_images_with_vision_provider("", &images)
-            .await?;
+        let refs = images.iter().collect::<Vec<_>>();
+        let description = self.describe_images_with_vision_provider("", &refs).await?;
         if description.trim().is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(ChatMessage::plain("user", description)))
+        Ok(vec![crate::state::TurnInlineMedia {
+            call_id: String::new(),
+            seq: 0,
+            kind: crate::state::INLINE_MEDIA_KIND_TEXT.to_string(),
+            mime: "text/plain".to_string(),
+            source: String::new(),
+            data: Some(description.into_bytes()),
+        }])
     }
 
     pub(in crate::agent) fn uploaded_attachment_image_parts(

@@ -835,10 +835,10 @@ impl Agent {
                         }
                     }
                 };
-                let clipboard_image = if tool_succeeded {
-                    clipboard_binary_image_from_tool_result(&call.function.name, &output)
+                let inline_media = if tool_succeeded {
+                    inline_media_from_tool_result(&call.function.name, &output)
                 } else {
-                    None
+                    Vec::new()
                 };
                 let model_output = self
                     .spill_tool_output(current_turn_id, &call.id, &call.function.name, &output)
@@ -852,7 +852,9 @@ impl Agent {
                     &call.function.arguments,
                     &model_output,
                 );
-                messages.push(ChatMessage::tool(call.id.clone(), model_output));
+                // tool 消息要等媒体块定下来再推:图直接进它的内容 parts(供应商
+                // 不认时才退回"之后补一条用户消息")。
+                let tool_message = ChatMessage::tool(call.id.clone(), model_output);
                 if tool_succeeded && call.function.name == "load_tools" {
                     let loaded = loaded_items_from_output(&output);
                     for name in &loaded.tools {
@@ -865,11 +867,14 @@ impl Agent {
                             .add_session_loaded_targets(&loaded.targets, Some(current_turn_id))?;
                     }
                 }
-                if let Some(img) = clipboard_image {
+                let stamped = if !inline_media.is_empty() {
                     let supports_vision = self.current_model_supports_vision();
-                    let uses_vision_fallback =
-                        !supports_vision && self.config.plugins.vision.enabled;
-                    if !supports_vision {
+                    let needs_fallback = !supports_vision
+                        && inline_media
+                            .iter()
+                            .any(|item| item.kind == crate::state::INLINE_MEDIA_KIND_IMAGE);
+                    let uses_vision_fallback = needs_fallback && self.config.plugins.vision.enabled;
+                    if needs_fallback {
                         let message = if self.config.plugins.vision.enabled {
                             if crate::i18n::is_zh() {
                                 "视觉分析."
@@ -877,9 +882,9 @@ impl Agent {
                                 "Vision analysis."
                             }
                         } else if crate::i18n::is_zh() {
-                            "当前模型不支持图片，且未启用视觉模型，无法分析剪贴板图片。"
+                            "当前模型不支持图片，且未启用视觉模型，无法分析这张图片。"
                         } else {
-                            "The current model does not support images and the vision plugin is disabled, so the clipboard image cannot be analyzed."
+                            "The current model does not support images and the vision plugin is disabled, so the image cannot be analyzed."
                         };
                         on_event(AgentEvent::ToolProgress {
                             call_id: call_id.clone(),
@@ -887,9 +892,9 @@ impl Agent {
                             message: message.to_string(),
                         })?;
                     }
-                    let image_message = if uses_vision_fallback {
-                        let image_future = self.clipboard_image_message(img);
-                        tokio::pin!(image_future);
+                    let items = if uses_vision_fallback {
+                        let describe_future = self.describe_inline_media(inline_media);
+                        tokio::pin!(describe_future);
                         let mut spinner_interval = tokio::time::interval(self.spinner_interval);
                         spinner_interval
                             .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -902,7 +907,7 @@ impl Agent {
                         let mut progress_tick = 0usize;
                         loop {
                             tokio::select! {
-                                result = &mut image_future => {
+                                result = &mut describe_future => {
                                     break result?;
                                 }
                                 _ = progress_interval.tick() => {
@@ -918,13 +923,36 @@ impl Agent {
                                 }
                             }
                         }
+                    } else if needs_fallback {
+                        Vec::new()
                     } else {
-                        self.clipboard_image_message(img).await?
+                        inline_media
                     };
-                    if let Some(message) = image_message {
-                        messages.push(message);
+                    // 先落库再推进对话:重放读的就是这批字节,活体与重放
+                    // 同源(1.2 化石化)。
+                    let stamped = items
+                        .into_iter()
+                        .enumerate()
+                        .map(|(seq, mut item)| {
+                            item.call_id = call.id.clone();
+                            item.seq = seq as i64;
+                            item
+                        })
+                        .collect::<Vec<_>>();
+                    if !stamped.is_empty() {
+                        self.state
+                            .save_turn_inline_media(current_turn_id, &stamped)?;
                     }
-                }
+                    stamped
+                } else {
+                    Vec::new()
+                };
+                push_tool_result_with_media(
+                    messages,
+                    tool_message,
+                    &stamped,
+                    self.config.active_pool_tool_result_media(),
+                );
                 if tool_succeeded {
                     let result_ok = tool_output_succeeded(&output);
                     if result_ok {

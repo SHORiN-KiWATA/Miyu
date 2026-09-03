@@ -206,6 +206,17 @@ impl AppConfig {
         (!usable.is_empty()).then_some(usable)
     }
 
+    /// 活跃池里每个供应商的工具结果都能直接带媒体时才用"图进工具结果"
+    /// 形态;否则整池退回"工具结果之后补一条带图的用户消息"。池是负载均衡
+    /// 的,一半供应商会 400 就不能用。空池按能带处理(无处可发,形态无关)。
+    pub fn active_pool_tool_result_media(&self) -> bool {
+        self.active_provider_model_choices().iter().all(|choice| {
+            self.provider(Some(&choice.provider_id))
+                .map(|provider| provider.tool_result_carries_media())
+                .unwrap_or(false)
+        })
+    }
+
     pub fn active_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
         match &self.active_provider_models {
             None => self

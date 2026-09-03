@@ -1,3 +1,4 @@
+pub mod inline;
 mod print;
 mod reference;
 pub(crate) use print::*;
@@ -293,6 +294,9 @@ mod batch_tests {
 
 async fn analyze_image(args: Value, config: AppConfig, paths: MiyuPaths) -> Result<String> {
     if let Some(targets) = batch_targets(&args) {
+        if let Some(output) = try_inline_targets(&config, &targets)? {
+            return Ok(output);
+        }
         let prompt = args.get("prompt").cloned();
         return run_vision_batch(targets, prompt, |sub| {
             let config = config.clone();
@@ -323,6 +327,9 @@ async fn analyze_image_one(args: Value, config: AppConfig, paths: MiyuPaths) -> 
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("Describe this image concisely and point out the important details.")
         .trim();
+    if let Some(output) = try_inline_targets(&config, std::slice::from_ref(&image.to_string()))? {
+        return Ok(output);
+    }
     // 视频走独立路由(08-22):OpenRouter 系 video_url 内容块,仅视频能力
     // 模型(如 ox-alpha)接受。
     if let Some(mime) = video_mime(image) {
@@ -511,6 +518,16 @@ async fn analyze_scoped_image_one(
         if let Some(cached) = state.analyses.lock().unwrap().get(&cache_key).cloned() {
             return Ok(cached);
         }
+        if active_text_pool_for_vision(&config).is_some() {
+            return Ok(inline::deposit(vec![crate::state::TurnInlineMedia {
+                call_id: String::new(),
+                seq: 0,
+                kind: crate::state::INLINE_MEDIA_KIND_IMAGE.to_string(),
+                mime: resolved.image.mime.clone(),
+                source: image.to_string(),
+                data: Some(resolved.image.data.to_vec()),
+            }]));
+        }
         let image_url = image_data_url(&resolved.image.mime, &resolved.image.data);
         let result = analyze_image_url_with_prompt(&config, &paths, &image_url, prompt).await?;
         state
@@ -537,6 +554,9 @@ async fn analyze_scoped_image_one(
         .context("failed to resolve the requested image")?;
     if !state.allowed_paths.iter().any(|allowed| allowed == &image) {
         bail!("image is not attached to the current platform turn")
+    }
+    if let Some(output) = try_inline_targets(&config, &[image.display().to_string()])? {
+        return Ok(output);
     }
     analyze_local_image_with_prompt(&config, &paths, &image, prompt).await
 }
@@ -641,6 +661,100 @@ fn active_text_pool_for_vision(
     usable.then_some(pool)
 }
 
+/// 活跃文本池整池支持某种输入(image/video)。池是负载均衡的,有一个不认
+/// 就不能算。
+fn active_text_pool_supports(config: &AppConfig, input: &str) -> bool {
+    if !config.plugins.vision.prefer_current_multimodal_model {
+        return false;
+    }
+    let pool = config.active_provider_model_choices();
+    !pool.is_empty()
+        && pool.iter().all(|choice| {
+            config.model_supports_any_input(&choice.provider_id, &choice.model, &[input])
+        })
+}
+
+/// 当前模型自己能看时,不发旁路请求:把媒体寄存给回合循环,返回 inline
+/// 标记。任一目标当前池吃不下(视频而池不认视频)就整批退回旁路,别把一
+/// 半图给主模型、另一半交给别的模型转述。
+///
+/// 只做"能不能读到"级别的校验(文件存在、体积在上限内),不解码——解码由
+/// 供应商负责,坏图它会明确报错。
+fn try_inline_targets(config: &AppConfig, targets: &[String]) -> Result<Option<String>> {
+    if !config.plugins.vision.enabled {
+        return Ok(None);
+    }
+    let mut items = Vec::with_capacity(targets.len());
+    for target in targets {
+        let target = target.trim();
+        let remote = target.starts_with("http://") || target.starts_with("https://");
+        if let Some(mime) = video_mime(target) {
+            if !active_text_pool_supports(config, "video") {
+                return Ok(None);
+            }
+            if !remote {
+                // 与旁路同一把尺:超限时指引裁剪,不静默截断。
+                local_video_data_url_check(target)?;
+            }
+            items.push(crate::state::TurnInlineMedia {
+                call_id: String::new(),
+                seq: 0,
+                kind: crate::state::INLINE_MEDIA_KIND_VIDEO.to_string(),
+                mime: mime.to_string(),
+                source: if remote {
+                    target.to_string()
+                } else {
+                    expand_path(target).display().to_string()
+                },
+                data: None,
+            });
+            continue;
+        }
+        if active_text_pool_for_vision(config).is_none() {
+            return Ok(None);
+        }
+        if remote {
+            items.push(crate::state::TurnInlineMedia {
+                call_id: String::new(),
+                seq: 0,
+                kind: crate::state::INLINE_MEDIA_KIND_IMAGE.to_string(),
+                mime: String::new(),
+                source: target.to_string(),
+                data: None,
+            });
+        } else {
+            let (mime, bytes) = local_image_bytes(target)?;
+            items.push(crate::state::TurnInlineMedia {
+                call_id: String::new(),
+                seq: 0,
+                kind: crate::state::INLINE_MEDIA_KIND_IMAGE.to_string(),
+                mime: mime.to_string(),
+                source: expand_path(target).display().to_string(),
+                data: Some(bytes),
+            });
+        }
+    }
+    Ok(Some(inline::deposit(items)))
+}
+
+/// 只校验不读:视频内联时正文由重放方按需从文件读。
+fn local_video_data_url_check(value: &str) -> Result<()> {
+    let path = expand_path(value);
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("failed to stat video {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("video path is not a file: {}", path.display())
+    }
+    if metadata.len() > MAX_VIDEO_BYTES {
+        bail!(
+            "video is {:.1} MB; the limit is {} MB — trim or compress it first (e.g. ffmpeg -ss/-t or lower the resolution)",
+            metadata.len() as f64 / 1024.0 / 1024.0,
+            MAX_VIDEO_BYTES / 1024 / 1024
+        )
+    }
+    Ok(())
+}
+
 fn vision_client(config: &AppConfig, paths: &MiyuPaths) -> Result<OpenAiCompatibleClient> {
     // An explicit global vision provider preserves its existing precedence.
     // Platform turns with a conversation override clear that single-provider
@@ -675,7 +789,7 @@ fn vision_client(config: &AppConfig, paths: &MiyuPaths) -> Result<OpenAiCompatib
     OpenAiCompatibleClient::new(&provider, config, paths)
 }
 
-pub(crate) fn local_image_data_url(value: &str) -> Result<String> {
+pub(crate) fn local_image_bytes(value: &str) -> Result<(&'static str, Vec<u8>)> {
     let path = expand_path(value);
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("failed to stat image {}", path.display()))?;
@@ -688,6 +802,11 @@ pub(crate) fn local_image_data_url(value: &str) -> Result<String> {
     let bytes =
         std::fs::read(&path).with_context(|| format!("failed to read image {}", path.display()))?;
     let mime = mime_from_path(&path)?;
+    Ok((mime, bytes))
+}
+
+pub(crate) fn local_image_data_url(value: &str) -> Result<String> {
+    let (mime, bytes) = local_image_bytes(value)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{mime};base64,{encoded}"))
 }
@@ -1026,5 +1145,55 @@ mod tests {
             .to_string()
             .contains("context image ID is not available"));
         assert_eq!(calls.load(Ordering::Acquire), 2);
+    }
+    #[test]
+    fn inline_short_circuit_only_when_the_text_pool_can_see() {
+        let temp = tempfile::tempdir().unwrap();
+        let image_path = temp.path().join("dot.png");
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+            .save(&image_path)
+            .unwrap();
+        let target = image_path.display().to_string();
+        let mut config = AppConfig::default();
+        // 池不认图片:退回旁路。
+        assert!(try_inline_targets(&config, &[target.clone()])
+            .unwrap()
+            .is_none());
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| !provider.is_builtin_cli_provider())
+            .unwrap();
+        provider.model_modalities.insert(
+            provider.default_model.clone(),
+            vec!["text".to_string(), "image".to_string()],
+        );
+        // 池认图片:寄存并返回 inline 标记,媒体本体不在结果文本里。
+        let output = try_inline_targets(&config, &[target.clone()])
+            .unwrap()
+            .expect("inline output");
+        assert!(inline::inline_reference(&output).is_some());
+        assert!(!output.contains("base64"));
+        let items = inline::take_from_output(&output);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, crate::state::INLINE_MEDIA_KIND_IMAGE);
+        assert_eq!(items[0].mime, "image/png");
+        assert_eq!(
+            items[0].data.as_deref(),
+            Some(std::fs::read(&image_path).unwrap().as_slice())
+        );
+        // 视频而池不认视频:整批退回旁路,不拆一半给主模型。
+        assert!(
+            try_inline_targets(&config, &[target, "https://x/y.mp4".to_string()])
+                .unwrap()
+                .is_none()
+        );
+        // 关掉偏好开关:一律旁路。
+        config.plugins.vision.prefer_current_multimodal_model = false;
+        assert!(
+            try_inline_targets(&config, &[image_path.display().to_string()])
+                .unwrap()
+                .is_none()
+        );
     }
 }

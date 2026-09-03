@@ -315,6 +315,7 @@ mod tests {
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
             model_modalities: HashMap::new(),
+            tool_result_media: None,
             model_costs: HashMap::new(),
             default_model: "vision-model".to_string(),
             timeout_seconds: 60,

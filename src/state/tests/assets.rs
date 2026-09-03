@@ -118,6 +118,40 @@ fn disk_backed_image_attachment_is_read_back_for_inlining() {
 }
 
 #[test]
+fn turn_inline_media_round_trips_and_cascades_with_the_turn() {
+    let (_temp, store) = test_store();
+    store.start_turn("turn_vis", "look", 999_999).unwrap();
+    let items = vec![
+        TurnInlineMedia {
+            call_id: "call_a".to_string(),
+            seq: 0,
+            kind: INLINE_MEDIA_KIND_IMAGE.to_string(),
+            mime: "image/png".to_string(),
+            source: "/tmp/a.png".to_string(),
+            data: Some(vec![9, 9, 9]),
+        },
+        TurnInlineMedia {
+            call_id: "call_a".to_string(),
+            seq: 1,
+            kind: INLINE_MEDIA_KIND_VIDEO.to_string(),
+            mime: "video/mp4".to_string(),
+            source: "https://example.com/v.mp4".to_string(),
+            data: None,
+        },
+    ];
+    store.save_turn_inline_media("turn_vis", &items).unwrap();
+    assert_eq!(store.load_turn_inline_media("turn_vis").unwrap(), items);
+    assert!(store
+        .load_turn_inline_media("turn_other")
+        .unwrap()
+        .is_empty());
+
+    store.complete_turn("turn_vis", "seen", None).unwrap();
+    store.reset_conversation().unwrap();
+    assert!(store.load_turn_inline_media("turn_vis").unwrap().is_empty());
+}
+
+#[test]
 fn image_assets_persist_with_metadata_and_are_removed_with_history() {
     let (temp, store) = test_store();
     store.init_files().unwrap();

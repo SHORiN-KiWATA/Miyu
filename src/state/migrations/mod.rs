@@ -172,10 +172,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "attachment_files",
         apply: apply_v29_attachment_files,
     },
+    Migration {
+        version: 30,
+        name: "turn_inline_media",
+        apply: apply_v30_turn_inline_media,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 29;
+pub const LATEST_VERSION: i64 = 30;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

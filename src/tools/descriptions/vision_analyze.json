@@ -1,7 +1,7 @@
 {
   "name": "vision_analyze",
   "display_name": "视觉分析",
-  "description": "Analyze images or a video. Pass images (array) to analyze several in one call — much faster than one call per image. Accepts local paths or http(s) URLs. Video (mp4/mpeg/mov/webm) needs a video-capable model; local videos are capped at 24 MB.",
+  "description": "Look at images or a video. When the current model can see them itself, the media is attached to the conversation directly; otherwise a vision model describes it. Pass images (array) to handle several in one call. Accepts local paths or http(s) URLs. Video (mp4/mkv/mov/webm/mpeg) needs a video-capable model; local videos are capped at 200 MB.",
   "parameters": {
     "type": "object",
     "properties": {

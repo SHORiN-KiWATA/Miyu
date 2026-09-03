@@ -23,16 +23,18 @@ pub(crate) fn default_timeout() -> u64 {
     60
 }
 
+// 三个视觉超时统一放到一小时(09-03 用户裁定):它们只剩"防僵尸"一个用途,
+// 大图慢模型下 15s/20s 会先把正常请求掐死;真要等太久用户自己会停。
 pub(crate) fn default_vision_response_header_timeout() -> u64 {
-    15
+    3600
 }
 
 pub(crate) fn default_vision_stream_idle_timeout() -> u64 {
-    20
+    3600
 }
 
 pub(crate) fn default_vision_image_timeout() -> u64 {
-    60
+    3600
 }
 
 pub(crate) fn default_mcp_timeout() -> u64 {

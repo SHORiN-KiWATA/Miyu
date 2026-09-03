@@ -1,4 +1,5 @@
 mod attachments;
+mod inline_media;
 pub use attachments::{
     USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
 };

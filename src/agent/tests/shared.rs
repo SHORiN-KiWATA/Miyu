@@ -62,6 +62,7 @@ pub(super) fn queue_test_config(base_url: String) -> AppConfig {
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
             model_modalities: Default::default(),
+            tool_result_media: None,
             model_costs: Default::default(),
             default_model: "test-model".to_string(),
             timeout_seconds: 30,

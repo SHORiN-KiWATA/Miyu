@@ -222,3 +222,26 @@ pub(in crate::state) fn apply_v29_attachment_files(conn: &Connection) -> Result<
     )?;
     Ok(())
 }
+
+/// v30: 回合内追加给模型看的媒体(工具让当前多模态模型直接看的图片/
+/// 视频、剪贴板图片、视觉旁路的描述文本),按 (turn, call) 落子表,历史
+/// 重放时紧跟对应 tool 消息逐字节回灌——不落库就等于下一回合模型"忘了"
+/// 这张图,且缓存前缀在此掰断(09-03)。
+pub(in crate::state) fn apply_v30_turn_inline_media(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS turn_inline_media (
+            media_id   INTEGER PRIMARY KEY,
+            turn_id    TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+            call_id    TEXT NOT NULL,
+            seq        INTEGER NOT NULL,
+            kind       TEXT NOT NULL CHECK (kind IN ('image', 'video', 'text')),
+            mime       TEXT NOT NULL,
+            source     TEXT NOT NULL,
+            data       BLOB,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_turn_inline_media_turn
+            ON turn_inline_media(turn_id, call_id, seq);",
+    )?;
+    Ok(())
+}

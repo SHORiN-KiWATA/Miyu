@@ -326,6 +326,25 @@ pub struct UserAttachment {
     pub created_at: String,
 }
 
+/// 回合内紧跟某次工具调用追加给模型的媒体块(v30)。
+///
+/// `image`/`video`:`data` 有值就按 data URL 内联,为空则 `source` 是
+/// http(s) 地址(原样交给供应商取)或本地路径(重放时从文件读)。
+/// `text`:视觉旁路给出的描述,`data` 是 UTF-8 正文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnInlineMedia {
+    pub call_id: String,
+    pub seq: i64,
+    pub kind: String,
+    pub mime: String,
+    pub source: String,
+    pub data: Option<Vec<u8>>,
+}
+
+pub const INLINE_MEDIA_KIND_IMAGE: &str = "image";
+pub const INLINE_MEDIA_KIND_VIDEO: &str = "video";
+pub const INLINE_MEDIA_KIND_TEXT: &str = "text";
+
 /// 附件本体。旧行把内容存在 `data` 列里,`path` 为 `None`;v29 起新上传一律
 /// 落盘,`path` 指向磁盘文件。`file` 类附件不读内容进内存(可能是几 GB 的
 /// 视频),`bytes` 为空,消费方只拿路径。

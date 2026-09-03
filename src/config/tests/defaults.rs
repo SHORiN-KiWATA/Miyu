@@ -13,9 +13,10 @@ fn context_overflow_defaults_to_compact() {
 #[test]
 fn vision_timeouts_have_stable_defaults() {
     let vision: VisionPluginConfig = serde_json::from_value(serde_json::json!({})).unwrap();
-    assert_eq!(vision.response_header_timeout_seconds, 15);
-    assert_eq!(vision.stream_idle_timeout_seconds, 20);
-    assert_eq!(vision.image_timeout_seconds, 60);
+    // 09-03 用户裁定:三个超时只剩"防僵尸"一个用途,统一一小时。
+    assert_eq!(vision.response_header_timeout_seconds, 3600);
+    assert_eq!(vision.stream_idle_timeout_seconds, 3600);
+    assert_eq!(vision.image_timeout_seconds, 3600);
 }
 
 #[test]

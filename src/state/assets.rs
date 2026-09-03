@@ -157,6 +157,15 @@ impl StateStore {
         self.conv_db.load_artifact_asset(asset_id)
     }
 
+    /// 记下某次工具调用之后追加给模型的媒体块,供历史重放逐字节回灌。
+    pub fn save_turn_inline_media(&self, turn_id: &str, items: &[TurnInlineMedia]) -> Result<()> {
+        self.conv_db.insert_turn_inline_media(turn_id, items)
+    }
+
+    pub fn load_turn_inline_media(&self, turn_id: &str) -> Result<Vec<TurnInlineMedia>> {
+        self.conv_db.load_turn_inline_media(turn_id)
+    }
+
     pub fn save_user_attachment(&self, attachment: &UserAttachment, data: &[u8]) -> Result<()> {
         self.conv_db
             .insert_user_attachment(&self.session(), attachment, data)

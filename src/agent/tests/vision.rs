@@ -179,6 +179,7 @@ async fn binary_image_reaches_vision_pool_then_text_model() {
             vec!["text".to_string(), "image".to_string()],
         )]
         .into(),
+        tool_result_media: None,
         model_costs: Default::default(),
         default_model: "vision-model".to_string(),
         timeout_seconds: 30,
@@ -597,4 +598,38 @@ async fn inlined_images_do_not_invite_the_vision_tool() {
         hints.contains("vision_analyze"),
         "看不了图的模型必须保留工具兜底，实际提示：{hints}"
     );
+}
+
+#[test]
+fn inline_media_message_uses_plain_for_text_and_parts_for_media() {
+    use crate::state::{TurnInlineMedia, INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_TEXT};
+    let text = TurnInlineMedia {
+        call_id: "c".into(),
+        seq: 0,
+        kind: INLINE_MEDIA_KIND_TEXT.into(),
+        mime: "text/plain".into(),
+        source: String::new(),
+        data: Some(b"a cat".to_vec()),
+    };
+    let message = inline_media_message(&[text.clone()]).unwrap();
+    assert!(matches!(message.content, Some(crate::llm::ChatContent::Text(ref t)) if t == "a cat"));
+
+    let remote = TurnInlineMedia {
+        call_id: "c".into(),
+        seq: 1,
+        kind: INLINE_MEDIA_KIND_IMAGE.into(),
+        mime: String::new(),
+        source: "https://example.com/p.jpg".into(),
+        data: None,
+    };
+    let message = inline_media_message(&[text, remote]).unwrap();
+    let parts = match message.content.unwrap() {
+        crate::llm::ChatContent::Parts(parts) => parts,
+        _ => panic!("parts"),
+    };
+    assert_eq!(parts.len(), 2);
+    assert!(
+        matches!(&parts[1], crate::llm::ChatContentPart::ImageUrl { image_url } if image_url.url == "https://example.com/p.jpg")
+    );
+    assert!(inline_media_message(&[]).is_none());
 }
