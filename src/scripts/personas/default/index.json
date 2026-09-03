@@ -462,6 +462,65 @@
       "groups": [
         "research"
       ]
+    },
+    {
+      "id": "bangumi",
+      "display_name": "番组日历",
+      "description": "查 Bangumi（bgm.tv）：今天/某天/整周的新番放送表；按名字搜动画、书、游戏、音乐、三次元条目；看条目详情（评分、排名、标签、简介、已播到第几集、下一集何时播）和剧集列表。用户问「今天有什么番」「某番播到哪了」「某作评分」用这个。",
+      "path": "bangumi",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "calendar",
+              "search",
+              "subject",
+              "episodes"
+            ],
+            "description": "calendar=放送表（默认）；search=搜条目；subject=条目详情含播出进度；episodes=剧集列表"
+          },
+          "query": {
+            "type": "string",
+            "description": "search/subject/episodes 的关键词或条目 id；名字匹配取第一条并附其它候选"
+          },
+          "weekday": {
+            "type": "string",
+            "description": "calendar 看哪天：一~日、mon~sun、今天（默认）、明天、week（整周）"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "anime",
+              "book",
+              "game",
+              "music",
+              "real"
+            ],
+            "description": "条目类型，默认 anime"
+          },
+          "top": {
+            "type": "integer",
+            "description": "最多显示几条；calendar 默认全部，search 默认 8"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "md",
+              "json"
+            ],
+            "description": "默认 md；要逐字段处理时用 json"
+          }
+        },
+        "additionalProperties": false
+      },
+      "timeout_seconds": 60,
+      "always_loaded": false,
+      "load_policy": "group",
+      "groups": [
+        "research"
+      ]
     }
   ]
 }

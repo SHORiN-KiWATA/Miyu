@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+# 显示名称：番组日历
+# 描述：查 Bangumi（bgm.tv）：今天/某天/整周的新番放送表，按名字搜动画/书/游戏/音乐/三次元条目，看条目详情（评分、排名、标签、简介、已播到第几集、下一集何时播）和剧集列表。零依赖，走公开 API。
+# Description: Query Bangumi (bgm.tv): today's / a weekday's / the whole week's airing calendar, search subjects by name, show subject details (score, rank, tags, summary, aired progress, next episode) and episode lists. Zero dependencies, public API only.
+"""
+用法（命令行）：
+    bangumi                          今天播什么
+    bangumi calendar 六               星期六播什么（也认 sat / 6 / week）
+    bangumi search 芙莉莲             搜条目（默认动画；--type book/game/music/real）
+    bangumi subject 400602            条目详情（id 或名字都行）
+    bangumi episodes 葬送的芙莉莲      剧集列表
+
+工具层（Miyu）调用时把参数打成 JSON 从 stdin 喂进来，键名同命令行选项：
+    {"action":"search","query":"芙莉莲","type":"anime","top":8,"format":"md"}
+"""
+
+import argparse
+import datetime as dt
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+API = "https://api.bgm.tv"
+# Bangumi 要求可识别的 UA（匿名 UA 会被限流甚至拒绝）。
+UA = "miyu-bangumi/0.1 (+https://github.com/shorinkiwata/Miyu)"
+TIMEOUT = 20
+
+SUBJECT_TYPES = {"book": 1, "anime": 2, "music": 3, "game": 4, "real": 6}
+TYPE_LABEL = {1: "书籍", 2: "动画", 3: "音乐", 4: "游戏", 6: "三次元"}
+WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
+WEEKDAY_ALIASES = {
+    "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 7,
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7,
+    "周一": 1, "周二": 2, "周三": 3, "周四": 4, "周五": 5, "周六": 6, "周日": 7,
+    "星期一": 1, "星期二": 2, "星期三": 3, "星期四": 4, "星期五": 5, "星期六": 6, "星期日": 7,
+    "今天": 0, "today": 0, "明天": -1, "tomorrow": -1, "week": -2, "本周": -2, "整周": -2,
+}
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, hint=""):
+        super().__init__(message)
+        self.hint = hint
+
+
+# ---------------------------------------------------------------- HTTP
+
+def request(path, method="GET", body=None, params=None):
+    url = API + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "User-Agent": UA,
+        "Accept": "application/json",
+        **({"Content-Type": "application/json"} if data else {}),
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise Failed("Bangumi 上没有这个条目", "确认 id 是否正确，或先用 search 查") from exc
+        if exc.code in (403, 429):
+            raise Failed(f"Bangumi 拒绝了请求（HTTP {exc.code}）", "可能是限流，稍后再试") from exc
+        raise Failed(f"Bangumi 接口出错（HTTP {exc.code}）") from exc
+    except urllib.error.URLError as exc:
+        raise Failed(f"连不上 Bangumi：{exc.reason}", "检查网络或代理") from exc
+
+
+# ---------------------------------------------------------------- helpers
+
+def today():
+    return dt.date.today()
+
+
+def title_of(item):
+    return item.get("name_cn") or item.get("name") or "?"
+
+
+def alt_title(item):
+    name, cn = item.get("name") or "", item.get("name_cn") or ""
+    return name if cn and name and name != cn else ""
+
+
+def score_of(item):
+    rating = item.get("rating") or {}
+    score = rating.get("score") or 0
+    total = rating.get("total") or 0
+    return score, total
+
+
+def rank_of(item):
+    rating = item.get("rating") or {}
+    return item.get("rank") or rating.get("rank")
+
+
+def fmt_score(item):
+    score, total = score_of(item)
+    if not total:
+        return "—"
+    return f"{score:.1f}({total})"
+
+
+def parse_weekday(text):
+    if text is None or str(text).strip() == "":
+        return 0
+    key = str(text).strip().lower()
+    if key in WEEKDAY_ALIASES:
+        return WEEKDAY_ALIASES[key]
+    if key.isdigit() and 1 <= int(key) <= 7:
+        return int(key)
+    if key == "0":
+        return 7
+    raise Failed(f"看不懂的星期：{text}", "写 一~日、mon~sun、1~7、今天、明天 或 week")
+
+
+def resolve_subject_id(query, subject_type):
+    text = str(query).strip()
+    if text.isdigit():
+        return int(text), None
+    hits = search(text, subject_type, limit=5)
+    if not hits:
+        raise Failed(f"Bangumi 上搜不到「{text}」", "换个写法（日文原名/中文译名）或加 --type")
+    return hits[0]["id"], hits
+
+
+# ---------------------------------------------------------------- API calls
+
+def calendar():
+    return request("/calendar")
+
+
+def search(keyword, subject_type=2, limit=8):
+    body = {"keyword": keyword, "sort": "match"}
+    if subject_type:
+        body["filter"] = {"type": [subject_type]}
+    data = request("/v0/search/subjects", method="POST", body=body, params={"limit": limit})
+    return data.get("data") or []
+
+
+def subject(subject_id):
+    return request(f"/v0/subjects/{subject_id}")
+
+
+def episodes(subject_id, limit=200):
+    out, offset = [], 0
+    while True:
+        data = request("/v0/episodes", params={"subject_id": subject_id, "type": 0,
+                                              "limit": min(limit, 100), "offset": offset})
+        chunk = data.get("data") or []
+        out.extend(chunk)
+        offset += len(chunk)
+        if not chunk or offset >= (data.get("total") or 0) or offset >= limit:
+            break
+    return out
+
+
+def airing_progress(eps):
+    now = today().isoformat()
+    aired = [e for e in eps if e.get("airdate") and e["airdate"] <= now]
+    upcoming = [e for e in eps if e.get("airdate") and e["airdate"] > now]
+    latest = aired[-1] if aired else None
+    nxt = upcoming[0] if upcoming else None
+    return latest, nxt, len(aired)
+
+
+# ---------------------------------------------------------------- render
+
+def render_calendar(days, weekday, top, md):
+    """weekday: 1~7 单日, -2 整周"""
+    picked = days if weekday == -2 else [d for d in days if d["weekday"]["id"] == weekday]
+    if md:
+        lines = []
+        for day in picked:
+            wd = day["weekday"]
+            items = sorted(day["items"], key=lambda it: score_of(it)[0], reverse=True)
+            shown = items[:top] if top else items
+            lines.append(f"## {wd['cn']}（{len(items)} 部）")
+            lines.append("")
+            lines.append("| 评分 | 名称 | 首播 | id |")
+            lines.append("| ---: | --- | --- | ---: |")
+            for it in shown:
+                alt = alt_title(it)
+                name = title_of(it) + (f"（{alt}）" if alt else "")
+                lines.append(f"| {fmt_score(it)} | {name} | {it.get('air_date') or '—'} | {it['id']} |")
+            if top and len(items) > top:
+                lines.append(f"| … | 还有 {len(items) - top} 部（top 调大可看全） | | |")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+    return {
+        "date": today().isoformat(),
+        "days": [{
+            "weekday": d["weekday"]["cn"],
+            "weekday_id": d["weekday"]["id"],
+            "items": [{
+                "id": it["id"], "name": it.get("name"), "name_cn": it.get("name_cn"),
+                "air_date": it.get("air_date"), "score": score_of(it)[0], "votes": score_of(it)[1],
+                "rank": rank_of(it),
+            } for it in sorted(d["items"], key=lambda it: score_of(it)[0], reverse=True)[: top or None]],
+        } for d in picked],
+    }
+
+
+def render_search(keyword, hits, md):
+    if md:
+        if not hits:
+            return f"Bangumi 上搜不到「{keyword}」"
+        lines = [f"搜索「{keyword}」：{len(hits)} 条", "",
+                 "| 评分 | 排名 | 类型 | 名称 | 日期 | 集数 | id |",
+                 "| ---: | ---: | --- | --- | --- | ---: | ---: |"]
+        for it in hits:
+            alt = alt_title(it)
+            name = title_of(it) + (f"（{alt}）" if alt else "")
+            lines.append(f"| {fmt_score(it)} | {rank_of(it) or '—'} | {TYPE_LABEL.get(it.get('type'), '?')}"
+                         f" | {name} | {it.get('date') or '—'} | {it.get('eps') or '—'} | {it['id']} |")
+        first = hits[0]
+        summary = (first.get("summary") or "").replace("\r", "").strip()
+        if summary:
+            lines += ["", f"**{title_of(first)}** 简介：", summary[:400] + ("…" if len(summary) > 400 else "")]
+        return "\n".join(lines)
+    return {"keyword": keyword, "results": [{
+        "id": it["id"], "name": it.get("name"), "name_cn": it.get("name_cn"), "type": TYPE_LABEL.get(it.get("type")),
+        "date": it.get("date"), "eps": it.get("eps"), "score": score_of(it)[0], "votes": score_of(it)[1],
+        "rank": rank_of(it), "platform": it.get("platform"),
+    } for it in hits]}
+
+
+def render_subject(info, eps, md):
+    latest, nxt, aired = airing_progress(eps) if eps else (None, None, 0)
+    tags = [t["name"] for t in (info.get("tags") or [])[:10]]
+    summary = (info.get("summary") or "").replace("\r", "").strip()
+    score, total = score_of(info)
+    if md:
+        alt = alt_title(info)
+        lines = [f"# {title_of(info)}" + (f"（{alt}）" if alt else ""), ""]
+        lines.append(f"- 类型：{TYPE_LABEL.get(info.get('type'), '?')}"
+                     + (f" · {info['platform']}" if info.get("platform") else ""))
+        lines.append(f"- 放送/发售：{info.get('date') or '—'} · 集数：{info.get('eps') or '—'}")
+        lines.append(f"- 评分：{score:.1f}（{total} 人）· 排名：{rank_of(info) or '—'}")
+        if eps:
+            total_eps = len(eps)
+            progress = f"已播 {aired}/{total_eps}"
+            if latest:
+                progress += f"，最新第 {latest.get('ep')} 集「{latest.get('name_cn') or latest.get('name') or ''}」{latest.get('airdate')}"
+            if nxt:
+                progress += f"；下一集第 {nxt.get('ep')} 集 {nxt.get('airdate')}"
+            elif aired == total_eps and total_eps:
+                progress += "；已完结"
+            lines.append(f"- 进度：{progress}")
+        if tags:
+            lines.append(f"- 标签：{'、'.join(tags)}")
+        lines.append(f"- 链接：https://bgm.tv/subject/{info['id']}")
+        if summary:
+            lines += ["", summary]
+        return "\n".join(lines)
+    return {
+        "id": info["id"], "name": info.get("name"), "name_cn": info.get("name_cn"),
+        "type": TYPE_LABEL.get(info.get("type")), "platform": info.get("platform"), "date": info.get("date"),
+        "eps": info.get("eps"), "score": score, "votes": total, "rank": rank_of(info), "tags": tags,
+        "aired": aired, "latest": latest and {"ep": latest.get("ep"), "airdate": latest.get("airdate")},
+        "next": nxt and {"ep": nxt.get("ep"), "airdate": nxt.get("airdate")},
+        "summary": summary, "url": f"https://bgm.tv/subject/{info['id']}",
+    }
+
+
+def render_episodes(info, eps, top, md):
+    now = today().isoformat()
+    shown = eps[:top] if top else eps
+    if md:
+        lines = [f"{title_of(info)} 剧集（共 {len(eps)} 集，今天 {now}）", "",
+                 "| 集 | 标题 | 播出 | 状态 |", "| ---: | --- | --- | --- |"]
+        for e in shown:
+            name = e.get("name_cn") or e.get("name") or ""
+            airdate = e.get("airdate") or "—"
+            state = "已播" if e.get("airdate") and e["airdate"] <= now else "未播"
+            lines.append(f"| {e.get('ep')} | {name} | {airdate} | {state} |")
+        if top and len(eps) > top:
+            lines.append(f"| … | 还有 {len(eps) - top} 集 | | |")
+        return "\n".join(lines)
+    return {"id": info["id"], "name_cn": info.get("name_cn"), "episodes": [{
+        "ep": e.get("ep"), "name": e.get("name"), "name_cn": e.get("name_cn"), "airdate": e.get("airdate"),
+        "aired": bool(e.get("airdate") and e["airdate"] <= now),
+    } for e in shown]}
+
+
+# ---------------------------------------------------------------- CLI
+
+def build_parser():
+    ap = argparse.ArgumentParser(prog="bangumi", description="Bangumi 番组日历/搜索/详情", add_help=True)
+    ap.add_argument("action", nargs="?", default="calendar",
+                    choices=["calendar", "search", "subject", "episodes"])
+    ap.add_argument("query", nargs="*", help="关键词 / 条目 id / 星期")
+    ap.add_argument("--weekday", "-w", help="calendar：一~日 / mon~sun / 今天 / 明天 / week")
+    ap.add_argument("--type", "-t", default="anime", choices=sorted(SUBJECT_TYPES))
+    ap.add_argument("--top", "-n", type=int, default=0, help="最多显示几条（0=全部）")
+    ap.add_argument("--format", "-f", default="md", choices=["md", "json"])
+    return ap
+
+
+def args_from_json(payload, ap):
+    if not isinstance(payload, dict):
+        raise Failed("stdin 里的 JSON 得是一个对象", '例如 {"action":"search","query":"芙莉莲"}')
+    known = {"action", "query", "weekday", "type", "top", "format"}
+    unknown = sorted(set(payload) - known)
+    if unknown:
+        raise Failed(f"不认识这些参数：{', '.join(unknown)}", f"可用：{', '.join(sorted(known))}")
+    argv = [str(payload.get("action") or "calendar")]
+    if payload.get("query") not in (None, ""):
+        argv.append(str(payload["query"]))
+    for key in ("weekday", "type", "format"):
+        if payload.get(key) not in (None, ""):
+            argv += [f"--{key}", str(payload[key])]
+    if payload.get("top") not in (None, ""):
+        argv += ["--top", str(payload["top"])]
+    return ap.parse_args(argv)
+
+
+def read_json_stdin():
+    if sys.stdin is None or sys.stdin.isatty():
+        return None
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"stdin 不是合法 JSON：{exc}", '喂一个对象进来，例如 {"action":"search","query":"芙莉莲"}')
+
+
+def run(a):
+    md = a.format == "md"
+    query = " ".join(a.query).strip()
+    subject_type = SUBJECT_TYPES[a.type]
+    if a.action == "calendar":
+        weekday = parse_weekday(a.weekday if a.weekday is not None else (query or None))
+        if weekday == 0:
+            weekday = today().isoweekday()
+        elif weekday == -1:
+            weekday = (today() + dt.timedelta(days=1)).isoweekday()
+        return render_calendar(calendar(), weekday, a.top, md)
+    if not query:
+        raise Failed(f"{a.action} 需要 query", "给关键词或条目 id")
+    if a.action == "search":
+        return render_search(query, search(query, subject_type, limit=a.top or 8), md)
+    subject_id, hits = resolve_subject_id(query, subject_type)
+    info = subject(subject_id)
+    eps = episodes(subject_id) if info.get("type") in (2, 6) else []
+    out = render_subject(info, eps, md) if a.action == "subject" else render_episodes(info, eps, a.top, md)
+    if hits and len(hits) > 1 and md:
+        others = "、".join(f"{title_of(h)}({h['id']})" for h in hits[1:4])
+        out += f"\n\n（按名字匹配到的第一条；其它候选：{others}）"
+    return out
+
+
+def main():
+    ap = build_parser()
+    try:
+        payload = read_json_stdin() if len(sys.argv) == 1 else None
+        a = args_from_json(payload, ap) if payload is not None else ap.parse_args()
+        out = run(a)
+        if isinstance(out, str):
+            print(out)
+        else:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+    except Failed as exc:
+        print(f"错误：{exc}" + (f"\n提示：{exc.hint}" if exc.hint else ""), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
