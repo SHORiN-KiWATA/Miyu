@@ -504,7 +504,7 @@ pub(in crate::web) fn reset_actor_conversation(
     };
     let context = reset().map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
     // claude-code 中转的联动:清空即丢弃该会话的续传映射并尽力删 claude 侧转录。
-    crate::llm::forget_claude_code_session(session_id);
+    crate::llm::forget_relay_sessions(session_id);
     if let Some(context) = context {
         manager.lock().unwrap().context = context;
     }
@@ -525,7 +525,7 @@ pub(in crate::web) fn reset_actor_persona_state(
         let persona = reset_config.active_persona_scope();
         let cleared_sessions = state_store.reset_persona_contexts(&persona, "onebot")?;
         for session_id in &cleared_sessions {
-            crate::llm::forget_claude_code_session(session_id);
+            crate::llm::forget_relay_sessions(session_id);
         }
         MemoryStore::new(reset_config, paths).reset_all(true)?;
         if persona != daemon_config.active_persona_scope() {
@@ -563,7 +563,7 @@ pub(in crate::web) fn clear_actor_session_content(
         .clear_session_content()
         .map_err(|error| AdminFailure::Internal(safe_error_message(error)))?;
     // 与 `reset_actor_conversation` 同理：待办在库外面，得单独清。
-    crate::llm::forget_claude_code_session(session_id);
+    crate::llm::forget_relay_sessions(session_id);
     tools::clear_session_todos(paths, session_id)
         .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
 

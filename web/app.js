@@ -7270,7 +7270,13 @@
   function toolIconName(name) {
     const n = String(name || "");
     if (["run_command", "Bash", "job_status", "job_stop"].includes(n)) return "terminal";
-    if (["web_search", "web_fetch", "search_web", "webfetch"].includes(n)) return "globe";
+    if (["web_search", "web_fetch", "search_web", "webfetch", "read_url_content"].includes(n)) return "globe";
+    // agy 原生工具(antigravity 中转)。
+    if (["view_file", "list_dir"].includes(n)) return "file-text";
+    if (["write_to_file", "replace_file_content"].includes(n)) return "square-pen";
+    if (["find_by_name", "grep_search"].includes(n)) return "search";
+    if (["manage_task", "invoke_subagent", "define_subagent", "manage_subagents"].includes(n)) return "bot";
+    if (n.startsWith("browser_") || n === "call_mcp_tool") return "wrench";
     if (n === "search_web_images") return "image-search";
     if (["edit", "artifact", "kb", "apply_patch", "apply_artifact_patch"].includes(n)) return "square-pen";
     if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";

@@ -11,9 +11,9 @@
 //! 量;对不上(redo/compact/daemon 重启)就重开 claude 会话全量重放。见
 //! [`session`]。
 
-mod payload;
-mod session;
-mod stream;
+pub(in crate::llm::openai_compatible) mod payload;
+pub(in crate::llm::openai_compatible) mod session;
+pub(in crate::llm::openai_compatible) mod stream;
 
 use crate::llm::openai_compatible::*;
 
@@ -272,7 +272,7 @@ impl OpenAiCompatibleClient {
 /// `attach_owner_turn_tools` → `apply_platform_turn_scope`,取的就是这个活体
 /// 平台上下文的 `host_tools_allowed()`。非平台会话(REPL/WebUI/回合外)没有
 /// 登记,按全量底座记——那些路径本来就只有 owner 一档。
-fn host_tools_face(miyu_session: Option<&str>) -> bool {
+pub(in crate::llm::openai_compatible) fn host_tools_face(miyu_session: Option<&str>) -> bool {
     miyu_session
         .and_then(crate::platforms::live_turn_context)
         .map(|context| context.host_tools_allowed())
@@ -349,15 +349,23 @@ fn mcp_bridge_config(exclude_duplicates: bool) -> Option<String> {
     )
 }
 
-/// 清空 Miyu 会话时的联动:丢弃它名下的续传映射,并尽力删除 claude 侧的
-/// 会话转录(`~/.claude/projects/<项目槽>/<会话id>.jsonl`)。存储布局是
-/// claude 的内部实现,删不到只记日志不报错——映射已丢弃,该 claude 会话
-/// 无论如何不会再被续传。
-pub(crate) fn forget_claude_code_session(miyu_session: &str) {
+/// 清空 Miyu 会话时的联动(两条 CLI 中转线共用):丢弃它名下的续传映射,
+/// 并尽力删除 CLI 侧的会话转录——claude 的在 `~/.claude/projects/<槽>/<id>.jsonl`,
+/// agy 的在 `~/.gemini/antigravity-cli/{conversations/<id>.db*,brain/<id>/}`。
+/// 存储布局是各家 CLI 的内部实现,删不到只记日志不报错——映射已丢弃,该会话
+/// 无论如何不会再被续传。会话 id 都是全局唯一 UUID,两处都试一遍不会误删。
+pub(crate) fn forget_relay_sessions(miyu_session: &str) {
     let removed = session::forget_miyu_session(miyu_session);
     if removed.is_empty() {
         return;
     }
+    for relay_session in &removed {
+        remove_claude_transcript(miyu_session, relay_session);
+        super::antigravity::remove_conversation_files(relay_session);
+    }
+}
+
+fn remove_claude_transcript(miyu_session: &str, claude_session: &str) {
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };
@@ -366,23 +374,21 @@ pub(crate) fn forget_claude_code_session(miyu_session: &str) {
         return;
     };
     for project in project_dirs.flatten() {
-        for claude_session in &removed {
-            let transcript = project.path().join(format!("{claude_session}.jsonl"));
-            if !transcript.exists() {
-                continue;
-            }
-            match std::fs::remove_file(&transcript) {
-                Ok(()) => tracing::info!(
-                    miyu_session,
-                    claude_session = %claude_session,
-                    "removed the claude-side transcript for a cleared Miyu session"
-                ),
-                Err(error) => tracing::warn!(
-                    %error,
-                    path = %transcript.display(),
-                    "failed to remove a claude-side transcript (best effort)"
-                ),
-            }
+        let transcript = project.path().join(format!("{claude_session}.jsonl"));
+        if !transcript.exists() {
+            continue;
+        }
+        match std::fs::remove_file(&transcript) {
+            Ok(()) => tracing::info!(
+                miyu_session,
+                claude_session = %claude_session,
+                "removed the claude-side transcript for a cleared Miyu session"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                path = %transcript.display(),
+                "failed to remove a claude-side transcript (best effort)"
+            ),
         }
     }
 }

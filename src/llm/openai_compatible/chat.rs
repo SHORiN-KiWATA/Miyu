@@ -83,7 +83,7 @@ impl OpenAiCompatibleClient {
         let client = self.with_endpoint(endpoint);
         if client.uses_openai_responses()
             || client.uses_anthropic_messages()
-            || provider_uses_claude_code(&client.provider)
+            || provider_uses_cli_relay(&client.provider)
         {
             return Ok(None);
         }
@@ -393,6 +393,11 @@ impl OpenAiCompatibleClient {
         if protocol == ProviderProtocol::ClaudeCode {
             return self
                 .chat_claude_code_stream(messages, tools, request_id, on_chunk)
+                .await;
+        }
+        if protocol == ProviderProtocol::Antigravity {
+            return self
+                .chat_antigravity_stream(messages, tools, request_id, on_chunk)
                 .await;
         }
         let uses_responses = protocol == ProviderProtocol::OpenAiResponses

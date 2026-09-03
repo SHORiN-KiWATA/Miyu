@@ -9,7 +9,7 @@ fn first_http_provider(config: &mut AppConfig) -> &mut ProviderConfig {
     config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .expect("default templates always carry HTTP providers")
 }
 
@@ -954,6 +954,50 @@ fn claude_code_builtin_provider_is_injected_disabled_with_preset_models() {
             .count(),
         1
     );
+}
+
+/// 09-03:Antigravity 是第二个内置 CLI 中转供应商——normalize 注入、紧随
+/// Claude Code 之后、默认禁用、模型预置 agy 别名;未启用不进选择器。
+#[test]
+fn antigravity_builtin_provider_is_injected_disabled_after_claude_code() {
+    let mut config = AppConfig::default();
+    config.normalize_builtin_providers();
+    assert!(config.providers[0].is_claude_code());
+    assert!(config.providers[1].is_antigravity());
+    let provider = &config.providers[1];
+    assert_eq!(provider.id, "antigravity");
+    assert!(!provider.enabled, "默认必须是禁用态");
+    assert_eq!(provider.default_model, "gemini-3.8-flash-high");
+    assert!(provider.models.iter().any(|model| model == "claude-sonnet-4-6"));
+    assert!(!config.antigravity_enabled());
+    assert!(!config
+        .text_provider_model_choices()
+        .iter()
+        .any(|choice| choice.provider_id == "antigravity"));
+
+    // 存量配置把它排到后面:normalize 搬回第二位;重复 normalize 不二次注入。
+    let moved = config.providers.remove(1);
+    config.providers.push(moved);
+    config.normalize_builtin_providers();
+    assert!(config.providers[1].is_antigravity());
+    assert_eq!(
+        config
+            .providers
+            .iter()
+            .filter(|provider| provider.is_antigravity())
+            .count(),
+        1
+    );
+    for provider in &mut config.providers {
+        if provider.is_antigravity() {
+            provider.enabled = true;
+        }
+    }
+    assert!(config.antigravity_enabled());
+    assert!(config
+        .text_provider_model_choices()
+        .iter()
+        .any(|choice| choice.provider_id == "antigravity"));
 }
 
 /// 会话模型覆盖指向已删除的模型时,必须能退回全局池而不是把入口锁死。

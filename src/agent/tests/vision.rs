@@ -13,7 +13,7 @@ fn vision_support_requires_every_effective_text_pool_model() {
     let provider = config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     provider.default_model = "vision-model".to_string();
     provider.models = vec!["vision-model".to_string(), "text-model".to_string()];
@@ -49,7 +49,7 @@ fn vision_preference_controls_direct_image_delivery_to_the_text_pool() {
     let provider = config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     provider.model_modalities.insert(
         provider.default_model.clone(),
@@ -302,7 +302,7 @@ async fn path_images_are_inlined_when_model_supports_vision() {
     let provider = config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     provider.model_modalities.insert(
         provider.default_model.clone(),

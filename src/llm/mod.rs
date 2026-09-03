@@ -4,7 +4,7 @@ pub(crate) mod provider_capabilities;
 pub mod request_log;
 
 pub(crate) use openai_compatible::{
-    forget_claude_code_session, thinking_variant_options_for_model, ThinkingVariantPreferences,
+    forget_relay_sessions, thinking_variant_options_for_model, ThinkingVariantPreferences,
 };
 pub use openai_compatible::{OpenAiCompatibleClient, ThinkingVariantOptions};
 

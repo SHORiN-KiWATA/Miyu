@@ -864,7 +864,7 @@ mod tests {
         let provider = config
             .providers
             .iter_mut()
-            .find(|provider| !provider.is_claude_code())
+            .find(|provider| !provider.is_builtin_cli_provider())
             .unwrap();
         let provider_id = provider.id.clone();
         provider.model_modalities.insert(
@@ -889,7 +889,7 @@ mod tests {
                 model: config
                     .providers
                     .iter()
-                    .find(|provider| !provider.is_claude_code())
+                    .find(|provider| !provider.is_builtin_cli_provider())
                     .unwrap()
                     .default_model
                     .clone(),

@@ -173,6 +173,18 @@ impl AppConfig {
                 self.providers.insert(0, provider);
             }
         }
+        // Antigravity 紧随 Claude Code 之后(同样是内置 CLI 中转)。
+        if let Some(position) = self
+            .providers
+            .iter()
+            .position(ProviderConfig::is_antigravity)
+        {
+            let target = usize::from(self.providers[0].is_claude_code());
+            if position != target && target < self.providers.len() {
+                let provider = self.providers.remove(position);
+                self.providers.insert(target, provider);
+            }
+        }
         if self.active_provider == "opencodezen" {
             self.active_provider = OPENCODE_PROVIDER_ID.to_string();
         }
@@ -310,8 +322,9 @@ impl AppConfig {
             if !provider_ids.insert(provider.id.as_str()) {
                 bail!("duplicate provider id: {}", provider.id);
             }
-            // Claude Code 特殊供应商的传输层是本机 CLI 子进程,没有 URL 概念。
-            if provider.base_url.trim().is_empty() && !provider.is_claude_code() {
+            // Claude Code / Antigravity 特殊供应商的传输层是本机 CLI 子进程,
+            // 没有 URL 概念。
+            if provider.base_url.trim().is_empty() && !provider.is_builtin_cli_provider() {
                 bail!("provider {} base_url cannot be empty", provider.id);
             }
         }

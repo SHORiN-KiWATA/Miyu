@@ -13,6 +13,7 @@ mod args;
 mod daemon_cmds;
 mod inline_picker;
 mod localize;
+mod mcp_schema;
 mod mcp_serve;
 mod setup;
 mod stdin_input;

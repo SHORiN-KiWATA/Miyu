@@ -17,6 +17,15 @@ pub(super) struct TurnOutcome {
     pub(super) claude_session: Option<String>,
 }
 
+/// 中转侧工具活动里**不**翻成卡片事件的工具。桥问答(`ask_question`)有自己
+/// 的事件流(question.requested/answered,由 bridge_question 直发 EventHub),
+/// 再发一份 tool.started 只会捣乱:CLI 的工具步 ACTIVE 与桥的 question.requested
+/// 并发到达,ACTIVE 晚到时终端的「准备问题」黏性态在面板关掉之后才被置上,
+/// 此后每个工具前都挂着「准备问题」(09-03 用户实录)。
+pub(in crate::llm::openai_compatible) fn hidden_remote_tool(name: &str) -> bool {
+    name == "ask_question"
+}
+
 /// `--resume` 目标在 claude 侧已不存在(过期/被清理)的签名。
 pub(super) fn resume_session_lost(error: &anyhow::Error) -> bool {
     format!("{error:#}")
@@ -24,7 +33,7 @@ pub(super) fn resume_session_lost(error: &anyhow::Error) -> bool {
         .contains("no conversation found")
 }
 
-fn kill_process_group(pid: u32) {
+pub(in crate::llm::openai_compatible) fn kill_process_group(pid: u32) {
     unsafe {
         libc::kill(-(pid as i32), libc::SIGKILL);
     }
@@ -333,7 +342,7 @@ where
 }
 
 /// 折叠空白并按字符截断,给思考通道的一行摘要用。
-fn compact_line(text: &str, limit: usize) -> String {
+pub(in crate::llm::openai_compatible) fn compact_line(text: &str, limit: usize) -> String {
     let mut collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() > limit {
         collapsed = collapsed.chars().take(limit).collect::<String>() + "…";
@@ -343,7 +352,7 @@ fn compact_line(text: &str, limit: usize) -> String {
 
 /// 按字符截断但保留换行结构:Bash 的输出走命令输出块渲染,折叠空白会把
 /// 多行日志压成一行。
-fn truncate_block(text: &str, limit: usize) -> String {
+pub(in crate::llm::openai_compatible) fn truncate_block(text: &str, limit: usize) -> String {
     let trimmed = text.trim_end();
     if trimmed.chars().count() > limit {
         trimmed.chars().take(limit).collect::<String>() + "…"
@@ -376,6 +385,9 @@ where
         // MCP 前缀剥掉:Miyu 工具按本名显示(readable_tool_name 才认识),
         // claude 原生工具保持原名。
         let name = raw_name.strip_prefix("mcp__miyu__").unwrap_or(raw_name);
+        if hidden_remote_tool(name) {
+            continue;
+        }
         remote_tools.insert(id.clone(), name.to_string());
         let input = block.get("input").cloned().unwrap_or(json!({}));
         on_chunk(ChatStreamChunk {
@@ -406,10 +418,10 @@ where
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let name = remote_tools
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| "tool".to_string());
+        // started 时被隐藏的工具(桥问答)没有登记,收口同样不发。
+        let Some(name) = remote_tools.get(&id).cloned() else {
+            continue;
+        };
         let ok = !block
             .get("is_error")
             .and_then(Value::as_bool)

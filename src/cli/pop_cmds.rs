@@ -553,7 +553,7 @@ pub(in crate::cli) async fn run_reset(paths: &MiyuPaths) -> Result<()> {
     let state = StateStore::new(paths)?;
     let memory = MemoryStore::new(&config, paths);
     state.reset_conversation()?;
-    crate::llm::forget_claude_code_session(&state.session_id());
+    crate::llm::forget_relay_sessions(&state.session_id());
     memory.clear_evicted_context()?;
     memory.clear_pending_events()?;
     tools::clear_aur_review_state(paths)?;
@@ -618,7 +618,7 @@ pub(in crate::cli) async fn run_wipe(paths: &MiyuPaths, assume_yes: bool) -> Res
             .await?;
         let cleared_sessions = state.reset_persona_contexts(&persona, "onebot")?;
         for session_id in &cleared_sessions {
-            crate::llm::forget_claude_code_session(session_id);
+            crate::llm::forget_relay_sessions(session_id);
         }
         state.reset_conversation_usage()?;
         MemoryStore::new(&config, paths).reset_all(true)?;

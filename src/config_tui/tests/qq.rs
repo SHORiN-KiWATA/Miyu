@@ -134,7 +134,7 @@ fn explicit_vision_choices_only_include_image_capable_models() {
     let provider = config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     provider.models = vec!["text-only".to_string(), "vision".to_string()];
     provider
@@ -163,7 +163,7 @@ fn removing_a_stale_model_clears_every_reference_to_it() {
     let provider = config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     let provider_id = provider.id.clone();
     provider.models = vec!["gone".to_string(), "alive".to_string()];
@@ -193,7 +193,7 @@ fn removing_a_stale_model_clears_every_reference_to_it() {
     let provider = config
         .providers
         .iter()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     assert!(!provider.models.iter().any(|model| model == "gone"));
     assert!(!provider.model_modalities.contains_key("gone"));

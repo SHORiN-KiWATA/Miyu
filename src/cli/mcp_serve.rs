@@ -11,6 +11,14 @@ use crate::cli::*;
 
 pub(in crate::cli) async fn run_mcp_serve(paths: &MiyuPaths) -> Result<()> {
     let session = std::env::var("MIYU_SESSION").ok().filter(|s| !s.is_empty());
+    // antigravity 线的全局 MCP 注册对用户自己交互式开的 agy 同样生效——那时
+    // 没有会话身份;守卫在场就只应答空工具表,不降级成无作用域直连。
+    let require_session = std::env::var("MIYU_MCP_REQUIRE_SESSION")
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    let guarded = require_session && session.is_none();
+    // 上游模型方言:antigravity 中转点名 gemini,桥吐的 schema 按它整形。
+    let dialect = std::env::var("MIYU_MCP_SCHEMA_DIALECT").unwrap_or_default();
     // 与 claude 原生重复的工具由拉起方经 env 点名剔除(原生优先):目录里
     // 不出现、调用被拒,两边同源。
     let excluded: std::collections::HashSet<String> = std::env::var("MIYU_MCP_EXCLUDE")
@@ -51,8 +59,24 @@ pub(in crate::cli) async fn run_mcp_serve(paths: &MiyuPaths) -> Result<()> {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let response = match method.as_str() {
+            "tools/list" if guarded => {
+                serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": [] } })
+            }
+            "tools/call" if guarded => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": "no Miyu session is attached to this MCP server (started outside a Miyu relay turn)"
+                    }],
+                    "isError": true
+                }
+            }),
             "initialize" | "ping" | "tools/list" | "tools/call" => {
-                match handle_request(paths, &session, &origin, depth, &excluded, &method, &params)
+                match handle_request(
+                    paths, &session, &origin, depth, &excluded, &dialect, &method, &params,
+                )
                     .await
                 {
                     Ok(result) => {
@@ -87,12 +111,14 @@ fn write_line(value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     paths: &MiyuPaths,
     session: &Option<String>,
     origin: &Option<String>,
     depth: u32,
     excluded: &std::collections::HashSet<String>,
+    dialect: &str,
     method: &str,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value> {
@@ -111,7 +137,7 @@ async fn handle_request(
         }
         "ping" => Ok(serde_json::json!({})),
         "tools/list" => {
-            let mut listing = list_tools(paths, session).await?;
+            let mut listing = list_tools(paths, session, dialect).await?;
             if let Some(tools) = listing
                 .get_mut("tools")
                 .and_then(serde_json::Value::as_array_mut)
@@ -159,7 +185,11 @@ async fn handle_request(
     }
 }
 
-async fn list_tools(paths: &MiyuPaths, session: &Option<String>) -> Result<serde_json::Value> {
+async fn list_tools(
+    paths: &MiyuPaths,
+    session: &Option<String>,
+    dialect: &str,
+) -> Result<serde_json::Value> {
     if ipc::daemon_info(paths).await.is_some() {
         let (_, data) = send_ipc_admin(
             paths,
@@ -192,6 +222,7 @@ async fn list_tools(paths: &MiyuPaths, session: &Option<String>) -> Result<serde
                     .cloned()
                     .filter(|schema| schema.is_object())
                     .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+                let schema = super::mcp_schema::shape_for_dialect(schema, dialect);
                 serde_json::json!({
                     "name": name,
                     "description": description,
@@ -218,7 +249,7 @@ async fn list_tools(paths: &MiyuPaths, session: &Option<String>) -> Result<serde
             serde_json::json!({
                 "name": spec.name,
                 "description": spec.description,
-                "inputSchema": spec.parameters,
+                "inputSchema": super::mcp_schema::shape_for_dialect(spec.parameters.clone(), dialect),
             })
         })
         .collect::<Vec<_>>();

@@ -68,6 +68,9 @@ pub(in crate::cli) async fn create_ephemeral_session(paths: &MiyuPaths) -> Resul
 /// pointing at a session that is about to disappear. Best effort: a daemon
 /// that has gone away leaves a row the startup sweep collects.
 pub(in crate::cli) async fn discard_ephemeral_session(paths: &MiyuPaths, session_id: &str) {
+    // CLI 中转(claude-code/antigravity)的联动:直连形态没有 daemon,DeleteSession
+    // 那条路上的 forget 不会跑到,这里自己收——续传映射与 CLI 侧转录都在本进程。
+    crate::llm::forget_relay_sessions(session_id);
     let _ = send_ipc_admin(
         paths,
         IpcCommand::StopSessionJobs {
@@ -95,6 +98,7 @@ pub(in crate::cli) struct EphemeralSessionGuard {
 
 impl Drop for EphemeralSessionGuard {
     fn drop(&mut self) {
+        crate::llm::forget_relay_sessions(&self.session_id);
         let _ = self.state.delete_session(&self.session_id);
     }
 }

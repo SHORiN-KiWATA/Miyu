@@ -9,7 +9,7 @@ use crate::llm::openai_compatible::*;
 use crate::llm::{ChatContent, ChatContentPart};
 
 /// 抽出开头的 system 消息拼成 `--system-prompt`,其余原顺序保留。
-pub(super) fn split_system(messages: Vec<ChatMessage>) -> (String, Vec<ChatMessage>) {
+pub(in crate::llm::openai_compatible) fn split_system(messages: Vec<ChatMessage>) -> (String, Vec<ChatMessage>) {
     let mut system_parts = Vec::new();
     let mut conversation = Vec::with_capacity(messages.len());
     for message in messages {
@@ -44,6 +44,20 @@ fn text_of(message: &ChatMessage) -> Option<String> {
 
 /// stdin 的单行载荷:一条 stream-json user 消息(含尾部换行)。
 pub(super) fn render_user_payload(delta: &[ChatMessage]) -> String {
+    let blocks = render_user_blocks(delta);
+    let mut line = json!({
+        "type": "user",
+        "message": { "role": "user", "content": blocks }
+    })
+    .to_string();
+    line.push('\n');
+    line
+}
+
+/// 增量消息 → 内容块(Anthropic 口径:text/image)。历史段转写成一个
+/// `<conversation-history>` 文本块,活跃尾巴逐块给。antigravity 线共用这份
+/// 翻译,只把它认不了的 image 块再降级。
+pub(in crate::llm::openai_compatible) fn render_user_blocks(delta: &[ChatMessage]) -> Vec<Value> {
     let mut blocks: Vec<Value> = Vec::new();
     // 活跃尾巴 = 结尾连续的 user 消息;之前的一切都是要转写的历史。
     let tail_start = delta
@@ -97,13 +111,7 @@ pub(super) fn render_user_payload(delta: &[ChatMessage]) -> String {
     if blocks.is_empty() {
         blocks.push(json!({ "type": "text", "text": "(continue)" }));
     }
-    let mut line = json!({
-        "type": "user",
-        "message": { "role": "user", "content": blocks }
-    })
-    .to_string();
-    line.push('\n');
-    line
+    blocks
 }
 
 fn render_history_line(message: &ChatMessage, transcript: &mut String) {

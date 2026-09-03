@@ -195,6 +195,20 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         "WebSearch" | "ToolSearch" => string_arg(&args, &["query"]),
         "Task" | "Agent" => string_arg(&args, &["description"]),
         "SlashCommand" => string_arg(&args, &["command"]),
+        // —— agy 原生工具(antigravity 中转;入参键已在流层归一成 Miyu 的) ——
+        "view_file" | "write_to_file" | "replace_file_content" | "list_dir" => {
+            string_arg(&args, &["path"])
+        }
+        "find_by_name" | "grep_search" => {
+            let needle = string_arg(&args, &["pattern", "query"])?;
+            Some(match string_arg(&args, &["path"]) {
+                Some(path) => format!("{needle} · {path}"),
+                None => needle,
+            })
+        }
+        "read_url_content" => string_arg(&args, &["url"]).and_then(|url| safe_url_subject(&url)),
+        "search_web" => string_arg(&args, &["query"]),
+        "call_mcp_tool" => string_arg(&args, &["ToolName"]),
         "task" => string_arg(&args, &["description"]),
         "web_search"
         | "search_web_images"

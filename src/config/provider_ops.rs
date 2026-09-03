@@ -707,4 +707,11 @@ impl AppConfig {
             .iter()
             .any(|provider| provider.is_claude_code() && provider.enabled)
     }
+
+    /// 内置 Antigravity 特殊供应商是否启用(agy CLI 中转的总开关)。
+    pub fn antigravity_enabled(&self) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.is_antigravity() && provider.enabled)
+    }
 }

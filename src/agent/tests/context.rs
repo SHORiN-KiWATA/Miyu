@@ -75,7 +75,7 @@ async fn pop_overflow_evicts_until_under_target() {
     let provider = config
         .providers
         .iter_mut()
-        .find(|provider| !provider.is_claude_code())
+        .find(|provider| !provider.is_builtin_cli_provider())
         .unwrap();
     provider
         .model_context_window

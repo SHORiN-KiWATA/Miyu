@@ -83,6 +83,26 @@ pub struct ActiveProviderModelConfig {
 
 /// Claude Code 特殊供应商的内部协议标识(不暴露成用户概念)。
 pub const CLAUDE_CODE_PROTOCOL: &str = "claude-code";
+/// Antigravity(agy CLI)特殊供应商的内部协议标识(不暴露成用户概念)。
+pub const ANTIGRAVITY_PROTOCOL: &str = "antigravity";
+/// Antigravity 预置模型:`agy models` 的输出(09-03);本机 CLI 没有 /models
+/// 端点,列表就是这份别名。gemini 的思考档位编码在模型名后缀里。
+pub const ANTIGRAVITY_PRESET_MODELS: &[&str] = &[
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -339,6 +359,35 @@ impl ProviderConfig {
             || protocol.eq_ignore_ascii_case("claude-code-cli")
     }
 
+    /// 内置的 Antigravity 特殊供应商:本机 `agy` CLI 的 Google 登录态中转。
+    /// 形态与 Claude Code 完全同构(恒存在、默认禁用、无 HTTP 字段)。
+    pub fn antigravity_template() -> Self {
+        Self {
+            enabled: false,
+            protocol: ANTIGRAVITY_PROTOCOL.to_string(),
+            models: ANTIGRAVITY_PRESET_MODELS
+                .iter()
+                .map(|model| model.to_string())
+                .collect(),
+            default_model: "gemini-3.8-flash-high".to_string(),
+            ..Self::template("antigravity", "Antigravity", "")
+        }
+    }
+
+    /// 该条目是否 Antigravity 特殊供应商(按协议判定)。
+    pub fn is_antigravity(&self) -> bool {
+        let protocol = self.protocol.trim();
+        protocol.eq_ignore_ascii_case(ANTIGRAVITY_PROTOCOL)
+            || protocol.eq_ignore_ascii_case("antigravity-cli")
+            || protocol.eq_ignore_ascii_case("agy")
+    }
+
+    /// 内置的本机 CLI 中转供应商(Claude Code / Antigravity):没有 URL、
+    /// API key 概念,列表里恒存在且不可删除。
+    pub fn is_builtin_cli_provider(&self) -> bool {
+        self.is_claude_code() || self.is_antigravity()
+    }
+
     pub fn default_templates() -> Vec<Self> {
         let mut providers = vec![Self::default_opencodezen()];
         providers.extend([
@@ -361,8 +410,9 @@ impl ProviderConfig {
             Self::template("ollama", "Ollama", "http://localhost:11434/v1"),
             Self::template("lmstudio", "LMStudio", "http://localhost:1234/v1"),
         ]);
-        // Claude Code 置顶:用户拍板的列表次序。
+        // Claude Code 置顶:用户拍板的列表次序;Antigravity 紧随其后。
         providers.insert(0, Self::claude_code_template());
+        providers.insert(1, Self::antigravity_template());
         providers
     }
 

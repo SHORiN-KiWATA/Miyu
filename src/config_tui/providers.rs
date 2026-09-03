@@ -55,7 +55,7 @@ impl ModelEntry {
 }
 
 pub(in crate::config_tui) fn fetch_models(provider: &ProviderConfig) -> Result<Vec<String>> {
-    if provider.is_claude_code() {
+    if provider.is_builtin_cli_provider() {
         // 本机 CLI 后端没有 /models HTTP 端点;模型列表就是预置的 CLI 别名。
         return Ok(provider.models.clone());
     }

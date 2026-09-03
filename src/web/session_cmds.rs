@@ -408,7 +408,7 @@ pub(in crate::web) async fn handle_session_command(
             let result = store
                 .delete_session(&record.session_id)
                 .map_err(|error| safe_error_message(&error));
-            crate::llm::forget_claude_code_session(&record.session_id);
+            crate::llm::forget_relay_sessions(&record.session_id);
             release_admin(&state.manager);
             result?;
             // 库里的目标行随会话级联删除；进程内的 goal 状态（armed 等）

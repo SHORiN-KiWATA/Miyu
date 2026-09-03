@@ -51,7 +51,7 @@ fn message_bytes(message: &ChatMessage) -> Vec<u8> {
     serde_json::to_vec(message).unwrap_or_default()
 }
 
-pub(super) fn prefix_chain(
+pub(in crate::llm::openai_compatible) fn prefix_chain(
     provider_id: &str,
     model: &str,
     system_prompt: &str,
@@ -74,13 +74,13 @@ pub(super) fn prefix_chain(
     chain
 }
 
-pub(super) fn extend_chain(chain_end: u64, message: &ChatMessage) -> u64 {
+pub(in crate::llm::openai_compatible) fn extend_chain(chain_end: u64, message: &ChatMessage) -> u64 {
     hash_step(chain_end, &message_bytes(message))
 }
 
 /// 找可续传的最长前缀:返回 (claude 会话 id, 已覆盖的消息数)。要求严格短于
 /// 本次会话消息数——增量为空说明不是正常的新一轮,按全量重放处理。
-pub(super) fn find_resumable(
+pub(in crate::llm::openai_compatible) fn find_resumable(
     provider_id: &str,
     model: &str,
     miyu_session: Option<&str>,
@@ -101,7 +101,7 @@ pub(super) fn find_resumable(
         .map(|entry| (entry.claude_session.clone(), entry.prefix_len))
 }
 
-pub(super) fn record_session(
+pub(in crate::llm::openai_compatible) fn record_session(
     provider_id: &str,
     model: &str,
     miyu_session: Option<&str>,
@@ -147,7 +147,7 @@ pub(in crate::llm::openai_compatible) fn forget_miyu_session(miyu_session: &str)
     removed
 }
 
-pub(super) fn forget_session(claude_session: &str) {
+pub(in crate::llm::openai_compatible) fn forget_session(claude_session: &str) {
     if let Ok(mut sessions) = SESSIONS.lock() {
         sessions.retain(|entry| entry.claude_session != claude_session);
     }

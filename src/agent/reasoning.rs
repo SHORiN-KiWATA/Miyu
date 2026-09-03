@@ -229,9 +229,10 @@ where
                 };
                 let name = text_of("name");
                 let output = text_of("output");
-                // 原生 Bash 的输出走命令输出块(与 run_command 同一渲染路),
-                // 否则 REPL 摘要只有一行 ok,命令打了什么全看不见。
-                if name == "Bash" && !output.is_empty() {
+                // 中转侧的命令家族(claude 的 Bash / agy 的 run_command)输出走
+                // 命令输出块(与本地 run_command 同一渲染路),否则 REPL 摘要
+                // 只有一行 ok,命令打了什么全看不见。
+                if crate::render::is_command_tool(&name) && !output.is_empty() {
                     on_event(AgentEvent::CommandOutput {
                         call_id: text_of("id"),
                         name: name.clone(),
