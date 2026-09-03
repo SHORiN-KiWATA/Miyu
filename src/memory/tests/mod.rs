@@ -2,6 +2,7 @@
 
 mod access;
 mod association;
+mod browse;
 mod diary;
 mod shared;
 mod store;

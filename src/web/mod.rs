@@ -25,6 +25,7 @@ mod bridge_progress;
 mod bridge_question;
 mod commands_api;
 mod config_api;
+mod dashboards;
 mod dto;
 mod event_map;
 mod goal_driver;
@@ -52,6 +53,7 @@ use bridge_progress::*;
 use bridge_question::*;
 use commands_api::*;
 use config_api::*;
+use dashboards::memory::*;
 use dto::*;
 use event_map::*;
 use goal_driver::*;
@@ -132,6 +134,9 @@ const LIGHTBOX_JS: &str = include_str!("../../web/lightbox.js");
 const TODOS_JS: &str = include_str!("../../web/todos.js");
 // 文件分享面板:独立文件,与 artifact 演示区无关。
 const SHARED_JS: &str = include_str!("../../web/shared.js");
+// 插件 dashboard:共享层 + 每域一文件(09-03 demo 先落记忆浏览器)。
+const DASHBOARDS_JS: &str = include_str!("../../web/dashboards.js");
+const DASH_MEMORY_JS: &str = include_str!("../../web/dash-memory.js");
 // KaTeX 0.18.4(vendored):公式渲染;字体只带 woff2(css 里 woff2 列首,
 // 现代浏览器不会去请求 woff/ttf 回退项)。
 const KATEX_JS: &str = include_str!("../../web/vendor/katex/katex.min.js");

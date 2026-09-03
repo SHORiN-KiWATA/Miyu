@@ -82,6 +82,14 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 concat!("src=\"/shared.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
+                "src=\"/dashboards.js\"",
+                concat!("src=\"/dashboards.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
+                "src=\"/dash-memory.js\"",
+                concat!("src=\"/dash-memory.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
                 "href=\"/vendor/katex/katex.min.css\"",
                 concat!(
                     "href=\"/vendor/katex/katex.min.css?v=",
@@ -145,6 +153,22 @@ pub(in crate::web) async fn shared_js_asset(headers: HeaderMap) -> Response {
     embedded_asset(
         &headers,
         SHARED_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn dashboards_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        DASHBOARDS_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn dash_memory_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        DASH_MEMORY_JS.as_bytes(),
         "application/javascript; charset=utf-8",
     )
 }

@@ -310,6 +310,15 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             get(shared_file_download).delete(shared_file_delete),
         )
         .route("/shared.js", get(shared_js_asset))
+        .route("/dashboards.js", get(dashboards_js_asset))
+        .route("/dash-memory.js", get(dash_memory_js_asset))
+        .route("/api/dash/memory/personas", get(dash_memory_personas))
+        .route("/api/dash/memory/stats", get(dash_memory_stats))
+        .route("/api/dash/memory/items", get(dash_memory_items))
+        .route(
+            "/api/dash/memory/items/{table}/{id}",
+            axum::routing::delete(dash_memory_delete),
+        )
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),

@@ -9880,6 +9880,8 @@
       usageTipHide();
     }
     if (panel === "settings" && !state.configLoaded && !state.configLoading) loadConfigDraft();
+    // 插件 dashboard 面板各自独立文件,首次进入挂载、之后只刷新。
+    if (panel === "memory") window.MiyuDash?.open("memory");
   }
 
   async function loadUsageStats() {

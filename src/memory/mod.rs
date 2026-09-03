@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 mod association;
+pub mod browse;
 mod evicted;
 mod recall;
 mod schema;
