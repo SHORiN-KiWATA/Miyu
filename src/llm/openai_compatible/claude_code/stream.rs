@@ -1,42 +1,23 @@
-//! claude 子进程的生命周期与 stream-json 事件泵。
+//! claude 子进程的 stream-json 事件泵。
 //!
 //! stdout 每行一个 JSON 事件;`stream_event` 里包的就是原生 Anthropic SSE
 //! 事件,直接复用 [`AnthropicStreamEvent`] 与缓冲发射件。与 HTTP 线的两个关
 //! 键差异:①一个 claude 回合可能含多次模型调用(MCP 工具循环),content 跨
 //! 消息累积,权威用量以最终 `result` 帧为准;②tool_use 不回吐给 Miyu 执行
-//! (桥在 claude 侧闭环),只作为思考通道的一行进度展示。
-//!
-//! 超时/出错路径必须显式杀进程组:drop future 只是弃 promise,不杀子进程。
+//! (桥在 claude 侧闭环),只翻成远程工具卡片事件。进程本身(拉起/看门狗/
+//! stderr/击杀)在 [`cli_relay::process`]。
 
 use crate::llm::openai_compatible::claude_code::ClaudeCodeRuntime;
+use crate::llm::openai_compatible::cli_relay::{
+    hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
+};
 use crate::llm::openai_compatible::*;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-
-pub(super) struct TurnOutcome {
-    pub(super) result: ChatResult,
-    pub(super) claude_session: Option<String>,
-}
-
-/// 中转侧工具活动里**不**翻成卡片事件的工具。桥问答(`ask_question`)有自己
-/// 的事件流(question.requested/answered,由 bridge_question 直发 EventHub),
-/// 再发一份 tool.started 只会捣乱:CLI 的工具步 ACTIVE 与桥的 question.requested
-/// 并发到达,ACTIVE 晚到时终端的「准备问题」黏性态在面板关掉之后才被置上,
-/// 此后每个工具前都挂着「准备问题」(09-03 用户实录)。
-pub(in crate::llm::openai_compatible) fn hidden_remote_tool(name: &str) -> bool {
-    name == "ask_question"
-}
 
 /// `--resume` 目标在 claude 侧已不存在(过期/被清理)的签名。
 pub(super) fn resume_session_lost(error: &anyhow::Error) -> bool {
     format!("{error:#}")
         .to_ascii_lowercase()
         .contains("no conversation found")
-}
-
-pub(in crate::llm::openai_compatible) fn kill_process_group(pid: u32) {
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-    }
 }
 
 /// 把订阅侧的失败翻译成端点调度认识的分类:限流给 429(600s 冷却,池里有
@@ -80,107 +61,44 @@ pub(super) async fn run_claude_turn<F>(
     stdin_payload: &str,
     request_id: &str,
     on_chunk: &mut F,
-) -> Result<TurnOutcome>
+) -> Result<RelayOutcome>
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
-    let mut command = tokio::process::Command::new(&runtime.binary);
-    command
-        .args(args)
-        .current_dir(workdir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true);
     // MCP 工具调用的客户端超时:ask_question 这类交互工具要等人回答,
     // claude 默认的 MCP 超时等不起,放宽到 30 分钟。
-    command.env("MCP_TOOL_TIMEOUT", "1800000");
+    let mut env: Vec<(String, Option<String>)> =
+        vec![("MCP_TOOL_TIMEOUT".into(), Some("1800000".into()))];
     if runtime.prefer_subscription {
         // 环境里的按量 API key 会抢走订阅登录态,中转的意义就没了。
-        command.env_remove("ANTHROPIC_API_KEY");
-        command.env_remove("ANTHROPIC_AUTH_TOKEN");
+        env.push(("ANTHROPIC_API_KEY".into(), None));
+        env.push(("ANTHROPIC_AUTH_TOKEN".into(), None));
     }
-    let mut child = command.spawn().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            anyhow::anyhow!(
-                "{}: {}",
-                t(
-                    "Claude Code CLI not found; install it or set plugins.claude_code.binary",
-                    "找不到 Claude Code CLI;请安装它或配置 plugins.claude_code.binary"
-                ),
-                runtime.binary.display()
+    let mut process = RelayProcess::spawn(
+        &runtime.binary,
+        args,
+        workdir,
+        &env,
+        stdin_payload,
+        runtime.idle_timeout,
+        "claude-code.stream",
+        "claude-code",
+        || {
+            t(
+                "Claude Code CLI not found; install it or set plugins.claude_code.binary",
+                "找不到 Claude Code CLI;请安装它或配置 plugins.claude_code.binary",
             )
-        } else {
-            anyhow::Error::from(error).context("failed to spawn the Claude Code CLI")
-        }
-    })?;
-    let pid = child.id().unwrap_or_default();
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("claude-code stdin unavailable")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("claude-code stdout unavailable")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("claude-code stderr unavailable")?;
-    // stderr 尾巴单独收,失败时并进报错(限流/登录错误常常只在 stderr)。
-    let stderr_tail = Arc::new(Mutex::new(String::new()));
-    let stderr_task = {
-        let tail = stderr_tail.clone();
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(mut tail) = tail.lock() {
-                    tail.push_str(&line);
-                    tail.push('\n');
-                    let overflow = tail.len().saturating_sub(8192);
-                    if overflow > 0 {
-                        let cut = tail
-                            .char_indices()
-                            .map(|(index, _)| index)
-                            .find(|index| *index >= overflow)
-                            .unwrap_or(0);
-                        tail.drain(..cut);
-                    }
-                }
-            }
-        })
-    };
-    stdin
-        .write_all(stdin_payload.as_bytes())
-        .await
-        .context("failed to write the claude-code stdin payload")?;
-    drop(stdin);
+            .to_string()
+        },
+    )
+    .await?;
 
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
     let mut state = AnthropicStreamState::default();
     // claude 侧工具调用 id → 名称,tool_result 帧只带 id,收口事件靠它配名。
     let mut remote_tools: HashMap<String, String> = HashMap::new();
     let mut session_id: Option<String> = None;
     let mut final_frame: Option<Value> = None;
-    loop {
-        let line = match tokio::time::timeout(runtime.idle_timeout, lines.next_line()).await {
-            Err(_) => {
-                kill_process_group(pid);
-                return Err(anyhow::anyhow!(
-                    "claude-code produced no output for {}s; the process was killed",
-                    runtime.idle_timeout.as_secs()
-                )
-                .context(TransportFailure {
-                    stage: "claude-code.stream",
-                    kind: TransportFailureKind::Timeout,
-                }));
-            }
-            Ok(read) => read.context("failed to read claude-code stdout")?,
-        };
-        let Some(line) = line else {
-            break;
-        };
+    while let Some(line) = process.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -228,28 +146,11 @@ where
             _ => {}
         }
     }
-    // 结果帧到手后进程应当自然退出;不给它耗着的机会。
-    let exit = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
-        Ok(status) => status.ok(),
-        Err(_) => {
-            kill_process_group(pid);
-            None
-        }
-    };
-    stderr_task.abort();
-    let stderr_text = stderr_tail
-        .lock()
-        .map(|tail| tail.clone())
-        .unwrap_or_default();
+    let (exit_code, stderr_text) = process.finish().await;
 
     let Some(final_frame) = final_frame else {
-        kill_process_group(pid);
-        let code = exit
-            .and_then(|status| status.code())
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
         let mut error = anyhow::anyhow!(
-            "claude-code exited (code {code}) without a result frame: {}",
+            "claude-code exited (code {exit_code}) without a result frame: {}",
             stderr_text.trim()
         );
         if let Some(failure) = classify_claude_failure(&stderr_text) {
@@ -335,30 +236,7 @@ where
     let mut result = finalize_stream_result(content, state.reasoning, usage, Vec::new(), false)?;
     result.finish_reason = map_anthropic_stop_reason(stop_reason);
     result.last_request_usage = per_request_usage;
-    Ok(TurnOutcome {
-        result,
-        claude_session: session_id,
-    })
-}
-
-/// 折叠空白并按字符截断,给思考通道的一行摘要用。
-pub(in crate::llm::openai_compatible) fn compact_line(text: &str, limit: usize) -> String {
-    let mut collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() > limit {
-        collapsed = collapsed.chars().take(limit).collect::<String>() + "…";
-    }
-    collapsed
-}
-
-/// 按字符截断但保留换行结构:Bash 的输出走命令输出块渲染,折叠空白会把
-/// 多行日志压成一行。
-pub(in crate::llm::openai_compatible) fn truncate_block(text: &str, limit: usize) -> String {
-    let trimmed = text.trim_end();
-    if trimmed.chars().count() > limit {
-        trimmed.chars().take(limit).collect::<String>() + "…"
-    } else {
-        trimmed.to_string()
-    }
+    Ok(RelayOutcome { result, session_id })
 }
 
 fn emit_remote_tool_started<F>(
@@ -441,11 +319,7 @@ where
                 "id": id,
                 "name": name,
                 "ok": ok,
-                "output": if name == "Bash" {
-                    truncate_block(&output, 4000)
-                } else {
-                    compact_line(&output, 4000)
-                },
+                "output": shape_remote_output(&name, &output),
             })
             .to_string(),
         })?;
@@ -539,7 +413,6 @@ where
                     }
                     // tool_use 的展示交给完整 assistant 帧翻译出的
                     // tool.started 卡片,这里不再往思考通道塞行。
-                    "tool_use" | "server_tool_use" | "mcp_tool_use" => {}
                     _ => {}
                 }
             }
@@ -640,18 +513,4 @@ fn usage_from_result_frame(frame: &Value) -> Option<Usage> {
         cache_reported: true,
         ..Usage::default()
     })
-}
-
-#[cfg(test)]
-mod output_shaping_tests {
-    /// Bash 走命令输出块,换行必须保住;其余工具仍折叠成一行摘要。
-    #[test]
-    fn bash_output_keeps_line_structure() {
-        assert_eq!(super::truncate_block("a\nb\n", 4000), "a\nb");
-        assert_eq!(super::compact_line("a\nb", 4000), "a b");
-        let long = "x".repeat(4001);
-        let cut = super::truncate_block(&long, 4000);
-        assert!(cut.ends_with('…'));
-        assert_eq!(cut.chars().count(), 4001);
-    }
 }

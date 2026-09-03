@@ -85,6 +85,18 @@ pub struct ActiveProviderModelConfig {
 pub const CLAUDE_CODE_PROTOCOL: &str = "claude-code";
 /// Antigravity(agy CLI)特殊供应商的内部协议标识(不暴露成用户概念)。
 pub const ANTIGRAVITY_PROTOCOL: &str = "antigravity";
+/// Codex(OpenAI codex CLI)特殊供应商的内部协议标识。
+pub const CODEX_PROTOCOL: &str = "codex";
+/// Codex 预置模型:`codex debug models` 的目录(09-03,codex 0.147)。
+pub const CODEX_PRESET_MODELS: &[&str] = &[
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
+];
 /// Antigravity 预置模型:`agy models` 的输出(09-03);本机 CLI 没有 /models
 /// 端点,列表就是这份别名。gemini 的思考档位编码在模型名后缀里。
 pub const ANTIGRAVITY_PRESET_MODELS: &[&str] = &[
@@ -374,6 +386,23 @@ impl ProviderConfig {
         }
     }
 
+    /// 内置的 Codex 特殊供应商:本机 `codex` CLI 的 ChatGPT 登录态中转。
+    pub fn codex_template() -> Self {
+        Self {
+            enabled: false,
+            protocol: CODEX_PROTOCOL.to_string(),
+            models: CODEX_PRESET_MODELS.iter().map(|model| model.to_string()).collect(),
+            default_model: "gpt-5.6-terra".to_string(),
+            ..Self::template("codex", "Codex", "")
+        }
+    }
+
+    /// 该条目是否 Codex 特殊供应商(按协议判定)。
+    pub fn is_codex(&self) -> bool {
+        let protocol = self.protocol.trim();
+        protocol.eq_ignore_ascii_case(CODEX_PROTOCOL) || protocol.eq_ignore_ascii_case("codex-cli")
+    }
+
     /// 该条目是否 Antigravity 特殊供应商(按协议判定)。
     pub fn is_antigravity(&self) -> bool {
         let protocol = self.protocol.trim();
@@ -385,7 +414,7 @@ impl ProviderConfig {
     /// 内置的本机 CLI 中转供应商(Claude Code / Antigravity):没有 URL、
     /// API key 概念,列表里恒存在且不可删除。
     pub fn is_builtin_cli_provider(&self) -> bool {
-        self.is_claude_code() || self.is_antigravity()
+        self.is_claude_code() || self.is_antigravity() || self.is_codex()
     }
 
     pub fn default_templates() -> Vec<Self> {
@@ -413,6 +442,7 @@ impl ProviderConfig {
         // Claude Code 置顶:用户拍板的列表次序;Antigravity 紧随其后。
         providers.insert(0, Self::claude_code_template());
         providers.insert(1, Self::antigravity_template());
+        providers.insert(2, Self::codex_template());
         providers
     }
 

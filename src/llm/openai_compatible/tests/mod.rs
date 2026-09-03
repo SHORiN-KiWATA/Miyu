@@ -7,6 +7,7 @@ mod anthropic;
 mod chat_stream;
 mod antigravity;
 mod claude_code;
+mod codex;
 mod endpoint_retry;
 mod extra_body;
 mod failover;

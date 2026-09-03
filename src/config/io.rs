@@ -173,16 +173,15 @@ impl AppConfig {
                 self.providers.insert(0, provider);
             }
         }
-        // Antigravity 紧随 Claude Code 之后(同样是内置 CLI 中转)。
-        if let Some(position) = self
-            .providers
-            .iter()
-            .position(ProviderConfig::is_antigravity)
-        {
-            let target = usize::from(self.providers[0].is_claude_code());
-            if position != target && target < self.providers.len() {
-                let provider = self.providers.remove(position);
-                self.providers.insert(target, provider);
+        // Antigravity、Codex 紧随其后(同样是内置 CLI 中转),顺序固定。
+        let mut target = usize::from(self.providers.first().is_some_and(ProviderConfig::is_claude_code));
+        for predicate in [ProviderConfig::is_antigravity, ProviderConfig::is_codex] {
+            if let Some(position) = self.providers.iter().position(predicate) {
+                if position != target && target < self.providers.len() {
+                    let provider = self.providers.remove(position);
+                    self.providers.insert(target, provider);
+                }
+                target += 1;
             }
         }
         if self.active_provider == "opencodezen" {

@@ -49,6 +49,7 @@ impl OpenAiCompatibleClient {
         let continuation_health = ResponsesContinuationHealth::for_provider(paths, &first.provider);
         let claude_code = claude_code_runtime(&endpoints, config);
         let antigravity = antigravity_runtime(&endpoints, config);
+        let codex = codex_runtime(&endpoints, config);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -64,6 +65,7 @@ impl OpenAiCompatibleClient {
             continuation_health,
             claude_code,
             antigravity,
+            codex,
             claude_code_dev_mode: false,
         };
         client.restore_saved_thinking_variants(paths);
@@ -140,6 +142,7 @@ impl OpenAiCompatibleClient {
         let continuation_health = ResponsesContinuationHealth::for_provider(paths, &first.provider);
         let claude_code = claude_code_runtime(&endpoints, config);
         let antigravity = antigravity_runtime(&endpoints, config);
+        let codex = codex_runtime(&endpoints, config);
         let mut client = Self {
             client: first.client.clone(),
             provider: first.provider.clone(),
@@ -155,6 +158,7 @@ impl OpenAiCompatibleClient {
             continuation_health,
             claude_code,
             antigravity,
+            codex,
             claude_code_dev_mode: false,
         };
         client.restore_saved_thinking_variants(paths);
@@ -203,6 +207,7 @@ impl OpenAiCompatibleClient {
         let endpoints = vec![endpoint];
         let claude_code = claude_code_runtime(&endpoints, config);
         let antigravity = antigravity_runtime(&endpoints, config);
+        let codex = codex_runtime(&endpoints, config);
         let mut client = Self {
             client,
             provider: provider.clone(),
@@ -218,6 +223,7 @@ impl OpenAiCompatibleClient {
             continuation_health,
             claude_code,
             antigravity,
+            codex,
             claude_code_dev_mode: false,
         };
         client.restore_saved_thinking_variants(paths);
@@ -340,6 +346,7 @@ impl OpenAiCompatibleClient {
             continuation_health: self.continuation_health.clone(),
             claude_code: self.claude_code.clone(),
             antigravity: self.antigravity.clone(),
+            codex: self.codex.clone(),
             claude_code_dev_mode: self.claude_code_dev_mode,
         }
     }
@@ -374,6 +381,17 @@ impl OpenAiCompatibleClient {
     pub(crate) fn uses_anthropic_messages(&self) -> bool {
         provider_looks_anthropic(&self.provider)
     }
+}
+
+/// 端点池里出现 codex 协议端点时,解析一份共享运行时参数。
+pub(in crate::llm::openai_compatible) fn codex_runtime(
+    endpoints: &[LlmEndpoint],
+    config: &AppConfig,
+) -> Option<Arc<CodexRuntime>> {
+    endpoints
+        .iter()
+        .any(|endpoint| provider_uses_codex(&endpoint.provider))
+        .then(|| Arc::new(CodexRuntime::from_config(config)))
 }
 
 /// 端点池里出现 antigravity 协议端点时,解析一份共享运行时参数。

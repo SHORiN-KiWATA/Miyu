@@ -374,6 +374,7 @@ fn mixed_client_keeps_variants_per_provider_and_model() {
         request_scope: "chat",
         claude_code: None,
         antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
         continuation_health: ResponsesContinuationHealth::detached(),
     };

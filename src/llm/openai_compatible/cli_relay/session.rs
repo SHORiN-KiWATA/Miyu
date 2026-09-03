@@ -1,4 +1,4 @@
-//! claude 会话与 Miyu 消息前缀的对应关系(进程内)。
+//! CLI 侧会话与 Miyu 消息前缀的对应关系(进程内;三条中转线共用,键含 provider)。
 //!
 //! 键是「逐消息哈希链」:chain[i] = 前 i 条会话消息的链哈希,种子掺入
 //! provider/model/system prompt。Miyu 的历史回放是字节级 append-only 的,
@@ -74,7 +74,10 @@ pub(in crate::llm::openai_compatible) fn prefix_chain(
     chain
 }
 
-pub(in crate::llm::openai_compatible) fn extend_chain(chain_end: u64, message: &ChatMessage) -> u64 {
+pub(in crate::llm::openai_compatible) fn extend_chain(
+    chain_end: u64,
+    message: &ChatMessage,
+) -> u64 {
     hash_step(chain_end, &message_bytes(message))
 }
 
@@ -221,7 +224,7 @@ mod tests {
             find_resumable("p", "m", Some("miyu-a"), true, &chain, extended.len()),
             None
         );
-        let _ = forget_session("sess-1");
+        forget_session("sess-1");
     }
 
     /// 两档工具面各续各的 claude 会话:跨档绝不复用(复用就会让 claude 逐轮

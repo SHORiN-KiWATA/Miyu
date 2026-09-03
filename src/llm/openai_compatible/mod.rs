@@ -4,6 +4,8 @@ mod builder;
 mod chat;
 mod chat_consume;
 mod claude_code;
+mod cli_relay;
+mod codex;
 mod dsml;
 mod endpoints;
 mod errors;
@@ -12,9 +14,10 @@ mod protocol;
 mod sse;
 mod variants;
 mod wire;
-pub(crate) use claude_code::forget_relay_sessions;
 use antigravity::AntigravityRuntime;
 use claude_code::ClaudeCodeRuntime;
+pub(crate) use cli_relay::forget_relay_sessions;
+use codex::CodexRuntime;
 use dsml::*;
 use endpoints::*;
 use errors::*;
@@ -98,6 +101,8 @@ pub struct OpenAiCompatibleClient {
     claude_code: Option<Arc<ClaudeCodeRuntime>>,
     /// antigravity 协议的运行时参数;端点池里没有该协议的端点时为 None。
     antigravity: Option<Arc<AntigravityRuntime>>,
+    /// codex 协议的运行时参数;端点池里没有该协议的端点时为 None。
+    codex: Option<Arc<CodexRuntime>>,
     /// 本会话是否 dev 模式(Agent 构造时置位),claude-code 的双四档工具
     /// 作用域(native_tools/miyu_tools)按它判定。
     claude_code_dev_mode: bool,

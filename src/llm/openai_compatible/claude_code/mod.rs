@@ -6,15 +6,15 @@
 //! 线),所以这条线对 Miyu 的回合循环呈现为「一次请求、纯文本(+思考)回来、
 //! 永远没有 tool_calls」。
 //!
-//! 会话续传:Miyu 的消息历史是严格 append-only 的(缓存体制的成果),所以
-//! 「这次请求是否延续上次」用逐消息哈希链判定——匹配上就 `--resume` 只发增
-//! 量;对不上(redo/compact/daemon 重启)就重开 claude 会话全量重放。见
-//! [`session`]。
+//! 作用域裁决、哈希链续传、载荷转写、子进程泵都在 [`cli_relay`];这里只剩
+//! claude 特有的三样:命令行怎么拼(`--system-prompt` 整体替换、`--mcp-config`
+//! 内联 JSON、`--resume`)、事件怎么解析([`stream`])、清空时删哪里的转录。
 
-pub(in crate::llm::openai_compatible) mod payload;
-pub(in crate::llm::openai_compatible) mod session;
-pub(in crate::llm::openai_compatible) mod stream;
+mod stream;
 
+use crate::llm::openai_compatible::cli_relay::{
+    self, payload, RelayOutcome, ResumePlan, ToolScopes,
+};
 use crate::llm::openai_compatible::*;
 
 /// 客户端构造期解析好的运行时参数(binary/工具作用域/权限模式),端点间共享。
@@ -32,17 +32,6 @@ pub(in crate::llm::openai_compatible) struct ClaudeCodeRuntime {
     pub(in crate::llm::openai_compatible) autocompact: HashMap<String, u64>,
     pub(in crate::llm::openai_compatible) idle_timeout: Duration,
     pub(in crate::llm::openai_compatible) prefer_subscription: bool,
-}
-
-/// 模式作用域判定:会话是 dev 还是 normal 由 Agent 构造时经
-/// `with_claude_code_dev_mode` 打到客户端上。未知值按 off 兜底。
-pub(in crate::llm::openai_compatible) fn scope_allows(scope: &str, dev_mode: bool) -> bool {
-    match scope.trim().to_ascii_lowercase().as_str() {
-        "all" => true,
-        "dev" => dev_mode,
-        "normal" => !dev_mode,
-        _ => false,
-    }
 }
 
 impl ClaudeCodeRuntime {
@@ -82,9 +71,6 @@ impl OpenAiCompatibleClient {
             .context("claude-code runtime was not initialized for this client")?;
         let model = self.provider.default_model.clone();
         let (system_prompt, conversation) = payload::split_system(messages);
-        // 辅助请求(压缩摘要、标题、judge)一次一个 claude 会话即可,不建持久
-        // 会话也不参与续传匹配,免得污染主对话的会话映射。
-        let ephemeral = self.request_scope != "chat";
         // 一律用会话工作区(与 run_command 同源):原生工具在这里操作文件,
         // 无工具时 cwd 无关紧要。回合作用域外(测试/辅助)回退进程 cwd。
         let workdir = crate::tools::workspace::effective_workdir();
@@ -92,94 +78,85 @@ impl OpenAiCompatibleClient {
         let miyu_session = miyu_session.as_deref();
         // 续传按工具面档位隔离:桥每轮按触发者身份重算工具面,两档共用一条
         // claude 会话会让清单逐轮增删,模型读成"工具掉线"(见 session 模块头)。
-        let host_tools = host_tools_face(miyu_session);
-        let chain = session::prefix_chain(&self.provider.id, &model, &system_prompt, &conversation);
-        let resumable = if ephemeral {
-            None
-        } else {
-            session::find_resumable(
-                &self.provider.id,
-                &model,
-                miyu_session,
-                host_tools,
-                &chain,
-                conversation.len(),
+        let host_tools = cli_relay::host_tools_face(miyu_session);
+        let scopes = cli_relay::tool_scopes(
+            self.request_scope,
+            &runtime.native_tools,
+            &runtime.miyu_tools,
+            self.claude_code_dev_mode,
+        );
+        let prompt = compose_system_prompt(&system_prompt, scopes);
+        let mut plan = ResumePlan::new(
+            &self.provider.id,
+            &model,
+            &prompt,
+            conversation,
+            self.request_scope,
+            miyu_session,
+            host_tools,
+        );
+        let mut outcome = self
+            .claude_turn(
+                &runtime, &model, &workdir, &prompt, scopes, &plan, request_id, on_chunk,
             )
-        };
-        let outcome = {
-            let (resume_id, covered) = match resumable.clone() {
-                Some((id, len)) => (Some(id), len),
-                None => (None, 0),
-            };
-            let delta = &conversation[covered..];
-            let payload = payload::render_user_payload(delta);
-            let args = self.claude_code_args(
-                &runtime,
-                &model,
-                &system_prompt,
-                resume_id.as_deref(),
-                ephemeral,
-            );
-            crate::llm::request_log::record(
-                &self.provider.id,
-                &model,
-                "claude-code",
-                self.request_scope,
-                &runtime.binary.display().to_string(),
-                // conversation 是续传哈希链的原料,录下来才能诊断"为什么没命中"。
-                &json!({ "args": args, "stdin": payload, "conversation": conversation }),
-            );
-            stream::run_claude_turn(&runtime, &workdir, &args, &payload, request_id, on_chunk).await
-        };
-        let outcome = match outcome {
-            Err(error) if resumable.is_some() && stream::resume_session_lost(&error) => {
-                // claude 侧会话被清理(过期/手动删除):忘掉映射,整段全量重放
-                // 一次。只对「会话找不到」类错误自愈,限流/登录错误照常上抛。
-                tracing::warn!(
-                    request_id,
-                    error = %format!("{error:#}"),
-                    "claude-code resume target is gone; replaying the full conversation in a fresh session"
-                );
-                if let Some((session_id, _)) = &resumable {
-                    session::forget_session(session_id);
-                }
-                let payload = payload::render_user_payload(&conversation);
-                let args = self.claude_code_args(&runtime, &model, &system_prompt, None, ephemeral);
-                stream::run_claude_turn(&runtime, &workdir, &args, &payload, request_id, on_chunk)
-                    .await?
-            }
-            other => other?,
-        };
-        if !ephemeral {
-            if let Some(claude_session) = &outcome.claude_session {
-                // 预测下一轮的前缀:本轮回放化石 = 已发送的会话消息 + 一条
-                // assistant 正文(思考回放已退役,无工具轮就是纯文本)。预测
-                // 若与实际化石有分歧,下一轮匹配不上,自动退化为全量重放——
-                // 只损失效率,不损失正确性。
-                let content = outcome.result.content.clone();
-                if !content.trim().is_empty() {
-                    let predicted = ChatMessage::assistant(content, None);
-                    let next_hash = session::extend_chain(chain[conversation.len()], &predicted);
-                    session::record_session(
-                        &self.provider.id,
-                        &model,
-                        miyu_session,
-                        host_tools,
-                        conversation.len() + 1,
-                        next_hash,
-                        claude_session.clone(),
-                    );
-                }
+            .await;
+        if let Err(error) = &outcome {
+            if plan.resume_id().is_some() && stream::resume_session_lost(error) {
+                plan.resume_lost("claude-code", request_id, error);
+                outcome = self
+                    .claude_turn(
+                        &runtime, &model, &workdir, &prompt, scopes, &plan, request_id, on_chunk,
+                    )
+                    .await;
             }
         }
+        let outcome = outcome?;
+        plan.record(&outcome);
         Ok(outcome.result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn claude_turn<F>(
+        &self,
+        runtime: &ClaudeCodeRuntime,
+        model: &str,
+        workdir: &std::path::Path,
+        prompt: &str,
+        scopes: ToolScopes,
+        plan: &ResumePlan,
+        request_id: &str,
+        on_chunk: &mut F,
+    ) -> Result<RelayOutcome>
+    where
+        F: FnMut(ChatStreamChunk) -> Result<()>,
+    {
+        let payload = payload::render_user_payload(plan.delta());
+        let args = self.claude_code_args(
+            runtime,
+            model,
+            prompt,
+            scopes,
+            plan.resume_id(),
+            plan.ephemeral(),
+        );
+        crate::llm::request_log::record(
+            &self.provider.id,
+            model,
+            "claude-code",
+            self.request_scope,
+            &runtime.binary.display().to_string(),
+            // conversation 是续传哈希链的原料,录下来才能诊断"为什么没命中"。
+            &json!({ "args": args, "stdin": payload, "conversation": plan.conversation() }),
+        );
+        stream::run_claude_turn(runtime, workdir, &args, &payload, request_id, on_chunk).await
     }
 
     fn claude_code_args(
         &self,
         runtime: &ClaudeCodeRuntime,
         model: &str,
-        system_prompt: &str,
+        prompt: &str,
+        scopes: ToolScopes,
         resume: Option<&str>,
         ephemeral: bool,
     ) -> Vec<String> {
@@ -211,32 +188,13 @@ impl OpenAiCompatibleClient {
                 args.push(effort);
             }
         }
-        // 工具面按双四档作用域装配。subagent 作用域也给:中转不会把工具
-        // 循环交还给外层(SubagentRunner 收到的永远是最终文本),子代理的
-        // 干活能力全靠内层 claude 自己的原生工具 + MCP 桥闭环;真正的纯文
-        // 本辅助请求(摘要/标题/judge)仍然无工具。
-        let tool_capable = matches!(self.request_scope, "chat" | "subagent");
-        let native_on =
-            tool_capable && scope_allows(&runtime.native_tools, self.claude_code_dev_mode);
-        let miyu_on = tool_capable && scope_allows(&runtime.miyu_tools, self.claude_code_dev_mode);
-        {
-            // 整体替换默认系统提示词:人格/开发提示词原样过去,同时甩掉
-            // Claude Code 自带的 CLI 身份与 CLAUDE.md 注入。工具开启时追加
-            // 中转环境说明(常量字节,前缀稳定):每轮一进程,自带后台/通知
-            // 活不过本轮——这是模型光靠自我认知猜不到的宿主事实。
-            let mut prompt = system_prompt.to_string();
-            if native_on || miyu_on {
-                prompt.push_str(RELAY_ENVIRONMENT_NOTE);
-                if miyu_on {
-                    prompt.push_str(RELAY_MIYU_TOOLS_NOTE);
-                }
-            }
-            if !prompt.trim().is_empty() {
-                args.push("--system-prompt".into());
-                args.push(prompt);
-            }
+        // 整体替换默认系统提示词:人格/开发提示词原样过去,同时甩掉 Claude
+        // Code 自带的 CLI 身份与 CLAUDE.md 注入。
+        if !prompt.trim().is_empty() {
+            args.push("--system-prompt".into());
+            args.push(prompt.to_string());
         }
-        if native_on {
+        if scopes.native_on {
             // claude 原生工具(训练分布内)开放;无头模式没有交互审批,
             // 权限模式决定 Bash 等是否可用(默认 bypassPermissions)。
             args.push("--permission-mode".into());
@@ -246,11 +204,11 @@ impl OpenAiCompatibleClient {
             args.push(String::new());
         }
         args.push("--strict-mcp-config".into());
-        if miyu_on {
+        if scopes.miyu_on {
             // 两套同开时去重:与 claude 原生重复的 Miyu 工具剔除,原生优先
             // (用户拍板清单;load_skill/manage_skill 与 claude 的 Skill 内容
             // 不同,不算重复)。
-            if let Some(mcp_config) = mcp_bridge_config(native_on) {
+            if let Some(mcp_config) = mcp_bridge_config(scopes.native_on) {
                 args.push("--mcp-config".into());
                 args.push(mcp_config);
                 args.push("--allowedTools".into());
@@ -268,20 +226,19 @@ impl OpenAiCompatibleClient {
     }
 }
 
-/// 本轮经 MCP 桥暴露的工具面档位。判据与桥完全同源:桥问工具时走
-/// `attach_owner_turn_tools` → `apply_platform_turn_scope`,取的就是这个活体
-/// 平台上下文的 `host_tools_allowed()`。非平台会话(REPL/WebUI/回合外)没有
-/// 登记,按全量底座记——那些路径本来就只有 owner 一档。
-pub(in crate::llm::openai_compatible) fn host_tools_face(miyu_session: Option<&str>) -> bool {
-    miyu_session
-        .and_then(crate::platforms::live_turn_context)
-        .map(|context| context.host_tools_allowed())
-        .unwrap_or(true)
+/// 系统提示词 + 中转环境说明(常量字节,前缀稳定):每轮一进程,自带后台/
+/// 通知活不过本轮——这是模型光靠自我认知猜不到的宿主事实。
+fn compose_system_prompt(system_prompt: &str, scopes: ToolScopes) -> String {
+    let mut prompt = system_prompt.to_string();
+    if scopes.native_on || scopes.miyu_on {
+        prompt.push_str(RELAY_ENVIRONMENT_NOTE);
+        if scopes.miyu_on {
+            prompt.push_str(RELAY_MIYU_TOOLS_NOTE);
+        }
+    }
+    prompt
 }
 
-/// Miyu 工具经 MCP stdio 桥挂给 claude:`miyu mcp-serve` 打回 daemon,与
-/// `miyu tool-call` 同一条会话→模式→registry 解析链。没有会话作用域(测试
-/// /直连辅助请求)就不挂桥。
 /// 中转环境事实(声明式,不写指令;常量字节保证前缀稳定)。
 const RELAY_ENVIRONMENT_NOTE: &str = "\n\n<relay-environment>\nThis session runs inside Miyu's relay: each turn is a fresh CLI process that exits when the turn ends. Work backgrounded through the built-in tools (Bash run_in_background, background Task) dies with the process, and its completion notifications never arrive.\n</relay-environment>";
 
@@ -311,6 +268,10 @@ const BRIDGE_DUPLICATE_TOOLS: &[&str] = &[
     "todowrite",
 ];
 
+/// Miyu 工具经 MCP stdio 桥挂给 claude:`miyu mcp-serve` 打回 daemon,与
+/// `miyu tool-call` 同一条会话→模式→registry 解析链。没有会话作用域(测试
+/// /直连辅助请求)就不挂桥。claude 给 MCP server 的是洁净环境,home/runtime
+/// 识别变量要显式带(如实透传,见 cli_relay::bridge_env_passthrough)。
 fn mcp_bridge_config(exclude_duplicates: bool) -> Option<String> {
     let session = crate::tools::workspace::try_session()?;
     let exe = crate::paths::miyu_executable().ok()?;
@@ -324,16 +285,8 @@ fn mcp_bridge_config(exclude_duplicates: bool) -> Option<String> {
             json!(BRIDGE_DUPLICATE_TOOLS.join(",")),
         );
     }
-    // claude 给 MCP server 的是洁净环境,home/runtime 识别变量要显式带——
-    // 但必须**如实透传**(daemon 自己有什么才给什么):runtime 目录推导对
-    // "显式设了 MIYU_HOME"与"没设"给出不同路径(默认 home 显式设也会变
-    // 成哈希子目录),无条件塞 MIYU_HOME 会让 mcp-serve 连不上正常启动的
-    // daemon,静默滑进直连兜底(实测:目录缺 WebUI 工具、图片打进
-    // mcp-serve 自己的 stdout、资产全无)。
-    for key in ["MIYU_HOME", "XDG_RUNTIME_DIR"] {
-        if let Some(value) = std::env::var_os(key) {
-            env.insert(key.into(), json!(value.to_string_lossy()));
-        }
+    for (key, value) in cli_relay::bridge_env_passthrough() {
+        env.insert(key, json!(value));
     }
     Some(
         json!({
@@ -349,23 +302,12 @@ fn mcp_bridge_config(exclude_duplicates: bool) -> Option<String> {
     )
 }
 
-/// 清空 Miyu 会话时的联动(两条 CLI 中转线共用):丢弃它名下的续传映射,
-/// 并尽力删除 CLI 侧的会话转录——claude 的在 `~/.claude/projects/<槽>/<id>.jsonl`,
-/// agy 的在 `~/.gemini/antigravity-cli/{conversations/<id>.db*,brain/<id>/}`。
-/// 存储布局是各家 CLI 的内部实现,删不到只记日志不报错——映射已丢弃,该会话
-/// 无论如何不会再被续传。会话 id 都是全局唯一 UUID,两处都试一遍不会误删。
-pub(crate) fn forget_relay_sessions(miyu_session: &str) {
-    let removed = session::forget_miyu_session(miyu_session);
-    if removed.is_empty() {
-        return;
-    }
-    for relay_session in &removed {
-        remove_claude_transcript(miyu_session, relay_session);
-        super::antigravity::remove_conversation_files(relay_session);
-    }
-}
-
-fn remove_claude_transcript(miyu_session: &str, claude_session: &str) {
+/// 清空 Miyu 会话时的联动:尽力删除 claude 侧的会话转录
+/// (`~/.claude/projects/<项目槽>/<会话id>.jsonl`)。
+pub(in crate::llm::openai_compatible) fn remove_transcript(
+    miyu_session: &str,
+    claude_session: &str,
+) {
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };

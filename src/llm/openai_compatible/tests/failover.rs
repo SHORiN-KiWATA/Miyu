@@ -91,6 +91,7 @@ async fn response_header_timeout_fails_over_to_the_next_endpoint() {
         continuation_health: ResponsesContinuationHealth::detached(),
         claude_code: None,
         antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
     };
 
@@ -526,6 +527,7 @@ async fn endpoint_failover_resets_partial_reasoning_before_retry() {
         request_scope: "chat",
         claude_code: None,
         antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
@@ -615,6 +617,7 @@ async fn buffered_completion_fails_over_after_partial_content() {
         request_scope: "chat",
         claude_code: None,
         antigravity: None,
+        codex: None,
         claude_code_dev_mode: false,
         continuation_health: ResponsesContinuationHealth::detached(),
     };

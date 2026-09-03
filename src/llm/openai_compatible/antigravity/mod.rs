@@ -14,13 +14,15 @@
 //! 靠 agy 把自己的环境(MIYU_SESSION 等)原样继承给 MCP 子进程按会话分流;
 //! ③续传目标丢失**不报错**而是静默新开会话,判据是 init 首行的 id 与请求不符。
 //!
-//! 会话续传复用 claude-code 的逐消息哈希链([`session`]):键本就带 provider
-//! 维度,种子含系统提示词,「提示词变=新会话全量重放」与那条线语义一致。
+//! 作用域裁决、哈希链续传、载荷转写、子进程泵都在 [`cli_relay`]:键本就带
+//! provider 维度,种子含系统提示词,「提示词变=新会话全量重放」三线一致。
 
 mod setup;
 mod stream;
 
-use crate::llm::openai_compatible::claude_code::{host_tools_face, payload, scope_allows, session};
+use crate::llm::openai_compatible::cli_relay::{
+    self, payload, RelayOutcome, ResumePlan, ToolScopes,
+};
 use crate::llm::openai_compatible::*;
 
 pub(in crate::llm::openai_compatible) use setup::remove_conversation_files;
@@ -141,116 +143,106 @@ impl OpenAiCompatibleClient {
             .context("antigravity runtime was not initialized for this client")?;
         let model = self.provider.default_model.clone();
         let (system_prompt, conversation) = payload::split_system(messages);
-        // 辅助请求(压缩摘要、标题、judge)一次一个会话,不参与续传匹配;
-        // 用完顺手删掉 agy 侧转录,免得辅助请求把用户的会话列表刷满。
-        let ephemeral = self.request_scope != "chat";
         let workdir = crate::tools::workspace::effective_workdir();
         let miyu_session = crate::tools::workspace::try_session();
         let miyu_session = miyu_session.as_deref();
-        let host_tools = host_tools_face(miyu_session);
-        // 工具面按双四档作用域装配(语义同 claude 线):subagent 作用域也给,
-        // 纯文本辅助请求无工具。
-        let tool_capable = matches!(self.request_scope, "chat" | "subagent");
-        let native_on =
-            tool_capable && scope_allows(&runtime.native_tools, self.claude_code_dev_mode);
-        let miyu_on = tool_capable && scope_allows(&runtime.miyu_tools, self.claude_code_dev_mode);
-        let agent_prompt = compose_agent_prompt(&system_prompt, native_on, miyu_on);
-        let chain = session::prefix_chain(&self.provider.id, &model, &agent_prompt, &conversation);
-        let resumable = if ephemeral {
-            None
-        } else {
-            session::find_resumable(
-                &self.provider.id,
-                &model,
-                miyu_session,
-                host_tools,
-                &chain,
-                conversation.len(),
-            )
-        };
+        let host_tools = cli_relay::host_tools_face(miyu_session);
+        let scopes = cli_relay::tool_scopes(
+            self.request_scope,
+            &runtime.native_tools,
+            &runtime.miyu_tools,
+            self.claude_code_dev_mode,
+        );
+        let agent_prompt = compose_agent_prompt(&system_prompt, scopes);
+        let mut plan = ResumePlan::new(
+            &self.provider.id,
+            &model,
+            &agent_prompt,
+            conversation,
+            self.request_scope,
+            miyu_session,
+            host_tools,
+        );
         // 人格代理与桥注册落盘(内容不变就不写)。桥的 eager 名单 = 本轮工具
         // 面减去与原生重复的;桥关着时名单为空,并且不给 MIYU_SESSION——
         // mcp-serve 见到守卫而没有会话就只应答空工具表。
-        setup::ensure_agent_file(&runtime.config_dir, &agent_prompt, native_on)?;
-        let eager_tools: Vec<String> = if miyu_on && runtime.miyu_tools_eager {
+        setup::ensure_agent_file(&runtime.config_dir, &agent_prompt, scopes.native_on)?;
+        let eager_tools: Vec<String> = if scopes.miyu_on && runtime.miyu_tools_eager {
             tools
                 .iter()
                 .map(|tool| tool.function.name.clone())
-                .filter(|name| !native_on || !BRIDGE_DUPLICATE_TOOLS.contains(&name.as_str()))
+                .filter(|name| {
+                    !scopes.native_on || !BRIDGE_DUPLICATE_TOOLS.contains(&name.as_str())
+                })
                 .collect()
         } else {
             Vec::new()
         };
         setup::ensure_mcp_entry(&runtime.config_dir, &eager_tools)?;
-        let env = relay_env(miyu_on, native_on, miyu_session);
+        let env = relay_env(scopes, miyu_session);
+        let mut outcome = self
+            .agy_turn(
+                &runtime, &model, &workdir, &env, &plan, request_id, on_chunk,
+            )
+            .await;
+        if let Err(error) = &outcome {
+            if plan.resume_id().is_some() && resume_target_lost(error) {
+                // agy 侧会话没了(被清理/过期):init 是流的首行、先于模型调用,
+                // 所以上面那次几乎没花额度。
+                plan.resume_lost("antigravity", request_id, error);
+                outcome = self
+                    .agy_turn(
+                        &runtime, &model, &workdir, &env, &plan, request_id, on_chunk,
+                    )
+                    .await;
+            }
+        }
+        let outcome = outcome?;
+        if plan.ephemeral() {
+            // 辅助请求用完顺手删掉 agy 侧转录,免得把用户的会话列表刷满。
+            if let Some(conversation_id) = &outcome.session_id {
+                setup::remove_conversation_files(conversation_id);
+            }
+        }
+        plan.record(&outcome);
+        Ok(outcome.result)
+    }
 
-        let (resume_id, covered) = match resumable.clone() {
-            Some((id, len)) => (Some(id), len),
-            None => (None, 0),
-        };
-        let payload = render_stdin_line(&conversation[covered..]);
-        let args = self.antigravity_args(&runtime, &model, &workdir, resume_id.as_deref());
+    #[allow(clippy::too_many_arguments)]
+    async fn agy_turn<F>(
+        &self,
+        runtime: &AntigravityRuntime,
+        model: &str,
+        workdir: &std::path::Path,
+        env: &[(String, Option<String>)],
+        plan: &ResumePlan,
+        request_id: &str,
+        on_chunk: &mut F,
+    ) -> Result<RelayOutcome>
+    where
+        F: FnMut(ChatStreamChunk) -> Result<()>,
+    {
+        let payload = render_stdin_line(plan.delta());
+        let args = self.antigravity_args(runtime, model, workdir, plan.resume_id());
         crate::llm::request_log::record(
             &self.provider.id,
-            &model,
+            model,
             "antigravity",
             self.request_scope,
             &runtime.binary.display().to_string(),
-            &json!({ "args": args, "stdin": payload, "conversation": conversation }),
+            &json!({ "args": args, "stdin": payload, "conversation": plan.conversation() }),
         );
-        let outcome = match stream::run_agy_turn(
-            &runtime,
-            &workdir,
+        stream::run_agy_turn(
+            runtime,
+            workdir,
             &args,
-            &env,
+            env,
             &payload,
-            resume_id.as_deref(),
+            plan.resume_id(),
             request_id,
             on_chunk,
         )
         .await
-        {
-            Err(error) if resumable.is_some() && resume_target_lost(&error) => {
-                // agy 侧会话没了(被清理/过期):忘掉映射,整段全量重放一次。
-                // init 是流的首行、先于模型调用,所以上面那次几乎没花额度。
-                tracing::warn!(
-                    request_id,
-                    error = %format!("{error:#}"),
-                    "antigravity resume target is gone; replaying the full conversation in a fresh session"
-                );
-                if let Some((relay_session, _)) = &resumable {
-                    session::forget_session(relay_session);
-                }
-                let payload = render_stdin_line(&conversation);
-                let args = self.antigravity_args(&runtime, &model, &workdir, None);
-                stream::run_agy_turn(
-                    &runtime, &workdir, &args, &env, &payload, None, request_id, on_chunk,
-                )
-                .await?
-            }
-            other => other?,
-        };
-        if let Some(conversation_id) = &outcome.conversation_id {
-            if ephemeral {
-                setup::remove_conversation_files(conversation_id);
-            } else {
-                let content = outcome.result.content.clone();
-                if !content.trim().is_empty() {
-                    let predicted = ChatMessage::assistant(content, None);
-                    let next_hash = session::extend_chain(chain[conversation.len()], &predicted);
-                    session::record_session(
-                        &self.provider.id,
-                        &model,
-                        miyu_session,
-                        host_tools,
-                        conversation.len() + 1,
-                        next_hash,
-                        conversation_id.clone(),
-                    );
-                }
-            }
-        }
-        Ok(outcome.result)
     }
 
     fn antigravity_args(
@@ -300,11 +292,11 @@ impl OpenAiCompatibleClient {
 }
 
 /// 代理文件正文 = Miyu 系统提示词 + 中转环境事实。
-fn compose_agent_prompt(system_prompt: &str, native_on: bool, miyu_on: bool) -> String {
+fn compose_agent_prompt(system_prompt: &str, scopes: ToolScopes) -> String {
     let mut prompt = system_prompt.to_string();
-    if native_on || miyu_on {
+    if scopes.native_on || scopes.miyu_on {
         prompt.push_str(RELAY_ENVIRONMENT_NOTE);
-        if miyu_on {
+        if scopes.miyu_on {
             prompt.push_str(RELAY_MIYU_TOOLS_NOTE);
         }
     }
@@ -315,13 +307,9 @@ fn compose_agent_prompt(system_prompt: &str, native_on: bool, miyu_on: bool) -> 
 /// 走这里而不是 mcp_config 的静态 env。MIYU_HOME/XDG_RUNTIME_DIR 本来就在
 /// 我们自己的环境里,自然继承,不再显式塞(claude 线第六轮的「如实透传」教训
 /// 在这里天然满足)。
-fn relay_env(
-    miyu_on: bool,
-    native_on: bool,
-    miyu_session: Option<&str>,
-) -> Vec<(String, Option<String>)> {
+fn relay_env(scopes: ToolScopes, miyu_session: Option<&str>) -> Vec<(String, Option<String>)> {
     let mut env: Vec<(String, Option<String>)> = Vec::new();
-    match (miyu_on, miyu_session) {
+    match (scopes.miyu_on, miyu_session) {
         (true, Some(session)) => {
             env.push(("MIYU_SESSION".into(), Some(session.to_string())));
             let origin = serde_json::to_string(&crate::tools::workspace::current_turn_origin())
@@ -331,7 +319,7 @@ fn relay_env(
             env.push(("MIYU_MCP_SCHEMA_DIALECT".into(), Some("gemini".into())));
             env.push((
                 "MIYU_MCP_EXCLUDE".into(),
-                Some(if native_on {
+                Some(if scopes.native_on {
                     BRIDGE_DUPLICATE_TOOLS.join(",")
                 } else {
                     String::new()

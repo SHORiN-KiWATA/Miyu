@@ -1,4 +1,4 @@
-//! Miyu 消息增量 → claude stream-json user 消息的翻译。
+//! Miyu 消息增量 → CLI 中转 user 载荷的翻译(claude stream-json 口径,别的线复用块列表)。
 //!
 //! claude 的 stream-json 输入只接受 user 消息,不能注入 assistant 历史。
 //! 所以增量按「历史段 + 活跃尾巴」二分:活跃尾巴(结尾连续的 user 消息,
@@ -9,7 +9,9 @@ use crate::llm::openai_compatible::*;
 use crate::llm::{ChatContent, ChatContentPart};
 
 /// 抽出开头的 system 消息拼成 `--system-prompt`,其余原顺序保留。
-pub(in crate::llm::openai_compatible) fn split_system(messages: Vec<ChatMessage>) -> (String, Vec<ChatMessage>) {
+pub(in crate::llm::openai_compatible) fn split_system(
+    messages: Vec<ChatMessage>,
+) -> (String, Vec<ChatMessage>) {
     let mut system_parts = Vec::new();
     let mut conversation = Vec::with_capacity(messages.len());
     for message in messages {
@@ -43,7 +45,7 @@ fn text_of(message: &ChatMessage) -> Option<String> {
 }
 
 /// stdin 的单行载荷:一条 stream-json user 消息(含尾部换行)。
-pub(super) fn render_user_payload(delta: &[ChatMessage]) -> String {
+pub(in crate::llm::openai_compatible) fn render_user_payload(delta: &[ChatMessage]) -> String {
     let blocks = render_user_blocks(delta);
     let mut line = json!({
         "type": "user",

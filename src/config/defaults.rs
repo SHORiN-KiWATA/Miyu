@@ -468,6 +468,22 @@ pub(crate) fn default_antigravity_print_timeout_seconds() -> u64 {
     24 * 60 * 60
 }
 
+pub(crate) fn default_codex_native_tools() -> String {
+    "all".to_string()
+}
+
+pub(crate) fn default_codex_miyu_tools() -> String {
+    "all".to_string()
+}
+
+pub(crate) fn default_codex_sandbox_mode() -> String {
+    "danger-full-access".to_string()
+}
+
+pub(crate) fn default_codex_idle_timeout_seconds() -> u64 {
+    300
+}
+
 pub(crate) fn bool_is_true(value: &bool) -> bool {
     *value
 }

@@ -54,6 +54,8 @@ pub struct PluginsConfig {
     pub claude_code: ClaudeCodePluginConfig,
     #[serde(default)]
     pub antigravity: AntigravityPluginConfig,
+    #[serde(default)]
+    pub codex: CodexPluginConfig,
 }
 
 /// 本机 Claude Code CLI 接入:`claude-code` 供应商协议的运行参数。CLI 用
@@ -142,6 +144,47 @@ impl Default for AntigravityPluginConfig {
             miyu_tools_eager: true,
             idle_timeout_seconds: default_antigravity_idle_timeout_seconds(),
             print_timeout_seconds: default_antigravity_print_timeout_seconds(),
+        }
+    }
+}
+
+/// 本机 OpenAI Codex CLI 接入:`codex` 供应商协议的运行参数。CLI 用用户既有
+/// 的 ChatGPT 登录态,Miyu 不经手凭据。所有配置逐进程经 `-c` 注入,不碰用户
+/// 的 ~/.codex/config.toml。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexPluginConfig {
+    /// 空 = 从 PATH 解析 `codex`。
+    #[serde(default)]
+    pub binary: String,
+    /// 哪些模式的会话让 codex 用自带原生工具(shell/apply_patch/web_search):
+    /// off/dev/normal/all,默认 all。
+    #[serde(default = "default_codex_native_tools")]
+    pub native_tools: String,
+    /// 哪些模式的会话把 Miyu 工具经 MCP 桥挂给 codex:off/dev/normal/all。
+    #[serde(default = "default_codex_miyu_tools")]
+    pub miyu_tools: String,
+    /// codex 沙箱:danger-full-access(默认,与另两条线的全放行同义)/
+    /// workspace-write / read-only。
+    #[serde(default = "default_codex_sandbox_mode")]
+    pub sandbox_mode: String,
+    /// 不加载用户自己的 ~/.codex/config.toml(登录态照常):默认开,免得用户
+    /// 的 MCP 服务器/规则混进中转工具面。
+    #[serde(default = "default_true")]
+    pub ignore_user_config: bool,
+    /// 流空闲看门狗(秒)。
+    #[serde(default = "default_codex_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+}
+
+impl Default for CodexPluginConfig {
+    fn default() -> Self {
+        Self {
+            binary: String::new(),
+            native_tools: default_codex_native_tools(),
+            miyu_tools: default_codex_miyu_tools(),
+            sandbox_mode: default_codex_sandbox_mode(),
+            ignore_user_config: true,
+            idle_timeout_seconds: default_codex_idle_timeout_seconds(),
         }
     }
 }
@@ -541,6 +584,7 @@ impl Default for PluginsConfig {
             memory: MemoryConfig::default(),
             claude_code: ClaudeCodePluginConfig::default(),
             antigravity: AntigravityPluginConfig::default(),
+            codex: CodexPluginConfig::default(),
         }
     }
 }

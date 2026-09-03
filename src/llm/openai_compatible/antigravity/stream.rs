@@ -12,16 +12,10 @@
 //! 超时/出错路径必须显式杀进程组:drop future 只是弃 promise,不杀子进程。
 
 use super::{AntigravityRuntime, ResumeTargetLost, AGENT_NAME, MCP_SERVER_NAME};
-use crate::llm::openai_compatible::claude_code::stream::{
-    compact_line, hidden_remote_tool, kill_process_group, truncate_block,
+use crate::llm::openai_compatible::cli_relay::{
+    hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
 };
 use crate::llm::openai_compatible::*;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-
-pub(super) struct TurnOutcome {
-    pub(super) result: ChatResult,
-    pub(super) conversation_id: Option<String>,
-}
 
 /// 把登录态/额度类失败翻译成端点调度认识的分类。只看 result 级的错误文本:
 /// stderr 每次启动都打一行 "not logged into Antigravity" 再静默鉴权成功,
@@ -85,103 +79,32 @@ pub(super) async fn run_agy_turn<F>(
     expected_conversation: Option<&str>,
     request_id: &str,
     on_chunk: &mut F,
-) -> Result<TurnOutcome>
+) -> Result<RelayOutcome>
 where
     F: FnMut(ChatStreamChunk) -> Result<()>,
 {
-    let mut command = tokio::process::Command::new(&runtime.binary);
-    command
-        .args(args)
-        .current_dir(workdir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true);
-    for (key, value) in env {
-        match value {
-            Some(value) => {
-                command.env(key, value);
-            }
-            None => {
-                command.env_remove(key);
-            }
-        }
-    }
-    let mut child = command.spawn().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            anyhow::anyhow!(
-                "{}: {}",
-                t(
-                    "Antigravity CLI (agy) not found; install it or set plugins.antigravity.binary",
-                    "找不到 Antigravity CLI(agy);请安装它或配置 plugins.antigravity.binary"
-                ),
-                runtime.binary.display()
+    let mut process = RelayProcess::spawn(
+        &runtime.binary,
+        args,
+        workdir,
+        env,
+        stdin_payload,
+        runtime.idle_timeout,
+        "antigravity.stream",
+        "agy",
+        || {
+            t(
+                "Antigravity CLI (agy) not found; install it or set plugins.antigravity.binary",
+                "找不到 Antigravity CLI(agy);请安装它或配置 plugins.antigravity.binary",
             )
-        } else {
-            anyhow::Error::from(error).context("failed to spawn the Antigravity CLI")
-        }
-    })?;
-    let pid = child.id().unwrap_or_default();
-    let mut stdin = child.stdin.take().context("agy stdin unavailable")?;
-    let stdout = child.stdout.take().context("agy stdout unavailable")?;
-    let stderr = child.stderr.take().context("agy stderr unavailable")?;
-    let stderr_tail = Arc::new(Mutex::new(String::new()));
-    let stderr_task = {
-        let tail = stderr_tail.clone();
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(mut tail) = tail.lock() {
-                    tail.push_str(&line);
-                    tail.push('\n');
-                    let overflow = tail.len().saturating_sub(8192);
-                    if overflow > 0 {
-                        let cut = tail
-                            .char_indices()
-                            .map(|(index, _)| index)
-                            .find(|index| *index >= overflow)
-                            .unwrap_or(0);
-                        tail.drain(..cut);
-                    }
-                }
-            }
-        })
-    };
-    stdin
-        .write_all(stdin_payload.as_bytes())
-        .await
-        .context("failed to write the agy stdin payload")?;
-    // 关写端 = 本轮输入结束;agy 跑完这一轮就退出。
-    drop(stdin);
-
-    let read_stderr = |tail: &Arc<Mutex<String>>| {
-        tail.lock()
-            .map(|tail| tail.trim().to_string())
-            .unwrap_or_default()
-    };
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
+            .to_string()
+        },
+    )
+    .await?;
     let mut state = StreamState::default();
     let mut conversation_id: Option<String> = None;
     let mut final_frame: Option<Value> = None;
-    loop {
-        let line = match tokio::time::timeout(runtime.idle_timeout, lines.next_line()).await {
-            Err(_) => {
-                kill_process_group(pid);
-                return Err(anyhow::anyhow!(
-                    "agy produced no output for {}s; the process was killed",
-                    runtime.idle_timeout.as_secs()
-                )
-                .context(TransportFailure {
-                    stage: "antigravity.stream",
-                    kind: TransportFailureKind::Timeout,
-                }));
-            }
-            Ok(read) => read.context("failed to read agy stdout")?,
-        };
-        let Some(line) = line else {
-            break;
-        };
+    while let Some(line) = process.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -203,15 +126,15 @@ where
                 let agent = value.pointer("/init/agent").and_then(Value::as_str);
                 if agent != Some(AGENT_NAME) {
                     // 代理没挂上 = 静默跑在 agy 自己的默认提示词上,人格全丢。
-                    kill_process_group(pid);
+                    process.kill();
                     bail!(
                         "agy did not load the `{AGENT_NAME}` persona agent (init.agent = {agent:?}); {}",
-                        read_stderr(&stderr_tail)
+                        process.stderr_tail()
                     );
                 }
                 if let Some(expected) = expected_conversation {
                     if actual != expected {
-                        kill_process_group(pid);
+                        process.kill();
                         return Err(anyhow::Error::new(ResumeTargetLost {
                             requested: expected.to_string(),
                             actual,
@@ -232,24 +155,11 @@ where
             _ => {}
         }
     }
-    let exit = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
-        Ok(status) => status.ok(),
-        Err(_) => {
-            kill_process_group(pid);
-            None
-        }
-    };
-    stderr_task.abort();
-    let stderr_text = read_stderr(&stderr_tail);
+    let (exit_code, stderr_text) = process.finish().await;
 
     let Some(final_frame) = final_frame else {
-        kill_process_group(pid);
-        let code = exit
-            .and_then(|status| status.code())
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
         bail!(
-            "agy exited (code {code}) without a result event: {} {}",
+            "agy exited (code {exit_code}) without a result event: {} {}",
             state.error_text.trim(),
             stderr_text
         );
@@ -329,9 +239,9 @@ where
     let mut result = finalize_stream_result(content, String::new(), usage, Vec::new(), false)?;
     result.finish_reason = Some("stop".to_string());
     result.last_request_usage = per_call_usage;
-    Ok(TurnOutcome {
+    Ok(RelayOutcome {
         result,
-        conversation_id,
+        session_id: conversation_id,
     })
 }
 
@@ -402,12 +312,7 @@ where
                     Some(Value::Null) | None => String::new(),
                     Some(other) => other.to_string(),
                 };
-                let output = error.unwrap_or(raw_output).replace('\r', "");
-                let output = if crate::render::is_command_tool(&name) {
-                    truncate_block(&output, 4000)
-                } else {
-                    compact_line(&output, 4000)
-                };
+                let output = shape_remote_output(&name, &error.unwrap_or(raw_output));
                 on_chunk(ChatStreamChunk {
                     kind: ChatStreamKind::RemoteToolFinished,
                     text: json!({ "id": id, "name": name, "ok": ok, "output": output }).to_string(),
@@ -574,7 +479,8 @@ mod tests {
         assert_eq!(usage.total_tokens, 110);
         assert!(usage.cache_reported);
         // 声称整段命中 = 不可信,按未报告处理;零命中同样不算"报告了缓存"。
-        let bogus = usage_from_agy(&json!({ "input_tokens": 100, "cache_read_tokens": 100 })).unwrap();
+        let bogus =
+            usage_from_agy(&json!({ "input_tokens": 100, "cache_read_tokens": 100 })).unwrap();
         assert_eq!(bogus.cache_read_tokens, 0);
         assert!(!bogus.cache_reported);
         let none = usage_from_agy(&json!({ "input_tokens": 100, "cache_read_tokens": 0 })).unwrap();

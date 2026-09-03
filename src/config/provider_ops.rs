@@ -707,6 +707,13 @@ impl AppConfig {
             .any(|provider| provider.is_claude_code() && provider.enabled)
     }
 
+    /// 内置 Codex 特殊供应商是否启用(codex CLI 中转的总开关)。
+    pub fn codex_enabled(&self) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.is_codex() && provider.enabled)
+    }
+
     /// 内置 Antigravity 特殊供应商是否启用(agy CLI 中转的总开关)。
     pub fn antigravity_enabled(&self) -> bool {
         self.providers
