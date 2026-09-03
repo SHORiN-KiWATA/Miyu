@@ -448,14 +448,6 @@ pub(crate) fn default_claude_code_miyu_tools() -> String {
     "all".to_string()
 }
 
-pub(crate) fn default_claude_code_timeout_seconds() -> u64 {
-    600
-}
-
-pub(crate) fn default_claude_code_max_output_bytes() -> u64 {
-    512 * 1024
-}
-
 pub(crate) fn default_claude_code_idle_timeout_seconds() -> u64 {
     300
 }

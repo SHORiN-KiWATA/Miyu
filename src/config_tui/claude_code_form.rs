@@ -9,8 +9,8 @@ use crate::config_tui::*;
 const TOOL_SCOPES: &[&str] = &["off", "dev", "normal", "all"];
 
 /// Claude Code 特殊供应商的编辑表单。它不是 HTTP 端点,所以没有
-/// base_url/协议/API Key/超时/额外请求体;取而代之的是启用总开关(同时控制
-/// 订阅中转与 claude_code 委托工具)和 CLI 中转的双四档工具作用域。
+/// base_url/协议/API Key/超时/额外请求体;取而代之的是启用总开关和 CLI
+/// 中转的双四档工具作用域。
 pub(in crate::config_tui) fn edit_claude_code_provider_form(
     stdout: &mut io::Stdout,
     provider: ProviderConfig,

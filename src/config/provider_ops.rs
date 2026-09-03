@@ -700,8 +700,7 @@ impl AppConfig {
 }
 
 impl AppConfig {
-    /// 内置 Claude Code 特殊供应商是否启用。这是订阅接入的**总开关**:
-    /// 同时决定中转供应商可选与 `claude_code` 委托工具注册。
+    /// 内置 Claude Code 特殊供应商是否启用(订阅中转的总开关)。
     pub fn claude_code_enabled(&self) -> bool {
         self.providers
             .iter()

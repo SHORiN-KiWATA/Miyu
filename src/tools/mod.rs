@@ -199,7 +199,7 @@ pub fn preparing_phase(name: &str) -> Option<&'static str> {
         "trash_path" => t("Preparing delete", "准备删除"),
         // A subagent brief is long, and its own timed block only appears once
         // the arguments have all arrived.
-        "task" | "deep_research" | "claude_code" => t("Preparing task", "准备任务"),
+        "task" | "deep_research" => t("Preparing task", "准备任务"),
         "ask_question" => t("Preparing question", "准备问题"),
         // 整张清单都在参数里,条目一多就是几百字节,和批量删是同一个窗口。
         "todowrite" => t("Preparing list", "准备清单"),
@@ -228,7 +228,6 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "present_artifact" => t("Preview file", "预览文件"),
         "ask_question" => t("Ask user", "询问用户"),
         "task" => t("Subagent", "子代理"),
-        "claude_code" => t("Claude Code", "Claude Code"),
         "read" | "read_file" => t("Read file", "读取文件"),
         "write_file" => t("Write file", "写入文件"),
         "edit_file" => t("Edit file", "编辑文件"),
