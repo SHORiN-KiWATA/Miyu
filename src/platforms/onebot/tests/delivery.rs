@@ -87,6 +87,37 @@ async fn internal_failures_are_silent_in_groups() {
     assert!(frames.try_recv().is_err());
 }
 
+/// 撤回/取代导致的取消不是错误:私聊也不能回"出错了:本轮被取消了"。
+#[tokio::test]
+async fn cancelled_turns_send_nothing_even_in_private_chats() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let state = test_web_state(temp.path(), 8300);
+    let (handle, mut frames) = test_connection(None);
+    let target = Target::Private { user_id: 7 };
+    let context = Arc::new(PlatformTurnContext::new(
+        unique_test_conversation(target),
+        "7".to_string(),
+        "seven".to_string(),
+        false,
+        crate::config::AppConfig::default(),
+        paths.clone(),
+        crate::state::StateStore::new(&paths).unwrap(),
+        Arc::new(test_adapter(handle, target)),
+        Arc::new(crate::platforms::plugins::PlatformPluginRegistry::default()),
+    ));
+
+    let delivered = deliver_dispatch(&state, &context, TurnDispatch::Cancelled)
+        .await
+        .unwrap();
+    assert!(!delivered);
+    assert!(frames.try_recv().is_err());
+
+    // 对照:真正的失败在私聊里仍会回"出错了",证明上面的静默不是测具收不到帧。
+    let _ = deliver_dispatch(&state, &context, TurnDispatch::Failed("boom".to_string())).await;
+    assert!(frames.try_recv().is_ok());
+}
+
 #[tokio::test]
 async fn final_delivery_deduplicates_identical_image_content() {
     let temp = tempfile::tempdir().unwrap();

@@ -171,6 +171,16 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
     dispatch: TurnDispatch,
 ) -> Result<bool> {
     match dispatch {
+        TurnDispatch::Cancelled => {
+            context.after_turn_aborted().await;
+            tracing::debug!(
+                target: "miyu::qq",
+                conversation_kind = context.conversation.kind.as_str(),
+                "{}",
+                t("OneBot turn cancelled; nothing to deliver", "OneBot 回合已取消,无需投递")
+            );
+            return Ok(false);
+        }
         TurnDispatch::Failed(message) => {
             context.after_turn_aborted().await;
             if context.conversation.kind == ConversationKind::Group {

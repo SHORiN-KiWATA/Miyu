@@ -25,6 +25,9 @@ pub(crate) struct TurnOutcome {
 pub(crate) enum TurnDispatch {
     Completed(TurnOutcome),
     Failed(String),
+    /// 回合被取消(消息撤回、被新消息取代、/stop):不是错误,静默收场,
+    /// 不给用户回"出错了",也不按内部错误记日志(09-03 用户报)。
+    Cancelled,
 }
 
 /// Drives one agent turn for an inbound IM message and waits for the
@@ -277,9 +280,7 @@ pub(crate) async fn run_platform_turn(
             }
             "run.cancelled" => {
                 run_guard.finish();
-                break TurnDispatch::Failed(
-                    crate::i18n::text("the turn was cancelled", "本轮被取消了").to_string(),
-                );
+                break TurnDispatch::Cancelled;
             }
             _ => {}
         }
