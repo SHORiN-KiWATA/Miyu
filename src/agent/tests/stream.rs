@@ -181,9 +181,7 @@ async fn parallel_task_calls_run_concurrently_and_map_outputs() {
 
     // Fewer than two task calls: empty map, serial path handles it.
     let single = agent
-        .execute_parallel_task_calls(&calls[..1], &mut |_| {
-            Ok(())
-        })
+        .execute_parallel_task_calls(&calls[..1], &mut |_| Ok(()))
         .await
         .unwrap();
     assert!(single.is_empty());

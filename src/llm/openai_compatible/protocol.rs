@@ -86,7 +86,9 @@ pub(in crate::llm::openai_compatible) fn provider_uses_cli_relay(
 }
 
 /// Codex 的思考档:config 的 `model_reasoning_effort` 五档,所有模型通用。
-pub(in crate::llm::openai_compatible) fn codex_reasoning_variants(_model: &str) -> Vec<ReasoningVariant> {
+pub(in crate::llm::openai_compatible) fn codex_reasoning_variants(
+    _model: &str,
+) -> Vec<ReasoningVariant> {
     ["minimal", "low", "medium", "high", "xhigh"]
         .into_iter()
         .map(|effort| ReasoningVariant {

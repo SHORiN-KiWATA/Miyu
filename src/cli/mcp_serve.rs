@@ -77,7 +77,7 @@ pub(in crate::cli) async fn run_mcp_serve(paths: &MiyuPaths) -> Result<()> {
                 match handle_request(
                     paths, &session, &origin, depth, &excluded, &dialect, &method, &params,
                 )
-                    .await
+                .await
                 {
                     Ok(result) => {
                         serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })

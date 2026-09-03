@@ -23,7 +23,6 @@ pub(crate) const MAX_DESCRIPTION_CHARS: usize = 500;
 
 pub(crate) const MAX_USAGE_CHARS: usize = 500;
 
-
 pub(crate) const MAX_TAGS: usize = 16;
 
 pub(crate) const MAX_TAG_CHARS: usize = 40;
@@ -297,15 +296,9 @@ pub(crate) fn configured_meme_size(config: &MemesPluginConfig) -> Option<String>
 }
 
 pub(crate) fn has_supplied_metadata(args: &Value) -> bool {
-    [
-        "name_zh",
-        "name_en",
-        "description",
-        "usage",
-        "tags",
-    ]
-    .iter()
-    .any(|key| args.get(*key).is_some())
+    ["name_zh", "name_en", "description", "usage", "tags"]
+        .iter()
+        .any(|key| args.get(*key).is_some())
 }
 
 pub(crate) fn item_from_args(

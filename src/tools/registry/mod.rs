@@ -590,13 +590,15 @@ mod tests {
     #[test]
     fn stub_presented_tools_can_hand_back_their_real_contract() {
         let mut registry = ToolRegistry::new();
-        registry.register(ToolSpec::new(
-            "todo_like",
-            "keeps a list",
-            json!({"type":"object","properties":{"todos":{"type":"array"}}}),
-            |_| async { Ok(String::new()) },
-        )
-        .with_always_loaded(false));
+        registry.register(
+            ToolSpec::new(
+                "todo_like",
+                "keeps a list",
+                json!({"type":"object","properties":{"todos":{"type":"array"}}}),
+                |_| async { Ok(String::new()) },
+            )
+            .with_always_loaded(false),
+        );
         assert!(registry.is_stub_presented("todo_like"));
         // 常驻工具带着真 schema 发出去,不需要这条补救
         registry.register(ToolSpec::new(
@@ -608,7 +610,10 @@ mod tests {
         assert!(!registry.is_stub_presented("resident"));
         let contract = registry.contract_text("todo_like").expect("contract");
         assert!(contract.contains("todo_like"));
-        assert!(contract.contains("todos"), "真 schema 必须在里面: {contract}");
+        assert!(
+            contract.contains("todos"),
+            "真 schema 必须在里面: {contract}"
+        );
         assert!(registry.contract_text("nope").is_none());
     }
 

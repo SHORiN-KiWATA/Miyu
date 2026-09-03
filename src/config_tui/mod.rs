@@ -529,11 +529,7 @@ impl<'a> ProviderBrowser<'a> {
                             &mut self.config.plugins.antigravity,
                         )?
                     } else if provider.is_codex() {
-                        edit_codex_provider_form(
-                            stdout,
-                            provider,
-                            &mut self.config.plugins.codex,
-                        )?
+                        edit_codex_provider_form(stdout, provider, &mut self.config.plugins.codex)?
                     } else {
                         edit_provider_form(stdout, provider)?
                     };

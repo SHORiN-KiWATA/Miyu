@@ -964,7 +964,10 @@ fn antigravity_builtin_provider_is_injected_disabled_after_claude_code() {
     config.normalize_builtin_providers();
     assert!(config.providers[0].is_claude_code());
     assert!(config.providers[1].is_antigravity());
-    assert!(config.providers[2].is_codex(), "Codex 紧随 Antigravity 之后");
+    assert!(
+        config.providers[2].is_codex(),
+        "Codex 紧随 Antigravity 之后"
+    );
     assert!(!config.providers[2].enabled);
     assert_eq!(config.providers[2].default_model, "gpt-5.6-terra");
     assert!(!config.codex_enabled());
@@ -972,7 +975,10 @@ fn antigravity_builtin_provider_is_injected_disabled_after_claude_code() {
     assert_eq!(provider.id, "antigravity");
     assert!(!provider.enabled, "默认必须是禁用态");
     assert_eq!(provider.default_model, "gemini-3.8-flash-high");
-    assert!(provider.models.iter().any(|model| model == "claude-sonnet-4-6"));
+    assert!(provider
+        .models
+        .iter()
+        .any(|model| model == "claude-sonnet-4-6"));
     assert!(!config.antigravity_enabled());
     assert!(!config
         .text_provider_model_choices()

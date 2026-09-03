@@ -264,7 +264,11 @@ async fn takeover_of_a_probability_commitment_keeps_the_join_in_notice() {
             .get(&runtime_session_key(&context))
             .and_then(|session| session.pending.get(&first.sender_id))
             .expect("顶替后 pending 应保留以支持链式覆盖");
-        assert_eq!(pending.trigger, TriggerKind::Probability, "链式覆盖应传递原始触发");
+        assert_eq!(
+            pending.trigger,
+            TriggerKind::Probability,
+            "链式覆盖应传递原始触发"
+        );
     }
 
     let mut input = empty_turn_input();
@@ -333,10 +337,7 @@ async fn an_uncommitted_takeover_goes_back_to_the_judge_not_the_bypass() {
         .await
         .unwrap();
 
-    assert!(
-        !decision.should_reply,
-        "判官不可用时应丢弃,而不是免判直回"
-    );
+    assert!(!decision.should_reply, "判官不可用时应丢弃,而不是免判直回");
     assert!(
         context.plugin_value(TRIGGER_KEY).is_none(),
         "免判路才会写 TRIGGER_KEY"

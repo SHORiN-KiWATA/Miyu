@@ -391,7 +391,10 @@ impl ProviderConfig {
         Self {
             enabled: false,
             protocol: CODEX_PROTOCOL.to_string(),
-            models: CODEX_PRESET_MODELS.iter().map(|model| model.to_string()).collect(),
+            models: CODEX_PRESET_MODELS
+                .iter()
+                .map(|model| model.to_string())
+                .collect(),
             default_model: "gpt-5.6-terra".to_string(),
             ..Self::template("codex", "Codex", "")
         }

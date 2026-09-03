@@ -407,8 +407,7 @@ pub(in crate::cli) async fn run_direct_repl(
                     apply_session_model_override(&state, &mut config);
                     client = OpenAiCompatibleClient::from_config(&config, paths)?;
                     input_history = load_repl_input_history(&state, paths)?;
-                    cumulative_tokens =
-                        state.session_cumulative_token_totals().unwrap_or_default();
+                    cumulative_tokens = state.session_cumulative_token_totals().unwrap_or_default();
                     footer = ReplFooterStatus::from_config(
                         &config,
                         agent.effective_context_tokens()?,

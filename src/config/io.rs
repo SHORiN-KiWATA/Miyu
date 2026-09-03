@@ -174,7 +174,11 @@ impl AppConfig {
             }
         }
         // Antigravity、Codex 紧随其后(同样是内置 CLI 中转),顺序固定。
-        let mut target = usize::from(self.providers.first().is_some_and(ProviderConfig::is_claude_code));
+        let mut target = usize::from(
+            self.providers
+                .first()
+                .is_some_and(ProviderConfig::is_claude_code),
+        );
         for predicate in [ProviderConfig::is_antigravity, ProviderConfig::is_codex] {
             if let Some(position) = self.providers.iter().position(predicate) {
                 if position != target && target < self.providers.len() {
