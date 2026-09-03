@@ -2454,6 +2454,13 @@ body.has-lightbox {
   }
 }
 
+/* artifact 分栏后正文缩到左半,而上面的 `right` 仍从整个舞台的中线量,面板
+   会落到正文头上;容器(主舞台)也没变窄,容器查询不会把它收掉。直接隐藏,
+   气泡里那份任务列表仍在(09-03 用户报)。 */
+.main-stage.artifact-open .stage-todos {
+  display: none;
+}
+
 /* 侧边这份去框：它悬在留白里,描边和底色反而显得突兀,也和正文抢注意力。
    气泡里那份仍是卡片——那个嵌在一段对话中间,需要边界把自己划出来。 */
 .stage-todos .todo-panel {
@@ -7033,6 +7040,21 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
 
+.shared-files-upload-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-soft);
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shared-files-panel.is-dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}
+
 .shared-files-check {
   flex: none;
   width: 15px;
@@ -7549,3 +7571,4 @@ body.miyu-paused *::after {
   45% { opacity: 0.55; }
   100% { opacity: 0; }
 }
+

@@ -299,7 +299,12 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/events", get(events))
         .route("/api/assets/{asset_id}", get(image_asset))
         .route("/api/artifacts/{asset_id}", get(artifact_asset))
-        .route("/api/shared", get(shared_files_list))
+        .route(
+            "/api/shared",
+            get(shared_files_list)
+                .post(shared_file_upload)
+                .layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/api/shared/{share_id}",
             get(shared_file_download).delete(shared_file_delete),
@@ -307,7 +312,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/shared.js", get(shared_js_asset))
         .route(
             "/api/attachments",
-            post(upload_user_attachment).layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT)),
+            post(upload_user_attachment).layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/api/attachments/{attachment_id}",

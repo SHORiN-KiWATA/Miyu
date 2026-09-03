@@ -162,6 +162,22 @@ impl StateStore {
             .insert_user_attachment(&self.session(), attachment, data)
     }
 
+    /// 登记一个已经写到 `user_attachment_path()` 的落盘附件。
+    pub fn save_user_attachment_file(&self, attachment: &UserAttachment) -> Result<()> {
+        self.conv_db
+            .insert_user_attachment_file(&self.session(), attachment)
+    }
+
+    /// 落盘附件的目标目录(`<state>/attachments/<id>`),上传前由调用方创建。
+    pub fn user_attachment_dir(&self, attachment_id: &str) -> std::path::PathBuf {
+        self.conv_db.attachment_dir(attachment_id)
+    }
+
+    /// 落盘附件的目标文件路径。
+    pub fn user_attachment_path(&self, attachment: &UserAttachment) -> std::path::PathBuf {
+        self.conv_db.attachment_path(attachment)
+    }
+
     pub fn load_user_attachment(&self, attachment_id: &str) -> Result<Option<UserAttachmentData>> {
         self.conv_db
             .load_user_attachment(&self.session(), attachment_id)

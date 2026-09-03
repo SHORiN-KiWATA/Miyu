@@ -326,10 +326,14 @@ pub struct UserAttachment {
     pub created_at: String,
 }
 
+/// 附件本体。旧行把内容存在 `data` 列里,`path` 为 `None`;v29 起新上传一律
+/// 落盘,`path` 指向磁盘文件。`file` 类附件不读内容进内存(可能是几 GB 的
+/// 视频),`bytes` 为空,消费方只拿路径。
 #[derive(Debug, Clone)]
 pub struct UserAttachmentData {
     pub attachment: UserAttachment,
     pub bytes: Vec<u8>,
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

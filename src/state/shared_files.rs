@@ -174,6 +174,68 @@ impl StateStore {
         Ok(record)
     }
 
+    /// WebUI 上传落地区:先流到这里,登记成功再挪进 `{share_id}/`。
+    /// 与托管区同一文件系统,最后一步是 rename 不是复制。
+    pub fn shared_files_incoming_dir(&self) -> PathBuf {
+        self.shared_files_dir.join(".incoming")
+    }
+
+    /// 把一份已经写进落地区的上传文件登记为 snapshot 分享。
+    /// `file_name` 已消毒;`staged` 必须在 `shared_files_incoming_dir()` 下。
+    pub fn share_uploaded_file(
+        &self,
+        staged: &Path,
+        file_name: &str,
+        title: &str,
+    ) -> Result<SharedFile> {
+        let metadata = std::fs::metadata(staged)
+            .with_context(|| format!("reading uploaded file metadata: {}", staged.display()))?;
+        if metadata.len() == 0 {
+            bail!("uploaded file is empty");
+        }
+        let (mime, kind) = shared_file_mime_kind(Path::new(file_name));
+        let created_at = chrono::Utc::now().to_rfc3339();
+        let share_id = format!(
+            "share_{}",
+            &blake3::hash(
+                format!(
+                    "upload\0{}\0{}\0{}\0{}",
+                    file_name,
+                    metadata.len(),
+                    mtime_unix(&metadata),
+                    created_at
+                )
+                .as_bytes()
+            )
+            .to_hex()[..24]
+        );
+        let dir = self.shared_files_dir.join(&share_id);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating share dir: {}", dir.display()))?;
+        let stored_path = dir.join(file_name);
+        std::fs::rename(staged, &stored_path)
+            .with_context(|| format!("moving upload into {}", stored_path.display()))?;
+        let record = SharedFile {
+            share_id,
+            file_name: file_name.to_string(),
+            title: title.trim().to_string(),
+            mode: "snapshot".to_string(),
+            source_path: stored_path.display().to_string(),
+            stored_path: stored_path.display().to_string(),
+            size_bytes: metadata.len(),
+            mtime_unix: mtime_unix(&metadata),
+            mime: mime.to_string(),
+            kind: kind.to_string(),
+            created_at,
+        };
+        if let Err(error) = self.conv_db.insert_shared_file(&record) {
+            let _ = std::fs::remove_file(&stored_path);
+            let _ = std::fs::remove_dir(&dir);
+            return Err(error);
+        }
+        Ok(record)
+    }
+
     pub fn list_shared_files(&self) -> Result<Vec<SharedFile>> {
         self.conv_db.list_shared_files()
     }
@@ -221,6 +283,31 @@ mod tests {
             system_scripts_dir: PathBuf::new(),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn uploaded_share_moves_into_managed_storage_as_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = test_store(&temp);
+        let incoming = store.shared_files_incoming_dir().join("u1");
+        std::fs::create_dir_all(&incoming).unwrap();
+        let staged = incoming.join("clip.mp4");
+        std::fs::write(&staged, b"vid").unwrap();
+
+        let record = store
+            .share_uploaded_file(&staged, "clip.mp4", "剪辑素材")
+            .unwrap();
+        assert_eq!(record.mode, "snapshot");
+        assert_eq!(record.kind, "video");
+        assert_eq!(record.title, "剪辑素材");
+        assert!(!staged.exists());
+        let stored = PathBuf::from(&record.stored_path);
+        assert!(stored.starts_with(temp.path().join("data/shared")));
+        assert_eq!(std::fs::read(&stored).unwrap(), b"vid");
+        assert_eq!(store.list_shared_files().unwrap().len(), 1);
+
+        assert!(store.delete_shared_file(&record.share_id).unwrap());
+        assert!(!stored.exists());
     }
 
     #[test]

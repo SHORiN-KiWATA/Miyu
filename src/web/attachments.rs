@@ -11,10 +11,9 @@
 
 use crate::web::*;
 
-pub(in crate::web) const ATTACHMENT_BODY_LIMIT: usize = 10 * 1024 * 1024;
-
-pub(in crate::web) const MAX_ATTACHMENT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
-
+// 单文件与单条消息合计的字节上限已移除(09-03 用户裁定):图片原样进
+// 请求,大小由用户自负;文本仍受 MAX_TEXT_ATTACHMENT_BYTES 约束,那是提示
+// 词体积保护,不是上传限制。路由层对应 `DefaultBodyLimit::disable()`。
 pub(in crate::web) const MAX_TEXT_ATTACHMENT_BYTES: usize = 1024 * 1024;
 
 pub(in crate::web) const MAX_ATTACHMENTS_PER_MESSAGE: usize = 12;
@@ -97,7 +96,19 @@ pub(in crate::web) async fn media_stream(
         .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "media not found"))?;
     let mime = media_mime(&path)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unsupported media type"))?;
-    let metadata = tokio::fs::metadata(&path)
+    stream_file_response(&path, mime, &headers, None, "no-store").await
+}
+
+/// 把磁盘文件按 Range 语义流出去。`disposition` 为 `None` 时不加
+/// Content-Disposition(媒体流内联播放);附件下载传自己的头。
+pub(in crate::web) async fn stream_file_response(
+    path: &std::path::Path,
+    mime: &str,
+    headers: &HeaderMap,
+    disposition: Option<HeaderValue>,
+    cache_control: &'static str,
+) -> std::result::Result<Response, ApiError> {
+    let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "media not found"))?;
     if !metadata.is_file() {
@@ -108,7 +119,7 @@ pub(in crate::web) async fn media_stream(
         .get(axum::http::header::RANGE)
         .and_then(|value| value.to_str().ok())
         .map(|value| parse_byte_range(value, total));
-    let mut file = tokio::fs::File::open(&path)
+    let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "media not found"))?;
 
@@ -133,7 +144,10 @@ pub(in crate::web) async fn media_stream(
     let mut response = Response::new(axum::body::Body::from_stream(stream));
     *response.status_mut() = status;
     let response_headers = response.headers_mut();
-    response_headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    response_headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(mime).map_err(ApiError::internal)?,
+    );
     response_headers.insert(CONTENT_LENGTH, HeaderValue::from(length));
     response_headers.insert(
         axum::http::header::ACCEPT_RANGES,
@@ -145,7 +159,11 @@ pub(in crate::web) async fn media_stream(
             HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap(),
         );
     }
-    response_headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Some(disposition) = disposition {
+        response_headers.insert(CONTENT_DISPOSITION, disposition);
+    }
+    response_headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    response_headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(response)
 }
 
@@ -153,17 +171,11 @@ pub(in crate::web) async fn upload_user_attachment(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Query(query): Query<AttachmentQuery>,
-    body: Bytes,
+    body: axum::body::Body,
 ) -> std::result::Result<Json<SafeUserAttachment>, ApiError> {
     require_mutation(&headers, &state)?;
     let session_id =
         resolve_turn_session(&state, Some(query.session_id)).map_err(session_api_error)?;
-    if body.is_empty() || body.len() > ATTACHMENT_BODY_LIMIT {
-        return Err(ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "attachment must be between 1 byte and 10 MiB",
-        ));
-    }
     let encoded_name = headers
         .get("x-miyu-filename")
         .and_then(|value| value.to_str().ok())
@@ -171,25 +183,88 @@ pub(in crate::web) async fn upload_user_attachment(
     let decoded_name = urlencoding::decode(encoded_name)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "attachment filename is invalid"))?;
     let file_name = sanitize_attachment_file_name(&decoded_name)?;
-    let (kind, mime, width, height) = inspect_user_attachment(&file_name, &body)?;
-    let attachment = UserAttachment {
-        attachment_id: random_id("att", 24),
-        file_name,
-        mime,
-        kind,
-        size_bytes: body.len() as u64,
-        width,
-        height,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
     let store = state.state_store.pinned(&session_id);
     store
         .purge_stale_user_attachments()
         .map_err(ApiError::internal)?;
-    store
-        .save_user_attachment(&attachment, &body)
+
+    // 请求体直接流到磁盘:没有大小上限(09-03 用户裁定),所以绝不能先
+    // 整体读进内存。目录名就是附件 id,失败一律整目录删掉。
+    let attachment_id = random_id("att", 24);
+    let dir = store.user_attachment_dir(&attachment_id);
+    let path = dir.join(&file_name);
+    tokio::fs::create_dir_all(&dir)
+        .await
         .map_err(ApiError::internal)?;
+    let written = spool_body_to_file(body, &path).await;
+    let size_bytes = match written {
+        Ok(size) if size > 0 => size,
+        Ok(_) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "attachment must not be empty",
+            ));
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(error);
+        }
+    };
+    let inspected = {
+        let file_name = file_name.clone();
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            inspect_user_attachment_file(&file_name, &path, size_bytes)
+        })
+        .await
+        .map_err(ApiError::internal)?
+    };
+    let (kind, mime, width, height) = match inspected {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(error);
+        }
+    };
+    let attachment = UserAttachment {
+        attachment_id,
+        file_name,
+        mime,
+        kind,
+        size_bytes,
+        width,
+        height,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(error) = store.save_user_attachment_file(&attachment) {
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        return Err(ApiError::internal(error));
+    }
     Ok(Json(SafeUserAttachment::from(attachment)))
+}
+
+/// 把请求体逐块写进 `path`,返回写入字节数。
+pub(in crate::web) async fn spool_body_to_file(
+    body: axum::body::Body,
+    path: &std::path::Path,
+) -> std::result::Result<u64, ApiError> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut stream = body.into_data_stream();
+    let mut written = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| {
+            ApiError::new(StatusCode::BAD_REQUEST, "attachment upload was interrupted")
+        })?;
+        file.write_all(&chunk).await.map_err(ApiError::internal)?;
+        written += chunk.len() as u64;
+    }
+    file.flush().await.map_err(ApiError::internal)?;
+    Ok(written)
 }
 
 pub(in crate::web) async fn user_attachment(
@@ -206,13 +281,19 @@ pub(in crate::web) async fn user_attachment(
     else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "attachment not found"));
     };
-    let inline = attachment.attachment.kind == "image";
+    let (inline, content_type) = attachment_delivery(&attachment.attachment);
+    if let Some(path) = attachment.path.as_deref() {
+        let disposition = attachment_content_disposition(&attachment.attachment.file_name, inline)?;
+        return stream_file_response(
+            path,
+            content_type,
+            &headers,
+            Some(disposition),
+            "private, max-age=86400",
+        )
+        .await;
+    }
     let mut response = attachment.bytes.into_response();
-    let content_type = if inline {
-        attachment.attachment.mime.as_str()
-    } else {
-        "application/octet-stream"
-    };
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_str(content_type).map_err(ApiError::internal)?,
@@ -292,12 +373,33 @@ pub(in crate::web) fn sanitize_attachment_file_name(
     Ok(name)
 }
 
+/// 内存版探测,供测试与小附件;上传路径走 `inspect_user_attachment_file`。
 pub(in crate::web) fn inspect_user_attachment(
     file_name: &str,
     bytes: &[u8],
 ) -> std::result::Result<(String, String, u32, u32), ApiError> {
-    if let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
-        if let Some(format) = reader.format() {
+    inspect_attachment_reader(file_name, std::io::Cursor::new(bytes), bytes.len() as u64)
+}
+
+/// 磁盘版探测:只读图片头与(不超过 1 MiB 的)文本正文,大文件不进内存。
+pub(in crate::web) fn inspect_user_attachment_file(
+    file_name: &str,
+    path: &std::path::Path,
+    size_bytes: u64,
+) -> std::result::Result<(String, String, u32, u32), ApiError> {
+    let file = std::fs::File::open(path).map_err(ApiError::internal)?;
+    inspect_attachment_reader(file_name, std::io::BufReader::new(file), size_bytes)
+}
+
+/// 三分法:认得出的图片 → image(内联进请求);白名单扩展名且 ≤1 MiB 的
+/// UTF-8 → text(内联进提示词);其余一律 file,只把路径告诉模型。
+fn inspect_attachment_reader<R: std::io::BufRead + std::io::Seek>(
+    file_name: &str,
+    mut reader: R,
+    size_bytes: u64,
+) -> std::result::Result<(String, String, u32, u32), ApiError> {
+    if let Ok(image) = image::ImageReader::new(&mut reader).with_guessed_format() {
+        if let Some(format) = image.format() {
             if matches!(
                 format,
                 image::ImageFormat::Png
@@ -305,7 +407,7 @@ pub(in crate::web) fn inspect_user_attachment(
                     | image::ImageFormat::WebP
                     | image::ImageFormat::Gif
             ) {
-                let (width, height) = reader.into_dimensions().map_err(|_| {
+                let (width, height) = image.into_dimensions().map_err(|_| {
                     ApiError::new(StatusCode::BAD_REQUEST, "attachment image is invalid")
                 })?;
                 if width == 0
@@ -320,7 +422,7 @@ pub(in crate::web) fn inspect_user_attachment(
                     ));
                 }
                 return Ok((
-                    "image".to_string(),
+                    USER_ATTACHMENT_KIND_IMAGE.to_string(),
                     format.to_mime_type().to_string(),
                     width,
                     height,
@@ -328,44 +430,175 @@ pub(in crate::web) fn inspect_user_attachment(
             }
         }
     }
-    if bytes.len() > MAX_TEXT_ATTACHMENT_BYTES {
-        return Err(ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "text attachment exceeds the 1 MiB limit",
-        ));
-    }
-    std::str::from_utf8(bytes).map_err(|_| {
-        ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "attachment is not UTF-8 text",
-        )
-    })?;
     let extension = FilePath::new(file_name)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    const TEXT_EXTENSIONS: &[&str] = &[
-        "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "log", "rs", "js", "jsx", "ts",
-        "tsx", "py", "go", "java", "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "swift", "kt",
-        "kts", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "xml", "html", "css", "scss",
-        "sql",
-    ];
-    if !TEXT_EXTENSIONS.contains(&extension.as_str()) {
-        return Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported attachment type",
-        ));
+    if let Some(mime) = text_attachment_mime(&extension) {
+        if size_bytes <= MAX_TEXT_ATTACHMENT_BYTES as u64 {
+            reader
+                .seek(std::io::SeekFrom::Start(0))
+                .map_err(ApiError::internal)?;
+            let mut bytes = Vec::with_capacity(size_bytes as usize);
+            reader.read_to_end(&mut bytes).map_err(ApiError::internal)?;
+            if std::str::from_utf8(&bytes).is_ok() {
+                return Ok((
+                    USER_ATTACHMENT_KIND_TEXT.to_string(),
+                    mime.to_string(),
+                    0,
+                    0,
+                ));
+            }
+        }
     }
-    let mime = match extension.as_str() {
+    let mime = media_mime(FilePath::new(file_name))
+        .or_else(|| binary_attachment_mime(&extension))
+        .unwrap_or("application/octet-stream");
+    Ok((
+        USER_ATTACHMENT_KIND_FILE.to_string(),
+        mime.to_string(),
+        0,
+        0,
+    ))
+}
+
+/// 会被内联进提示词的文本类扩展名及其 MIME。
+fn text_attachment_mime(extension: &str) -> Option<&'static str> {
+    const TEXT_EXTENSIONS: &[&str] = &[
+        "txt",
+        "md",
+        "markdown",
+        "json",
+        "jsonl",
+        "csv",
+        "tsv",
+        "log",
+        "rs",
+        "js",
+        "jsx",
+        "ts",
+        "tsx",
+        "py",
+        "go",
+        "java",
+        "c",
+        "cc",
+        "cpp",
+        "h",
+        "hpp",
+        "cs",
+        "rb",
+        "php",
+        "swift",
+        "kt",
+        "kts",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "toml",
+        "yaml",
+        "yml",
+        "xml",
+        "html",
+        "css",
+        "scss",
+        "sql",
+        "ini",
+        "cfg",
+        "conf",
+        "env",
+        "properties",
+        "lua",
+        "dart",
+        "scala",
+        "pl",
+        "ps1",
+        "bat",
+        "tex",
+        "rst",
+        "org",
+        "srt",
+        "vtt",
+        "ass",
+        "diff",
+        "patch",
+        "gradle",
+        "cmake",
+        "mjs",
+        "cjs",
+        "vue",
+        "svelte",
+        "svg",
+    ];
+    if !TEXT_EXTENSIONS.contains(&extension) {
+        return None;
+    }
+    Some(match extension {
         "md" | "markdown" => "text/markdown",
         "json" | "jsonl" => "application/json",
         "csv" => "text/csv",
         "html" => "text/html",
-        "css" => "text/css",
+        "css" | "scss" => "text/css",
+        "xml" => "application/xml",
+        "svg" => "image/svg+xml",
         _ => "text/plain",
-    };
-    Ok(("text".to_string(), mime.to_string(), 0, 0))
+    })
+}
+
+/// 常见二进制类型的 MIME;不在表里的落 octet-stream。
+fn binary_attachment_mime(extension: &str) -> Option<&'static str> {
+    Some(match extension {
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "doc" => "application/msword",
+        "xls" => "application/vnd.ms-excel",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "epub" => "application/epub+zip",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "heic" => "image/heic",
+        "avif" => "image/avif",
+        "psd" => "image/vnd.adobe.photoshop",
+        "aac" => "audio/aac",
+        "wma" => "audio/x-ms-wma",
+        "avi" => "video/x-msvideo",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "mpeg" | "mpg" => "video/mpeg",
+        "ts" => "video/mp2t",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "wasm" => "application/wasm",
+        "apk" => "application/vnd.android.package-archive",
+        "iso" => "application/x-iso9660-image",
+        "sqlite" | "db" => "application/vnd.sqlite3",
+        _ => return None,
+    })
+}
+
+/// 下载时怎么交付:图片与音视频内联(浏览器直接看/播),其它一律附件
+/// 下载并抹成 octet-stream,不给 HTML 之类的类型在同源下执行的机会。
+pub(in crate::web) fn attachment_delivery(attachment: &UserAttachment) -> (bool, &str) {
+    let mime = attachment.mime.as_str();
+    let inline = attachment.kind == USER_ATTACHMENT_KIND_IMAGE
+        || mime.starts_with("video/")
+        || mime.starts_with("audio/");
+    if inline {
+        (true, mime)
+    } else {
+        (false, "application/octet-stream")
+    }
 }
 
 pub(in crate::web) fn attachment_content_disposition(
@@ -435,16 +668,6 @@ pub(in crate::web) fn prepare_web_attachment_data(
             format!("a message can include at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments"),
         ));
     }
-    let total_bytes = attachments
-        .iter()
-        .map(|attachment| attachment.attachment.size_bytes)
-        .sum::<u64>();
-    if total_bytes > MAX_ATTACHMENT_TOTAL_BYTES {
-        return Err(ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "attachments exceed the 32 MiB per-message limit",
-        ));
-    }
     let mut content = if display_content.is_empty() {
         "请查看附件。".to_string()
     } else {
@@ -452,11 +675,28 @@ pub(in crate::web) fn prepare_web_attachment_data(
     };
     let mut images = Vec::new();
     for attachment in attachments {
-        if attachment.attachment.kind == "image" {
+        if attachment.attachment.kind == USER_ATTACHMENT_KIND_IMAGE {
             images.push(Some(ImageAttachment::Binary {
                 mime: attachment.attachment.mime,
                 data: attachment.bytes,
             }));
+            continue;
+        }
+        if attachment.attachment.kind == USER_ATTACHMENT_KIND_FILE {
+            // 内容不进上下文,只给路径:模型用 vision_analyze / 命令工具去读。
+            let Some(path) = attachment.path.as_deref() else {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "attachment file is unavailable",
+                ));
+            };
+            let name = escape_attachment_attribute(&attachment.attachment.file_name);
+            let mime = escape_attachment_attribute(&attachment.attachment.mime);
+            let path = escape_attachment_attribute(&path.to_string_lossy());
+            let size = attachment.attachment.size_bytes;
+            content.push_str(&format!(
+                "\n\n<user-attachment name=\"{name}\" mime=\"{mime}\" size=\"{size}\" path=\"{path}\" />"
+            ));
             continue;
         }
         let text = std::str::from_utf8(&attachment.bytes)

@@ -52,6 +52,72 @@ fn user_attachment_moves_from_staged_to_turn_and_cascades() {
 }
 
 #[test]
+fn disk_backed_file_attachment_exposes_path_and_is_swept_with_its_row() {
+    let (_temp, store) = test_store();
+    let attachment = UserAttachment {
+        attachment_id: "att_disk".to_string(),
+        file_name: "clip.mp4".to_string(),
+        mime: "video/mp4".to_string(),
+        kind: USER_ATTACHMENT_KIND_FILE.to_string(),
+        size_bytes: 5,
+        width: 0,
+        height: 0,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let path = store.user_attachment_path(&attachment);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"vid!!").unwrap();
+    store.save_user_attachment_file(&attachment).unwrap();
+
+    let staged = store
+        .load_staged_user_attachments(&[attachment.attachment_id.clone()])
+        .unwrap();
+    // file 类不读内容进内存,只给路径。
+    assert!(staged[0].bytes.is_empty());
+    assert_eq!(staged[0].path.as_deref(), Some(path.as_path()));
+
+    // 撤掉暂存附件时文件一起走。
+    assert!(store
+        .delete_staged_user_attachment(&attachment.attachment_id)
+        .unwrap());
+    assert!(!path.exists());
+
+    // 行随会话/回合级联删除后,文件由 purge 顺手回收。
+    let orphan = store.user_attachment_dir("att_orphan");
+    std::fs::create_dir_all(&orphan).unwrap();
+    std::fs::write(orphan.join("x.bin"), b"x").unwrap();
+    store.purge_stale_user_attachments().unwrap();
+    assert!(!orphan.exists());
+}
+
+#[test]
+fn disk_backed_image_attachment_is_read_back_for_inlining() {
+    let (_temp, store) = test_store();
+    let attachment = UserAttachment {
+        attachment_id: "att_img".to_string(),
+        file_name: "dot.png".to_string(),
+        mime: "image/png".to_string(),
+        kind: USER_ATTACHMENT_KIND_IMAGE.to_string(),
+        size_bytes: 0,
+        width: 1,
+        height: 1,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let path = store.user_attachment_path(&attachment);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+        .save(&path)
+        .unwrap();
+    store.save_user_attachment_file(&attachment).unwrap();
+    let loaded = store
+        .load_user_attachment_by_id(&attachment.attachment_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.bytes, std::fs::read(&path).unwrap());
+    assert_eq!(loaded.path.as_deref(), Some(path.as_path()));
+}
+
+#[test]
 fn image_assets_persist_with_metadata_and_are_removed_with_history() {
     let (temp, store) = test_store();
     store.init_files().unwrap();

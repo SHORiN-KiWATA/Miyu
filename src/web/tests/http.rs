@@ -78,14 +78,50 @@ async fn persona_asset_store_is_atomic_and_rejects_corrupt_cache_entries() {
 }
 
 #[test]
-fn attachment_validation_accepts_utf8_code_and_rejects_unknown_binary() {
+fn attachment_validation_classifies_text_and_falls_back_to_file() {
     let (kind, mime, width, height) =
         inspect_user_attachment("main.rs", b"fn main() {}\n").unwrap();
     assert_eq!(kind, "text");
     assert_eq!(mime, "text/plain");
     assert_eq!((width, height), (0, 0));
-    assert!(inspect_user_attachment("payload.bin", &[0xff, 0xfe, 0xfd]).is_err());
-    assert!(inspect_user_attachment("notes.exe", b"plain text").is_err());
+    // 09-03 起不再拒绝未知二进制:一律按 file 落盘,只把路径交给模型。
+    let (kind, mime, _, _) = inspect_user_attachment("payload.bin", &[0xff, 0xfe, 0xfd]).unwrap();
+    assert_eq!(
+        (kind.as_str(), mime.as_str()),
+        ("file", "application/octet-stream")
+    );
+    let (kind, mime, _, _) = inspect_user_attachment("clip.mp4", &[0, 0, 0, 0x18]).unwrap();
+    assert_eq!((kind.as_str(), mime.as_str()), ("file", "video/mp4"));
+    // 白名单外的扩展名即使内容是文本也走 file,不进提示词。
+    let (kind, _, _, _) = inspect_user_attachment("notes.exe", b"plain text").unwrap();
+    assert_eq!(kind, "file");
+    // 白名单内但不是 UTF-8 的也走 file。
+    let (kind, _, _, _) = inspect_user_attachment("broken.txt", &[0xff, 0xfe]).unwrap();
+    assert_eq!(kind, "file");
+}
+
+#[test]
+fn file_attachment_is_injected_as_a_path_reference_only() {
+    let attachment = crate::state::UserAttachmentData {
+        attachment: UserAttachment {
+            attachment_id: "att_video".to_string(),
+            file_name: "clip.mp4".to_string(),
+            mime: "video/mp4".to_string(),
+            kind: "file".to_string(),
+            size_bytes: 4,
+            width: 0,
+            height: 0,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        bytes: Vec::new(),
+        path: Some(std::path::PathBuf::from("/tmp/att_video/clip.mp4")),
+    };
+    let prepared = prepare_web_attachment_data("cut it", vec![attachment]).unwrap();
+    assert!(prepared.images.is_empty());
+    assert_eq!(
+        prepared.content,
+        "cut it\n\n<user-attachment name=\"clip.mp4\" mime=\"video/mp4\" size=\"4\" path=\"/tmp/att_video/clip.mp4\" />"
+    );
 }
 
 #[test]

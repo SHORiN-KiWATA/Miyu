@@ -1,4 +1,7 @@
 mod attachments;
+pub use attachments::{
+    USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
+};
 mod goals;
 pub use goals::*;
 mod history;
@@ -23,7 +26,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 fn insert_platform_access_audit(
@@ -62,6 +65,9 @@ fn insert_platform_access_audit(
 
 pub struct ConversationDb {
     conn: Mutex<Connection>,
+    /// 落盘附件的根目录(`<state_dir>/attachments`),布局
+    /// `<attachment_id>/<file_name>`;路径完全由行数据推导,表里不存。
+    attachments_dir: PathBuf,
 }
 
 impl std::fmt::Debug for ConversationDb {
@@ -242,7 +248,24 @@ impl ConversationDb {
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            attachments_dir: state_dir.join("attachments"),
         })
+    }
+
+    /// 落盘附件的根目录。
+    pub fn attachments_dir(&self) -> &Path {
+        &self.attachments_dir
+    }
+
+    /// 某个附件在磁盘上的目录(`<root>/<attachment_id>`)。
+    pub fn attachment_dir(&self, attachment_id: &str) -> PathBuf {
+        self.attachments_dir.join(attachment_id)
+    }
+
+    /// 某个附件在磁盘上的文件路径。文件名已在上传时消毒。
+    pub fn attachment_path(&self, attachment: &UserAttachment) -> PathBuf {
+        self.attachment_dir(&attachment.attachment_id)
+            .join(&attachment.file_name)
     }
 
     fn next_seq_locked(&self, conn: &Connection, session_id: &str) -> Result<i64> {

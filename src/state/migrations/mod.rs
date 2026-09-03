@@ -167,10 +167,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "session_sort_key",
         apply: apply_v28_session_sort_key,
     },
+    Migration {
+        version: 29,
+        name: "attachment_files",
+        apply: apply_v29_attachment_files,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 28;
+pub const LATEST_VERSION: i64 = 29;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

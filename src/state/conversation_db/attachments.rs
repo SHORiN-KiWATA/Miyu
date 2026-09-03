@@ -9,12 +9,43 @@
 
 use crate::state::conversation_db::*;
 
+/// `kind` 取值:图片内联进请求,文本内联进提示词,其它一律 `file`——只把
+/// 磁盘路径告诉模型,由工具去读。
+pub const USER_ATTACHMENT_KIND_IMAGE: &str = "image";
+pub const USER_ATTACHMENT_KIND_TEXT: &str = "text";
+pub const USER_ATTACHMENT_KIND_FILE: &str = "file";
+
+const USER_ATTACHMENT_SELECT: &str =
+    "SELECT attachment_id, file_name, mime, kind, size_bytes, width,
+            height, created_at, data
+     FROM user_attachments";
+
 impl ConversationDb {
+    /// 旧式 BLOB 存法:内容进 `data` 列。保留给测试与小附件;WebUI 上传
+    /// 一律走 `insert_user_attachment_file`。
     pub fn insert_user_attachment(
         &self,
         session_id: &str,
         attachment: &UserAttachment,
         data: &[u8],
+    ) -> Result<()> {
+        self.insert_user_attachment_row(session_id, attachment, Some(data))
+    }
+
+    /// 落盘附件:文件已由调用方写到 `attachment_path()`,这里只登记行。
+    pub fn insert_user_attachment_file(
+        &self,
+        session_id: &str,
+        attachment: &UserAttachment,
+    ) -> Result<()> {
+        self.insert_user_attachment_row(session_id, attachment, None)
+    }
+
+    fn insert_user_attachment_row(
+        &self,
+        session_id: &str,
+        attachment: &UserAttachment,
+        data: Option<&[u8]>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -38,47 +69,80 @@ impl ConversationDb {
         Ok(())
     }
 
+    /// 把一行还原成附件本体:`data` 有值就是旧式 BLOB;为空则内容在磁盘
+    /// 上——图片/文本读进内存(它们要内联进请求),`file` 只给路径。
+    fn hydrate_user_attachment(
+        &self,
+        attachment: UserAttachment,
+        data: Option<Vec<u8>>,
+    ) -> Result<UserAttachmentData> {
+        if let Some(bytes) = data {
+            return Ok(UserAttachmentData {
+                attachment,
+                bytes,
+                path: None,
+            });
+        }
+        let path = self.attachment_path(&attachment);
+        let bytes = if attachment.kind == USER_ATTACHMENT_KIND_FILE {
+            Vec::new()
+        } else {
+            std::fs::read(&path)
+                .with_context(|| format!("attachment file is missing: {}", path.display()))?
+        };
+        Ok(UserAttachmentData {
+            attachment,
+            bytes,
+            path: Some(path),
+        })
+    }
+
+    fn query_user_attachment_row(
+        conn: &Connection,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Option<(UserAttachment, Option<Vec<u8>>)>> {
+        conn.query_row(sql, params, |row| {
+            Ok((
+                map_user_attachment_row(row)?,
+                row.get::<_, Option<Vec<u8>>>(8)?,
+            ))
+        })
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub fn load_user_attachment(
         &self,
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Option<UserAttachmentData>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT attachment_id, file_name, mime, kind, size_bytes, width,
-                    height, created_at, data
-             FROM user_attachments WHERE session_id = ?1 AND attachment_id = ?2",
-            params![session_id, attachment_id],
-            |row| {
-                Ok(UserAttachmentData {
-                    attachment: map_user_attachment_row(row)?,
-                    bytes: row.get(8)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(Into::into)
+        let row = {
+            let conn = self.conn.lock().unwrap();
+            Self::query_user_attachment_row(
+                &conn,
+                &format!("{USER_ATTACHMENT_SELECT} WHERE session_id = ?1 AND attachment_id = ?2"),
+                params![session_id, attachment_id],
+            )?
+        };
+        row.map(|(attachment, data)| self.hydrate_user_attachment(attachment, data))
+            .transpose()
     }
 
     pub fn load_user_attachment_by_id(
         &self,
         attachment_id: &str,
     ) -> Result<Option<UserAttachmentData>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT attachment_id, file_name, mime, kind, size_bytes, width,
-                    height, created_at, data
-             FROM user_attachments WHERE attachment_id = ?1",
-            params![attachment_id],
-            |row| {
-                Ok(UserAttachmentData {
-                    attachment: map_user_attachment_row(row)?,
-                    bytes: row.get(8)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(Into::into)
+        let row = {
+            let conn = self.conn.lock().unwrap();
+            Self::query_user_attachment_row(
+                &conn,
+                &format!("{USER_ATTACHMENT_SELECT} WHERE attachment_id = ?1"),
+                params![attachment_id],
+            )?
+        };
+        row.map(|(attachment, data)| self.hydrate_user_attachment(attachment, data))
+            .transpose()
     }
 
     pub fn load_user_attachment_data_for_turn(
@@ -103,23 +167,26 @@ impl ConversationDb {
         field: &'static str,
         value: &str,
     ) -> Result<Vec<UserAttachmentData>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT attachment_id, file_name, mime, kind, size_bytes, width,
-                    height, created_at, data
-             FROM user_attachments
-             WHERE session_id = ?1 AND {field} = ?2
-             ORDER BY created_at, attachment_id"
-        ))?;
-        let attachments = stmt
-            .query_map(params![session_id, value], |row| {
-                Ok(UserAttachmentData {
-                    attachment: map_user_attachment_row(row)?,
-                    bytes: row.get(8)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(attachments)
+        let rows = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(&format!(
+                "{USER_ATTACHMENT_SELECT}
+                 WHERE session_id = ?1 AND {field} = ?2
+                 ORDER BY created_at, attachment_id"
+            ))?;
+            let rows = stmt
+                .query_map(params![session_id, value], |row| {
+                    Ok((
+                        map_user_attachment_row(row)?,
+                        row.get::<_, Option<Vec<u8>>>(8)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        rows.into_iter()
+            .map(|(attachment, data)| self.hydrate_user_attachment(attachment, data))
+            .collect()
     }
 
     pub fn load_user_attachments(
@@ -127,29 +194,24 @@ impl ConversationDb {
         session_id: &str,
         attachment_ids: &[String],
     ) -> Result<Vec<UserAttachmentData>> {
-        let conn = self.conn.lock().unwrap();
         let mut attachments = Vec::with_capacity(attachment_ids.len());
         for attachment_id in attachment_ids {
-            let attachment = conn
-                .query_row(
-                    "SELECT attachment_id, file_name, mime, kind, size_bytes, width,
-                            height, created_at, data
-                     FROM user_attachments
-                     WHERE session_id = ?1 AND attachment_id = ?2
-                       AND turn_id IS NULL AND prompt_id IS NULL AND run_id IS NULL",
+            let row = {
+                let conn = self.conn.lock().unwrap();
+                Self::query_user_attachment_row(
+                    &conn,
+                    &format!(
+                        "{USER_ATTACHMENT_SELECT}
+                         WHERE session_id = ?1 AND attachment_id = ?2
+                           AND turn_id IS NULL AND prompt_id IS NULL AND run_id IS NULL"
+                    ),
                     params![session_id, attachment_id],
-                    |row| {
-                        Ok(UserAttachmentData {
-                            attachment: map_user_attachment_row(row)?,
-                            bytes: row.get(8)?,
-                        })
-                    },
-                )
-                .optional()?;
-            let Some(attachment) = attachment else {
+                )?
+            };
+            let Some((attachment, data)) = row else {
                 bail!("attachment is unavailable: {attachment_id}");
             };
-            attachments.push(attachment);
+            attachments.push(self.hydrate_user_attachment(attachment, data)?);
         }
         Ok(attachments)
     }
@@ -190,23 +252,64 @@ impl ConversationDb {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn.execute(
-            "DELETE FROM user_attachments
-             WHERE session_id = ?1 AND attachment_id = ?2
-               AND turn_id IS NULL AND prompt_id IS NULL AND run_id IS NULL",
-            params![session_id, attachment_id],
-        )? == 1)
+        let deleted = {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM user_attachments
+                 WHERE session_id = ?1 AND attachment_id = ?2
+                   AND turn_id IS NULL AND prompt_id IS NULL AND run_id IS NULL",
+                params![session_id, attachment_id],
+            )? == 1
+        };
+        if deleted {
+            let _ = std::fs::remove_dir_all(self.attachment_dir(attachment_id));
+        }
+        Ok(deleted)
     }
 
+    /// 清理超过一天仍未被任何回合占用的暂存附件,并顺手扫掉磁盘上已经
+    /// 没有对应行的附件目录——行会随会话/回合级联删除,文件不会,这里是
+    /// 文件侧唯一的回收点(每次上传都会经过)。
     pub fn purge_stale_user_attachments(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn.execute(
-            "DELETE FROM user_attachments
-             WHERE turn_id IS NULL AND prompt_id IS NULL AND run_id IS NULL
-               AND datetime(created_at) < datetime('now', '-1 day')",
-            [],
-        )?)
+        let purged = {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM user_attachments
+                 WHERE turn_id IS NULL AND prompt_id IS NULL AND run_id IS NULL
+                   AND datetime(created_at) < datetime('now', '-1 day')",
+                [],
+            )?
+        };
+        self.sweep_orphan_attachment_files()?;
+        Ok(purged)
+    }
+
+    /// 删掉 `attachments_dir` 下没有对应行的目录。
+    pub fn sweep_orphan_attachment_files(&self) -> Result<usize> {
+        let Ok(entries) = std::fs::read_dir(&self.attachments_dir) else {
+            return Ok(0);
+        };
+        let live: std::collections::HashSet<String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT attachment_id FROM user_attachments")?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            ids
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if live.contains(&name) {
+                continue;
+            }
+            if std::fs::remove_dir_all(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     pub fn insert_image_asset(&self, asset: &ImageAsset, data: &[u8]) -> Result<()> {

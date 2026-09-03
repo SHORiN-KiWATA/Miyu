@@ -1,4 +1,4 @@
-//! 文件分享的 HTTP 面：列表、下载（Range 流式）、删除。
+//! 文件分享的 HTTP 面：列表、上传、下载（Range 流式）、删除。
 //!
 //! 与 artifact 路由（SQLite blob 全量响应）不同，这里的字节始终来自磁盘并
 //! 流式返回——大视频既不进内存也不进库。reference 模式在**每次**下载前校验
@@ -68,6 +68,91 @@ pub(in crate::web) async fn shared_file_delete(
     Ok(axum::Json(json!({ "ok": true })).into_response())
 }
 
+/// WebUI 主动上传:请求体流到落地区,再以 snapshot 模式登记——这就是
+/// 「局域网传文件」的入口,不经过模型。文件名走附件同一套消毒,大小只受
+/// `plugins.file_sharing.max_shared_file_bytes`(默认 0=不限)约束。
+pub(in crate::web) async fn shared_file_upload(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let sharing = state
+        .manager
+        .lock()
+        .unwrap()
+        .config
+        .plugins
+        .file_sharing
+        .clone();
+    if !sharing.enabled {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "file sharing is disabled in plugins.file_sharing",
+        ));
+    }
+    let file_name = header_file_name(&headers, "x-miyu-filename")?
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "attachment filename is required"))?;
+    let file_name = sanitize_attachment_file_name(&file_name)?;
+    let title = header_file_name(&headers, "x-miyu-title")?.unwrap_or_default();
+
+    let store = &state.state_store;
+    let staging_dir = store.shared_files_incoming_dir().join(random_id("up", 16));
+    tokio::fs::create_dir_all(&staging_dir)
+        .await
+        .map_err(ApiError::internal)?;
+    let staged = staging_dir.join(&file_name);
+    let outcome = spool_body_to_file(body, &staged).await;
+    let size = match outcome {
+        Ok(size) if size > 0 => size,
+        Ok(_) => {
+            let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "uploaded file must not be empty",
+            ));
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+            return Err(error);
+        }
+    };
+    if sharing.max_shared_file_bytes > 0 && size > sharing.max_shared_file_bytes {
+        let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "uploaded file is {size} bytes which exceeds max_shared_file_bytes ({})",
+                sharing.max_shared_file_bytes
+            ),
+        ));
+    }
+    let registered = {
+        let store = store.clone();
+        let staged = staged.clone();
+        let file_name = file_name.clone();
+        tokio::task::spawn_blocking(move || store.share_uploaded_file(&staged, &file_name, &title))
+            .await
+            .map_err(ApiError::internal)?
+    };
+    let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+    let record = registered.map_err(ApiError::internal)?;
+    Ok(axum::Json(share_json(&record)).into_response())
+}
+
+/// 读一个 URL 编码的文本头;缺失返回 `None`,编码坏了报 400。
+fn header_file_name(
+    headers: &HeaderMap,
+    name: &str,
+) -> std::result::Result<Option<String>, ApiError> {
+    let Some(raw) = headers.get(name).and_then(|value| value.to_str().ok()) else {
+        return Ok(None);
+    };
+    urlencoding::decode(raw)
+        .map(|value| Some(value.into_owned()))
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, format!("{name} header is invalid")))
+}
+
 #[derive(Deserialize)]
 pub(in crate::web) struct SharedDownloadQuery {
     #[serde(default)]
@@ -117,34 +202,6 @@ pub(in crate::web) async fn shared_file_download(
             ));
         }
     }
-    let total = metadata.len();
-    let range = headers
-        .get(axum::http::header::RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| parse_byte_range(value, total));
-    let mut file = tokio::fs::File::open(&path)
-        .await
-        .map_err(|_| ApiError::new(StatusCode::GONE, "the shared file no longer exists on disk"))?;
-    let (status, start, end) = match range {
-        None => (StatusCode::OK, 0, total.saturating_sub(1)),
-        Some(Some((start, end))) => (StatusCode::PARTIAL_CONTENT, start, end),
-        Some(None) => {
-            let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
-            response.headers_mut().insert(
-                axum::http::header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes */{total}")).unwrap(),
-            );
-            return Ok(response);
-        }
-    };
-    let length = if total == 0 { 0 } else { end - start + 1 };
-    use tokio::io::AsyncSeekExt;
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(ApiError::internal)?;
-    let stream = tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, length));
-    let mut response = Response::new(axum::body::Body::from_stream(stream));
-    *response.status_mut() = status;
     let force_download = query.download.as_deref().is_some_and(|value| value == "1");
     let inline = !force_download && inline_allowed(&record.kind);
     let disposition = format!(
@@ -152,27 +209,13 @@ pub(in crate::web) async fn shared_file_download(
         if inline { "inline" } else { "attachment" },
         urlencoding::encode(&record.file_name)
     );
-    let response_headers = response.headers_mut();
-    response_headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_str(&record.mime).map_err(ApiError::internal)?,
-    );
-    response_headers.insert(
-        CONTENT_DISPOSITION,
-        HeaderValue::from_str(&disposition).map_err(ApiError::internal)?,
-    );
-    response_headers.insert(CONTENT_LENGTH, HeaderValue::from(length));
-    response_headers.insert(
-        axum::http::header::ACCEPT_RANGES,
-        HeaderValue::from_static("bytes"),
-    );
-    if status == StatusCode::PARTIAL_CONTENT {
-        response_headers.insert(
-            axum::http::header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap(),
-        );
-    }
-    response_headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
-    response_headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    Ok(response)
+    let disposition = HeaderValue::from_str(&disposition).map_err(ApiError::internal)?;
+    stream_file_response(
+        &path,
+        &record.mime,
+        &headers,
+        Some(disposition),
+        "private, no-cache",
+    )
+    .await
 }

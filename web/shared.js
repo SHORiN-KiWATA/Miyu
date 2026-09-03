@@ -25,12 +25,17 @@ window.MiyuShared = (() => {
     "volume-2": [["path", { d: "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" }], ["path", { d: "M16 9a5 5 0 0 1 0 6" }], ["path", { d: "M19.364 18.364a9 9 0 0 0 0-12.728" }]],
     "volume-x": [["path", { d: "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" }], ["line", { x1: "22", x2: "16", y1: "9", y2: "15" }], ["line", { x1: "16", x2: "22", y1: "9", y2: "15" }]],
     "trash-2": [["path", { d: "M3 6h18" }], ["path", { d: "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" }], ["path", { d: "M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" }], ["line", { x1: "10", x2: "10", y1: "11", y2: "17" }], ["line", { x1: "14", x2: "14", y1: "11", y2: "17" }]],
-    "check-square": [["polyline", { points: "9 11 12 14 22 4" }], ["path", { d: "M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" }]]
+    "check-square": [["polyline", { points: "9 11 12 14 22 4" }], ["path", { d: "M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" }]],
+    upload: [["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }], ["polyline", { points: "17 8 12 3 7 8" }], ["line", { x1: "12", x2: "12", y1: "3", y2: "15" }]]
   };
   const KIND_ICON = { video: "film", audio: "music", image: "image", other: "file" };
   const MODE_LABEL = { reference: "引用", snapshot: "快照" };
   let panel = null;
   let listBox = null;
+  let uploadButton = null;
+  let uploadInput = null;
+  let uploadStatus = null;
+  let uploading = false;
   /* 多选批量操作:选中集以 share_id 为键,render 时会剔除已不存在的条目。 */
   const selectedIds = new Set();
   let currentShares = [];
@@ -328,11 +333,50 @@ window.MiyuShared = (() => {
     /* 批量操作工具条:全选切换 + 下载所选 + 删除所选,插在 header 与列表之间。 */
     const toolbarBox = document.createElement("div");
     toolbarBox.className = "shared-files-toolbar";
+    uploadInput = document.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.multiple = true;
+    uploadInput.hidden = true;
+    uploadInput.addEventListener("change", () => {
+      const files = Array.from(uploadInput.files || []);
+      uploadInput.value = "";
+      uploadFiles(files);
+    });
+    uploadButton = toolButton("upload", "上传", () => uploadInput.click());
     selectAllButton = toolButton("check-square", "全选", toggleSelectAll);
     downloadSelectedButton = toolButton("download", "下载所选", downloadSelected);
     deleteSelectedButton = toolButton("trash-2", "删除所选", deleteSelected, "danger");
-    toolbarBox.append(selectAllButton, downloadSelectedButton, deleteSelectedButton);
-    panel.querySelector(".shared-files-panel").insertBefore(toolbarBox, listBox);
+    uploadStatus = document.createElement("span");
+    uploadStatus.className = "shared-files-upload-status";
+    uploadStatus.hidden = true;
+    toolbarBox.append(uploadButton, selectAllButton, downloadSelectedButton, deleteSelectedButton, uploadStatus, uploadInput);
+    const dialog = panel.querySelector(".shared-files-panel");
+    dialog.insertBefore(toolbarBox, listBox);
+    /* 整个面板都是投放区:拖文件进来即上传,不用先找按钮。 */
+    let dragDepth = 0;
+    dialog.addEventListener("dragenter", (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth += 1;
+      dialog.classList.add("is-dropping");
+    });
+    dialog.addEventListener("dragover", (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    });
+    dialog.addEventListener("dragleave", (event) => {
+      if (!hasFiles(event)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dialog.classList.remove("is-dropping");
+    });
+    dialog.addEventListener("drop", (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth = 0;
+      dialog.classList.remove("is-dropping");
+      uploadFiles(Array.from(event.dataTransfer.files || []));
+    });
     syncToolbar();
 
     document.body.appendChild(panel);
@@ -349,6 +393,58 @@ window.MiyuShared = (() => {
     button.appendChild(text);
     button.addEventListener("click", onClick);
     return button;
+  }
+
+  function hasFiles(event) {
+    const types = event.dataTransfer?.types;
+    return !!types && Array.from(types).includes("Files");
+  }
+
+  function setUploadStatus(text) {
+    if (!uploadStatus) return;
+    uploadStatus.hidden = !text;
+    uploadStatus.textContent = text || "";
+  }
+
+  /*
+   * 逐个 PUT 到 /api/shared:文件名与标题走 URL 编码头,正文原样流上去,
+   * 服务端不设大小上限(受 plugins.file_sharing.max_shared_file_bytes 约束)。
+   * 串行上传,避免多个大文件同时打满上行。
+   */
+  async function uploadFiles(files) {
+    const list = files.filter((file) => file instanceof File && file.size > 0);
+    if (!list.length || uploading) return;
+    uploading = true;
+    uploadButton.disabled = true;
+    const failures = [];
+    for (let index = 0; index < list.length; index += 1) {
+      const file = list[index];
+      setUploadStatus(`上传中 ${index + 1}/${list.length}:${file.name}(${formatSize(file.size)})`);
+      try {
+        const response = await fetch("/api/shared", {
+          method: "POST",
+          headers: {
+            "content-type": "application/octet-stream",
+            "x-miyu-filename": encodeURIComponent(file.name)
+          },
+          body: file
+        });
+        if (!response.ok) {
+          let detail = `HTTP ${response.status}`;
+          try {
+            const payload = await response.json();
+            if (payload?.error?.message) detail = String(payload.error.message);
+          } catch (_) { /* 非 JSON 错误体 */ }
+          failures.push(`${file.name}:${detail}`);
+        }
+      } catch (error) {
+        failures.push(`${file.name}:${error.message || error}`);
+      }
+    }
+    uploading = false;
+    uploadButton.disabled = false;
+    setUploadStatus(failures.length ? `失败 ${failures.length} 个:${failures.join(";")}` : "");
+    await refresh();
   }
 
   function syncToolbar() {
@@ -436,7 +532,7 @@ window.MiyuShared = (() => {
     if (!shares.length) {
       const empty = document.createElement("p");
       empty.className = "shared-files-empty";
-      empty.textContent = "还没有分享任何文件。让 AI 调用 share_file 即可分享。";
+      empty.textContent = "还没有分享任何文件。点「上传」或把文件拖进来,也可以让 AI 调用 share_file。";
       listBox.appendChild(empty);
       syncToolbar();
       return;

@@ -39,6 +39,7 @@ pub use conversation_db::{
     SessionRecord, ToolFlowCall, ToolFlowRound, ToolFootprint, Turn, TurnFollowup,
     TurnJournalEvent, TurnRedoCheckpointPayload, TurnReplay, TurnStatus, UserAttachment,
     UserAttachmentData, DEFAULT_MAX_GOAL_ROUNDS, GLOBAL_PLATFORM_ACCOUNT_SCOPE,
+    USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
 };
 pub use usage::{
     UsageMeta, UsageRange, UsageSnapshot, UsageStats, USAGE_KIND_AFFECTION, USAGE_KIND_GROUP_JOIN,

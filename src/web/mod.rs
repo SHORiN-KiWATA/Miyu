@@ -79,7 +79,8 @@ use crate::runtime::{
 };
 use crate::state::{
     ArtifactAsset, ImageAsset, PlatformPluginScopeKey, QueuedPrompt, StateStore, Turn,
-    TurnFollowup, TurnStatus, UsageSnapshot, UserAttachment,
+    TurnFollowup, TurnStatus, UsageSnapshot, UserAttachment, USER_ATTACHMENT_KIND_FILE,
+    USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
 };
 use crate::tools::build_tool_registry;
 use crate::tools::{self, CommandOutputStream};

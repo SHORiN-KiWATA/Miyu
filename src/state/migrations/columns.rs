@@ -165,3 +165,60 @@ pub(in crate::state) fn apply_v28_session_sort_key(conn: &Connection) -> Result<
     )?;
     Ok(())
 }
+
+/// v29: 用户附件可以落在磁盘上(`state/attachments/<id>/<name>`),
+/// `data` 列留空;同时放开 `kind` 让视频等任意二进制以 `file` 进来。
+///
+/// 两条都是 CHECK/NOT NULL 约束,SQLite 改不了,只能整表重建。行数据逐列
+/// 原样搬,旧的 BLOB 附件继续从 `data` 列读(读路径双兼容)。
+pub(in crate::state) fn apply_v29_attachment_files(conn: &Connection) -> Result<()> {
+    // 幂等:半途而废的库里新约束可能已经就位。
+    let already: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+              WHERE type = 'table' AND name = 'user_attachments'
+                AND sql LIKE '%''file''%'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if already {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE user_attachments_v29 (
+            attachment_id TEXT PRIMARY KEY,
+            session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+            turn_id       TEXT REFERENCES turns(turn_id) ON DELETE CASCADE,
+            prompt_id     TEXT REFERENCES queued_prompts(prompt_id) ON DELETE CASCADE,
+            run_id        TEXT,
+            file_name     TEXT NOT NULL,
+            mime          TEXT NOT NULL,
+            kind          TEXT NOT NULL CHECK (kind IN ('image', 'text', 'file')),
+            size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+            width         INTEGER NOT NULL DEFAULT 0,
+            height        INTEGER NOT NULL DEFAULT 0,
+            data          BLOB,
+            created_at    TEXT NOT NULL,
+            CHECK (
+                (turn_id IS NOT NULL) + (prompt_id IS NOT NULL) + (run_id IS NOT NULL) <= 1
+            )
+        );
+        INSERT INTO user_attachments_v29
+            (attachment_id, session_id, turn_id, prompt_id, run_id, file_name, mime,
+             kind, size_bytes, width, height, data, created_at)
+        SELECT attachment_id, session_id, turn_id, prompt_id, run_id, file_name, mime,
+               kind, size_bytes, width, height, data, created_at
+          FROM user_attachments;
+        DROP TABLE user_attachments;
+        ALTER TABLE user_attachments_v29 RENAME TO user_attachments;
+        CREATE INDEX idx_user_attachments_session
+            ON user_attachments(session_id, created_at, attachment_id);
+        CREATE INDEX idx_user_attachments_turn
+            ON user_attachments(turn_id, created_at, attachment_id);
+        CREATE INDEX idx_user_attachments_prompt
+            ON user_attachments(prompt_id, created_at, attachment_id);
+        CREATE INDEX idx_user_attachments_run ON user_attachments(run_id);",
+    )?;
+    Ok(())
+}

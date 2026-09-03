@@ -5,8 +5,6 @@
   const MAX_CUSTOM_ANSWER_CHARS = 4_000;
   const MAX_TOOL_OUTPUT_CHARS = 200_000;
   const MAX_ATTACHMENTS = 12;
-  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-  const MAX_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
   const COMMAND_OUTPUT_PREVIEW_ROWS = 8;
   const NEAR_BOTTOM_PX = 120;
   // Mirrors the CSS --ui-scale custom property; mobile drops it to 1 via a
@@ -4058,18 +4056,11 @@
       showToast(`每条消息最多添加 ${MAX_ATTACHMENTS} 个附件，已忽略 ${incoming.length - available} 个`, "error");
     }
     const accepted = incoming.slice(0, available);
-    const existingBytes = state.composerAttachments.reduce((sum, item) => sum + asFiniteNumber(item.size), 0);
-    let totalBytes = existingBytes;
     for (const file of accepted) {
-      if (!(file instanceof File) || file.size <= 0 || file.size > MAX_ATTACHMENT_BYTES) {
-        showToast(`${file?.name || "附件"} 必须小于 10 MB`, "error");
+      if (!(file instanceof File) || file.size <= 0) {
+        showToast(`${file?.name || "附件"} 是空文件`, "error");
         continue;
       }
-      if (totalBytes + file.size > MAX_ATTACHMENT_TOTAL_BYTES) {
-        showToast("单条消息的附件总计不能超过 32 MB", "error");
-        break;
-      }
-      totalBytes += file.size;
       const image = file.type.startsWith("image/");
       const item = {
         localId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
