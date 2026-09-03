@@ -254,9 +254,6 @@ pub(in crate::cli) fn expand_shell_pasted_text_placeholders(
 mod short_link_tests {
     use super::*;
 
-    /// 短链软链:32 位哈希名得到 8 位短名软链且指向原文件;重复调用幂等;
-    /// 本来就短的名字原样返回不建链。
-    #[test]
     /// 截短只针对机器生成的哈希名。
     ///
     /// 中文等多字节文件名按字节切会落在字符中间,`&stem[..8]` 直接 panic

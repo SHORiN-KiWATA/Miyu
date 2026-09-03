@@ -401,7 +401,7 @@ async fn local_video_paths_inline_when_the_model_takes_video() {
     let state = StateStore::new(&paths).unwrap();
     let client =
         OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         config,
         &paths,
         state,
@@ -425,7 +425,7 @@ async fn local_video_paths_inline_when_the_model_takes_video() {
     let state = StateStore::new(&paths).unwrap();
     let client =
         OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         config,
         &paths,
         state,
@@ -458,7 +458,7 @@ async fn local_video_paths_inline_when_the_model_takes_video() {
     let state = StateStore::new(&paths).unwrap();
     let client =
         OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         config,
         &paths,
         state,
@@ -510,7 +510,7 @@ async fn inlined_images_do_not_invite_the_vision_tool() {
             let client =
                 OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths)
                     .unwrap();
-            let mut agent = Agent::new(
+            let agent = Agent::new(
                 config,
                 &paths,
                 state,
@@ -536,7 +536,7 @@ async fn inlined_images_do_not_invite_the_vision_tool() {
             let client =
                 OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths)
                     .unwrap();
-            let mut agent = Agent::new(
+            let agent = Agent::new(
                 config,
                 &paths,
                 state,

@@ -529,7 +529,6 @@ mod tests {
         assert_eq!(forward_digest(truncated).unwrap(), "[forward x1] 阿: 一");
     }
 
-    use super::*;
     use crate::platforms::{
         PlatformConversation, PlatformInboundMedia, PlatformMediaKind, PlatformMessagePosition,
     };

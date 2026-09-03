@@ -385,14 +385,21 @@ async fn ordered_tickets_refuse_once_the_backlog_is_full() {
         tickets.push(
             runtime
                 .turn_order
-                .enter("scope-full", order, 3)
+                .enter("scope-full", order, limits.running + limits.queued)
                 .expect("capacity is running + queued = 3"),
         );
     }
-    assert!(runtime.turn_order.enter("scope-full", 3, 3).is_none());
+    let capacity = limits.running + limits.queued;
+    assert!(runtime
+        .turn_order
+        .enter("scope-full", 3, capacity)
+        .is_none());
     // 判断不通过的票据掉落即让位,后来的消息立刻能登记。
     tickets.pop();
-    assert!(runtime.turn_order.enter("scope-full", 4, 3).is_some());
+    assert!(runtime
+        .turn_order
+        .enter("scope-full", 4, capacity)
+        .is_some());
 }
 
 /// 抢占票据不排队——覆盖的语义就是插队。
@@ -428,7 +435,12 @@ async fn queued_session_turns_counts_the_arrival_backlog() {
     };
     let mut tickets = Vec::new();
     for order in 0..5 {
-        tickets.push(order_slot(&runtime, "scope-backlog", order, 9));
+        tickets.push(order_slot(
+            &runtime,
+            "scope-backlog",
+            order,
+            limits.running + limits.queued,
+        ));
     }
     assert_eq!(runtime.queued_turns("scope-backlog"), 5);
     tickets.truncate(2);
