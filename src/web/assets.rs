@@ -56,7 +56,7 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
     // Version the asset references so browsers and intermediaries can never
     // serve a stale app.js/styles.css after an upgrade.
     static VERSIONED_INDEX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        INDEX_HTML
+        let mut html = INDEX_HTML
             .replace(
                 "href=\"/styles.css\"",
                 concat!("href=\"/styles.css?v=", env!("MIYU_BUILD_ID"), "\""),
@@ -82,14 +82,6 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 concat!("src=\"/shared.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
-                "src=\"/dashboards.js\"",
-                concat!("src=\"/dashboards.js?v=", env!("MIYU_BUILD_ID"), "\""),
-            )
-            .replace(
-                "src=\"/dash-memory.js\"",
-                concat!("src=\"/dash-memory.js?v=", env!("MIYU_BUILD_ID"), "\""),
-            )
-            .replace(
                 "href=\"/vendor/katex/katex.min.css\"",
                 concat!(
                     "href=\"/vendor/katex/katex.min.css?v=",
@@ -104,7 +96,14 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                     env!("MIYU_BUILD_ID"),
                     "\""
                 ),
-            )
+            );
+        for (name, _) in DASH_SCRIPTS {
+            html = html.replace(
+                &format!("src=\"/dash/{name}\""),
+                &format!("src=\"/dash/{name}?v={}\"", env!("MIYU_BUILD_ID")),
+            );
+        }
+        html
     });
     embedded_asset(
         &headers,
@@ -157,20 +156,26 @@ pub(in crate::web) async fn shared_js_asset(headers: HeaderMap) -> Response {
     )
 }
 
-pub(in crate::web) async fn dashboards_js_asset(headers: HeaderMap) -> Response {
-    embedded_asset(
-        &headers,
-        DASHBOARDS_JS.as_bytes(),
-        "application/javascript; charset=utf-8",
-    )
-}
+/// 插件 dashboard 脚本表:`/dash/<name>` 一张表一个 handler。新增面板只在这里
+/// 加一行(外加 index.html 的 script 标签),不再逐个写 handler + route。
+/// `dashboards.js` 是共享层,得排在各面板之前加载,顺序由 index.html 决定。
+static DASH_SCRIPTS: &[(&str, &str)] = &[
+    ("dashboards.js", include_str!("../../web/dashboards.js")),
+    ("dash-memory.js", include_str!("../../web/dash-memory.js")),
+];
 
-pub(in crate::web) async fn dash_memory_js_asset(headers: HeaderMap) -> Response {
-    embedded_asset(
-        &headers,
-        DASH_MEMORY_JS.as_bytes(),
-        "application/javascript; charset=utf-8",
-    )
+pub(in crate::web) async fn dash_script_asset(
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    match DASH_SCRIPTS.iter().find(|(entry, _)| *entry == name) {
+        Some((_, content)) => embedded_asset(
+            &headers,
+            content.as_bytes(),
+            "application/javascript; charset=utf-8",
+        ),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 pub(in crate::web) async fn logo_asset(headers: HeaderMap) -> Response {

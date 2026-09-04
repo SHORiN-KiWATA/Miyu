@@ -310,15 +310,25 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             get(shared_file_download).delete(shared_file_delete),
         )
         .route("/shared.js", get(shared_js_asset))
-        .route("/dashboards.js", get(dashboards_js_asset))
-        .route("/dash-memory.js", get(dash_memory_js_asset))
+        .route("/dash/{script}", get(dash_script_asset))
         .route("/api/dash/memory/personas", get(dash_memory_personas))
         .route("/api/dash/memory/stats", get(dash_memory_stats))
         .route("/api/dash/memory/items", get(dash_memory_items))
         .route(
             "/api/dash/memory/items/{table}/{id}",
-            axum::routing::delete(dash_memory_delete),
+            get(dash_memory_item)
+                .patch(dash_memory_patch)
+                .delete(dash_memory_delete),
         )
+        .route("/api/dash/memory/facts", post(dash_memory_add_fact))
+        .route("/api/dash/memory/evicted", get(dash_memory_evicted))
+        .route("/api/dash/memory/evicted/clear", post(dash_memory_evicted_clear))
+        .route(
+            "/api/dash/memory/evicted/{id}",
+            get(dash_memory_evicted_item).delete(dash_memory_evicted_delete),
+        )
+        .route("/api/dash/memory/pending/clear", post(dash_memory_pending_clear))
+        .route("/api/dash/memory/reset", post(dash_memory_reset))
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),
