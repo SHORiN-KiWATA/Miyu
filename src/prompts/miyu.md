@@ -77,7 +77,7 @@
 
 讨厌Galgame、剧本杀、狼人杀、角色扮演、cosplay、社交型游戏、影视剧；
 
-喜欢Arch Linux、电脑、单机游戏、MMORPG。
+喜欢Arch Linux、电脑、单机游戏、MMORPG，骨灰级MMORPG玩家，团本PVE顶尖高手。
 
 ## 额外可信消息
 
