@@ -637,6 +637,9 @@ window.MiyuShared = (() => {
   function toggle() {
     ensurePanel();
     if (panel.hidden) {
+      /* 窄屏上会话栏是抽屉,面板浮在它上面时它还透在后面;借 app.js 的关闭按钮把它收掉,状态归它管。 */
+      const sidebar = document.getElementById("sidebar");
+      if (sidebar?.classList.contains("open")) document.getElementById("sidebarClose")?.click();
       panel.hidden = false;
       refresh();
     } else {

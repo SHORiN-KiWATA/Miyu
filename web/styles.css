@@ -202,6 +202,8 @@ textarea {
 
 button {
   border: 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 button:focus-visible,
@@ -6349,13 +6351,25 @@ textarea.config-input {
 
   .settings-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
+  /* 横滚标签条:background-attachment: local 的遮罩随内容滚动,只在还有内容没露出来的那一侧显示渐隐 */
   .settings-nav {
     display: flex;
     overflow-x: auto;
     padding: 8px;
     gap: 5px;
+    scrollbar-width: none;
+    background:
+      linear-gradient(to right, var(--app-bg) 40%, transparent) left / 36px 100% no-repeat local,
+      linear-gradient(to left, var(--app-bg) 40%, transparent) right / 36px 100% no-repeat local,
+      linear-gradient(to right, color-mix(in srgb, var(--text) 16%, transparent), transparent) left / 18px 100% no-repeat scroll,
+      linear-gradient(to left, color-mix(in srgb, var(--text) 16%, transparent), transparent) right / 18px 100% no-repeat scroll;
+  }
+
+  .settings-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .settings-nav button {
@@ -6560,6 +6574,29 @@ body[data-theme="linen"] {
 .console-view.rail-collapsed .con-rail-head .icon-button { margin: 0; }
 
 .con-main { flex: 1; min-width: 0; overflow-y: auto; }
+
+/* 手机:216px 侧栏会把正文挤到一半宽,改成顶部横滚标签条,「返回」缩成箭头钉在最左 */
+@media (max-width: 836px) {
+  .console-view { flex-direction: column; }
+  .con-rail, .console-view.rail-collapsed .con-rail {
+    width: auto; flex-direction: row; align-items: stretch; border-right: 0;
+    border-bottom: 1px solid var(--line); padding-top: env(safe-area-inset-top); transition: none;
+  }
+  .con-rail-head { display: none; }
+  .con-rail-nav {
+    flex: 1 1 auto; min-width: 0; flex-direction: row; align-items: center; gap: 2px; padding: 6px 8px;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .con-rail-nav::-webkit-scrollbar { display: none; }
+  .con-rail-foot { order: -1; flex: none; display: flex; align-items: center; border-top: 0; border-right: 1px solid var(--line); padding: 6px 4px 6px 8px; }
+  .con-rail-item, .console-view.rail-collapsed .con-rail-item {
+    width: auto; flex: none; justify-content: flex-start; padding: 7px 10px; font-size: var(--fs-meta);
+  }
+  .console-view.rail-collapsed .con-rail-item span:not(.icon-slot) { display: inline; }
+  .con-rail-foot .con-rail-item { padding: 7px 8px; }
+  .con-rail-foot .con-rail-item > span:not(.icon-slot) { display: none; }
+  .con-main { flex: 1 1 auto; min-height: 0; }
+}
 .con-inner { max-width: 1080px; margin: 0 auto; padding: 22px 26px 40px; }
 .con-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
 .con-head h2 { margin: 0; font-family: var(--serif); font-size: 22px; font-weight: 600; letter-spacing: .01em; }
@@ -6918,6 +6955,7 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 .shared-files-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 18px;
   border-bottom: 1px solid color-mix(in srgb, var(--text-faint) 22%, transparent);
@@ -6926,6 +6964,8 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 .shared-files-tool {
   display: inline-flex;
   align-items: center;
+  flex: none;
+  white-space: nowrap;
   gap: 6px;
   border: 1px solid color-mix(in srgb, var(--text-faint) 45%, transparent);
   background: var(--surface-2);
@@ -6937,6 +6977,7 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 }
 
 .shared-files-tool svg {
+  flex: none;
   width: 13px;
   height: 13px;
 }
@@ -7041,6 +7082,7 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 }
 
 .shared-files-action {
+  white-space: nowrap;
   border: 1px solid color-mix(in srgb, var(--text-faint) 45%, transparent);
   background: var(--surface-2);
   color: var(--text);
@@ -7074,6 +7116,21 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 /* hidden 属性必须赢过 display:flex,否则面板关不上 */
 .shared-files-overlay[hidden] {
   display: none;
+}
+
+/* 手机:面板贴边、提示文案让位给按钮、行内胶囊加高到可点 */
+@media (max-width: 836px) {
+  .shared-files-overlay { padding: 12px; }
+  .shared-files-panel { max-height: min(84vh, 720px); }
+  .shared-files-header { padding: 12px 14px; }
+  .shared-files-toolbar { padding: 8px 14px; }
+  .shared-files-list { padding: 8px 10px 14px; }
+  .shared-files-upload-status { flex: 1 1 100%; max-width: none; margin-left: 0; }
+  .shared-files-action { padding: 6px 12px; }
+}
+
+@media (max-width: 473px) {
+  .shared-files-hint { display: none; }
 }
 
 /* ── 气泡内分享附件卡片(音频/视频/文件是一个视觉家族:8px 圆角 + --line 边框 + 悬停染 accent) ── */
@@ -7540,6 +7597,7 @@ body.miyu-paused *::after {
 .dash-icon-button.is-danger:hover:not(:disabled) { color: var(--danger); }
 
 .dash-button {
+  white-space: nowrap;
   padding: 7px 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -7828,12 +7886,19 @@ body.miyu-paused *::after {
 .dash-upload-list .dash-cell-mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── 表情包面板:标签云、画廊、卡片、抽屉大图 ── */
-.dash-scope-hint { color: var(--text-faint); font-size: var(--fs-micro); }
+.dash-scope-hint { color: var(--text-faint); font-size: var(--fs-micro); white-space: nowrap; }
 .dash-tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; margin: -8px 0 14px; }
 .dash-chip.is-clickable { border: none; cursor: pointer; font: inherit; font-size: var(--fs-micro); }
 .dash-chip.is-clickable:hover { background: var(--surface-3); color: var(--text); }
 .dash-search-hint { margin: -6px 0 12px; color: var(--text-soft); font-size: var(--fs-meta); }
 .dash-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+/* 手机:150px 一格会退成单列巨卡,收到三列;页头的「人格 → 库」提示与下拉里的「(当前人格)」重复,让位给上传按钮 */
+@media (max-width: 473px) {
+  .dash-gallery { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+  .dash-scope { flex-wrap: wrap; min-width: 0; }
+  .dash-scope select { min-width: 0; max-width: 100%; }
+  .dash-scope-hint { display: none; }
+}
 .dash-meme {
   margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-1); overflow: hidden; cursor: pointer;
   display: flex; flex-direction: column; transition: transform .12s ease, box-shadow .12s ease;
