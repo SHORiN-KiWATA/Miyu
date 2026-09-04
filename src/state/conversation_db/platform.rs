@@ -649,6 +649,31 @@ impl ConversationDb {
         Ok(records)
     }
 
+    /// dashboard 用:某个库里每张表情的入站/出站引用次数与最近一次时间。
+    pub fn platform_meme_ref_counts(&self, library: &str) -> Result<Vec<PlatformMemeRefCount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT meme_id,
+                    SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END),
+                    MAX(created_at)
+             FROM platform_meme_refs
+             WHERE library = ?1
+             GROUP BY meme_id",
+        )?;
+        let rows = stmt
+            .query_map(params![library], |row| {
+                Ok(PlatformMemeRefCount {
+                    meme_id: row.get(0)?,
+                    inbound: row.get(1)?,
+                    outbound: row.get(2)?,
+                    last_seen_at: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn delete_platform_meme_ref(&self, library: &str, meme_id: &str) -> Result<usize> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

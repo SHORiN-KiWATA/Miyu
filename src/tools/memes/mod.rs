@@ -1,7 +1,9 @@
 mod crud;
+mod dashboard;
 mod library;
 mod validate;
 pub(crate) use crud::*;
+pub(crate) use dashboard::*;
 pub(crate) use library::*;
 pub(crate) use validate::*;
 

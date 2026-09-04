@@ -54,6 +54,7 @@ use bridge_question::*;
 use commands_api::*;
 use config_api::*;
 use dashboards::kb::*;
+use dashboards::memes::*;
 use dashboards::memory::*;
 use dto::*;
 use event_map::*;

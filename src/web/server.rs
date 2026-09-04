@@ -345,6 +345,19 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/dash/kb/reindex/lock", axum::routing::delete(dash_kb_reindex_unlock))
         .route("/api/dash/kb/default", get(dash_kb_default))
         .route("/api/dash/kb/default/update", post(dash_kb_default_update))
+        .route("/api/dash/memes/libraries", get(dash_memes_libraries))
+        .route(
+            "/api/dash/memes/items",
+            get(dash_memes_items)
+                .post(dash_memes_upload)
+                .layer(DefaultBodyLimit::max(MEME_UPLOAD_LIMIT)),
+        )
+        .route(
+            "/api/dash/memes/items/{id}",
+            axum::routing::patch(dash_memes_patch).delete(dash_memes_delete),
+        )
+        .route("/api/dash/memes/items/{id}/classify", post(dash_memes_classify))
+        .route("/api/dash/memes/image", get(dash_memes_image))
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),

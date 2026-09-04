@@ -488,6 +488,14 @@ pub struct PlatformMemeRefRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PlatformMemeRefCount {
+    pub meme_id: String,
+    pub inbound: i64,
+    pub outbound: i64,
+    pub last_seen_at: String,
+}
+
 /// One replayable turn: the prompt echo plus either its ordered transcript or,
 /// for turns predating the transcript column, just the final reply.
 #[derive(Clone, Debug, Default)]
