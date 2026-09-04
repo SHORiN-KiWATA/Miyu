@@ -84,7 +84,7 @@ fn followup_redo_restores_the_last_batch_checkpoint() {
     store
         .consume_queued_prompts_with_checkpoint(
             "t1",
-            &[("q1".to_string(), "followup".to_string())],
+            &[("q1".to_string(), "followup".to_string(), "[]".to_string())],
             Some("prefix answer"),
             None,
             None,
@@ -121,7 +121,11 @@ fn followup_redo_restores_the_last_batch_checkpoint() {
     store
         .consume_queued_prompts_with_checkpoint(
             "t1",
-            &[("q2".to_string(), "new during redo".to_string())],
+            &[(
+                "q2".to_string(),
+                "new during redo".to_string(),
+                "[]".to_string(),
+            )],
             None,
             None,
             None,

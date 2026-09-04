@@ -61,6 +61,34 @@ fn vision_preference_controls_direct_image_delivery_to_the_text_pool() {
     assert!(!should_use_active_text_pool_for_images(&config));
 }
 
+/// agy 中转线的模型目录里 Gemini 标着 image 输入,但 stdin 只收文本:图不能
+/// 内联进消息,只能留路径让模型自己 view_file(09-04 实测)。判成"能看图"
+/// 的后果是图被中转层降级丢掉、活体与化石字节不同、续传链逢图必断。
+#[test]
+fn antigravity_pool_never_inlines_media_but_views_it_natively() {
+    let mut config = AppConfig::default();
+    let provider = config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.is_antigravity())
+        .unwrap();
+    provider.enabled = true;
+    let model = provider.default_model.clone();
+    provider
+        .model_modalities
+        .insert(model.clone(), vec!["text".to_string(), "image".to_string()]);
+    let provider_id = provider.id.clone();
+    config.active_provider_models = Some(vec![ActiveProviderModelConfig { provider_id, model }]);
+
+    assert!(!active_text_pool_supports_vision(&config));
+    assert!(!should_use_active_text_pool_for_images(&config));
+    assert!(config.active_pool_views_media_with_native_file_tool(false));
+    // 原生工具在本模式关着 ⇒ 没人能打开路径,退回视觉旁路。
+    config.plugins.antigravity.native_tools = "dev".to_string();
+    assert!(!config.active_pool_views_media_with_native_file_tool(false));
+    assert!(config.active_pool_views_media_with_native_file_tool(true));
+}
+
 #[tokio::test]
 async fn platform_images_register_a_turn_scoped_vision_tool() {
     let temp = tempfile::tempdir().unwrap();

@@ -217,6 +217,20 @@ impl AppConfig {
         })
     }
 
+    /// 活跃文本池整池靠原生 `view_file` 看媒体,且该工具在本模式放行。
+    /// 满足时用户媒体只留本地路径提示、邀请模型自己打开,不做视觉旁路
+    /// 转述,也不往消息里内联。池是负载均衡的,有一个端点不是这条线就不算。
+    pub fn active_pool_views_media_with_native_file_tool(&self, dev_mode: bool) -> bool {
+        let pool = self.active_provider_model_choices();
+        !pool.is_empty()
+            && pool.iter().all(|choice| {
+                self.provider(Some(&choice.provider_id))
+                    .ok()
+                    .is_some_and(|provider| provider.views_media_with_native_file_tool())
+            })
+            && relay_scope_allows(&self.plugins.antigravity.native_tools, dev_mode)
+    }
+
     pub fn active_provider_model_choices(&self) -> Vec<ProviderModelChoice> {
         match &self.active_provider_models {
             None => self

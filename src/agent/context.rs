@@ -153,16 +153,11 @@ pub(in crate::agent) fn replace_request_mode_context(
     if let Some(system) = messages.first_mut() {
         *system = ChatMessage::system(system_prompt);
     }
-    // Role-agnostic on purpose: the live block is a `user` message now, while
-    // fossils written before the change are still `system`.
-    if let Some(runtime) = messages.iter_mut().rev().find(|message| {
-        matches!(
-            message.content.as_ref(),
-            Some(ChatContent::Text(content)) if content.starts_with("<runtime now=")
-        )
-    }) {
-        *runtime = ChatMessage::turn_context(runtime_context(mode, platform));
-    }
+    // runtime 块不再原地改写:已发出的块是前缀的一部分,改它等于把本轮尾巴
+    // 的前缀掰断——CLI 中转线上 followup 的第二次请求因此整段全量重放
+    // (09-04 seq 220 实证)。新的 runtime 由 followup 路径按"变了才追加"
+    // 的规矩挂在 followup 正文之后,与首轮注入同一口径。
+    let _ = (mode, platform);
 }
 
 pub(in crate::agent) fn continuation_system_prompt(system_prompt: &str, mode: AgentMode) -> String {
@@ -322,6 +317,7 @@ pub(in crate::agent) fn turn_context_tokens(turn: &crate::state::Turn) -> usize 
             false,
         );
         messages.push(ChatMessage::plain("user", &followup.content));
+        messages.extend(followup.context_messages());
     }
     // 与 push_history_turn 同步:工具轮以原生 tool_calls + tool 输出回放,
     // 漏计 tool_flow 会让 trim/压缩预算对工具密集回合失真数十倍。
@@ -458,6 +454,7 @@ pub(in crate::agent) fn interrupted_turn_replay_messages(
                 false,
             );
             messages.push(agent.followup_user_message(followup));
+            messages.extend(followup.context_messages().iter().map(replay_fossil));
         }
     }
 

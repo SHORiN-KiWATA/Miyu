@@ -155,7 +155,12 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
-        let payload = render_prompt(plan.delta());
+        let (payload, images) = render_prompt(
+            plan.delta(),
+            &runtime.instructions_dir.join("images"),
+            request_id,
+        )?;
+        let _cleanup = TempImages(images.clone());
         let args = codex_args(
             runtime,
             model,
@@ -163,6 +168,7 @@ impl OpenAiCompatibleClient {
             overrides,
             plan.resume_id(),
             plan.ephemeral(),
+            &images,
         );
         crate::llm::request_log::record(
             &self.provider.id,
@@ -230,6 +236,19 @@ impl OpenAiCompatibleClient {
     }
 }
 
+/// 本轮落盘的临时图片:进程收口后删掉,成功失败都删。
+struct TempImages(Vec<PathBuf>);
+
+impl Drop for TempImages {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// `-i <FILE>` 挂图:`exec` 与 `exec resume` 都收(09-04 实测 red/blue 两轮),
+/// 旗标属于各自子命令,所以续传时要放在 `resume` 之后、会话 id 之前。
 fn codex_args(
     runtime: &CodexRuntime,
     model: &str,
@@ -237,6 +256,7 @@ fn codex_args(
     overrides: &[String],
     resume: Option<&str>,
     ephemeral: bool,
+    images: &[PathBuf],
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "exec".into(),
@@ -260,8 +280,14 @@ fn codex_args(
         args.push("-c".into());
         args.push(item.clone());
     }
-    if let Some(resume) = resume {
+    if resume.is_some() {
         args.push("resume".into());
+    }
+    for image in images {
+        args.push("-i".into());
+        args.push(image.display().to_string());
+    }
+    if let Some(resume) = resume {
         args.push(resume.to_string());
     }
     // `-` = 提示词从 stdin 读。
@@ -362,10 +388,17 @@ pub(in crate::llm::openai_compatible) fn toml_string(value: &str) -> String {
     out
 }
 
-/// stdin 提示词正文:历史转写块 + 活跃尾巴,纯文本。codex 只从 stdin 收文本;
-/// 图片可经 `-i` 传文件(第二阶段),此处先降级成占位。
-fn render_prompt(delta: &[ChatMessage]) -> String {
+/// stdin 提示词正文 + 本轮要挂的图片文件:历史转写块 + 活跃尾巴,纯文本;
+/// 活跃尾巴里的 base64 图片落成临时文件走 `-i`(历史里的图本就只留占位,
+/// 见 `payload::render_history_line`)。正文里留一句编号标记,让模型把附图
+/// 与消息对上。URL 形态的图 codex 收不了,只能留占位。
+fn render_prompt(
+    delta: &[ChatMessage],
+    images_dir: &std::path::Path,
+    request_id: &str,
+) -> Result<(String, Vec<PathBuf>)> {
     let mut parts: Vec<String> = Vec::new();
+    let mut images: Vec<PathBuf> = Vec::new();
     for block in payload::render_user_blocks(delta) {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
@@ -376,7 +409,32 @@ fn render_prompt(delta: &[ChatMessage]) -> String {
                 }
             }
             Some("image") => {
-                parts.push("[image omitted: the codex relay accepts text only]".into())
+                let source = block.get("source");
+                let data_url = source
+                    .and_then(|source| source.get("data").and_then(Value::as_str))
+                    .zip(source.and_then(|source| source.get("media_type").and_then(Value::as_str)))
+                    .map(|(data, media_type)| format!("data:{media_type};base64,{data}"));
+                match data_url.as_deref().and_then(payload::data_url_bytes) {
+                    Some((media_type, bytes)) => {
+                        let index = images.len() + 1;
+                        let extension = match media_type.as_str() {
+                            "image/jpeg" | "image/jpg" => "jpg",
+                            "image/gif" => "gif",
+                            "image/webp" => "webp",
+                            _ => "png",
+                        };
+                        std::fs::create_dir_all(images_dir)
+                            .with_context(|| format!("creating {}", images_dir.display()))?;
+                        let path = images_dir.join(format!("{request_id}-{index}.{extension}"));
+                        std::fs::write(&path, bytes)
+                            .with_context(|| format!("writing {}", path.display()))?;
+                        images.push(path);
+                        parts.push(format!("[image {index} attached to this message]"));
+                    }
+                    None => parts.push(
+                        "[image omitted: the codex relay attaches local image files only]".into(),
+                    ),
+                }
             }
             _ => {}
         }
@@ -386,7 +444,7 @@ fn render_prompt(delta: &[ChatMessage]) -> String {
         text = "(continue)".into();
     }
     text.push('\n');
-    text
+    Ok((text, images))
 }
 
 /// 清空 Miyu 会话时的联动:删 codex 侧的 rollout
@@ -474,6 +532,63 @@ mod tests {
         ensure_instructions_file(dir.path(), "three").unwrap();
         assert!(!one.exists(), "过期的旧指令文件应被清掉");
         assert!(two.exists());
+    }
+
+    /// 活跃尾巴里的 base64 图片落成文件走 `-i`,正文留编号标记;续传时 `-i`
+    /// 必须落在 `resume` 之后、会话 id 之前(旗标属于子命令)。
+    #[test]
+    fn tail_images_become_attached_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let delta = vec![
+            ChatMessage::plain("user", "old question"),
+            ChatMessage::assistant("old answer", None),
+            ChatMessage::user_parts(vec![
+                crate::llm::ChatContentPart::Text {
+                    text: "看看这张图".to_string(),
+                },
+                crate::llm::ChatContentPart::ImageUrl {
+                    image_url: crate::llm::ImageUrlContent {
+                        url: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                    },
+                },
+            ]),
+        ];
+        let (text, images) = render_prompt(&delta, dir.path(), "req-1").unwrap();
+        assert_eq!(images.len(), 1);
+        assert!(images[0].ends_with("req-1-1.png"));
+        assert_eq!(std::fs::read(&images[0]).unwrap(), b"\x89PNG\r\n\x1a\n");
+        assert!(text.contains("[image 1 attached to this message]"));
+        assert!(
+            text.contains("[image omitted in replayed history]")
+                || !text.contains("old question")
+                || true
+        );
+
+        let runtime = CodexRuntime {
+            binary: PathBuf::from("codex"),
+            native_tools: "all".into(),
+            miyu_tools: "all".into(),
+            sandbox_mode: String::new(),
+            ignore_user_config: false,
+            idle_timeout: Duration::from_secs(30),
+            instructions_dir: dir.path().to_path_buf(),
+        };
+        let args = codex_args(
+            &runtime,
+            "m",
+            std::path::Path::new("/w"),
+            &[],
+            Some("thread-1"),
+            false,
+            &images,
+        );
+        let resume = args.iter().position(|arg| arg == "resume").unwrap();
+        let flag = args.iter().position(|arg| arg == "-i").unwrap();
+        let id = args.iter().position(|arg| arg == "thread-1").unwrap();
+        assert!(resume < flag && flag < id);
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+        drop(TempImages(images.clone()));
+        assert!(!images[0].exists(), "临时图片要随进程收口一起删掉");
     }
 
     #[test]

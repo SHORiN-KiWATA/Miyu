@@ -129,7 +129,15 @@ impl Agent {
                 None => unread_video_paths.push(path),
             }
         }
-        let content = if !binary_images.is_empty() && !current_model_supports_vision {
+        // agy 线:模型自己用 view_file 看本地文件就是真图(09-04 实测图片/
+        // 视频/音频/PDF 都通),不再花一次视觉旁路把图转述成文字。
+        let native_media_viewer = self
+            .config
+            .active_pool_views_media_with_native_file_tool(self.mode == AgentMode::Dev);
+        let content = if !binary_images.is_empty()
+            && !current_model_supports_vision
+            && !native_media_viewer
+        {
             self.describe_images_with_vision_provider(&input, &binary_images)
                 .await?
         } else {
@@ -188,8 +196,11 @@ impl Agent {
             // 图已经内联给模型时不再邀请它调工具:它自己看得见,再调一次是白
             // 烧一次旁路请求。临时文件路径仍然留着——生图参考图、artifact 这些
             // 工具要靠它定位(08-27)。
-            let invite_vision_tool = vision_tool_available && !current_model_supports_vision;
-            let tool_hint = if invite_vision_tool {
+            let invite_vision_tool =
+                vision_tool_available && !current_model_supports_vision && !native_media_viewer;
+            let tool_hint = if native_media_viewer {
+                "\nOpen the path with view_file to look at the image itself."
+            } else if invite_vision_tool {
                 "\n你可以使用 vision_analyze 工具对此图片进行更详细的分析。"
             } else {
                 ""
@@ -210,7 +221,9 @@ impl Agent {
                     "用户{source}了 {} 张图片，已保存到临时文件：\n{}{}",
                     binary_paths.len(),
                     list,
-                    if invite_vision_tool {
+                    if native_media_viewer {
+                        "\nOpen these paths with view_file to look at the images themselves."
+                    } else if invite_vision_tool {
                         "\n你可以使用 vision_analyze 工具对这些图片进行更详细的分析。"
                     } else {
                         ""
@@ -219,15 +232,20 @@ impl Agent {
             };
             hints.push(ChatMessage::turn_context(hint));
         }
-        if !unread_image_paths.is_empty() && vision_tool_available {
+        if !unread_image_paths.is_empty() && (vision_tool_available || native_media_viewer) {
             let list = unread_image_paths
                 .iter()
                 .enumerate()
                 .map(|(index, path)| format!("  [Image {}] {}", index + 1, path))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let tool_hint = if native_media_viewer {
+                "Open these paths with view_file to look at the images themselves."
+            } else {
+                "你可以使用 vision_analyze 工具读取并分析这些图片。"
+            };
             hints.push(ChatMessage::turn_context(format!(
-                "用户粘贴了 {} 张本地图片路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些图片。",
+                "用户粘贴了 {} 张本地图片路径：\n{}\n{tool_hint}",
                 unread_image_paths.len(),
                 list
             )));
@@ -235,15 +253,20 @@ impl Agent {
         // 视频没能内联时才提示走工具:已经内联的那些模型自己看得见,再叫它去
         // 调工具就是白烧一次旁路请求(而且工具那条路还要另外挑一个吃视频的
         // 模型)。
-        if !unread_video_paths.is_empty() && vision_tool_available {
+        if !unread_video_paths.is_empty() && (vision_tool_available || native_media_viewer) {
             let list = unread_video_paths
                 .iter()
                 .enumerate()
                 .map(|(index, path)| format!("  [Video {}] {}", index + 1, path))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let tool_hint = if native_media_viewer {
+                "Open these paths with view_file to watch the videos themselves."
+            } else {
+                "你可以使用 vision_analyze 工具读取并分析这些视频。"
+            };
             hints.push(ChatMessage::turn_context(format!(
-                "用户粘贴了 {} 个本地视频路径：\n{}\n你可以使用 vision_analyze 工具读取并分析这些视频。",
+                "用户粘贴了 {} 个本地视频路径：\n{}\n{tool_hint}",
                 unread_video_paths.len(),
                 list
             )));

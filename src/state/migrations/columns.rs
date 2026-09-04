@@ -245,3 +245,16 @@ pub(in crate::state) fn apply_v30_turn_inline_media(conn: &Connection) -> Result
     )?;
     Ok(())
 }
+
+/// v31: followup(排队消息)随发的瞬态尾巴也要化石化。活体里 followup 正文
+/// 后面跟着 `<context-images>`/图片路径等提示块,回放只重建正文,两边字节
+/// 不同 ⇒ 缓存前缀在此掰断,CLI 中转线的续传链也在此失配、下一轮全量重放
+/// (09-04 codex 线实证)。存 JSON 数组的 ChatMessage,口径同 `turns.context_messages`。
+pub(in crate::state) fn apply_v31_queued_prompt_context_messages(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "queued_prompts",
+        "context_messages",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+}

@@ -152,6 +152,19 @@ fn render_history_line(message: &ChatMessage, transcript: &mut String) {
     transcript.push_str("\n\n");
 }
 
+/// base64 data URL → (media_type, 字节)。codex 只能从文件收图(`-i <FILE>`),
+/// 活跃尾巴里的 data: 图片要先落成临时文件再挂上去。
+pub(in crate::llm::openai_compatible) fn data_url_bytes(url: &str) -> Option<(String, Vec<u8>)> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let media_type = meta.strip_suffix(";base64")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
+    Some((media_type.to_string(), bytes))
+}
+
 /// data:/http(s) 图片 → Anthropic 内容块;认不出的形态退化为占位文本。
 fn image_block(url: &str) -> Value {
     if let Some(rest) = url.strip_prefix("data:") {

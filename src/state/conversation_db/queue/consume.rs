@@ -20,10 +20,14 @@ impl ConversationDb {
         preceding_assistant_model: Option<&str>,
         queue_session_id: &str,
     ) -> Result<()> {
+        let prompts = prompts
+            .iter()
+            .map(|(prompt_id, content)| (prompt_id.clone(), content.clone(), "[]".to_string()))
+            .collect::<Vec<_>>();
         self.consume_queued_prompts_with_checkpoint(
             session_id,
             turn_id,
-            prompts,
+            &prompts,
             preceding_assistant_content,
             preceding_assistant_reasoning,
             preceding_assistant_provider_id,
@@ -33,12 +37,15 @@ impl ConversationDb {
         )
     }
 
+    /// `prompts` = (prompt_id, 发出去的正文, 随发的瞬态尾巴 JSON)。尾巴要和
+    /// 正文一起落库:回放少了它,活体与化石字节不同,缓存前缀与 CLI 续传链
+    /// 都在 followup 处掰断(09-04 codex 线实证)。
     #[allow(clippy::too_many_arguments)]
     pub fn consume_queued_prompts_with_checkpoint(
         &self,
         session_id: &str,
         turn_id: &str,
-        prompts: &[(String, String)],
+        prompts: &[(String, String, String)],
         preceding_assistant_content: Option<&str>,
         preceding_assistant_reasoning: Option<&str>,
         preceding_assistant_provider_id: Option<&str>,
@@ -98,7 +105,7 @@ impl ConversationDb {
             };
         }
         let consumed_at = Utc::now().to_rfc3339();
-        for (index, (prompt_id, context_content)) in prompts.iter().enumerate() {
+        for (index, (prompt_id, context_content, context_messages)) in prompts.iter().enumerate() {
             let preceding_content = (index == 0)
                 .then_some(preceding_assistant_content)
                 .flatten();
@@ -111,7 +118,8 @@ impl ConversationDb {
                       context_content = ?3, preceding_assistant_content = ?4,
                       preceding_assistant_reasoning = ?5,
                       preceding_assistant_provider_id = ?6,
-                      preceding_assistant_model = ?7
+                      preceding_assistant_model = ?7,
+                      context_messages = ?11
                    WHERE prompt_id = ?8 AND status = 'queued' AND session_id = ?9
                      AND queue_session_id = ?10",
                 params![
@@ -124,7 +132,8 @@ impl ConversationDb {
                     preceding_assistant_model,
                     prompt_id,
                     session_id,
-                    queue_session_id
+                    queue_session_id,
+                    context_messages
                 ],
             )?;
             if affected != 1 {
@@ -133,7 +142,7 @@ impl ConversationDb {
         }
         let batch_prompt_ids = prompts
             .iter()
-            .map(|(prompt_id, _)| prompt_id.as_str())
+            .map(|(prompt_id, _, _)| prompt_id.as_str())
             .collect::<Vec<_>>();
         let batch_prompt_ids = serde_json::to_string(&batch_prompt_ids)?;
         let (payload, unavailable_reason) = match checkpoint {
@@ -192,7 +201,7 @@ impl ConversationDb {
         )?;
         let next_segment = segment_index.saturating_add(1);
         let prompt_payload =
-            serde_json::to_string(&prompts.iter().map(|(id, _)| id).collect::<Vec<_>>())?;
+            serde_json::to_string(&prompts.iter().map(|(id, _, _)| id).collect::<Vec<_>>())?;
         if segment_status == "superseded" {
             tx.execute(
                 "INSERT INTO turn_journal_segments

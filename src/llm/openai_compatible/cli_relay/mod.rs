@@ -18,12 +18,7 @@ use crate::llm::openai_compatible::*;
 /// 模式作用域判定:会话是 dev 还是 normal 由 Agent 构造时经
 /// `with_claude_code_dev_mode` 打到客户端上。未知值按 off 兜底。
 pub(in crate::llm::openai_compatible) fn scope_allows(scope: &str, dev_mode: bool) -> bool {
-    match scope.trim().to_ascii_lowercase().as_str() {
-        "all" => true,
-        "dev" => dev_mode,
-        "normal" => !dev_mode,
-        _ => false,
-    }
+    crate::config::relay_scope_allows(scope, dev_mode)
 }
 
 /// 本轮的双四档裁决结果。

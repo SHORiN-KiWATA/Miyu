@@ -18,6 +18,7 @@
 //! 别档的回合之后旧前缀依然匹配得上,所以切回来是续传而不是全量重放。
 
 use crate::llm::openai_compatible::*;
+use crate::llm::{ChatContent, ChatContentPart};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 struct SessionEntry {
@@ -47,8 +48,31 @@ fn hash_step(previous: u64, bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
+/// 进哈希链的是消息的**纯文本投影**:多段内容只留文本块,图片/视频块不参与。
+///
+/// 活体用户消息带图时是 `Parts[Text, ImageUrl…]`,落库只存那段文本,下一轮
+/// 化石回放成 `Text`——两者 JSON 字节不同,原样哈希会让链逢图必断,之后每个
+/// 已登记的前缀全部失配、全量重放(09-04 案卷机制 1)。历史转写本来就不带图
+/// (`payload::render_history_line` 只标一句 image omitted),所以文本投影才
+/// 是 CLI 那头真正看到过的东西。
 fn message_bytes(message: &ChatMessage) -> Vec<u8> {
-    serde_json::to_vec(message).unwrap_or_default()
+    let projected = match &message.content {
+        Some(ChatContent::Parts(parts)) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| match part {
+                    ChatContentPart::Text { text } => Some(text.as_str()),
+                    ChatContentPart::ImageUrl { .. } | ChatContentPart::VideoUrl { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut projected = message.clone();
+            projected.content = Some(ChatContent::Text(text));
+            projected
+        }
+        _ => message.clone(),
+    };
+    serde_json::to_vec(&projected).unwrap_or_default()
 }
 
 pub(in crate::llm::openai_compatible) fn prefix_chain(
@@ -225,6 +249,44 @@ mod tests {
             None
         );
         forget_session("sess-1");
+    }
+
+    /// 带图的活体用户消息(`Parts[Text, ImageUrl]`)与它的化石(只剩那段文本)
+    /// 必须算同一条链:落库不存图,下一轮回放成纯文本,原样哈希会让链逢图
+    /// 必断、之后每轮全量重放(09-04 群 130515298 案卷机制 1)。
+    #[test]
+    fn image_parts_hash_like_their_text_fossil() {
+        let live = ChatMessage::user_parts(vec![
+            ChatContentPart::Text {
+                text: "看看这张图".to_string(),
+            },
+            ChatContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrlContent {
+                    url: "data:image/png;base64,QUJD".to_string(),
+                },
+            },
+        ]);
+        let fossil = ChatMessage::plain("user", "看看这张图");
+        let reply = message("assistant", "红的");
+
+        let live_chain = prefix_chain("p", "m", "sys", &[live]);
+        record_session(
+            "p",
+            "m",
+            Some("miyu-img"),
+            true,
+            2,
+            extend_chain(live_chain[1], &reply),
+            "sess-img".to_string(),
+        );
+
+        let next = vec![fossil, reply, message("user", "再看看")];
+        let chain = prefix_chain("p", "m", "sys", &next);
+        assert_eq!(
+            find_resumable("p", "m", Some("miyu-img"), true, &chain, next.len()),
+            Some(("sess-img".to_string(), 2))
+        );
+        forget_session("sess-img");
     }
 
     /// 两档工具面各续各的 claude 会话:跨档绝不复用(复用就会让 claude 逐轮

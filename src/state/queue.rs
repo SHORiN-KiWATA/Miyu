@@ -170,7 +170,7 @@ impl StateStore {
     pub fn consume_queued_prompts_with_checkpoint(
         &self,
         turn_id: &str,
-        prompts: &[(String, String)],
+        prompts: &[(String, String, String)],
         preceding_assistant_content: Option<&str>,
         preceding_assistant_reasoning: Option<&str>,
         preceding_assistant_provider_id: Option<&str>,

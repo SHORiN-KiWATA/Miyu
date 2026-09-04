@@ -410,7 +410,7 @@ pub(crate) fn attach_followups_locked(conn: &Connection, turns: &mut [Turn]) -> 
             "SELECT prompt_id, turn_id, COALESCE(context_content, content), display_content,
                     attachments, submitted_at, preceding_assistant_content,
                     preceding_assistant_reasoning, preceding_assistant_provider_id,
-                    preceding_assistant_model
+                    preceding_assistant_model, COALESCE(context_messages, '[]')
              FROM queued_prompts
              WHERE status = 'consumed' AND turn_id IN ({placeholders})
              ORDER BY seq ASC"
@@ -431,6 +431,7 @@ pub(crate) fn attach_followups_locked(conn: &Connection, turns: &mut [Turn]) -> 
                     preceding_assistant_reasoning: row.get(7)?,
                     preceding_assistant_provider_id: row.get(8)?,
                     preceding_assistant_model: row.get(9)?,
+                    context_messages_json: row.get(10)?,
                 },
             ))
         })?;

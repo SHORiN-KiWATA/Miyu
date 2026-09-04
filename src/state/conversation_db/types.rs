@@ -312,6 +312,16 @@ pub struct TurnFollowup {
     pub preceding_assistant_reasoning: Option<String>,
     pub preceding_assistant_provider_id: Option<String>,
     pub preceding_assistant_model: Option<String>,
+    /// followup 正文之后随发的瞬态尾巴(runtime/图片路径/context-images 提示),
+    /// JSON 数组的 ChatMessage,口径同 `Turn::context_messages`;回放逐字节
+    /// 跟在正文后面。老行为 `[]`。
+    pub context_messages_json: String,
+}
+
+impl TurnFollowup {
+    pub fn context_messages(&self) -> Vec<ChatMessage> {
+        serde_json::from_str(&self.context_messages_json).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

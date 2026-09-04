@@ -87,6 +87,17 @@ pub const CLAUDE_CODE_PROTOCOL: &str = "claude-code";
 pub const ANTIGRAVITY_PROTOCOL: &str = "antigravity";
 /// Codex(OpenAI codex CLI)特殊供应商的内部协议标识。
 pub const CODEX_PROTOCOL: &str = "codex";
+
+/// CLI 中转线的工具作用域(off/dev/normal/all)在本模式下是否放行。
+/// 中转层与 agent 侧共用这一份判定,免得两边各写一套 match。
+pub fn relay_scope_allows(scope: &str, dev_mode: bool) -> bool {
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "all" => true,
+        "dev" => dev_mode,
+        "normal" => !dev_mode,
+        _ => false,
+    }
+}
 /// Claude Code 预置模型:CLI 认的别名。
 pub const CLAUDE_CODE_PRESET_MODELS: &[&str] = &["fable", "opus", "sonnet", "haiku"];
 /// Codex 预置模型:`codex debug models` 的目录(09-03,codex 0.147)。
@@ -545,11 +556,27 @@ impl ProviderConfig {
             .map(|modalities| modalities.iter().any(|m| m == "image"))
     }
 
+    /// 模型能直接吃进**消息**里的输入种类。
+    ///
+    /// agy 中转线恒为纯文本:它的 stream-json 只收 text 块(09-04 实测,image/
+    /// media 块一律 `not supported (only "text")`),模型看媒体只能自己调原生
+    /// `view_file`。目录里 Gemini 标着 image 输入,照抄就会让 Miyu 把图内联进
+    /// 消息——中转层再降级成占位文本,图没到模型,活体消息与化石还因此字节
+    /// 不同,续传链逢图必断(docs/issues/2026-09-04 案卷机制 1)。
     pub fn input_modalities(&self, model: &str) -> Option<Vec<String>> {
+        if self.is_antigravity() {
+            return Some(vec!["text".to_string()]);
+        }
         if let Some(modalities) = self.model_modalities.get(model) {
             return Some(modalities.clone());
         }
         crate::models_cache::input_modalities(&self.id, model)
+    }
+
+    /// 本线上模型看媒体靠自己调原生文件工具(`view_file` 对图片/视频/音频/PDF
+    /// 都返回媒体本体,09-04 实测),而不是消息内联或视觉旁路。
+    pub fn views_media_with_native_file_tool(&self) -> bool {
+        self.is_antigravity()
     }
 
     pub fn resolved_api_keys(&self, _paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {

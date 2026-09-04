@@ -221,6 +221,9 @@ impl Agent {
                     false,
                 );
                 messages.push(self.followup_user_message(followup));
+                // followup 随发的瞬态尾巴(runtime/图片路径/context-images)同样
+                // 化石回放,否则化石在这里比活体短一截,前缀与续传链都掰断。
+                messages.extend(followup.context_messages().iter().map(replay_fossil));
             }
             // dsh 形态回放:每轮 assistant 带原生 tool_calls(参数原样字节),
             // 随后各 call 的 role:"tool" 输出;最终回复照旧收尾。老回合

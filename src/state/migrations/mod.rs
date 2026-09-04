@@ -177,10 +177,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "turn_inline_media",
         apply: apply_v30_turn_inline_media,
     },
+    Migration {
+        version: 31,
+        name: "queued_prompt_context_messages",
+        apply: apply_v31_queued_prompt_context_messages,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 30;
+pub const LATEST_VERSION: i64 = 31;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

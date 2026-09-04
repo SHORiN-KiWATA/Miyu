@@ -218,10 +218,30 @@ impl Agent {
             self.platform_context.is_some(),
         );
 
-        let consumed = prepared
-            .iter()
-            .map(|(prompt, input)| (prompt.prompt_id.clone(), input.content.clone()))
-            .collect::<Vec<_>>();
+        // 瞬态尾巴挂在 followup 正文之后,并与正文一起化石化(v31):runtime
+        // 按首轮同一口径"变了才追加"(只挂第一条),图片路径/context-images
+        // 提示原样跟随。live 推进 messages 的就是这同一份 tail,活体与化石
+        // 逐字节一致——少了这一步,下一轮回放在 followup 处比活体短一截,
+        // 缓存前缀与 CLI 续传链都在这里掰断(09-04 codex 线实证)。
+        let runtime = runtime_context(mode, self.platform_context.is_some());
+        let runtime_block = (last_fossil_with_prefix(messages, "<runtime ")
+            != Some(runtime.as_str()))
+        .then(|| ChatMessage::turn_context(runtime));
+        let mut consumed = Vec::with_capacity(prepared.len());
+        let mut tails: Vec<Vec<ChatMessage>> = Vec::with_capacity(prepared.len());
+        for (index, (prompt, input)) in prepared.iter().enumerate() {
+            let mut tail = Vec::new();
+            if index == 0 {
+                tail.extend(runtime_block.clone());
+            }
+            tail.extend(fossil_context_messages(&input.hints));
+            consumed.push((
+                prompt.prompt_id.clone(),
+                input.content.clone(),
+                serde_json::to_string(&tail)?,
+            ));
+            tails.push(tail);
+        }
         self.state.consume_queued_prompts_with_checkpoint(
             current_turn_id,
             &consumed,
@@ -249,15 +269,15 @@ impl Agent {
             }
         }
         on_event(AgentEvent::QueuedPromptsConsumed {
-            prompt_ids: consumed.iter().map(|(id, _)| id.clone()).collect(),
+            prompt_ids: consumed.iter().map(|(id, _, _)| id.clone()).collect(),
             mode,
             provider_id: preceding_assistant.2.map(str::to_string),
             model: preceding_assistant.3.map(str::to_string),
         })?;
 
-        for (_, input) in prepared {
+        for ((_, input), tail) in prepared.into_iter().zip(tails) {
             messages.push(input.message);
-            messages.extend(input.hints);
+            messages.extend(tail);
         }
         Ok(())
     }

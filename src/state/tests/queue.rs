@@ -249,3 +249,57 @@ fn normal_session_cleanup_discards_unsent_prompts() {
     assert_eq!(store.discard_queued_prompts().unwrap(), 1);
     assert!(store.load_queued_prompts().unwrap().is_empty());
 }
+
+/// followup 随发的瞬态尾巴要和正文一起化石化(v31):回放少了它,活体与
+/// 化石在 followup 处字节不同,缓存前缀与 CLI 续传链都在这里掰断。
+#[test]
+fn followup_context_messages_round_trip() {
+    let (_temp, store) = test_store();
+    store
+        .start_turn("t1", "initial", std::process::id())
+        .unwrap();
+    store
+        .enqueue_prompt("q1", "followup", "followup", &[])
+        .unwrap();
+    let tail = vec![
+        crate::llm::ChatMessage::turn_context("<runtime now=\"x\"/>"),
+        crate::llm::ChatMessage::turn_context("<context-images>img_1</context-images>"),
+    ];
+    store
+        .consume_queued_prompts_with_checkpoint(
+            "t1",
+            &[(
+                "q1".to_string(),
+                "followup".to_string(),
+                serde_json::to_string(&tail).unwrap(),
+            )],
+            Some("before followup"),
+            None,
+            None,
+            None,
+            TurnRedoCheckpointPayload {
+                replay_messages: Vec::new(),
+                prefix_tool_reports: Vec::new(),
+                tool_rounds: 0,
+                question_rounds: 0,
+                loaded_items: Vec::new(),
+                prefix_question_count: 0,
+                prefix_image_asset_ids: Vec::new(),
+                prefix_artifact_asset_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+    store.complete_turn("t1", "final", None).unwrap();
+
+    let turns = store.load_turns().unwrap();
+    let replayed = turns[0].followups[0].context_messages();
+    assert_eq!(replayed.len(), 2);
+    assert!(matches!(
+        replayed[0].content.as_ref(),
+        Some(crate::llm::ChatContent::Text(text)) if text == "<runtime now=\"x\"/>"
+    ));
+    assert!(matches!(
+        replayed[1].content.as_ref(),
+        Some(crate::llm::ChatContent::Text(text)) if text.contains("img_1")
+    ));
+}

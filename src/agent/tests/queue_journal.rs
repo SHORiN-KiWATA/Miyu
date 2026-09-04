@@ -171,6 +171,7 @@ fn interrupted_redo_replays_prefix_followups_before_new_boundaries() {
         preceding_assistant_reasoning: None,
         preceding_assistant_provider_id: None,
         preceding_assistant_model: None,
+        context_messages_json: "[]".to_string(),
     };
     let mut turn = crate::state::Turn {
         turn_id: "redo-turn".to_string(),
@@ -469,14 +470,33 @@ async fn queued_prompt_continues_after_a_completed_model_call() {
             .as_deref(),
         Some("first reasoning")
     );
+    // followup 随发的尾巴(图片路径提示)与它一起化石化,回放紧跟在正文后。
+    let fossil_tail = turns[0].followups[0].context_messages();
+    assert!(fossil_tail.iter().any(|message| matches!(
+        message.content.as_ref(),
+        Some(ChatContent::Text(text)) if text.contains("已保存到临时文件")
+    )));
+    // 活体第二次请求里同一份尾巴紧跟 followup 之后,且 runtime 不再原地改写。
+    assert!(messages[followup + 1]["content"]
+        .as_str()
+        .is_some_and(
+            |content| content.starts_with("<runtime now=") || content.contains("已保存到临时文件")
+        ));
     let history = agent.chat_messages("", "next prompt").unwrap().0;
-    assert!(history.iter().any(|message| {
-        matches!(
-            message.content.as_ref(),
-            Some(ChatContent::Parts(parts))
-                if parts.iter().any(|part| matches!(part, ChatContentPart::ImageUrl { .. }))
-        )
-    }));
+    let replayed_followup = history
+        .iter()
+        .position(|message| {
+            matches!(
+                message.content.as_ref(),
+                Some(ChatContent::Parts(parts))
+                    if parts.iter().any(|part| matches!(part, ChatContentPart::ImageUrl { .. }))
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        history[replayed_followup + 1].content.as_ref(),
+        Some(ChatContent::Text(text)) if text.starts_with("<runtime now=") || text.contains("已保存到临时文件")
+    ));
     let candidate = state.redo_candidate().unwrap().unwrap();
     let redo = agent
         .redo_stream_with_control(
