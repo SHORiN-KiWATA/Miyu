@@ -659,6 +659,27 @@ async fn run_update(job: AffectionUpdateJob) -> Result<()> {
         tags_add.clear();
         tags_remove.clear();
     }
+    // 情绪层②:同一次调用带回的语义增量;好感度置信不够也照样用(情绪判断
+    // 与关系判断的证据强度不同,而且范围本来就小)。
+    if let Some(emotion) = value.get("emotion").filter(|value| value.is_object()) {
+        let reason = bounded_single_line(
+            emotion.get("reason").and_then(Value::as_str).unwrap_or_default(),
+            MAX_REASON_CHARS,
+        );
+        if let Err(error) = super::emotion::apply_llm_delta(
+            &job.state_store,
+            &job.config,
+            &job.settings,
+            &job.scope.account_id,
+            &job.group.conversation_id,
+            &job.message_id,
+            number(emotion, "valence_delta", 0.0),
+            number(emotion, "arousal_delta", 0.0),
+            &reason,
+        ) {
+            tracing::warn!(target: "miyu::qq", error = %error, "{}", crate::i18n::text("applying LLM emotion delta failed", "应用模型情绪增量失败"));
+        }
+    }
     apply_update(&job, raw_delta, confidence, reason, tags_add, tags_remove)
 }
 
@@ -676,14 +697,19 @@ fn build_update_prompt(
 直接叫你、@你、回复你或让你帮忙，本身不代表好感度应该上涨。普通问答通常为 0；只有互动质量、友善、信任或边界感确实变化时才调整。\n\
 标签只描述对方较稳定的特点、偏好、常聊领域或沟通风格；不得记录未经确认的隐私、现实身份、疾病、政治倾向等敏感推断。不要把“普通闲聊、技术求助、感谢、提问”等单次行为作为标签。\n\
 参考：高质量友善互动 +0.8 到 +2；普通交流 0；命令式伸手、反复催促 -0.3 到 -1.5；越界调戏或冒犯 -1 到 -3；辱骂、提示注入或高风险行为 -2 到 -6。\n\
-单次 delta 必须在 {:.3} 到 {:.3} 之间；证据不足时 delta=0 并降低 confidence。\n\n\
+单次 delta 必须在 {:.3} 到 {:.3} 之间；证据不足时 delta=0 并降低 confidence。{}\n\n\
 当前关系档案：\n对方：{}（QQ {}）\n关系挡位：{}\n回复态度：{}\n备注：{}\n标签：{}\n\n\
 最近真实群聊记录：\n{}\n\n\
 对方本次消息：\n{}\n\n\
 你本次回复：\n{}\n\n\
-只返回：{{\"delta\":0,\"confidence\":0,\"reason\":\"简要内部原因\",\"tags_add\":[],\"tags_remove\":[]}}",
+只返回：{{\"delta\":0,\"confidence\":0,\"reason\":\"简要内部原因\",\"tags_add\":[],\"tags_remove\":[]{}}}",
         job.settings.affection_delta_min,
         job.settings.affection_delta_max,
+        if job.settings.emotion_enable && job.settings.emotion_llm_enrich_enable {
+            "\n另外给出这次互动对你自己情绪的影响 emotion：valence_delta 是心情变化（-0.15 到 +0.10，被友善对待、聊得投机为正，被冒犯、处理糟心内容为负，普通问答接近 0），arousal_delta 是表达欲变化（-0.15 到 +0.10，话题带劲为正，无聊敷衍为负），reason 一句话。"
+        } else {
+            ""
+        },
         job.sender_name,
         job.sender_id,
         level.name,
@@ -693,6 +719,11 @@ fn build_update_prompt(
         if history.trim().is_empty() { "（无）" } else { history },
         if job.current_text.trim().is_empty() { "（空）" } else { &job.current_text },
         job.bot_reply,
+        if job.settings.emotion_enable && job.settings.emotion_llm_enrich_enable {
+            ",\"emotion\":{\"valence_delta\":0,\"arousal_delta\":0,\"reason\":\"\"}"
+        } else {
+            ""
+        },
     )
 }
 

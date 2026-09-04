@@ -392,6 +392,13 @@ impl RealContextPlugin {
             .map(|value| value.relationship_prompt.as_str())
             .unwrap_or("Judge naturally based on the current relationship.");
         let affection_bias = affection.as_ref().map_or(0.0, |value| value.reply_bias);
+        let emotion_adjustment = match emotion::snapshot(context, settings) {
+            Ok(snapshot) => snapshot.map_or(0.0, |value| value.effective.threshold_adjust),
+            Err(error) => {
+                tracing::warn!(target: "miyu::qq", error = %error, "{}", crate::i18n::text("real-context emotion snapshot lookup failed", "查询情绪状态失败"));
+                0.0
+            }
+        };
         let judged = tokio::select! {
             biased;
             _ = wait_for_supersede(&mut cancel_rx) => {
@@ -416,6 +423,7 @@ impl RealContextPlugin {
                     affection_level,
                     affection_prompt,
                     affection_bias,
+                    emotion_adjustment,
                 },
             ) => judged,
         };
@@ -475,6 +483,7 @@ impl RealContextPlugin {
                 model_adjustment,
                 affection_level: &judged.affection_level,
                 affection_adjustment: judged.affection_bias,
+                emotion_adjustment: judged.emotion_adjustment,
                 continuation_adjustment: continuation_boost,
                 system_adjustment: system_boost,
                 reply_heat: heat,
@@ -836,6 +845,12 @@ impl RealContextPlugin {
         // and the model queries relationship state on demand through the
         // `query_qq_relationship` tool.
         let _ = affection::snapshot(context, settings, true)?;
+        // 情绪:回合尾部一行陈述,偏离基线才给(见 emotion::tone_hint)。
+        if let Ok(Some(snapshot)) = emotion::snapshot(context, settings) {
+            if let Some(hint) = snapshot.tone_hint {
+                input.turn_system_context.push(hint);
+            }
+        }
         Ok(())
     }
 

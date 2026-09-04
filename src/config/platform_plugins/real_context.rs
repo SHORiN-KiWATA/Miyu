@@ -116,6 +116,23 @@ pub struct RealContextPluginSettings {
     pub affection_prompt_trusted: String,
     pub affection_prompt_close: String,
 
+    /// 情绪状态(09-04):按 (bot 账号, 人格) 一份的二维心情/表达欲,默认关。
+    pub emotion_enable: bool,
+    /// 层①:回复后按回合事实定固定增量。
+    pub emotion_heuristic_enable: bool,
+    /// 层②:搭好感度更新那次 LLM 调用的车拿语义增量,有它时替换层①。
+    pub emotion_llm_enrich_enable: bool,
+    pub emotion_influence_threshold: bool,
+    pub emotion_max_threshold_adjust: f64,
+    pub emotion_influence_tone: bool,
+    pub emotion_valence_half_life_hours: f64,
+    pub emotion_arousal_half_life_minutes: f64,
+    pub emotion_idle_loneliness_hours: f64,
+    pub emotion_morning_arousal_bonus: f64,
+    pub emotion_night_arousal_penalty: f64,
+    pub emotion_daily_valence_gain_limit: f64,
+    pub emotion_daily_valence_loss_limit: f64,
+
     pub identity_mappings: Vec<RealContextIdentityMapping>,
 }
 
@@ -202,6 +219,19 @@ impl Default for RealContextPluginSettings {
             affection_prompt_friend: "你和该用户关系较熟。可以自然接话，允许轻微吐槽、接梗和熟人语气，但不要过度亲密。".to_string(),
             affection_prompt_trusted: "你信任该用户。回复时可以更主动承接上下文，表达更直接明确的判断，但仍要保持事实准确和边界。".to_string(),
             affection_prompt_close: "你和该用户是挚友。可以使用更熟悉、轻松的语气和轻微玩笑。".to_string(),
+            emotion_enable: false,
+            emotion_heuristic_enable: true,
+            emotion_llm_enrich_enable: true,
+            emotion_influence_threshold: true,
+            emotion_max_threshold_adjust: 0.12,
+            emotion_influence_tone: true,
+            emotion_valence_half_life_hours: 6.0,
+            emotion_arousal_half_life_minutes: 45.0,
+            emotion_idle_loneliness_hours: 3.0,
+            emotion_morning_arousal_bonus: 0.06,
+            emotion_night_arousal_penalty: 0.12,
+            emotion_daily_valence_gain_limit: 0.6,
+            emotion_daily_valence_loss_limit: 1.0,
             identity_mappings: Vec::new(),
         }
     }
@@ -294,6 +324,54 @@ impl RealContextPluginSettings {
             self.reply_restraint_multiplier,
             0.0,
             3.0,
+        )?;
+        validate_real_context_range(
+            "emotion_max_threshold_adjust",
+            self.emotion_max_threshold_adjust,
+            0.0,
+            1.0,
+        )?;
+        validate_real_context_range(
+            "emotion_valence_half_life_hours",
+            self.emotion_valence_half_life_hours,
+            0.1,
+            168.0,
+        )?;
+        validate_real_context_range(
+            "emotion_arousal_half_life_minutes",
+            self.emotion_arousal_half_life_minutes,
+            1.0,
+            10_080.0,
+        )?;
+        validate_real_context_range(
+            "emotion_idle_loneliness_hours",
+            self.emotion_idle_loneliness_hours,
+            0.1,
+            168.0,
+        )?;
+        validate_real_context_range(
+            "emotion_morning_arousal_bonus",
+            self.emotion_morning_arousal_bonus,
+            0.0,
+            0.5,
+        )?;
+        validate_real_context_range(
+            "emotion_night_arousal_penalty",
+            self.emotion_night_arousal_penalty,
+            0.0,
+            0.5,
+        )?;
+        validate_real_context_range(
+            "emotion_daily_valence_gain_limit",
+            self.emotion_daily_valence_gain_limit,
+            0.0,
+            2.0,
+        )?;
+        validate_real_context_range(
+            "emotion_daily_valence_loss_limit",
+            self.emotion_daily_valence_loss_limit,
+            0.0,
+            2.0,
         )?;
         for (name, value) in [
             ("judge_relevance_weight", self.judge_relevance_weight),

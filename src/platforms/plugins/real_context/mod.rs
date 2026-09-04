@@ -12,6 +12,7 @@ pub(crate) use targeting::safe_prompt_field;
 pub(in crate::platforms::plugins::real_context) use targeting::*;
 pub(super) mod active_judgement_skip;
 pub(crate) mod affection;
+pub(crate) mod emotion;
 mod judge;
 
 use super::message_history::{self, store, ORIGINAL_TEXT_KEY};
@@ -404,17 +405,31 @@ impl PlatformPlugin for RealContextPlugin {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| outbound_text(message));
+                let mut affection_job = None;
                 if !reply.trim().is_empty() {
                     let store = self.store(context);
-                    if let Some(job) = affection::update_job(
+                    affection_job = affection::update_job(
                         context,
                         settings.clone(),
                         store,
                         group_key(context)?,
                         &reply,
-                    ) {
-                        self.affection_updates.enqueue(job);
-                    }
+                    );
+                }
+                // 情绪层①在这里;层②(LLM 语义增量)会随好感度更新一起回来,
+                // 那种情况下这里只计互动不加分,免得两层叠加。
+                let llm_pending = settings.emotion_llm_enrich_enable && affection_job.is_some();
+                let facts = emotion::ReplyFacts {
+                    direct: direct_interaction,
+                    active: matches!(trigger, Some(TriggerKind::Probability)),
+                    moderation_hit: context.plugin_value(MODERATION_NOTICE_KEY).is_some(),
+                    reply_chars: reply.chars().count(),
+                };
+                if let Err(error) = emotion::touch_after_reply(context, &settings, &facts, llm_pending) {
+                    tracing::warn!(target: "miyu::qq", error = %error, "{}", crate::i18n::text("emotion update after reply failed", "回复后更新情绪状态失败"));
+                }
+                if let Some(job) = affection_job {
+                    self.affection_updates.enqueue(job);
                 }
             }
             Ok(())

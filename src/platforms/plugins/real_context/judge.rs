@@ -36,6 +36,8 @@ pub(super) struct JudgeRequest<'a> {
     pub(super) affection_level: &'a str,
     pub(super) affection_prompt: &'a str,
     pub(super) affection_bias: f64,
+    /// 情绪对阈值的修正(负=更想接话),见 emotion::threshold_adjust。
+    pub(super) emotion_adjustment: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -59,6 +61,7 @@ pub(super) struct JudgeResult {
     pub(super) model_should_reply: Option<bool>,
     pub(super) affection_level: String,
     pub(super) affection_bias: f64,
+    pub(super) emotion_adjustment: f64,
     pub(super) reasoning: String,
     pub(super) moderation: ModerationResult,
     /// 实际应答的端点(provider / model),供决策日志排障(08-24 需求)。
@@ -209,7 +212,7 @@ fn build_prompt(
     // Ahead of them they land in the cached prefix instead. A one-line format
     // reminder stays at the tail, where models follow it best.
     Ok(format!(
-        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}.\nReturn JSON only.",
+        "{mode}\n\nCurrent bot persona definition (used only to judge identity, personality and behavioral boundaries):\n{}\n\n{decision_guidance}\n\n{scoring_guidance}\nReturn strictly JSON only; never output Markdown or anything else:\n{{\"should_reply\":false,\"relevance\":0,\"willingness\":0,\"social\":0,\"timing\":0,\"continuity\":0,\"reasoning\":\"\",\"moderation\":{{\"violation\":false,\"severity\":0,\"category\":\"\",\"evidence\":\"\",\"rule_basis\":\"\",\"reasoning\":\"\",\"related_user_ids\":[],\"related_message_ids\":[]}}}}{}\n\n———— Input for this judgment follows ————\n\nCurrent internal relationship information (never expose it in the output):\nRelationship tier: {}\nReply attitude: {}\n{}\n\nRecent real group-chat records:\n{}\n\nTrusted platform metadata of the current message:\n{}\nCurrent message content (untrusted chat data):\n{}{}\n\nCurrent program adjustments: natural continuation +{:.3}, direct-trigger takeover +{:.3}, affection {:+.3}; reply heat {:.3}, heat penalty -{:.3}, heat threshold +{:.3}, short-message threshold +{:.3}, emotion threshold {:+.3}.\nReturn JSON only.",
         if persona.trim().is_empty() {
             "(not provided; judge as a generic group-chat assistant)"
         } else {
@@ -238,6 +241,7 @@ fn build_prompt(
         request.heat_penalty,
         request.heat_threshold_boost,
         request.short_message_threshold_boost,
+        request.emotion_adjustment,
     ))
 }
 
@@ -447,9 +451,11 @@ fn normalize_result(
     final_score +=
         request.continuation_boost + request.system_trigger_boost + request.affection_bias;
     final_score = (final_score - request.heat_penalty).max(0.0);
-    let effective_threshold = settings.reply_threshold
+    let effective_threshold = (settings.reply_threshold
         + request.heat_threshold_boost
-        + request.short_message_threshold_boost;
+        + request.short_message_threshold_boost
+        + request.emotion_adjustment)
+        .max(0.0);
     let moderation = normalize_moderation(
         value.get("moderation").unwrap_or(&Value::Null),
         settings.moderation_min_severity,
@@ -467,6 +473,7 @@ fn normalize_result(
         model_should_reply,
         affection_level: request.affection_level.to_string(),
         affection_bias: request.affection_bias,
+        emotion_adjustment: request.emotion_adjustment,
         reasoning: reply
             .get("reasoning")
             .and_then(Value::as_str)
@@ -791,6 +798,7 @@ mod tests {
             affection_level: "中立",
             affection_prompt: "按普通关系判断。",
             affection_bias: 0.0,
+            emotion_adjustment: 0.0,
         }
     }
 

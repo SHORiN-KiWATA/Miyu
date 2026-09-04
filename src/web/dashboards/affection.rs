@@ -2,6 +2,7 @@
 //! 写走 plugin_update_json 读改写;情绪状态接口待情绪功能落地后补。
 
 use crate::platforms::plugins::real_context::affection::dashboard as affection;
+use crate::platforms::plugins::real_context::emotion;
 use crate::web::*;
 
 #[derive(Deserialize)]
@@ -159,5 +160,76 @@ pub(in crate::web) async fn dash_affection_delete(
     if !deleted {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "profile not found"));
     }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/* ── 情绪 ─────────────────────────────────────────────── */
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::web) struct EmotionSetBody {
+    valence: f64,
+    arousal: f64,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::web) struct EmotionResetBody {
+    #[serde(default)]
+    clear_events: bool,
+}
+
+pub(in crate::web) async fn dash_emotion_state(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_auth(&headers, &state)?;
+    check_ids(&query.account, None)?;
+    let scope = persona_scope(&state, &query.persona);
+    let settings = settings(&state)?;
+    let store = state.state_store.clone();
+    let paths = state.paths.clone();
+    let account = query.account.clone();
+    let result = blocking(move || emotion::dashboard_state(&store, &paths, &settings, &account, &scope)).await?;
+    Ok(Json(result))
+}
+
+pub(in crate::web) async fn dash_emotion_set(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+    Json(body): Json<EmotionSetBody>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_mutation(&headers, &state)?;
+    check_ids(&query.account, None)?;
+    if !body.valence.is_finite() || !body.arousal.is_finite() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "valence and arousal must be finite"));
+    }
+    let scope = persona_scope(&state, &query.persona);
+    let settings = settings(&state)?;
+    let store = state.state_store.clone();
+    let account = query.account.clone();
+    let updated = blocking(move || {
+        emotion::dashboard_set(&store, &settings, &account, &scope, body.valence, body.arousal, &body.reason)
+    })
+    .await?;
+    Ok(Json(json!({ "ok": true, "valence": updated.valence, "arousal": updated.arousal, "label": emotion::label_for(updated.valence, updated.arousal) })))
+}
+
+pub(in crate::web) async fn dash_emotion_reset(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+    Json(body): Json<EmotionResetBody>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_mutation(&headers, &state)?;
+    check_ids(&query.account, None)?;
+    let scope = persona_scope(&state, &query.persona);
+    let store = state.state_store.clone();
+    let account = query.account.clone();
+    blocking(move || emotion::dashboard_reset(&store, &account, &scope, body.clear_events)).await?;
     Ok(Json(json!({ "ok": true })))
 }

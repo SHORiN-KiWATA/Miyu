@@ -383,6 +383,11 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
                 .delete(dash_affection_delete),
         )
         .route(
+            "/api/dash/affection/emotion",
+            get(dash_emotion_state).put(dash_emotion_set),
+        )
+        .route("/api/dash/affection/emotion/reset", post(dash_emotion_reset))
+        .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),
         )

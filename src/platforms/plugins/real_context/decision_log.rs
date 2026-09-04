@@ -21,6 +21,7 @@ pub(in crate::platforms::plugins::real_context) struct ActiveReplyDecisionLog<'a
     pub(in crate::platforms::plugins::real_context) model_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) affection_level: &'a str,
     pub(in crate::platforms::plugins::real_context) affection_adjustment: f64,
+    pub(in crate::platforms::plugins::real_context) emotion_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) continuation_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) system_adjustment: f64,
     pub(in crate::platforms::plugins::real_context) reply_heat: f64,
@@ -136,6 +137,13 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_decision_
             ),
         ),
     ];
+    if log.emotion_adjustment.abs() >= 0.0005 {
+        lines.push(format_decision_log_field(
+            locale,
+            text_for(locale, "Emotion threshold adjustment", "情绪阈值调整"),
+            &format_adjustment(log.emotion_adjustment),
+        ));
+    }
     if log.continuation_adjustment.abs() >= 0.0005 {
         lines.push(format_decision_log_field(
             locale,

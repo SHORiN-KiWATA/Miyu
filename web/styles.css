@@ -7889,3 +7889,30 @@ body.miyu-paused *::after {
 .dash-score-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .dash-score-big { font-family: var(--serif); font-size: 30px; font-weight: 600; }
 .dash-check { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; font-size: var(--fs-ui); }
+
+/* ── 情绪标签:二维方格、点、区域标注、量表、表单 ── */
+.dash-emo-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .dash-emo-layout { grid-template-columns: 1fr; } }
+.dash-emo-grid {
+  position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden;
+  background:
+    linear-gradient(to right, transparent 49.5%, var(--line) 49.5%, var(--line) 50.5%, transparent 50.5%),
+    linear-gradient(to bottom, transparent 49.5%, var(--line) 49.5%, var(--line) 50.5%, transparent 50.5%),
+    linear-gradient(135deg, color-mix(in srgb, var(--danger) 14%, var(--surface-2)) 0%, var(--surface-2) 50%, color-mix(in srgb, var(--online) 16%, var(--surface-2)) 100%);
+}
+.dash-emo-region { position: absolute; transform: translate(-50%, -50%); font-size: var(--fs-micro); color: var(--text-faint); pointer-events: none; }
+.dash-emo-axis { position: absolute; font-size: var(--fs-micro); color: var(--text-faint); }
+.dash-emo-axis.is-x { right: 8px; bottom: 4px; }
+.dash-emo-axis.is-y { left: 6px; top: 4px; }
+.dash-emo-dot { position: absolute; width: 14px; height: 14px; border-radius: 50%; transform: translate(-50%, -50%); box-sizing: border-box; }
+.dash-emo-dot.is-stored { border: 2px solid var(--accent); background: transparent; }
+.dash-emo-dot.is-effective { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); }
+.dash-emo-side { display: flex; flex-direction: column; gap: 10px; }
+.dash-meter { display: grid; grid-template-columns: 52px minmax(0, 1fr) 48px auto; align-items: center; gap: 10px; font-size: var(--fs-meta); }
+.dash-meter-label { color: var(--text-soft); }
+.dash-meter-track { position: relative; height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.dash-meter-fill { position: absolute; top: 0; height: 100%; background: var(--accent); border-radius: 999px; }
+.dash-meter-base { position: absolute; top: -2px; width: 2px; height: 14px; background: var(--text-faint); transform: translateX(-1px); }
+.dash-emo-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.dash-emo-form label { display: grid; grid-template-columns: 52px minmax(0, 1fr) 48px; align-items: center; gap: 10px; font-size: var(--fs-meta); color: var(--text-soft); }
+.dash-emo-form input[type="range"] { height: auto; padding: 0; border: none; background: transparent; accent-color: var(--accent); }

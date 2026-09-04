@@ -1,6 +1,6 @@
 # 情绪状态功能设计（2026-09-04）
 
-状态：**设计稿，待拍板**。用户 09-04 拍板"情绪可以做"。这是功能提案，面板部分见 `2026-09-04-dashboard-design.md` §3.6。
+状态：**已实现（09-04，默认关闭 `emotion_enable=false`）**。用户 09-04 拍板"情绪可以做"；落点见文末"实现记录"。面板部分见 `2026-09-04-dashboard-design.md` §3.6。
 
 ## 0. 前提
 
@@ -126,3 +126,12 @@ struct EmotionEvent {
 2. 层②搭好感度更新的车而不是单独调用。
 3. 影响 C（表情包概率）做不做。
 4. 面板放在好感度面板的第二个标签（rail 名改"好感·情绪"）。
+
+## 8. 实现记录（09-04）
+
+- 代码：`src/platforms/plugins/real_context/emotion/mod.rs`（状态、标签表、衰减、有效态、阈值修正、启发式表、层②入口、面板视图与手动设值；6 条单测）。
+- 接线：`real_context/mod.rs::after_send` 回复后 touch（层②会来时只计互动不加分）；`inject.rs` 判官请求加 `emotion_adjustment`，回合尾部 `<internal-state>` 只在偏离基线时注入（回合尾部不在缓存前缀里，与 v7 决定 4 不冲突）；`judge.rs` 把修正加进有效阈值并写进"程序调整"行；`decision_log.rs` 多一行"情绪阈值调整"；`affection/mod.rs` 更新提示词多要一个 `emotion` 字段，解析后转 `apply_llm_delta`。
+- 配置：`RealContextPluginSettings` 新增 13 个 `emotion_*` 键（比 §4 少了 `emotion_influence_meme`，影响 C 未做）；TUI 分组"情绪状态"。
+- 面板：好感·情绪面板第二标签（二维方格、双量表、修正项、双曲线、手动设值、重置、事件流）。接口 `/api/dash/affection/emotion` GET/PUT，`/reset` POST。
+- 验收：§6.1 单测全过；§6.3 阈值差由 `threshold_adjust` 单测覆盖（±max）；接口在真实库副本上实测（设值/衰减/重置）；**§6.2 桩 LLM 五回合与 §6.4 人格遵循 A/B 未做**（需要真 QQ 回合形态）。
+- 未做：影响 C（表情包概率）；"自己的消息被撤回 → 负增量"那一行。

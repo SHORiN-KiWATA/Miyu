@@ -378,3 +378,20 @@ pub(crate) async fn dashboard_reset_context(paths: &MiyuPaths, key: Conversation
         .await?;
     Ok(json!({ "ok": true, "boundary": boundary }))
 }
+
+/// 情绪"冷清感"用:该账号最近一条人类消息的时间;库不存在或没有则 None。
+pub(crate) fn latest_human_message_at(paths: &MiyuPaths, account_id: &str) -> Result<Option<i64>> {
+    let Some(conn) = open_readonly(paths)? else {
+        return Ok(None);
+    };
+    let value: Option<i64> = conn
+        .query_row(
+            "SELECT sent_at FROM messages
+              WHERE platform = ?1 AND account_id = ?2 AND is_bot = 0
+              ORDER BY sent_at DESC, id DESC LIMIT 1",
+            rusqlite::params![PLATFORM, account_id],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(value)
+}

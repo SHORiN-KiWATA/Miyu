@@ -38,6 +38,7 @@ fn active_reply_decision_log_is_structured_for_humans() {
         model_adjustment: 0.2,
         affection_level: "熟人",
         affection_adjustment: 0.03,
+        emotion_adjustment: 0.0,
         continuation_adjustment: 0.05,
         system_adjustment: 0.0,
         reply_heat: 1.25,

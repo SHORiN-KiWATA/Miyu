@@ -229,11 +229,103 @@
     }
   }
 
-  function renderEmotion() {
+  /* ── 情绪标签 ────────────────────────────────────────── */
+  const EMO_LABEL_CLASS = { "烦躁": "is-danger", "低落": "is-muted", "疲惫": "is-muted", "兴奋": "is-active", "调皮": "is-active", "愉快": "is-active", "平静": "" };
+  const EMO_SOURCE = { reply: "回复", llm: "模型", moderation: "违规处理", manual: "手动" };
+  const fmtDur = (secs) => {
+    if (!secs || secs <= 0) return "已在基线";
+    if (secs < 3600) return `${Math.round(secs / 60)} 分钟`;
+    if (secs < 86400) return `${(secs / 3600).toFixed(1)} 小时`;
+    return `${(secs / 86400).toFixed(1)} 天`;
+  };
+
+  async function renderEmotion() {
     ui.cards.textContent = "";
-    ui.body.replaceChildren(D.el("div.u-card", null,
-      D.el("div.u-card-head", null, D.el("h3", { text: "情绪状态" })),
-      D.el("p.dash-field-hint", { text: "情绪功能按 docs/plan/2026-09-04-emotion-state.md 落地后,这里显示心情 / 表达欲二维状态、衰减进度、时段与冷清修正、事件曲线,并可手动设值。" })));
+    ui.body.replaceChildren(D.el("p.dash-empty", { text: "载入中…" }));
+    let e;
+    try {
+      e = await D.api(`/api/dash/affection/emotion?${scopeQuery()}`);
+    } catch (error) {
+      ui.body.replaceChildren(D.el("p.dash-empty", { text: `加载失败:${error.message}` }));
+      return;
+    }
+    if (state.tab !== "emotion") return;
+    const ef = e.effective, st = e.stored;
+    const pct = (v, min, max) => `${Math.round(((v - min) / (max - min)) * 100)}%`;
+
+    // 二维方格:横轴心情 −1..1,纵轴表达欲 1..0;七个区域用 title 标出。
+    const grid = D.el("div.dash-emo-grid");
+    const stored = D.el("i.dash-emo-dot.is-stored", { title: `存储态 ${st.label} (${st.valence.toFixed(2)}, ${st.arousal.toFixed(2)})` });
+    stored.style.left = pct(st.valence, -1, 1); stored.style.top = pct(1 - st.arousal, 0, 1);
+    const eff = D.el("i.dash-emo-dot.is-effective", { title: `有效态 ${ef.label} (${ef.valence.toFixed(2)}, ${ef.arousal.toFixed(2)})` });
+    eff.style.left = pct(ef.valence, -1, 1); eff.style.top = pct(1 - ef.arousal, 0, 1);
+    for (const [name, left, top] of [["烦躁", 12, 20], ["低落", 12, 78], ["疲惫", 50, 90], ["兴奋", 86, 8], ["调皮", 74, 22], ["愉快", 84, 55], ["平静", 50, 52]]) {
+      const tag = D.el("span.dash-emo-region", { text: name }); tag.style.left = `${left}%`; tag.style.top = `${top}%`; grid.append(tag);
+    }
+    grid.append(D.el("span.dash-emo-axis.is-x", { text: "心情 →" }), D.el("span.dash-emo-axis.is-y", { text: "表达欲 ↑" }), stored, eff);
+
+    const meter = (label, value, min, max, baseline, back) => {
+      const fill = D.el("i.dash-meter-fill"); fill.style.left = pct(Math.min(value, baseline), min, max); fill.style.width = `${Math.abs(value - baseline) / (max - min) * 100}%`;
+      const base = D.el("i.dash-meter-base"); base.style.left = pct(baseline, min, max);
+      return D.el("div.dash-meter", null, D.el("span.dash-meter-label", { text: label }), D.el("span.dash-meter-track", null, base, fill), D.el("span.dash-cell-mono", { text: value.toFixed(2) }), D.el("small.dash-cell-muted", { text: `回归基线还需 ${back}` }));
+    };
+    const stateCard = D.el("div.u-card", null,
+      D.el("div.u-card-head", null, D.el("h3", { text: "当前状态" }), D.el("span.u-hint", { text: "空心 = 存储态(已衰减),实心 = 叠加时段与冷清后的有效态" })),
+      D.el("div.dash-emo-layout", null, grid,
+        D.el("div.dash-emo-side", null,
+          D.el("div.dash-score-head", null, D.el("strong.dash-score-big", { text: ef.label }), D.el(`span.dash-chip.${EMO_LABEL_CLASS[ef.label] || ""}`, { text: ef.label_en }), ef.label !== st.label ? D.el("span.dash-cell-muted", { text: `存储态 ${st.label}` }) : null),
+          D.el("dl.dash-meta", null, [["心情", ef.valence_text], ["精神", ef.arousal_text], ["阈值修正", `${ef.threshold_adjust >= 0 ? "+" : ""}${ef.threshold_adjust.toFixed(3)}(负=更想接话)`],
+            ["时段修正", `${ef.time_arousal_adjust >= 0 ? "+" : ""}${ef.time_arousal_adjust.toFixed(2)} 表达欲`], ["冷清", `${ef.idle_hours.toFixed(1)} 小时无人 → 心情 ${ef.idle_valence_adjust.toFixed(2)} · 表达欲 ${ef.idle_arousal_adjust.toFixed(2)}`],
+            ["注入提示", ef.tone_hint || "(平静时不注入)"], ["今日", `${e.daily.date || "—"} · ${e.daily.interactions} 次互动 · +${e.daily.gain.toFixed(2)}/${e.daily.gain_limit} · −${e.daily.loss.toFixed(2)}/${e.daily.loss_limit}`],
+            ["上次写入", st.updated_at ? ts(st.updated_at) : "从未"]].flatMap(([k, v]) => [D.el("dt", { text: k }), D.el("dd", { text: String(v) })])),
+          meter("心情", st.valence, -1, 1, 0, fmtDur(e.return_secs.valence)),
+          meter("表达欲", st.arousal, 0, 1, 0.5, fmtDur(e.return_secs.arousal)))));
+
+    const events = e.events || [];
+    const rev = events.slice().reverse();
+    const curves = D.el("div.u-card", null, D.el("div.u-card-head", null, D.el("h3", { text: "曲线" }), D.el("span.u-hint", { text: `最近 ${events.length} 次变化(上限 100)` })),
+      D.el("div.dash-two-col", null,
+        D.el("div", null, D.el("span.dash-cell-muted", { text: "心情" }), rev.length > 1 ? D.sparkline(rev.map((ev, i) => ({ x: i, y: ev.valence_after })), { min: -1, max: 1, baseline: 0, height: 64 }) : D.el("p.dash-field-hint", { text: "—" })),
+        D.el("div", null, D.el("span.dash-cell-muted", { text: "表达欲" }), rev.length > 1 ? D.sparkline(rev.map((ev, i) => ({ x: i, y: ev.arousal_after })), { min: 0, max: 1, baseline: 0.5, height: 64 }) : D.el("p.dash-field-hint", { text: "—" }))));
+
+    const vInput = D.el("input.dash-select", { type: "range", min: "-1", max: "1", step: "0.05", value: String(st.valence) });
+    const aInput = D.el("input.dash-select", { type: "range", min: "0", max: "1", step: "0.05", value: String(st.arousal) });
+    const vOut = D.el("span.dash-cell-mono", { text: st.valence.toFixed(2) }), aOut = D.el("span.dash-cell-mono", { text: st.arousal.toFixed(2) });
+    vInput.oninput = () => { vOut.textContent = Number(vInput.value).toFixed(2); };
+    aInput.oninput = () => { aOut.textContent = Number(aInput.value).toFixed(2); };
+    const reason = D.el("input.dash-select.dash-wide", { type: "text", placeholder: "理由(必填)" });
+    const setBtn = D.el("button.dash-button.is-primary", { type: "button", text: "设值", onclick: async () => {
+      if (!reason.value.trim()) { D.toast("写个理由", "error"); return; }
+      try {
+        await D.api(`/api/dash/affection/emotion?${scopeQuery()}`, { method: "PUT", body: { valence: Number(vInput.value), arousal: Number(aInput.value), reason: reason.value.trim() } });
+        D.toast("已设值"); renderEmotion();
+      } catch (error) { D.toast(`失败:${error.message}`, "error"); }
+    } });
+    const resetBtn = D.el("button.dash-button", { type: "button", text: "回到基线", onclick: async () => {
+      if (!(await D.confirmAction("把心情与表达欲重置到基线?事件保留。", "重置"))) return;
+      try { await D.api(`/api/dash/affection/emotion/reset?${scopeQuery()}`, { method: "POST", body: { clear_events: false } }); D.toast("已重置"); renderEmotion(); } catch (error) { D.toast(`失败:${error.message}`, "error"); }
+    } });
+    const clearBtn = D.el("button.dash-button.is-danger", { type: "button", text: "清空状态与事件", onclick: async () => {
+      if (!(await D.confirmAction("删除这个账号 + 人格的情绪状态与全部事件?", "清空"))) return;
+      try { await D.api(`/api/dash/affection/emotion/reset?${scopeQuery()}`, { method: "POST", body: { clear_events: true } }); D.toast("已清空"); renderEmotion(); } catch (error) { D.toast(`失败:${error.message}`, "error"); }
+    } });
+    const manual = D.el("div.u-card", null, D.el("div.u-card-head", null, D.el("h3", { text: "手动设值" }), D.el("span.u-hint", { text: "写一条 manual 事件,不受日限幅" })),
+      D.el("div.dash-emo-form", null, D.el("label", null, D.el("span", { text: "心情" }), vInput, vOut), D.el("label", null, D.el("span", { text: "表达欲" }), aInput, aOut), reason),
+      D.el("div.dash-actions", null, setBtn, resetBtn, D.el("span.dash-actions-gap"), clearBtn));
+
+    const timeline = D.el("div.u-card", null, D.el("div.u-card-head", null, D.el("h3", { text: "事件" })),
+      D.timeline(events.slice(0, 60).map((ev) => ({
+        time: ts(ev.created_at),
+        chip: `${ev.delta_valence >= 0 ? "+" : ""}${ev.delta_valence.toFixed(3)} / ${ev.delta_arousal >= 0 ? "+" : ""}${ev.delta_arousal.toFixed(3)}`,
+        chipClass: ev.delta_valence > 0 ? "is-active" : (ev.delta_valence < 0 ? "is-danger" : ""),
+        body: D.el("div", null,
+          D.el("p.dash-timeline-body", { text: `${ev.label_before} → ${ev.label_after} · ${ev.reason || "(无理由)"}` }),
+          D.el("small.dash-cell-muted", { text: `${EMO_SOURCE[ev.source] || ev.source}${ev.group_id ? ` · 群 ${ev.group_id}` : ""}${ev.message_id && ev.message_id !== "dashboard" ? ` · 消息 ${ev.message_id}` : ""}` }))
+      })), "还没有情绪变化。"));
+
+    ui.body.replaceChildren(...[
+      e.enabled ? null : D.el("p.dash-banner", { text: "情绪功能在配置里是关闭的(emotion_enable=false):不会更新也不会影响判官与语气;下面是旧状态或空态。" }),
+      stateCard, curves, manual, timeline].filter(Boolean));
   }
 
   D.register({ name: "affection", root: "dashAffectionRoot", mount, refresh: () => reloadAll() });

@@ -8,9 +8,11 @@
 //! 插件的自由 JSON 里，不是强类型字段。
 
 mod affection;
+mod emotion;
 mod identity;
 mod reply;
 pub(in crate::config_tui) use affection::*;
+pub(in crate::config_tui) use emotion::*;
 pub(in crate::config_tui) use identity::*;
 pub(in crate::config_tui) use reply::*;
 
@@ -73,6 +75,7 @@ pub(in crate::config_tui) fn edit_real_context(
             t("Quote, mention, and reactions", "引用艾特和贴表情").to_string(),
             t("Safety checks", "违规判断").to_string(),
             t("Affection and relationship", "好感度与关系").to_string(),
+            t("Emotion state", "情绪状态").to_string(),
             t("Identity mappings", "识人映射").to_string(),
         ];
         draw_menu(
@@ -120,7 +123,8 @@ pub(in crate::config_tui) fn edit_real_context(
                 5 => edit_real_context_reply_target(stdout, &mut settings)?,
                 6 => edit_real_context_moderation(stdout, &mut settings)?,
                 7 => edit_real_context_affection(stdout, config, &mut settings)?,
-                8 => edit_real_context_identities(stdout, &mut settings)?,
+                8 => edit_real_context_emotion(stdout, &mut settings)?,
+                9 => edit_real_context_identities(stdout, &mut settings)?,
                 _ => {}
             },
             _ => {}
