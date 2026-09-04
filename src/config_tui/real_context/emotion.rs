@@ -52,8 +52,11 @@ pub(in crate::config_tui) fn edit_real_context_emotion(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
                 0 => {
-                    settings.emotion_enable =
-                        select_bool(stdout, t("Emotion state", "情绪状态"), settings.emotion_enable)?
+                    settings.emotion_enable = select_bool(
+                        stdout,
+                        t("Emotion state", "情绪状态"),
+                        settings.emotion_enable,
+                    )?
                 }
                 1 => {
                     settings.emotion_heuristic_enable = select_bool(
@@ -65,7 +68,10 @@ pub(in crate::config_tui) fn edit_real_context_emotion(
                 2 => {
                     settings.emotion_llm_enrich_enable = select_bool(
                         stdout,
-                        t("LLM deltas via affection update", "搭好感度更新拿模型语义增量"),
+                        t(
+                            "LLM deltas via affection update",
+                            "搭好感度更新拿模型语义增量",
+                        ),
                         settings.emotion_llm_enrich_enable,
                     )?
                 }
@@ -110,7 +116,10 @@ pub(in crate::config_tui) fn edit_real_context_emotion_values(
                 settings.emotion_arousal_half_life_minutes.to_string(),
             ),
             Field::new(
-                t("Loneliness after idle (hours)", "无人互动多久开始冷清(小时)"),
+                t(
+                    "Loneliness after idle (hours)",
+                    "无人互动多久开始冷清(小时)",
+                ),
                 settings.emotion_idle_loneliness_hours.to_string(),
             ),
             Field::new(

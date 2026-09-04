@@ -18,10 +18,7 @@ use std::time::{Duration, Instant};
 const CLI_LIST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 该供应商列模型要跑的二进制;`None` = 没有对应的 CLI 子命令。
-pub(crate) fn builtin_cli_binary(
-    config: &AppConfig,
-    provider: &ProviderConfig,
-) -> Option<String> {
+pub(crate) fn builtin_cli_binary(config: &AppConfig, provider: &ProviderConfig) -> Option<String> {
     let pick = |configured: &str, fallback: &str| {
         let configured = configured.trim();
         if configured.is_empty() {

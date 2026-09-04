@@ -90,7 +90,8 @@ pub(in crate::web) async fn dash_kb_file(
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
     let kb = kb(&state)?;
-    let page = blocking_user(move || kb.dashboard_read(&query.name, query.start, query.lines)).await?;
+    let page =
+        blocking_user(move || kb.dashboard_read(&query.name, query.start, query.lines)).await?;
     Ok(Json(page))
 }
 
@@ -102,7 +103,9 @@ pub(in crate::web) async fn dash_kb_search(
     require_auth(&headers, &state)?;
     let text = query.q.trim().to_string();
     if text.is_empty() {
-        return Ok(Json(json!({ "ok": true, "query": "", "total_matches": 0, "results": [] })));
+        return Ok(Json(
+            json!({ "ok": true, "query": "", "total_matches": 0, "results": [] }),
+        ));
     }
     let kb = kb(&state)?;
     let limit = Some(query.limit.clamp(1, 50));
@@ -230,7 +233,9 @@ pub(in crate::web) async fn dash_kb_default_update(
     {
         let mut guard = DEFAULT_KB_TASK.lock().unwrap();
         if guard.as_ref().is_some_and(|task| task.running) {
-            return Ok(Json(json!({ "ok": true, "started": false, "reason": "running" })));
+            return Ok(Json(
+                json!({ "ok": true, "started": false, "reason": "running" }),
+            ));
         }
         *guard = Some(DefaultKbTask {
             running: true,

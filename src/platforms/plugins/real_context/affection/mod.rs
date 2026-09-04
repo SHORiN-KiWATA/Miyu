@@ -663,7 +663,10 @@ async fn run_update(job: AffectionUpdateJob) -> Result<()> {
     // 与关系判断的证据强度不同,而且范围本来就小)。
     if let Some(emotion) = value.get("emotion").filter(|value| value.is_object()) {
         let reason = bounded_single_line(
-            emotion.get("reason").and_then(Value::as_str).unwrap_or_default(),
+            emotion
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
             MAX_REASON_CHARS,
         );
         if let Err(error) = super::emotion::apply_llm_delta(

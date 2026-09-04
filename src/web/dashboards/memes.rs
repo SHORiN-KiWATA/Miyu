@@ -165,7 +165,11 @@ pub(in crate::web) async fn dash_memes_upload(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty image"));
     }
     let manual = query.mode == "manual";
-    if manual && (query.name_zh.trim().is_empty() || query.description.trim().is_empty() || query.usage.trim().is_empty()) {
+    if manual
+        && (query.name_zh.trim().is_empty()
+            || query.description.trim().is_empty()
+            || query.usage.trim().is_empty())
+    {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "manual mode needs name_zh, description and usage",
@@ -211,7 +215,12 @@ pub(in crate::web) async fn dash_memes_patch(
         name_en: body.name_en.map(|v| v.trim().to_string()),
         description: body.description.map(|v| v.trim().to_string()),
         usage: body.usage.map(|v| v.trim().to_string()),
-        tags: body.tags.map(|tags| tags.into_iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()),
+        tags: body.tags.map(|tags| {
+            tags.into_iter()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        }),
         enabled: body.enabled,
     };
     let result = dashboard_update(&config, &state.paths, &library, &id, patch)

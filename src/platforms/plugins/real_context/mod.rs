@@ -425,7 +425,9 @@ impl PlatformPlugin for RealContextPlugin {
                     moderation_hit: context.plugin_value(MODERATION_NOTICE_KEY).is_some(),
                     reply_chars: reply.chars().count(),
                 };
-                if let Err(error) = emotion::touch_after_reply(context, &settings, &facts, llm_pending) {
+                if let Err(error) =
+                    emotion::touch_after_reply(context, &settings, &facts, llm_pending)
+                {
                     tracing::warn!(target: "miyu::qq", error = %error, "{}", crate::i18n::text("emotion update after reply failed", "回复后更新情绪状态失败"));
                 }
                 if let Some(job) = affection_job {

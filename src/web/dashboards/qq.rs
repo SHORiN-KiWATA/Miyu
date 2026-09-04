@@ -178,7 +178,12 @@ pub(in crate::web) async fn dash_qq_accounts(
         let conversations = history::dashboard_conversations(&paths, None)?;
         let history_accounts: Vec<String> = conversations["accounts"]
             .as_array()
-            .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let kv_accounts: Vec<String> = store
             .plugin_scopes(QQ_GROUP_MANAGEMENT_PLUGIN_ID, Some("group"))?
@@ -193,7 +198,9 @@ pub(in crate::web) async fn dash_qq_accounts(
     all.extend(kv_accounts);
     all.sort();
     all.dedup();
-    Ok(Json(json!({ "ok": true, "connected": connected, "accounts": all })))
+    Ok(Json(
+        json!({ "ok": true, "connected": connected, "accounts": all }),
+    ))
 }
 
 pub(in crate::web) async fn dash_qq_conversations(
@@ -233,9 +240,7 @@ pub(in crate::web) async fn dash_qq_messages(
     require_auth(&headers, &state)?;
     let key = conversation_key(&params.account, &params.kind, &params.id)?;
     let before = match (params.before_sent, params.before_row) {
-        (Some(sent_at), Some(row_id)) => {
-            Some(history::DashHistoryCursor { sent_at, row_id })
-        }
+        (Some(sent_at), Some(row_id)) => Some(history::DashHistoryCursor { sent_at, row_id }),
         _ => None,
     };
     let query = history::MessagesQuery {
@@ -262,9 +267,14 @@ pub(in crate::web) async fn dash_qq_stats(
     require_auth(&headers, &state)?;
     let key = conversation_key(&params.account, &params.kind, &params.id)?;
     let until = chrono::Utc::now().timestamp();
-    let since = if params.days <= 0 { 0 } else { until - params.days.clamp(1, 3650) * 86_400 };
+    let since = if params.days <= 0 {
+        0
+    } else {
+        until - params.days.clamp(1, 3650) * 86_400
+    };
     let paths = state.paths.clone();
-    let result = blocking(move || history::dashboard_stats(&paths, key, since, until, params.limit)).await?;
+    let result =
+        blocking(move || history::dashboard_stats(&paths, key, since, until, params.limit)).await?;
     Ok(Json(result))
 }
 
@@ -276,7 +286,9 @@ pub(in crate::web) async fn dash_qq_recalls(
     require_auth(&headers, &state)?;
     let key = conversation_key(&params.account, &params.kind, &params.id)?;
     let paths = state.paths.clone();
-    let result = blocking(move || history::dashboard_recalls(&paths, key, params.limit, params.offset)).await?;
+    let result =
+        blocking(move || history::dashboard_recalls(&paths, key, params.limit, params.offset))
+            .await?;
     Ok(Json(result))
 }
 
@@ -293,17 +305,26 @@ pub(in crate::web) async fn dash_qq_delete(
     }
     let key = if body.id.trim().is_empty() {
         if body.confirm.trim() != body.account {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "confirm must equal the account id"));
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "confirm must equal the account id",
+            ));
         }
         None
     } else {
         if body.confirm.trim() != body.id.trim() {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "confirm must equal the conversation id"));
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "confirm must equal the conversation id",
+            ));
         }
         Some(conversation_key(&body.account, &body.kind, &body.id)?)
     };
     if body.keep_days == Some(0) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "keep_days must be positive"));
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "keep_days must be positive",
+        ));
     }
     let spec = history::DeleteSpec {
         key,
@@ -368,7 +389,8 @@ pub(in crate::web) async fn dash_qq_groups(
     require_auth(&headers, &state)?;
     let account = query.account.trim().to_string();
     let store = state.state_store.clone();
-    let scopes = blocking(move || store.plugin_scopes(QQ_GROUP_MANAGEMENT_PLUGIN_ID, Some("group"))).await?;
+    let scopes =
+        blocking(move || store.plugin_scopes(QQ_GROUP_MANAGEMENT_PLUGIN_ID, Some("group"))).await?;
     let groups: Vec<Value> = scopes
         .into_iter()
         .filter(|scope| account.is_empty() || scope.account_id == account)
@@ -380,7 +402,9 @@ pub(in crate::web) async fn dash_qq_groups(
             })
         })
         .collect();
-    Ok(Json(json!({ "ok": true, "groups": groups, "connected": connected_accounts(&state) })))
+    Ok(Json(
+        json!({ "ok": true, "groups": groups, "connected": connected_accounts(&state) }),
+    ))
 }
 
 pub(in crate::web) async fn dash_qq_management(

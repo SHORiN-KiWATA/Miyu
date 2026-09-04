@@ -132,7 +132,8 @@ fn row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let subjects: String = row.get(11)?;
     let tags: String = row.get(14)?;
     let source_episode_ids: String = row.get(17)?;
-    let json_or = |text: &str, fallback: Value| serde_json::from_str::<Value>(text).unwrap_or(fallback);
+    let json_or =
+        |text: &str, fallback: Value| serde_json::from_str::<Value>(text).unwrap_or(fallback);
     Ok(json!({
         "id": row.get::<_, i64>(0)?,
         "content": row.get::<_, String>(1)?,
@@ -214,7 +215,12 @@ impl MemoryStore {
         push_eq(&mut clauses, &mut params, "visibility", &query.visibility);
         if table == BrowseTable::Facts {
             push_eq(&mut clauses, &mut params, "memory_type", &query.memory_type);
-            push_eq(&mut clauses, &mut params, "truth_status", &query.truth_status);
+            push_eq(
+                &mut clauses,
+                &mut params,
+                "truth_status",
+                &query.truth_status,
+            );
         } else {
             push_eq(&mut clauses, &mut params, "retention", &query.retention);
             push_eq(&mut clauses, &mut params, "origin_kind", &query.origin_kind);
@@ -457,7 +463,8 @@ impl MemoryStore {
             stats["episodes"] = json!(count_where(&data, "episodes", "status='active'")?);
             stats["episodes_forgotten"] =
                 json!(count_where(&data, "episodes", "status='forgotten'")?);
-            stats["short_diaries"] = json!(count_where(&data, "episodes", "retention='short_term'")?);
+            stats["short_diaries"] =
+                json!(count_where(&data, "episodes", "retention='short_term'")?);
             stats["long_diaries"] = json!(count_where(&data, "episodes", "retention='long_term'")?);
             stats["unconsolidated_diaries"] = json!(count_where(
                 &data,
@@ -469,8 +476,11 @@ impl MemoryStore {
                 "episodes",
                 "promotion_pending=1 AND promoted_at IS NULL"
             )?);
-            stats["unprocessed_pending_events"] =
-                json!(count_where(&data, "pending_events", "processed_at IS NULL")?);
+            stats["unprocessed_pending_events"] = json!(count_where(
+                &data,
+                "pending_events",
+                "processed_at IS NULL"
+            )?);
             stats["revisions"] = json!(count_rows(&data, "memory_revisions")?);
         }
         if let Some(state) = self.state_conn_existing()? {

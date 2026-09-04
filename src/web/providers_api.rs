@@ -30,12 +30,13 @@ pub(in crate::web) async fn provider_models(
     Json(request): Json<ProviderModelsRequest>,
 ) -> std::result::Result<Json<ProviderModelsResponse>, ApiError> {
     require_auth(&headers, &state)?;
-    let mut provider: ProviderConfig = serde_json::from_value(request.provider).map_err(|error| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("invalid provider: {}", safe_error_message(error)),
-        )
-    })?;
+    let mut provider: ProviderConfig =
+        serde_json::from_value(request.provider).map_err(|error| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("invalid provider: {}", safe_error_message(error)),
+            )
+        })?;
     let (current, paths) = {
         let manager = state.manager.lock().unwrap();
         (manager.config.clone(), state.paths.clone())
@@ -52,10 +53,7 @@ pub(in crate::web) async fn provider_models(
             .find(|item| item.id == provider.id)
             .and_then(|item| item.api_key.clone());
     }
-    if request.fetch
-        && !provider.is_builtin_cli_provider()
-        && provider.base_url.trim().is_empty()
-    {
+    if request.fetch && !provider.is_builtin_cli_provider() && provider.base_url.trim().is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "provider base_url is required to fetch models",

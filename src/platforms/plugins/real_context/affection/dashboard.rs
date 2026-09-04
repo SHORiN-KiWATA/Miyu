@@ -70,7 +70,8 @@ pub(crate) fn dashboard_list(
     let key = key_for_persona(persona_scope);
     let legacy_ok = key == DEFAULT_PROFILE_KEY;
     let rows = store.plugin_rows(REAL_CONTEXT_PLUGIN_ID, "affection")?;
-    let mut by_user: std::collections::BTreeMap<String, AffectionProfile> = std::collections::BTreeMap::new();
+    let mut by_user: std::collections::BTreeMap<String, AffectionProfile> =
+        std::collections::BTreeMap::new();
     for row in rows {
         if row.scope.account_id != account_id {
             continue;
@@ -90,7 +91,8 @@ pub(crate) fn dashboard_list(
         }
         by_user.insert(row.scope.conversation_id, profile);
     }
-    let mut levels: std::collections::BTreeMap<&'static str, usize> = std::collections::BTreeMap::new();
+    let mut levels: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut today_gain = 0.0;
     let mut today_loss = 0.0;
@@ -179,7 +181,11 @@ pub(crate) fn dashboard_update(
     }
     let now = now_unix();
     let reason = bounded_single_line(
-        if patch.reason.trim().is_empty() { "dashboard 手动调整" } else { patch.reason.trim() },
+        if patch.reason.trim().is_empty() {
+            "dashboard 手动调整"
+        } else {
+            patch.reason.trim()
+        },
         MAX_REASON_CHARS,
     );
     let updated = store.plugin_update_json(&scope, &key, |current: Option<AffectionProfile>| {

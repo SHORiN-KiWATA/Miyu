@@ -142,11 +142,7 @@ impl KnowledgeBase {
         let total = content.lines().count();
         let start = start_line.max(1);
         let max_lines = max_lines.clamp(1, 5000);
-        let text: Vec<&str> = content
-            .lines()
-            .skip(start - 1)
-            .take(max_lines)
-            .collect();
+        let text: Vec<&str> = content.lines().skip(start - 1).take(max_lines).collect();
         let end = if text.is_empty() {
             start.saturating_sub(1)
         } else {

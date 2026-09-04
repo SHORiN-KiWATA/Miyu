@@ -651,7 +651,11 @@ impl ConversationDb {
 
     /// dashboard 用:某插件在某类会话下的全部 kv 行(好感度档案这种"每用户一行"的
     /// 键要按前缀筛,只能整批拉回来再挑)。
-    pub fn plugin_rows(&self, plugin_id: &str, conversation_kind: &str) -> Result<Vec<PlatformPluginRow>> {
+    pub fn plugin_rows(
+        &self,
+        plugin_id: &str,
+        conversation_kind: &str,
+    ) -> Result<Vec<PlatformPluginRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT platform, account_id, conversation_id, key, value_json, updated_at
@@ -685,7 +689,11 @@ impl ConversationDb {
     }
 
     /// dashboard 用:某插件在哪些 (平台, 账号, 会话类型, 会话) 下留有记录。
-    pub fn plugin_scopes(&self, plugin_id: &str, conversation_kind: Option<&str>) -> Result<Vec<PlatformPluginScopeKey>> {
+    pub fn plugin_scopes(
+        &self,
+        plugin_id: &str,
+        conversation_kind: Option<&str>,
+    ) -> Result<Vec<PlatformPluginScopeKey>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
             "SELECT DISTINCT platform, account_id, conversation_kind, conversation_id

@@ -97,11 +97,19 @@ impl Default for EmotionEvent {
 /* ── 纯函数:标签、文本、衰减、修正 ─────────────────────────── */
 
 pub(crate) fn clamp_valence(value: f64) -> f64 {
-    if value.is_finite() { value.clamp(-1.0, 1.0) } else { VALENCE_BASELINE }
+    if value.is_finite() {
+        value.clamp(-1.0, 1.0)
+    } else {
+        VALENCE_BASELINE
+    }
 }
 
 pub(crate) fn clamp_arousal(value: f64) -> f64 {
-    if value.is_finite() { value.clamp(0.0, 1.0) } else { AROUSAL_BASELINE }
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        AROUSAL_BASELINE
+    }
 }
 
 /// 七态标签,顺序判定;阈值是常量不是配置。
@@ -166,20 +174,30 @@ pub(crate) fn arousal_text(value: f64) -> &'static str {
 }
 
 /// 指数回归基线:半衰期 h,经过 Δt 后偏离量减半。
-pub(crate) fn decayed(state: &EmotionState, now: i64, settings: &RealContextPluginSettings) -> (f64, f64) {
+pub(crate) fn decayed(
+    state: &EmotionState,
+    now: i64,
+    settings: &RealContextPluginSettings,
+) -> (f64, f64) {
     let elapsed = (now - state.updated_at).max(0) as f64;
     if state.updated_at <= 0 || elapsed <= 0.0 {
         return (clamp_valence(state.valence), clamp_arousal(state.arousal));
     }
     let v_half = (settings.emotion_valence_half_life_hours * 3600.0).max(60.0);
     let a_half = (settings.emotion_arousal_half_life_minutes * 60.0).max(60.0);
-    let v = VALENCE_BASELINE + (clamp_valence(state.valence) - VALENCE_BASELINE) * (2f64).powf(-elapsed / v_half);
-    let a = AROUSAL_BASELINE + (clamp_arousal(state.arousal) - AROUSAL_BASELINE) * (2f64).powf(-elapsed / a_half);
+    let v = VALENCE_BASELINE
+        + (clamp_valence(state.valence) - VALENCE_BASELINE) * (2f64).powf(-elapsed / v_half);
+    let a = AROUSAL_BASELINE
+        + (clamp_arousal(state.arousal) - AROUSAL_BASELINE) * (2f64).powf(-elapsed / a_half);
     (clamp_valence(v), clamp_arousal(a))
 }
 
 /// 心情好、表达欲高 → 阈值降(负数);反之升。
-pub(crate) fn threshold_adjust(valence: f64, arousal: f64, settings: &RealContextPluginSettings) -> f64 {
+pub(crate) fn threshold_adjust(
+    valence: f64,
+    arousal: f64,
+    settings: &RealContextPluginSettings,
+) -> f64 {
     if !settings.emotion_influence_threshold || settings.emotion_max_threshold_adjust <= 0.0 {
         return 0.0;
     }
@@ -256,7 +274,9 @@ pub(crate) fn tone_hint(effective: &Effective) -> Option<String> {
     if mood == "平稳" && energy == "普通" {
         return None;
     }
-    Some(format!("<internal-state>心情:{mood};精神:{energy}。</internal-state>"))
+    Some(format!(
+        "<internal-state>心情:{mood};精神:{energy}。</internal-state>"
+    ))
 }
 
 /* ── 存储 ───────────────────────────────────────────────── */
@@ -275,7 +295,11 @@ pub(crate) fn key_for(persona_scope: &str) -> String {
     format!("{STATE_KEY_PREFIX}:{persona_scope}")
 }
 
-pub(crate) fn load(store: &StateStore, account_id: &str, persona_scope: &str) -> Result<EmotionState> {
+pub(crate) fn load(
+    store: &StateStore,
+    account_id: &str,
+    persona_scope: &str,
+) -> Result<EmotionState> {
     Ok(store
         .plugin_get_json::<EmotionState>(&scope_for(account_id), &key_for(persona_scope))?
         .unwrap_or_default())
@@ -314,12 +338,22 @@ pub(crate) fn apply_delta(
                 state.daily_loss = 0.0;
                 state.daily_interactions = 0;
             }
-            let mut dv = if delta.valence.is_finite() { delta.valence } else { 0.0 };
-            let da = if delta.arousal.is_finite() { delta.arousal } else { 0.0 };
+            let mut dv = if delta.valence.is_finite() {
+                delta.valence
+            } else {
+                0.0
+            };
+            let da = if delta.arousal.is_finite() {
+                delta.arousal
+            } else {
+                0.0
+            };
             if dv > 0.0 && settings.emotion_daily_valence_gain_limit > 0.0 {
-                dv = dv.min((settings.emotion_daily_valence_gain_limit - state.daily_gain).max(0.0));
+                dv =
+                    dv.min((settings.emotion_daily_valence_gain_limit - state.daily_gain).max(0.0));
             } else if dv < 0.0 && settings.emotion_daily_valence_loss_limit > 0.0 {
-                dv = -(-dv).min((settings.emotion_daily_valence_loss_limit - state.daily_loss).max(0.0));
+                dv = -(-dv)
+                    .min((settings.emotion_daily_valence_loss_limit - state.daily_loss).max(0.0));
             }
             let v1 = clamp_valence(v0 + dv);
             let a1 = clamp_arousal(a0 + da);
@@ -436,7 +470,11 @@ pub(crate) fn touch_after_reply(
         Delta {
             valence: dv,
             arousal: da,
-            source: if facts.moderation_hit { "moderation" } else { "reply" },
+            source: if facts.moderation_hit {
+                "moderation"
+            } else {
+                "reply"
+            },
             reason,
             group_id: &context.conversation.conversation_id,
             message_id: &message_id,
@@ -491,7 +529,10 @@ fn local_hour() -> u32 {
 }
 
 /// 判官与注入用:读存储态 + 最近人类消息时间 → 有效态。功能关着返回 None。
-pub(crate) fn snapshot(context: &PlatformTurnContext, settings: &RealContextPluginSettings) -> Result<Option<Snapshot>> {
+pub(crate) fn snapshot(
+    context: &PlatformTurnContext,
+    settings: &RealContextPluginSettings,
+) -> Result<Option<Snapshot>> {
     if !settings.emotion_enable {
         return Ok(None);
     }
@@ -513,17 +554,22 @@ pub(crate) fn snapshot_for(
 ) -> Result<Snapshot> {
     let state = load(store, account_id, persona_scope)?;
     let now = now_unix();
-    let idle = crate::platforms::plugins::message_history::dashboard::latest_human_message_at(paths, account_id)
-        .ok()
-        .flatten()
-        .map(|at| now - at);
+    let idle = crate::platforms::plugins::message_history::dashboard::latest_human_message_at(
+        paths, account_id,
+    )
+    .ok()
+    .flatten()
+    .map(|at| now - at);
     let effective = effective(&state, now, local_hour(), idle, settings);
     let tone_hint = if settings.emotion_influence_tone {
         tone_hint(&effective)
     } else {
         None
     };
-    Ok(Snapshot { effective, tone_hint })
+    Ok(Snapshot {
+        effective,
+        tone_hint,
+    })
 }
 
 /* ── dashboard ─────────────────────────────────────────── */
@@ -542,7 +588,11 @@ pub(crate) fn dashboard_state(
     // 距基线回归到 5% 以内还要多久(按半衰期算,给面板一个"多久归零")。
     let remaining = |value: f64, baseline: f64, half_life_secs: f64| -> f64 {
         let offset = (value - baseline).abs();
-        if offset < 0.01 { 0.0 } else { half_life_secs * (offset / 0.01).log2() }
+        if offset < 0.01 {
+            0.0
+        } else {
+            half_life_secs * (offset / 0.01).log2()
+        }
     };
     Ok(json!({
         "ok": true,
@@ -626,7 +676,11 @@ pub(crate) fn dashboard_set(
             valence: clamp_valence(valence) - v0,
             arousal: clamp_arousal(arousal) - a0,
             source: "manual",
-            reason: if reason.trim().is_empty() { "dashboard 手动设值" } else { reason.trim() },
+            reason: if reason.trim().is_empty() {
+                "dashboard 手动设值"
+            } else {
+                reason.trim()
+            },
             group_id: "",
             message_id: "dashboard",
             interaction: false,
@@ -634,18 +688,27 @@ pub(crate) fn dashboard_set(
     )
 }
 
-pub(crate) fn dashboard_reset(store: &StateStore, account_id: &str, persona_scope: &str, clear_events: bool) -> Result<()> {
+pub(crate) fn dashboard_reset(
+    store: &StateStore,
+    account_id: &str,
+    persona_scope: &str,
+    clear_events: bool,
+) -> Result<()> {
     if clear_events {
         store.plugin_delete_key(&scope_for(account_id), &key_for(persona_scope))?;
         return Ok(());
     }
-    store.plugin_update_json(&scope_for(account_id), &key_for(persona_scope), |current: Option<EmotionState>| {
-        let mut state = current.unwrap_or_default();
-        state.valence = VALENCE_BASELINE;
-        state.arousal = AROUSAL_BASELINE;
-        state.updated_at = now_unix();
-        Ok(Some(state))
-    })?;
+    store.plugin_update_json(
+        &scope_for(account_id),
+        &key_for(persona_scope),
+        |current: Option<EmotionState>| {
+            let mut state = current.unwrap_or_default();
+            state.valence = VALENCE_BASELINE;
+            state.arousal = AROUSAL_BASELINE;
+            state.updated_at = now_unix();
+            Ok(Some(state))
+        },
+    )?;
     Ok(())
 }
 
@@ -689,7 +752,10 @@ mod tests {
         let (v, a) = decayed(&state, 1_000 + 365 * 86_400, &s);
         assert!(v.abs() < 1e-6 && (a - 0.5).abs() < 1e-6);
         // updated_at 为 0(从未写过)按不衰减处理。
-        let fresh = EmotionState { valence: 0.3, ..Default::default() };
+        let fresh = EmotionState {
+            valence: 0.3,
+            ..Default::default()
+        };
         assert_eq!(decayed(&fresh, 99_999, &s).0, 0.3);
     }
 
@@ -708,7 +774,12 @@ mod tests {
     #[test]
     fn effective_state_stacks_time_and_loneliness_without_touching_storage() {
         let s = settings();
-        let state = EmotionState { valence: 0.1, arousal: 0.5, updated_at: 10, ..Default::default() };
+        let state = EmotionState {
+            valence: 0.1,
+            arousal: 0.5,
+            updated_at: 10,
+            ..Default::default()
+        };
         let quiet = effective(&state, 10, 12, Some(0), &s);
         assert_eq!(quiet.label, "平静");
         assert!(tone_hint(&quiet).is_none());
@@ -720,7 +791,12 @@ mod tests {
         assert_eq!(night.stored_arousal, 0.5);
         let morning = effective(&state, 10, 8, Some(0), &s);
         assert!((morning.arousal - 0.56).abs() < 1e-9);
-        let excited = EmotionState { valence: 0.6, arousal: 0.8, updated_at: 10, ..Default::default() };
+        let excited = EmotionState {
+            valence: 0.6,
+            arousal: 0.8,
+            updated_at: 10,
+            ..Default::default()
+        };
         let hint = tone_hint(&effective(&excited, 10, 12, None, &s)).unwrap();
         assert!(hint.contains("心情:很好") && hint.contains("很有表达欲"));
         assert!(!hint.contains('0'));
@@ -728,11 +804,26 @@ mod tests {
 
     #[test]
     fn heuristic_table_matches_the_design() {
-        let plain = heuristic_delta(&ReplyFacts { direct: false, active: false, moderation_hit: false, reply_chars: 10 });
+        let plain = heuristic_delta(&ReplyFacts {
+            direct: false,
+            active: false,
+            moderation_hit: false,
+            reply_chars: 10,
+        });
         assert_eq!(plain, (0.02, 0.02, "完成了一次普通回复"));
-        let direct = heuristic_delta(&ReplyFacts { direct: true, active: false, moderation_hit: false, reply_chars: 200 });
+        let direct = heuristic_delta(&ReplyFacts {
+            direct: true,
+            active: false,
+            moderation_hit: false,
+            reply_chars: 200,
+        });
         assert!((direct.0 - 0.04).abs() < 1e-9 && (direct.1 - 0.045).abs() < 1e-9);
-        let bad = heuristic_delta(&ReplyFacts { direct: true, active: true, moderation_hit: true, reply_chars: 0 });
+        let bad = heuristic_delta(&ReplyFacts {
+            direct: true,
+            active: true,
+            moderation_hit: true,
+            reply_chars: 0,
+        });
         assert!(bad.0 <= -0.025);
         assert_eq!(bad.2, "处理了可能违规或令人不适的内容");
     }
@@ -758,17 +849,45 @@ mod tests {
         };
         let store = StateStore::new(&paths).unwrap();
         let s = settings();
-        let first = apply_delta(&store, &s, "1", "default", 1_000, Delta {
-            valence: 0.5, arousal: 0.1, source: "reply", reason: "r", group_id: "g", message_id: "m", interaction: true,
-        }).unwrap();
+        let first = apply_delta(
+            &store,
+            &s,
+            "1",
+            "default",
+            1_000,
+            Delta {
+                valence: 0.5,
+                arousal: 0.1,
+                source: "reply",
+                reason: "r",
+                group_id: "g",
+                message_id: "m",
+                interaction: true,
+            },
+        )
+        .unwrap();
         assert!((first.valence - 0.5).abs() < 1e-9);
         assert_eq!(first.daily_interactions, 1);
         assert_eq!(first.events.len(), 1);
         assert_eq!(first.events[0].label_after, "愉快");
         // 日增益上限 0.6:再加 0.5 只能进 0.1。
-        let second = apply_delta(&store, &s, "1", "default", 1_000, Delta {
-            valence: 0.5, arousal: 0.0, source: "reply", reason: "r", group_id: "g", message_id: "m2", interaction: true,
-        }).unwrap();
+        let second = apply_delta(
+            &store,
+            &s,
+            "1",
+            "default",
+            1_000,
+            Delta {
+                valence: 0.5,
+                arousal: 0.0,
+                source: "reply",
+                reason: "r",
+                group_id: "g",
+                message_id: "m2",
+                interaction: true,
+            },
+        )
+        .unwrap();
         assert!((second.valence - 0.6).abs() < 1e-9);
         assert!((second.daily_gain - 0.6).abs() < 1e-9);
         // 手动设值绕过日限幅并落一条 manual 事件。

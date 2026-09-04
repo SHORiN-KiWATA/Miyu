@@ -70,7 +70,13 @@ pub(crate) fn dashboard_libraries(config: &AppConfig, paths: &MiyuPaths) -> Resu
     }))
 }
 
-fn item_json(item: &MemeItem, source: MemeSource, shadowed: bool, disabled: bool, short_id: &str) -> Value {
+fn item_json(
+    item: &MemeItem,
+    source: MemeSource,
+    shadowed: bool,
+    disabled: bool,
+    short_id: &str,
+) -> Value {
     json!({
         "id": item.id,
         "short_id": short_id,
@@ -263,7 +269,11 @@ pub(crate) async fn dashboard_update(
     }
     if let Some(value) = patch.name_en {
         // 空串表示清掉英文名:apply_updates 会忽略空串,所以单独处理。
-        args["name_en"] = json!(if value.is_empty() { " ".to_string() } else { value });
+        args["name_en"] = json!(if value.is_empty() {
+            " ".to_string()
+        } else {
+            value
+        });
     }
     if let Some(value) = patch.description {
         args["description"] = json!(value);
@@ -304,7 +314,8 @@ pub(crate) async fn dashboard_classify(
     library: &str,
     id: &str,
 ) -> Result<Value> {
-    let meme = find_meme_any(paths, library, id)?.with_context(|| format!("meme not found: {id}"))?;
+    let meme =
+        find_meme_any(paths, library, id)?.with_context(|| format!("meme not found: {id}"))?;
     let classification = classify_meme_image(config, paths, &meme.path).await?;
     Ok(json!({
         "ok": true,
@@ -366,7 +377,9 @@ mod tests {
             tags: vec!["测试".into()],
             manual: true,
         };
-        let added = dashboard_add(&config, &paths, upload, &png_bytes()).await.unwrap();
+        let added = dashboard_add(&config, &paths, upload, &png_bytes())
+            .await
+            .unwrap();
         assert_eq!(added["success"], true);
         let id = added["id"].as_str().unwrap().to_string();
 
@@ -388,7 +401,9 @@ mod tests {
             tags: vec![],
             manual: true,
         };
-        let dup = dashboard_add(&config, &paths, again, &png_bytes()).await.unwrap();
+        let dup = dashboard_add(&config, &paths, again, &png_bytes())
+            .await
+            .unwrap();
         assert_eq!(dup["already_exists"], true);
 
         // 编辑 + 校验:超长描述拒绝;正常改写生效;禁用后列表仍列出并标 disabled。
@@ -400,7 +415,9 @@ mod tests {
             tags: None,
             enabled: None,
         };
-        assert!(dashboard_update(&config, &paths, "testlib", &id, too_long).await.is_err());
+        assert!(dashboard_update(&config, &paths, "testlib", &id, too_long)
+            .await
+            .is_err());
         let patch = DashboardPatch {
             name_zh: Some("大红方块".into()),
             name_en: None,
@@ -409,7 +426,9 @@ mod tests {
             tags: Some(vec!["测试".into(), "红色".into()]),
             enabled: Some(false),
         };
-        dashboard_update(&config, &paths, "testlib", &id, patch).await.unwrap();
+        dashboard_update(&config, &paths, "testlib", &id, patch)
+            .await
+            .unwrap();
         let listed = dashboard_list(&paths, "testlib").unwrap();
         assert_eq!(listed["items"][0]["name"]["zh"], "大红方块");
         assert_eq!(listed["items"][0]["tags"], json!(["测试", "红色"]));
@@ -417,9 +436,14 @@ mod tests {
         assert_eq!(listed["stats"]["disabled"], 1);
         assert!(dashboard_image(&paths, "testlib", &id).unwrap().is_some());
 
-        let deleted = dashboard_delete(&config, &paths, "testlib", &id, true).await.unwrap();
+        let deleted = dashboard_delete(&config, &paths, "testlib", &id, true)
+            .await
+            .unwrap();
         assert_eq!(deleted["action"], "deleted_user_meme");
-        assert_eq!(dashboard_list(&paths, "testlib").unwrap()["stats"]["total"], 0);
+        assert_eq!(
+            dashboard_list(&paths, "testlib").unwrap()["stats"]["total"],
+            0
+        );
         assert!(dashboard_image(&paths, "testlib", &id).unwrap().is_none());
 
         let libraries = dashboard_libraries(&config, &paths).unwrap();

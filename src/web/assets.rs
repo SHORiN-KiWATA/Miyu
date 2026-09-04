@@ -166,9 +166,15 @@ static DASH_SCRIPTS: &[(&str, &str)] = &[
     ("dash-memes.js", include_str!("../../web/dash-memes.js")),
     ("dash-qq.js", include_str!("../../web/dash-qq.js")),
     ("dash-groups.js", include_str!("../../web/dash-groups.js")),
-    ("dash-affection.js", include_str!("../../web/dash-affection.js")),
+    (
+        "dash-affection.js",
+        include_str!("../../web/dash-affection.js"),
+    ),
     // 设置页(09-04 重做):字段模式表 + 渲染层,走同一条静态表。
-    ("settings-schema.js", include_str!("../../web/settings-schema.js")),
+    (
+        "settings-schema.js",
+        include_str!("../../web/settings-schema.js"),
+    ),
     ("settings.js", include_str!("../../web/settings.js")),
 ];
 

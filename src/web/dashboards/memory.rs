@@ -1,9 +1,7 @@
 //! 记忆浏览器:按人格分库,列表 / 过滤 / 详情(含修订历史)/ 编辑 / 删除 /
 //! 手工新增 / 逐出归档浏览 / 清理与重置。读走零副作用查询,不建库不衰减。
 
-use crate::memory::browse::{
-    BrowsePatch, BrowseQuery, BrowseTable, EpisodeStage, EvictedQuery,
-};
+use crate::memory::browse::{BrowsePatch, BrowseQuery, BrowseTable, EpisodeStage, EvictedQuery};
 use crate::web::*;
 
 #[derive(Deserialize)]
@@ -136,9 +134,8 @@ fn memory_store(
 }
 
 fn parse_table(value: &str) -> std::result::Result<BrowseTable, ApiError> {
-    BrowseTable::parse(value).ok_or_else(|| {
-        ApiError::new(StatusCode::BAD_REQUEST, "table must be facts or episodes")
-    })
+    BrowseTable::parse(value)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "table must be facts or episodes"))
 }
 
 async fn blocking<T, F>(work: F) -> std::result::Result<T, ApiError>
@@ -195,9 +192,10 @@ pub(in crate::web) async fn dash_memory_items(
     let table = parse_table(&params.table)?;
     let stage = match params.stage.trim() {
         "" | "all" => None,
-        value => Some(EpisodeStage::parse(value).ok_or_else(|| {
-            ApiError::new(StatusCode::BAD_REQUEST, "invalid stage")
-        })?),
+        value => Some(
+            EpisodeStage::parse(value)
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid stage"))?,
+        ),
     };
     let store = memory_store(&state, &params.persona)?;
     let query = BrowseQuery {

@@ -6,7 +6,10 @@ use crate::state::{PlatformPluginScopeKey, StateStore};
 use anyhow::Result;
 use serde_json::{json, Value};
 
-pub(crate) fn dashboard_management(store: &StateStore, scope: &PlatformPluginScopeKey) -> Result<Value> {
+pub(crate) fn dashboard_management(
+    store: &StateStore,
+    scope: &PlatformPluginScopeKey,
+) -> Result<Value> {
     let events = load_all_events_from(store, scope)?;
     let statuses = ban_statuses(&events, chrono::Utc::now().timestamp());
     let members = aggregate_member_stats("all", &events);
@@ -39,6 +42,9 @@ pub(crate) fn dashboard_management(store: &StateStore, scope: &PlatformPluginSco
     }))
 }
 
-pub(crate) fn dashboard_clear_events(store: &StateStore, scope: &PlatformPluginScopeKey) -> Result<bool> {
+pub(crate) fn dashboard_clear_events(
+    store: &StateStore,
+    scope: &PlatformPluginScopeKey,
+) -> Result<bool> {
     store.plugin_delete_key(scope, EVENTS_KEY)
 }

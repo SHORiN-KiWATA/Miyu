@@ -106,8 +106,13 @@ pub(in crate::config_tui) fn catalog_entry(
     provider: &ProviderConfig,
     model: &str,
 ) -> Option<crate::models_cache::ModelCatalogEntry> {
-    crate::models_cache::describe_models(paths, &provider.id, &provider.base_url, &[model.to_string()])
-        .pop()
+    crate::models_cache::describe_models(
+        paths,
+        &provider.id,
+        &provider.base_url,
+        &[model.to_string()],
+    )
+    .pop()
 }
 
 /// 从目录自动同步模型元数据:输入模态、上下文窗口,只补空缺不覆盖手填
@@ -741,18 +746,19 @@ pub(in crate::config_tui) fn edit_model_form(
                 .map(|window| window as usize)
         })
         .unwrap_or_default();
-    let catalog_price_label: &'static str = match catalog.as_ref().and_then(|entry| entry.cost.as_ref()) {
-        Some(cost) => Box::leak(
-            format!(
-                "{} ${}/{}",
-                t("catalogue", "目录价"),
-                trim_price(cost.input),
-                trim_price(cost.output)
-            )
-            .into_boxed_str(),
-        ),
-        None => t("catalogue", "目录价"),
-    };
+    let catalog_price_label: &'static str =
+        match catalog.as_ref().and_then(|entry| entry.cost.as_ref()) {
+            Some(cost) => Box::leak(
+                format!(
+                    "{} ${}/{}",
+                    t("catalogue", "目录价"),
+                    trim_price(cost.input),
+                    trim_price(cost.output)
+                )
+                .into_boxed_str(),
+            ),
+            None => t("catalogue", "目录价"),
+        };
     let stored_variant = thinking_variants
         .selected(&provider.id, model)
         .filter(|selected| !selected.trim().is_empty())

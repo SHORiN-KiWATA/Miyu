@@ -38,7 +38,9 @@ fn persona_scope(state: &DaemonState, requested: &str) -> String {
     }
 }
 
-fn settings(state: &DaemonState) -> std::result::Result<crate::config::RealContextPluginSettings, ApiError> {
+fn settings(
+    state: &DaemonState,
+) -> std::result::Result<crate::config::RealContextPluginSettings, ApiError> {
     let config = state.manager.lock().unwrap().config.clone();
     affection::settings_from_config(&config)
         .map_err(|error| ApiError::internal(safe_error_message(&error)))
@@ -46,7 +48,10 @@ fn settings(state: &DaemonState) -> std::result::Result<crate::config::RealConte
 
 fn check_ids(account: &str, user: Option<&str>) -> std::result::Result<(), ApiError> {
     if !valid_qq_id(account) || user.is_some_and(|value| !valid_qq_id(value)) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "account and user must be numeric QQ ids"));
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "account and user must be numeric QQ ids",
+        ));
     }
     Ok(())
 }
@@ -93,7 +98,8 @@ pub(in crate::web) async fn dash_affection_items(
     let settings = settings(&state)?;
     let store = state.state_store.clone();
     let account = query.account.clone();
-    let result = blocking(move || affection::dashboard_list(&store, &settings, &account, &scope)).await?;
+    let result =
+        blocking(move || affection::dashboard_list(&store, &settings, &account, &scope)).await?;
     Ok(Json(result))
 }
 
@@ -109,7 +115,9 @@ pub(in crate::web) async fn dash_affection_item(
     let settings = settings(&state)?;
     let store = state.state_store.clone();
     let account = query.account.clone();
-    let profile = blocking(move || affection::dashboard_profile(&store, &settings, &account, &scope, &user)).await?;
+    let profile =
+        blocking(move || affection::dashboard_profile(&store, &settings, &account, &scope, &user))
+            .await?;
     profile
         .map(|profile| Json(json!({ "ok": true, "profile": profile })))
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "profile not found"))
@@ -125,7 +133,10 @@ pub(in crate::web) async fn dash_affection_patch(
     require_mutation(&headers, &state)?;
     check_ids(&query.account, Some(&user))?;
     if body.score.is_some_and(|value| !value.is_finite()) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "score must be finite"));
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "score must be finite",
+        ));
     }
     let scope = persona_scope(&state, &query.persona);
     let settings = settings(&state)?;
@@ -139,7 +150,10 @@ pub(in crate::web) async fn dash_affection_patch(
         clear_events: body.clear_events,
         reason: body.reason,
     };
-    let profile = blocking(move || affection::dashboard_update(&store, &settings, &account, &scope, &user, patch)).await?;
+    let profile = blocking(move || {
+        affection::dashboard_update(&store, &settings, &account, &scope, &user, patch)
+    })
+    .await?;
     profile
         .map(|profile| Json(json!({ "ok": true, "profile": profile })))
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "profile not found"))
@@ -156,7 +170,8 @@ pub(in crate::web) async fn dash_affection_delete(
     let scope = persona_scope(&state, &query.persona);
     let store = state.state_store.clone();
     let account = query.account.clone();
-    let deleted = blocking(move || affection::dashboard_delete(&store, &account, &scope, &user)).await?;
+    let deleted =
+        blocking(move || affection::dashboard_delete(&store, &account, &scope, &user)).await?;
     if !deleted {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "profile not found"));
     }
@@ -193,7 +208,9 @@ pub(in crate::web) async fn dash_emotion_state(
     let store = state.state_store.clone();
     let paths = state.paths.clone();
     let account = query.account.clone();
-    let result = blocking(move || emotion::dashboard_state(&store, &paths, &settings, &account, &scope)).await?;
+    let result =
+        blocking(move || emotion::dashboard_state(&store, &paths, &settings, &account, &scope))
+            .await?;
     Ok(Json(result))
 }
 
@@ -206,17 +223,30 @@ pub(in crate::web) async fn dash_emotion_set(
     require_mutation(&headers, &state)?;
     check_ids(&query.account, None)?;
     if !body.valence.is_finite() || !body.arousal.is_finite() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "valence and arousal must be finite"));
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "valence and arousal must be finite",
+        ));
     }
     let scope = persona_scope(&state, &query.persona);
     let settings = settings(&state)?;
     let store = state.state_store.clone();
     let account = query.account.clone();
     let updated = blocking(move || {
-        emotion::dashboard_set(&store, &settings, &account, &scope, body.valence, body.arousal, &body.reason)
+        emotion::dashboard_set(
+            &store,
+            &settings,
+            &account,
+            &scope,
+            body.valence,
+            body.arousal,
+            &body.reason,
+        )
     })
     .await?;
-    Ok(Json(json!({ "ok": true, "valence": updated.valence, "arousal": updated.arousal, "label": emotion::label_for(updated.valence, updated.arousal) })))
+    Ok(Json(
+        json!({ "ok": true, "valence": updated.valence, "arousal": updated.arousal, "label": emotion::label_for(updated.valence, updated.arousal) }),
+    ))
 }
 
 pub(in crate::web) async fn dash_emotion_reset(

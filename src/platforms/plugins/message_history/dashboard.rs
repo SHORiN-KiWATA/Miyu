@@ -7,7 +7,9 @@ use super::store::{
     map_message, query_activity_ranking, ActivityRankingQuery, ConversationKey, DeleteMode,
     DeleteRequest, HistoryCursor, HistoryScope, HistoryStore, MESSAGE_COLUMNS,
 };
-pub(crate) use super::store::{ConversationKey as DashConversationKey, HistoryCursor as DashHistoryCursor};
+pub(crate) use super::store::{
+    ConversationKey as DashConversationKey, HistoryCursor as DashHistoryCursor,
+};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Result};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, OpenFlags};
@@ -37,7 +39,11 @@ fn open_readonly(paths: &MiyuPaths) -> Result<Option<Connection>> {
     Ok(Some(conn))
 }
 
-pub(crate) fn conversation_key(account_id: &str, kind: &str, conversation_id: &str) -> Result<ConversationKey> {
+pub(crate) fn conversation_key(
+    account_id: &str,
+    kind: &str,
+    conversation_id: &str,
+) -> Result<ConversationKey> {
     let kind = match kind {
         "group" => crate::platforms::ConversationKind::Group,
         "private" => crate::platforms::ConversationKind::Private,
@@ -47,12 +53,19 @@ pub(crate) fn conversation_key(account_id: &str, kind: &str, conversation_id: &s
 }
 
 /// 会话清单:每个 (账号, 类型, 会话) 的消息数、首末时间、撤回数;附库文件大小。
-pub(crate) fn dashboard_conversations(paths: &MiyuPaths, account_id: Option<&str>) -> Result<Value> {
+pub(crate) fn dashboard_conversations(
+    paths: &MiyuPaths,
+    account_id: Option<&str>,
+) -> Result<Value> {
     let path = db_path(paths);
     let db_bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0)
-        + std::fs::metadata(path.with_extension("sqlite3-wal")).map(|meta| meta.len()).unwrap_or(0);
+        + std::fs::metadata(path.with_extension("sqlite3-wal"))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
     let Some(conn) = open_readonly(paths)? else {
-        return Ok(json!({ "ok": true, "exists": false, "conversations": [], "accounts": [], "total_messages": 0, "db_bytes": 0 }));
+        return Ok(
+            json!({ "ok": true, "exists": false, "conversations": [], "accounts": [], "total_messages": 0, "db_bytes": 0 }),
+        );
     };
     let mut sql = String::from(
         "SELECT account_id, conversation_kind, conversation_id, COUNT(*), MIN(sent_at), MAX(sent_at),
@@ -65,7 +78,9 @@ pub(crate) fn dashboard_conversations(paths: &MiyuPaths, account_id: Option<&str
         sql.push_str(" AND account_id = ?2");
         args.push(SqlValue::Text(account.to_string()));
     }
-    sql.push_str(" GROUP BY account_id, conversation_kind, conversation_id ORDER BY MAX(sent_at) DESC");
+    sql.push_str(
+        " GROUP BY account_id, conversation_kind, conversation_id ORDER BY MAX(sent_at) DESC",
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
         .query_map(params_from_iter(args.iter()), |row| {
@@ -81,7 +96,10 @@ pub(crate) fn dashboard_conversations(paths: &MiyuPaths, account_id: Option<&str
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let total: i64 = rows.iter().map(|row| row["messages"].as_i64().unwrap_or(0)).sum();
+    let total: i64 = rows
+        .iter()
+        .map(|row| row["messages"].as_i64().unwrap_or(0))
+        .sum();
     let mut accounts: Vec<String> = rows
         .iter()
         .filter_map(|row| row["account_id"].as_str().map(str::to_string))
@@ -169,7 +187,9 @@ pub(crate) fn dashboard_messages(paths: &MiyuPaths, query: MessagesQuery) -> Res
         let sent = args.len();
         args.push(SqlValue::Integer(before.row_id));
         let row = args.len();
-        conditions.push(format!("(m.sent_at < ?{sent} OR (m.sent_at = ?{sent} AND m.id < ?{row}))"));
+        conditions.push(format!(
+            "(m.sent_at < ?{sent} OR (m.sent_at = ?{sent} AND m.id < ?{row}))"
+        ));
     }
     let sql = format!(
         "SELECT {MESSAGE_COLUMNS} FROM {from} WHERE {} ORDER BY m.sent_at DESC, m.id DESC LIMIT {}",
@@ -183,7 +203,9 @@ pub(crate) fn dashboard_messages(paths: &MiyuPaths, query: MessagesQuery) -> Res
     let has_more = messages.len() > limit;
     messages.truncate(limit);
     let next_cursor = if has_more {
-        messages.last().map(|last| json!({ "sent_at": last.sent_at, "row_id": last.row_id }))
+        messages
+            .last()
+            .map(|last| json!({ "sent_at": last.sent_at, "row_id": last.row_id }))
     } else {
         None
     };
@@ -205,7 +227,9 @@ pub(crate) fn dashboard_messages(paths: &MiyuPaths, query: MessagesQuery) -> Res
             })
         })
         .collect();
-    Ok(json!({ "ok": true, "items": items, "next_cursor": next_cursor.unwrap_or(Value::Null), "fts": use_fts }))
+    Ok(
+        json!({ "ok": true, "items": items, "next_cursor": next_cursor.unwrap_or(Value::Null), "fts": use_fts }),
+    )
 }
 
 /// 统计:发言榜(复用工具同款查询)+ 星期×小时热力 + 人机占比 + 媒体类型。
@@ -218,7 +242,9 @@ pub(crate) fn dashboard_stats(
 ) -> Result<Value> {
     let Some(conn) = open_readonly(paths)? else {
         let heat = [[0i64; 24]; 7];
-        return Ok(json!({ "ok": true, "total": 0, "ranking": { "items": [], "total_messages": 0, "participant_count": 0 }, "heat": heat, "bot": 0, "human": 0, "media": {} }));
+        return Ok(
+            json!({ "ok": true, "total": 0, "ranking": { "items": [], "total_messages": 0, "participant_count": 0 }, "heat": heat, "bot": 0, "human": 0, "media": {} }),
+        );
     };
     let ranking = query_activity_ranking(
         &conn,
@@ -246,7 +272,11 @@ pub(crate) fn dashboard_stats(
            FROM messages WHERE {scope_sql} GROUP BY 1, 2"
     ))?;
     for row in stmt.query_map(params_from_iter(scope_args.iter()), |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })? {
         let (weekday, hour, count) = row?;
         if (0..7).contains(&weekday) && (0..24).contains(&hour) {
@@ -265,7 +295,9 @@ pub(crate) fn dashboard_stats(
     let mut stmt = conn.prepare(&format!(
         "SELECT media_json FROM messages WHERE {scope_sql} AND media_json <> '[]'"
     ))?;
-    for row in stmt.query_map(params_from_iter(scope_args.iter()), |row| row.get::<_, String>(0))? {
+    for row in stmt.query_map(params_from_iter(scope_args.iter()), |row| {
+        row.get::<_, String>(0)
+    })? {
         if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&row?) {
             for item in items {
                 if let Some(kind) = item["kind"].as_str() {
@@ -288,7 +320,12 @@ pub(crate) fn dashboard_stats(
 }
 
 /// 撤回记录:撤回表按时间倒序,能对上原消息就带上正文。
-pub(crate) fn dashboard_recalls(paths: &MiyuPaths, key: ConversationKey, limit: usize, offset: usize) -> Result<Value> {
+pub(crate) fn dashboard_recalls(
+    paths: &MiyuPaths,
+    key: ConversationKey,
+    limit: usize,
+    offset: usize,
+) -> Result<Value> {
     let Some(conn) = open_readonly(paths)? else {
         return Ok(json!({ "ok": true, "items": [], "total": 0 }));
     };
@@ -367,12 +404,22 @@ pub(crate) async fn dashboard_delete(paths: &MiyuPaths, spec: DeleteSpec) -> Res
     }))
 }
 
-pub(crate) async fn dashboard_boundary(paths: &MiyuPaths, key: ConversationKey, persona_scope: String) -> Result<Value> {
-    let boundary = dashboard_store(paths).context_boundary(key, persona_scope).await?;
+pub(crate) async fn dashboard_boundary(
+    paths: &MiyuPaths,
+    key: ConversationKey,
+    persona_scope: String,
+) -> Result<Value> {
+    let boundary = dashboard_store(paths)
+        .context_boundary(key, persona_scope)
+        .await?;
     Ok(json!({ "ok": true, "boundary": boundary }))
 }
 
-pub(crate) async fn dashboard_reset_context(paths: &MiyuPaths, key: ConversationKey, persona_scope: String) -> Result<Value> {
+pub(crate) async fn dashboard_reset_context(
+    paths: &MiyuPaths,
+    key: ConversationKey,
+    persona_scope: String,
+) -> Result<Value> {
     let boundary = dashboard_store(paths)
         .reset_context(key, persona_scope, chrono::Utc::now().timestamp())
         .await?;
