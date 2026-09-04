@@ -627,30 +627,35 @@ impl RealContextPlugin {
         let Ok(page) = page else {
             return;
         };
-        let images = context_image_refs(
+        let (images, files) = context_media_refs(
             &page.messages,
             80_000,
             context.config.platforms.qq.user_identification,
             MAX_CONTEXT_IMAGE_REFS,
+            MAX_CONTEXT_FILE_REFS,
         );
         tracing::info!(
             target: "miyu::qq",
             conversation_id = %context.conversation.conversation_id,
             scanned = page.messages.len(),
             refs = images.len(),
+            file_refs = files.len(),
             "{}",
             crate::i18n::text(
-                "private-chat context image refs prepared",
-                "私聊历史图片引用已准备"
+                "private-chat context media refs prepared",
+                "私聊历史图片/文件引用已准备"
             )
         );
-        if images.is_empty() {
-            return;
-        }
         // 同一份也挂到回合上下文上:MCP 桥(claude-code 供应商)另建工具面,
         // 拿不到 PlatformTurnInput,只能从这里取。
-        context.set_context_images(images.clone());
-        input.context_images = images;
+        if !images.is_empty() {
+            context.set_context_images(images.clone());
+            input.context_images = images;
+        }
+        if !files.is_empty() {
+            context.set_context_files(files.clone());
+            input.context_files = files;
+        }
     }
 
     pub(in crate::platforms::plugins::real_context) async fn inject_context(
@@ -797,6 +802,7 @@ impl RealContextPlugin {
         // 同一份也挂到回合上下文上:MCP 桥(claude-code 供应商)另建工具面,
         // 拿不到 PlatformTurnInput,只能从这里取(08-26)。
         context.set_context_images(resolvable.clone());
+        context.set_context_files(formatted.files.clone());
         input.context_images = resolvable;
         input.context_files = formatted.files.clone();
         // Advance only on the messages actually rendered; a turn that showed

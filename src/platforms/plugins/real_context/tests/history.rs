@@ -168,6 +168,62 @@ fn file_media_with_a_provider_id_renders_a_resolvable_file_ref() {
     assert_eq!(rendered.files[0].file_name, "配置.txt");
 }
 
+/// 视频与文件走同一条懒下载链路:历史里的视频也要带可解析的 file_ id,否则
+/// 只剩一个没法引用的 [video] 标签(09-04)。
+#[test]
+fn video_media_with_a_provider_id_renders_a_resolvable_file_ref() {
+    let mut message = history_message("m-vid", "看这个");
+    message.content.media = vec![
+        MediaPlaceholder::new(MediaKind::Video, Some("clip.mp4"), None::<String>)
+            .with_media_id(Some("vid-1")),
+        MediaPlaceholder::new(MediaKind::Audio, Some("voice.amr"), None::<String>)
+            .with_media_id(Some("rec-1")),
+    ];
+    let rendered = format_history_for_turn(std::slice::from_ref(&message), usize::MAX, true, 8, 8);
+    assert!(
+        rendered
+            .text
+            .contains("[video id=file_m-vid_1, label=clip.mp4]"),
+        "{}",
+        rendered.text
+    );
+    assert!(
+        rendered.text.contains("[audio: voice.amr]"),
+        "语音暂不接 id"
+    );
+    assert_eq!(rendered.files.len(), 1);
+    assert_eq!(rendered.files[0].file_id, "vid-1");
+    assert_eq!(rendered.files[0].file_name, "clip.mp4");
+}
+
+/// 私聊路径:图片与文件/视频引用一起收,收满图片也不早停。
+#[test]
+fn context_media_refs_collects_files_after_images_are_full() {
+    let mut messages = Vec::new();
+    for index in 0..10 {
+        let mut message = history_message(&format!("i{index}"), "图");
+        message.content.media = vec![MediaPlaceholder::new(
+            MediaKind::Image,
+            None::<String>,
+            None::<String>,
+        )];
+        messages.push(message);
+    }
+    let mut video = history_message("v1", "视频");
+    video.content.media =
+        vec![
+            MediaPlaceholder::new(MediaKind::Video, Some("clip.mp4"), None::<String>)
+                .with_media_id(Some("vid-1")),
+        ];
+    // 视频排在最旧:图片先收满 8 张,早停版本在这里就断了。
+    messages.insert(0, video);
+    let (images, files) = context_media_refs(&messages, usize::MAX, true, 8, 8);
+    assert_eq!(images.len(), 8);
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, "file_v1_1");
+    assert_eq!(files[0].file_id, "vid-1");
+}
+
 #[test]
 fn context_image_refs_matches_full_render_across_budget_and_cap_cases() {
     let with_image = |id: &str| {

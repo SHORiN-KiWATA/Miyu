@@ -29,4 +29,12 @@ impl crate::platform_types::PlatformToolContext for PlatformTurnContext {
     ) -> futures_util::future::BoxFuture<'static, Result<Vec<PlatformImageData>>> {
         PlatformTurnContext::message_images_task(self, message_id)
     }
+
+    fn fetch_platform_file_task(
+        &self,
+        file_ref: crate::platform_types::PlatformContextFileRef,
+    ) -> futures_util::future::BoxFuture<'static, Result<crate::platform_types::PlatformFileDownload>>
+    {
+        PlatformTurnContext::fetch_platform_file_task(self, file_ref)
+    }
 }

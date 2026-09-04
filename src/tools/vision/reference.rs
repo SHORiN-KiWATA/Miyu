@@ -26,10 +26,14 @@ pub(crate) struct ResolvedContextImage {
 pub(crate) struct ScopedVisionState {
     pub(crate) allowed_paths: Vec<PathBuf>,
     pub(crate) context_images: HashMap<String, PlatformContextImageRef>,
+    /// 历史/当前消息里的文件与视频引用(`file_<msg>_<n>`),按需懒下载到
+    /// `platform_files` 缓存后再看(09-04)。
+    pub(crate) context_files: HashMap<String, PlatformContextFileRef>,
     pub(crate) platform_context: Option<Arc<dyn PlatformToolContext>>,
     pub(crate) allow_general_access: bool,
     pub(crate) resolve_lock: tokio::sync::Mutex<()>,
     pub(crate) resolved: Mutex<HashMap<String, ResolvedContextImage>>,
+    pub(crate) resolved_files: Mutex<HashMap<String, PlatformFileDownload>>,
     pub(crate) content_images: Mutex<HashMap<String, ResolvedContextImage>>,
     pub(crate) analyses: Mutex<HashMap<(String, String), String>>,
     pub(crate) calls: AtomicUsize,
@@ -252,6 +256,80 @@ pub(crate) async fn resolve_context_image(
         .unwrap()
         .insert(resolved.digest.clone(), resolved.clone());
     Ok(resolved)
+}
+
+/// 把 `file_<msg>_<n>` 引用懒下载到本地缓存,返回缓存里的路径。占用与图片
+/// 同一份取件配额(`fetches`);同一 id 本回合只下一次。
+pub(crate) async fn resolve_context_file(
+    paths: &MiyuPaths,
+    state: &ScopedVisionState,
+    file_id: &str,
+) -> Result<PlatformFileDownload> {
+    if let Some(resolved) = state.resolved_files.lock().unwrap().get(file_id).cloned() {
+        return Ok(resolved);
+    }
+    let _resolve_guard = state.resolve_lock.lock().await;
+    if let Some(resolved) = state.resolved_files.lock().unwrap().get(file_id).cloned() {
+        return Ok(resolved);
+    }
+    let source = state
+        .context_files
+        .get(file_id)
+        .context("file ID is not available in the current platform turn")?
+        .clone();
+    let context = state
+        .platform_context
+        .as_ref()
+        .context("platform file lookup is unavailable")?;
+    if state
+        .fetches
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_SCOPED_CONTEXT_FETCHES).then_some(count + 1)
+        })
+        .is_err()
+    {
+        bail!("context media fetch limit reached for the current platform turn")
+    }
+    let download = match context.fetch_platform_file_task(source.clone()).await {
+        Ok(download) => download,
+        Err(error) => {
+            state.fetches.fetch_sub(1, Ordering::AcqRel);
+            return Err(error).context("failed to download the platform file");
+        }
+    };
+    if !is_platform_cache_path(&paths.cache_dir, &download.path) {
+        state.fetches.fetch_sub(1, Ordering::AcqRel);
+        bail!("the downloaded platform file landed outside the platform file cache")
+    }
+    tracing::info!(
+        target: "miyu::qq",
+        file_id,
+        message_id = %source.message_id,
+        bytes = download.size,
+        name = %download.name,
+        "{}",
+        crate::i18n::text(
+            "OneBot context file prepared on demand for vision",
+            "已按需为看图/看视频准备 OneBot 上下文文件",
+        )
+    );
+    state
+        .resolved_files
+        .lock()
+        .unwrap()
+        .insert(file_id.to_string(), download.clone());
+    Ok(download)
+}
+
+/// 路径是否落在 `<cache>/platform_files/` 之下(canonicalize 之后比较,
+/// 挡住 `..` 与符号链接)。
+pub(crate) fn is_platform_cache_path(cache_dir: &Path, path: &Path) -> bool {
+    let Ok(root) = cache_dir.join("platform_files").canonicalize() else {
+        return false;
+    };
+    path.canonicalize()
+        .map(|path| path.starts_with(&root))
+        .unwrap_or(false)
 }
 
 pub(crate) fn image_data_url(mime: &str, data: &[u8]) -> String {

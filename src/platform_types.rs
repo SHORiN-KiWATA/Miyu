@@ -533,6 +533,13 @@ pub(crate) trait PlatformToolContext: Send + Sync {
         &self,
         message_id: String,
     ) -> futures_util::future::BoxFuture<'static, anyhow::Result<Vec<PlatformImageData>>>;
+
+    /// 把一个上下文文件引用(`file_<msg>_<n>`)懒下载到本地缓存。看视频
+    /// 走这条:视频和文件共用同一条懒下载链路(09-04)。
+    fn fetch_platform_file_task(
+        &self,
+        file_ref: PlatformContextFileRef,
+    ) -> futures_util::future::BoxFuture<'static, anyhow::Result<PlatformFileDownload>>;
 }
 
 // ── QQ 头像 URL 的可信判定 ──

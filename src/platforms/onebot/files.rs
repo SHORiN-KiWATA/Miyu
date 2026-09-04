@@ -8,6 +8,129 @@ use crate::platforms::onebot::*;
 
 pub(in crate::platforms::onebot) const MAX_INBOUND_FILE_BYTES: usize = 50 * 1024 * 1024;
 
+/// 视频比普通文件宽:视觉路由那边的上限是 200MB(对齐 GLM 规格),下载链路
+/// 卡在 50MB 的话,大半手机直出的视频还没到模型就被拒了(09-04)。
+pub(in crate::platforms::onebot) const MAX_INBOUND_VIDEO_BYTES: usize = 200 * 1024 * 1024;
+
+/// 按文件名扩展名给下载上限:视频 200MB,其余 50MB。
+pub(in crate::platforms::onebot) fn platform_file_byte_limit(name: &str) -> usize {
+    if crate::tools::vision::video_mime(name).is_some() {
+        MAX_INBOUND_VIDEO_BYTES
+    } else {
+        MAX_INBOUND_FILE_BYTES
+    }
+}
+
+/// `get_file` 一类接口给出的文件来源:三种形态都见过——http 直链、桥所在
+/// 机器上的本地路径(同机部署时最省)、内嵌 base64。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::platforms::onebot) enum PlatformFileSource {
+    Url(String),
+    LocalPath(PathBuf),
+    Bytes(Vec<u8>),
+}
+
+/// 解析 OneBot 文件接口(`get_file` / `get_*_file_url`)的返回。优先级:本地
+/// 路径 > http 直链 > base64;`file://` 形式的 url 当本地路径。本地路径存不
+/// 存在这里不查(同步函数),由调用方在使用前核实并退回下一形态。
+pub(in crate::platforms::onebot) fn parse_platform_file_sources(
+    data: &Value,
+) -> Vec<PlatformFileSource> {
+    let mut sources = Vec::new();
+    let mut push_path = |raw: &str| {
+        let path = std::path::Path::new(raw.trim());
+        if path.is_absolute()
+            && !sources.contains(&PlatformFileSource::LocalPath(path.to_path_buf()))
+        {
+            sources.push(PlatformFileSource::LocalPath(path.to_path_buf()));
+        }
+    };
+    for key in ["file", "path"] {
+        if let Some(raw) = data.get(key).and_then(Value::as_str) {
+            if let Some(local) = raw.strip_prefix("file://") {
+                push_path(local);
+            } else {
+                push_path(raw);
+            }
+        }
+    }
+    if let Some(url) = data.get("url").and_then(Value::as_str).map(str::trim) {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            sources.push(PlatformFileSource::Url(url.to_string()));
+        } else if let Some(local) = url.strip_prefix("file://") {
+            push_path(local);
+        }
+    }
+    if let Some(encoded) = data
+        .get("base64")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let encoded = encoded.strip_prefix("base64://").unwrap_or(encoded);
+        if let Ok(bytes) = BASE64.decode(encoded) {
+            if !bytes.is_empty() {
+                sources.push(PlatformFileSource::Bytes(bytes));
+            }
+        }
+    }
+    sources
+}
+
+/// 把桥所在机器上的文件拷进缓存目录,边拷边计数,和下载一样不信任 metadata。
+pub(in crate::platforms::onebot) async fn copy_platform_file_capped(
+    source: &std::path::Path,
+    data_dir: &std::path::Path,
+    name: &str,
+    max_bytes: usize,
+) -> Result<PathBuf> {
+    let metadata = tokio::fs::metadata(source)
+        .await
+        .with_context(|| format!("reading {}", source.display()))?;
+    if !metadata.is_file() {
+        bail!("{} is not a regular file", source.display());
+    }
+    if metadata.len() > max_bytes as u64 {
+        bail!(
+            "the file is larger than the {}MB limit",
+            max_bytes / 1024 / 1024
+        );
+    }
+    let mut input = tokio::fs::File::open(source)
+        .await
+        .with_context(|| format!("opening {}", source.display()))?;
+    let (path, mut output) = create_platform_file(data_dir, name).await?;
+    let result = async {
+        let mut total = 0usize;
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            let read = input.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            total = total
+                .checked_add(read)
+                .context("platform file size overflow")?;
+            if total > max_bytes {
+                bail!(
+                    "the file is larger than the {}MB limit",
+                    max_bytes / 1024 / 1024
+                );
+            }
+            output.write_all(&buffer[..read]).await?;
+        }
+        output.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = result {
+        drop(output);
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(error);
+    }
+    Ok(path)
+}
+
 pub(in crate::platforms::onebot) const FILE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(in crate::platforms::onebot) const PLATFORM_FILE_STORAGE_BYTES: u64 = 1024 * 1024 * 1024;

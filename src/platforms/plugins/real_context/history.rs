@@ -138,6 +138,30 @@ pub(in crate::platforms::plugins::real_context) fn context_image_refs(
     .images
 }
 
+/// 私聊用:历史里的图片引用和文件/视频引用一起收(09-04)。此前私聊只收图,
+/// 上一轮看过的视频在下一轮就解析不到——模型从会话上下文里拿到旧 id 却
+/// 被告知"文件已过期"。不早停:收满图片后文件可能还没收齐。
+pub(in crate::platforms::plugins::real_context) fn context_media_refs(
+    messages: &[HistoryMessage],
+    maximum_bytes: usize,
+    show_user_ids: bool,
+    maximum_images: usize,
+    maximum_files: usize,
+) -> (
+    Vec<crate::platforms::PlatformContextImageRef>,
+    Vec<crate::platforms::PlatformContextFileRef>,
+) {
+    let formatted = format_history_internal(
+        messages,
+        maximum_bytes,
+        show_user_ids,
+        maximum_images,
+        maximum_files,
+        false,
+    );
+    (formatted.images, formatted.files)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::platforms::plugins::real_context) fn format_history_internal(
     messages: &[HistoryMessage],
@@ -200,7 +224,7 @@ pub(in crate::platforms::plugins::real_context) fn format_history_internal(
                 } else {
                     None
                 };
-                let file_id = if media.kind == MediaKind::File {
+                let file_id = if matches!(media.kind, MediaKind::File | MediaKind::Video) {
                     file_index += 1;
                     if file_index > MAX_CONTEXT_FILES_PER_MESSAGE {
                         return format_history_media(media, image_id.as_deref(), None);

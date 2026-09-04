@@ -70,6 +70,8 @@ pub(crate) struct PlatformTurnContext {
     /// `vision::register_scoped_platform`;MCP 桥另建工具面时也要用同一份,
     /// 否则 claude-code 供应商那边整条看图链路是空的(08-26)。
     pub(crate) context_images: Mutex<Vec<PlatformContextImageRef>>,
+    /// 本回合可懒下载的上下文文件/视频引用,用途同上(09-04)。
+    pub(crate) context_files: Mutex<Vec<PlatformContextFileRef>>,
     pub(crate) response_target: Mutex<Option<PendingResponseTarget>>,
     pub(crate) group_member_cache: Mutex<HashMap<String, PlatformGroupMember>>,
     pub(crate) plugin_values: Mutex<BTreeMap<String, Value>>,
@@ -113,6 +115,7 @@ impl PlatformTurnContext {
             inflight_guard: None,
             message_activity: None,
             context_images: Mutex::new(Vec::new()),
+            context_files: Mutex::new(Vec::new()),
             response_target: Mutex::new(None),
             group_member_cache: Mutex::new(HashMap::new()),
             plugin_values: Mutex::new(BTreeMap::new()),
@@ -173,6 +176,15 @@ impl PlatformTurnContext {
 
     pub(crate) fn context_images(&self) -> Vec<PlatformContextImageRef> {
         self.context_images.lock().unwrap().clone()
+    }
+
+    /// 登记本回合可懒下载的文件引用(历史里的 + 当前消息里的)。
+    pub(crate) fn set_context_files(&self, files: Vec<PlatformContextFileRef>) {
+        *self.context_files.lock().unwrap() = files;
+    }
+
+    pub(crate) fn context_files(&self) -> Vec<PlatformContextFileRef> {
+        self.context_files.lock().unwrap().clone()
     }
 
     pub(crate) fn set_response_target(&self, target: Option<ResponseTarget>) {
@@ -754,6 +766,15 @@ impl PlatformTurnContext {
     ) -> futures_util::future::BoxFuture<'static, Result<Vec<PlatformImageData>>> {
         let adapter = self.adapter.clone();
         Box::pin(async move { adapter.message_images(&message_id).await })
+    }
+
+    pub(crate) fn fetch_platform_file_task(
+        &self,
+        file_ref: PlatformContextFileRef,
+    ) -> futures_util::future::BoxFuture<'static, Result<PlatformFileDownload>> {
+        let adapter = self.adapter.clone();
+        let paths = self.paths.clone();
+        Box::pin(async move { adapter.fetch_platform_file(&file_ref, &paths).await })
     }
 
     pub(crate) async fn group_members(&self) -> Result<Vec<PlatformGroupMember>> {

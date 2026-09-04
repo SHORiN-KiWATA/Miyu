@@ -533,6 +533,7 @@ pub(in crate::web) fn attach_owner_turn_tools(
                 state.paths.clone(),
                 Vec::new(),
                 context_images,
+                platform.context_files(),
                 platform.clone(),
             );
         }

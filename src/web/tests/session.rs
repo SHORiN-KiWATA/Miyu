@@ -925,6 +925,7 @@ fn platform_tool_face_carries_scoped_vision() {
         paths.clone(),
         Vec::new(),
         guest.context_images(),
+        guest.context_files(),
         guest.clone(),
     );
     assert!(registry.contains("vision_analyze"), "桥的工具面必须能看图");

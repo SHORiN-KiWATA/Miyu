@@ -453,55 +453,174 @@ impl OneBotAdapter {
             .unwrap_or_else(|| self.conn.clone())
     }
 
+    /// 找到文件在哪:段自带的 url 最省;否则先按会话类型问群/私聊文件直链,
+    /// 再用 NapCat 通用的 `get_file` 兜底——视频段的 file_id 不是群文件 id,
+    /// 只有 `get_file` 认得(09-04)。返回按优先级排好的候选来源。
+    /// 问桥文件在哪:先按会话类型要群/私聊文件直链,再用 NapCat 通用的
+    /// `get_file` 兜底——视频段的 file_id 不是群文件 id,只有 `get_file`
+    /// 认得(09-04)。返回按优先级排好的候选来源。
+    async fn resolve_platform_file_sources(
+        &self,
+        file_ref: &PlatformContextFileRef,
+    ) -> Result<Vec<PlatformFileSource>> {
+        let (action, params) = match self.target {
+            Target::Group { group_id } => (
+                "get_group_file_url",
+                json!({ "group_id": group_id, "file_id": file_ref.file_id }),
+            ),
+            Target::Private { user_id } => (
+                "get_private_file_url",
+                json!({ "user_id": user_id, "file_id": file_ref.file_id }),
+            ),
+        };
+        let mut errors = Vec::new();
+        match self
+            .connection()
+            .call_api_with_timeout(action, params, FILE_DOWNLOAD_TIMEOUT)
+            .await
+        {
+            Ok(data) => {
+                let sources = parse_platform_file_sources(&data);
+                if !sources.is_empty() {
+                    return Ok(sources);
+                }
+                errors.push(format!("{action} returned no usable url"));
+            }
+            Err(error) => errors.push(format!("{action}: {error:#}")),
+        }
+        match self
+            .connection()
+            .call_api_with_timeout(
+                "get_file",
+                json!({ "file_id": file_ref.file_id, "file": file_ref.file_id }),
+                FILE_DOWNLOAD_TIMEOUT,
+            )
+            .await
+        {
+            Ok(data) => {
+                let sources = parse_platform_file_sources(&data);
+                if !sources.is_empty() {
+                    return Ok(sources);
+                }
+                errors.push("get_file returned no usable url, path, or base64".to_string());
+            }
+            Err(error) => errors.push(format!("get_file: {error:#}")),
+        }
+        bail!(
+            "the platform file URL API returned no usable url ({})",
+            errors.join("; ")
+        )
+    }
+
+    /// 依次尝试候选来源,第一个成功的落进缓存。`Ok(None)` = 全部不可达且
+    /// 没有实质错误(比如只有别的机器上的本地路径)。
+    async fn fetch_platform_file_from_sources(
+        &self,
+        sources: Vec<PlatformFileSource>,
+        file_ref: &PlatformContextFileRef,
+        cache_dir: &std::path::Path,
+        max_bytes: usize,
+    ) -> Result<Option<PathBuf>> {
+        let mut last_error = None;
+        for source in sources {
+            let attempt = match &source {
+                PlatformFileSource::Url(url) => {
+                    download_platform_file_capped(
+                        &self.http,
+                        url,
+                        cache_dir,
+                        &file_ref.file_name,
+                        max_bytes,
+                        FILE_DOWNLOAD_TIMEOUT,
+                    )
+                    .await
+                }
+                PlatformFileSource::LocalPath(local) => {
+                    // 桥不在同一台机器上时路径自然不存在,静默退回下一形态。
+                    if tokio::fs::metadata(local).await.is_err() {
+                        continue;
+                    }
+                    copy_platform_file_capped(local, cache_dir, &file_ref.file_name, max_bytes)
+                        .await
+                }
+                PlatformFileSource::Bytes(bytes) => {
+                    if bytes.len() > max_bytes {
+                        Err(anyhow::anyhow!(
+                            "the file is larger than the {}MB limit",
+                            max_bytes / 1024 / 1024
+                        ))
+                    } else {
+                        save_platform_file(cache_dir, &file_ref.file_name, bytes).await
+                    }
+                }
+            };
+            match attempt {
+                Ok(path) => return Ok(Some(path)),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
+    }
+
     pub(in crate::platforms::onebot) async fn fetch_platform_file_impl(
         &self,
         file_ref: &PlatformContextFileRef,
         paths: &crate::paths::MiyuPaths,
     ) -> Result<PlatformFileDownload> {
         migrate_legacy_platform_file_cache(paths).await;
-        let url = if let Some(url) = file_ref.url.as_deref() {
-            url.to_string()
-        } else {
-            let (action, params) = match self.target {
-                Target::Group { group_id } => (
-                    "get_group_file_url",
-                    json!({ "group_id": group_id, "file_id": file_ref.file_id }),
-                ),
-                Target::Private { user_id } => (
-                    "get_private_file_url",
-                    json!({ "user_id": user_id, "file_id": file_ref.file_id }),
-                ),
-            };
-            let data = self
-                .connection()
-                .call_api_with_timeout(action, params, FILE_DOWNLOAD_TIMEOUT)
-                .await?;
-            data.get("url")
-                .and_then(Value::as_str)
-                .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
-                .context("the platform file URL API returned no usable url")?
-                .to_string()
-        };
+        let max_bytes = platform_file_byte_limit(&file_ref.file_name);
         // 配额预检不持锁(尽力而为,明显已满时省掉一次下载);下载本身也
         // 不持锁——此前全局锁跨最长 60s 的下载持有,一个慢文件会让所有
         // 群所有用户的文件下载排队。
         ensure_platform_file_capacity(
             &paths.cache_dir,
-            MAX_INBOUND_FILE_BYTES as u64,
+            max_bytes as u64,
             PLATFORM_FILE_STORAGE_BYTES,
             PLATFORM_FILE_STORAGE_ENTRIES,
             PLATFORM_FILE_TTL,
         )
         .await?;
-        let path = download_platform_file_capped(
-            &self.http,
-            &url,
-            &paths.cache_dir,
-            &file_ref.file_name,
-            MAX_INBOUND_FILE_BYTES,
-            FILE_DOWNLOAD_TIMEOUT,
-        )
-        .await?;
+        // 段自带的直链最省,先试;直链失效(CDN 链接过期)再问桥。没有真正的
+        // file_id(占位符里 file_id 就是 url 本身)就没法问,直接报直链的错。
+        let mut fetched = None;
+        let mut direct_error = None;
+        if let Some(url) = file_ref.url.as_deref() {
+            match self
+                .fetch_platform_file_from_sources(
+                    vec![PlatformFileSource::Url(url.to_string())],
+                    file_ref,
+                    &paths.cache_dir,
+                    max_bytes,
+                )
+                .await
+            {
+                Ok(path) => fetched = path,
+                Err(error) => direct_error = Some(error),
+            }
+        }
+        let has_provider_id = !file_ref.file_id.is_empty() && !file_ref.file_id.starts_with("http");
+        if fetched.is_none() && has_provider_id {
+            if let Some(error) = &direct_error {
+                tracing::debug!(
+                    target: "miyu::qq",
+                    error = %error,
+                    file = %file_ref.id,
+                    "direct platform file url failed; asking the bridge"
+                );
+            }
+            let sources = self.resolve_platform_file_sources(file_ref).await?;
+            fetched = self
+                .fetch_platform_file_from_sources(sources, file_ref, &paths.cache_dir, max_bytes)
+                .await?;
+        }
+        let Some(path) = fetched else {
+            return Err(direct_error.unwrap_or_else(|| {
+                anyhow::anyhow!("the platform file is not reachable from this machine")
+            }));
+        };
         // 落位复查才持锁:锁只护"清点→裁决"窗口。复查针对既成事实
         // (存量已含刚写入的文件),并发下载一起冲破配额时超额者自删。
         let verdict = {

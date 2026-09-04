@@ -62,6 +62,7 @@ impl Agent {
                     self.paths.clone(),
                     binary_paths.iter().map(PathBuf::from).collect(),
                     self.context_images.clone(),
+                    self.context_files.clone(),
                     platform_context,
                 );
             } else if !tools.contains("vision_analyze") {

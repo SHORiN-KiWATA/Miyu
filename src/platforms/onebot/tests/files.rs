@@ -2,6 +2,61 @@
 
 use crate::platforms::onebot::*;
 
+/// `get_file` 的返回三种形态都要认,优先级本地路径 > http 直链 > base64。
+#[test]
+fn parses_platform_file_sources_in_priority_order() {
+    let data = json!({
+        "file": "/home/napcat/cache/clip.mp4",
+        "url": "https://cdn.example/clip.mp4",
+        "base64": "aGk="
+    });
+    assert_eq!(
+        parse_platform_file_sources(&data),
+        vec![
+            PlatformFileSource::LocalPath("/home/napcat/cache/clip.mp4".into()),
+            PlatformFileSource::Url("https://cdn.example/clip.mp4".to_string()),
+            PlatformFileSource::Bytes(b"hi".to_vec()),
+        ]
+    );
+    // file:// 形式的 url 当本地路径;相对路径与空 base64 忽略。
+    let data = json!({ "url": "file:///tmp/x.bin", "file": "x.bin", "base64": "" });
+    assert_eq!(
+        parse_platform_file_sources(&data),
+        vec![PlatformFileSource::LocalPath("/tmp/x.bin".into())]
+    );
+    assert!(parse_platform_file_sources(&json!({})).is_empty());
+    assert_eq!(
+        platform_file_byte_limit("clip.MP4"),
+        MAX_INBOUND_VIDEO_BYTES
+    );
+    assert_eq!(
+        platform_file_byte_limit("notes.txt"),
+        MAX_INBOUND_FILE_BYTES
+    );
+}
+
+/// 同机部署时直接从桥的缓存拷文件,超限即拒且不留残片。
+#[tokio::test]
+async fn copies_local_platform_files_with_a_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source.mp4");
+    tokio::fs::write(&source, b"0123456789").await.unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let copied = copy_platform_file_capped(&source, cache.path(), "clip.mp4", 10)
+        .await
+        .unwrap();
+    assert_eq!(tokio::fs::read(&copied).await.unwrap(), b"0123456789");
+    assert!(
+        copy_platform_file_capped(&source, cache.path(), "clip.mp4", 9)
+            .await
+            .is_err()
+    );
+    let (_, count) = scan_platform_file_storage(cache.path(), Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "超限的拷贝不能留残片");
+}
+
 #[test]
 fn sanitizes_file_names() {
     assert_eq!(sanitize_file_name("../../etc/passwd"), "passwd");

@@ -502,6 +502,9 @@ pub(in crate::platforms::onebot) async fn build_and_run_turn(
     }
     let mut prepared = context.prepare_turn(content).await;
     prepared.context_files.extend(current_files);
+    // 历史里的 + 当前消息里的文件/视频引用一起登记,供看图工具(含 MCP 桥
+    // 另建的工具面)按 id 懒下载(09-04)。
+    context.set_context_files(prepared.context_files.clone());
     let content = prepared.content;
     let group_name = context
         .inbound_event()

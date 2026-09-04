@@ -9,7 +9,9 @@ use crate::clipboard::write_image_cache_file;
 use crate::config::{AppConfig, PrintImagePluginConfig};
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
-use crate::platform_types::{PlatformContextImageRef, PlatformImageData};
+use crate::platform_types::{
+    PlatformContextFileRef, PlatformContextImageRef, PlatformFileDownload, PlatformImageData,
+};
 // 工具层只认这个 trait：主体身份、管理员标志、宿主工具放行、按消息取图。
 // 依赖 PlatformTurnContext 本身等于把整个平台运行时钉进工具层。
 use crate::platform_types::PlatformToolContext;
@@ -69,6 +71,7 @@ pub fn register_scoped_local(
         paths,
         allowed_images,
         Vec::new(),
+        Vec::new(),
         None,
         false,
     );
@@ -80,6 +83,7 @@ pub fn register_scoped_platform(
     paths: MiyuPaths,
     allowed_images: Vec<PathBuf>,
     context_images: Vec<PlatformContextImageRef>,
+    context_files: Vec<PlatformContextFileRef>,
     platform_context: Arc<dyn PlatformToolContext>,
 ) {
     let allow_general_access = platform_context.host_tools_allowed();
@@ -89,17 +93,20 @@ pub fn register_scoped_platform(
         paths,
         allowed_images,
         context_images,
+        context_files,
         Some(platform_context),
         allow_general_access,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn register_scoped(
     registry: &mut ToolRegistry,
     config: AppConfig,
     paths: MiyuPaths,
     allowed_images: Vec<PathBuf>,
     context_images: Vec<PlatformContextImageRef>,
+    context_files: Vec<PlatformContextFileRef>,
     platform_context: Option<Arc<dyn PlatformToolContext>>,
     allow_general_access: bool,
 ) {
@@ -111,6 +118,10 @@ fn register_scoped(
         .into_iter()
         .map(|image| (image.id.clone(), image))
         .collect::<HashMap<_, _>>();
+    let context_files = context_files
+        .into_iter()
+        .map(|file| (file.id.clone(), file))
+        .collect::<HashMap<_, _>>();
     // Register even with an empty scope: keeping the tool pinned keeps the
     // provider-visible tools array byte-stable across turns (cache prefix).
     // Analysis calls against an empty scope fail with the existing clear
@@ -118,10 +129,12 @@ fn register_scoped(
     let state = Arc::new(ScopedVisionState {
         allowed_paths,
         context_images,
+        context_files,
         platform_context,
         allow_general_access,
         resolve_lock: tokio::sync::Mutex::new(()),
         resolved: Mutex::new(HashMap::new()),
+        resolved_files: Mutex::new(HashMap::new()),
         content_images: Mutex::new(HashMap::new()),
         analyses: Mutex::new(HashMap::new()),
         calls: AtomicUsize::new(0),
@@ -148,12 +161,12 @@ fn register_scoped(
     }
     registry.register(ToolSpec::new(
         "vision_analyze",
-        "Analyze an image. image can be an image path from this turn's prompt or context_image_N; historical context images are fetched on demand.",
+        "Analyze an image or a video. image can be an image path from this turn's prompt, context_image_N, or a file_<message_id>_<n> id from chat history (videos and image files shared in the chat); context media is fetched on demand.",
         json!({
             "type": "object",
             "properties": {
-                "image": { "type": "string", "description": "A path listed in this turn's image prompt, or a historical image ID such as context_image_1." },
-                "images": { "type": "array", "items": { "type": "string" }, "description": "Several images to analyze in one call. Overrides image." },
+                "image": { "type": "string", "description": "A path listed in this turn's image prompt, a historical image ID such as context_image_1, or a file id such as file_<message_id>_1 for a video or image file from the chat." },
+                "images": { "type": "array", "items": { "type": "string" }, "description": "Several images to analyze in one call. Overrides image. Videos are analyzed one at a time — pass a single video through `image`." },
                 "prompt": { "type": "string", "description": "Question or instruction for the image analysis. Defaults to a concise description." }
             },
             "required": [],
@@ -169,9 +182,9 @@ fn register_scoped(
     registry.amend_description(
         "vision_analyze",
         if allow_general_access {
-            " Historical image IDs from this turn (context_image_N) are fetched on demand; plain local paths and URLs still work as well."
+            " Historical image IDs from this turn (context_image_N) and file ids (file_<message_id>_<n>, for videos or image files) are fetched on demand; plain local paths and URLs still work as well."
         } else {
-            " Only these images may be analyzed: this turn's paths from the current or quoted message, context_image_N IDs explicitly listed in earlier group-chat history, or avatar_url links returned by the group query tools. No other paths or URLs are allowed."
+            " Only these may be analyzed: this turn's paths from the current or quoted message, context_image_N IDs explicitly listed in earlier group-chat history, file_<message_id>_<n> ids for videos or image files listed in the chat, or avatar_url links returned by the group query tools. No other paths or URLs are allowed."
         },
     );
 }
@@ -537,6 +550,10 @@ async fn analyze_scoped_image_one(
             .insert(cache_key, result.clone());
         return Ok(result);
     }
+    if state.context_files.contains_key(image) {
+        let download = resolve_context_file(&paths, &state, image).await?;
+        return analyze_platform_cache_file(&config, &paths, &download.path, prompt).await;
+    }
     if state.allow_general_access {
         return analyze_image_one(args, config, paths).await;
     }
@@ -552,6 +569,11 @@ async fn analyze_scoped_image_one(
     let image = expand_path(image)
         .canonicalize()
         .context("failed to resolve the requested image")?;
+    // 已经懒下载进 platform_files 缓存的文件(read_platform_file / 上一次
+    // vision_analyze 落下的)按路径也放行:目录只装本会话链路下来的东西。
+    if is_platform_cache_path(&paths.cache_dir, &image) {
+        return analyze_platform_cache_file(&config, &paths, &image, prompt).await;
+    }
     if !state.allowed_paths.iter().any(|allowed| allowed == &image) {
         bail!("image is not attached to the current platform turn")
     }
@@ -559,6 +581,36 @@ async fn analyze_scoped_image_one(
         return Ok(output);
     }
     analyze_local_image_with_prompt(&config, &paths, &image, prompt).await
+}
+
+/// 看一个已落在 platform_files 缓存里的文件:视频走视频路由,图片走图片
+/// 路由,其余扩展名明确拒绝(文本请用 read_platform_file)。
+async fn analyze_platform_cache_file(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    path: &Path,
+    prompt: &str,
+) -> Result<String> {
+    let target = path.display().to_string();
+    if let Some(mime) = video_mime(&target) {
+        if let Some(output) = try_inline_targets(config, std::slice::from_ref(&target))? {
+            return Ok(output);
+        }
+        let video_url = local_video_data_url(&target, mime)?;
+        return analyze_video_url_with_prompt(config, paths, &video_url, prompt).await;
+    }
+    if mime_from_path(path).is_err() {
+        bail!(
+            "`{}` is neither a video nor an image; text files go through read_platform_file",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("file")
+        )
+    }
+    if let Some(output) = try_inline_targets(config, std::slice::from_ref(&target))? {
+        return Ok(output);
+    }
+    analyze_local_image_with_prompt(config, paths, path, prompt).await
 }
 
 pub async fn analyze_local_image_with_prompt(
@@ -1111,10 +1163,12 @@ mod tests {
                 (duplicate_source.id.clone(), duplicate_source),
             ]
             .into(),
+            context_files: HashMap::new(),
             platform_context: Some(context),
             allow_general_access: false,
             resolve_lock: tokio::sync::Mutex::new(()),
             resolved: Mutex::new(HashMap::new()),
+            resolved_files: Mutex::new(HashMap::new()),
             content_images: Mutex::new(HashMap::new()),
             analyses: Mutex::new(HashMap::new()),
             calls: AtomicUsize::new(0),

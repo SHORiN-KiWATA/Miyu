@@ -118,9 +118,14 @@ pub(in crate::platforms::onebot) fn inbound_file_placeholders(
         }
         let file_index = index + 1;
         let id = format!("file_{}_{}", message_id, file_index);
+        let label = if crate::tools::vision::video_mime(&file.name).is_some() {
+            t("video", "视频")
+        } else {
+            t("file", "文件")
+        };
         text.push_str(&format!(
             "[{} id={}, label={}]",
-            t("file", "文件"),
+            label,
             id,
             crate::platforms::plugins::real_context::safe_prompt_field(&file.name)
         ));
@@ -134,6 +139,26 @@ pub(in crate::platforms::onebot) fn inbound_file_placeholders(
         });
     }
     (text, refs)
+}
+
+/// 视频段的文件名:优先 name / file_name,再取 file(NapCat 放的是文件名,
+/// 有时是 md5 裸串)。没有视频扩展名就补 `.mp4`,下游全靠扩展名认视频
+/// (`vision::video_mime`),缺了它视频会被当普通二进制文件拒掉。
+pub(in crate::platforms::onebot) fn video_file_name(data: &Value) -> String {
+    let raw = data
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| data.get("file_name").and_then(Value::as_str))
+        .or_else(|| data.get("file").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.starts_with("base64://"))
+        .unwrap_or("video");
+    let name = bounded_chars(raw, MAX_INBOUND_FILE_NAME_CHARS);
+    if crate::tools::vision::video_mime(&name).is_some() {
+        name
+    } else {
+        format!("{name}.mp4")
+    }
 }
 
 /// Group wake check. `Some(text)` = triggered, with any wake prefix
@@ -771,12 +796,39 @@ pub(in crate::platforms::onebot) fn parse_message(
                         .map(str::to_string),
                 });
             }
-            "face" | "record" | "video" if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS => {
+            "video" => {
+                // 视频走文件那条懒下载链路(09-04):此前只进 media,当轮正文里
+                // 没有任何 id,模型连"有段视频可以看"都不知道。NapCat 视频段带
+                // file(文件名)/url/file_id/file_size;file_id 不是群文件 id,
+                // 下载时由 fetch_platform_file 用 url 或 get_file 兜底。
+                let name = video_file_name(data);
+                let file_id = data
+                    .get("file_id")
+                    .and_then(value_id_string)
+                    .or_else(|| data.get("id").and_then(value_id_string))
+                    .and_then(bounded_onebot_id);
+                let url = data
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|url| url.starts_with("http") && url.len() <= 4096)
+                    .map(str::to_string);
+                if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS {
+                    parsed.media.push(PlatformInboundMedia {
+                        kind: PlatformMediaKind::Video,
+                        id: file_id.clone(),
+                        name: Some(name.clone()),
+                        url: url.clone(),
+                    });
+                }
+                if parsed.files.len() < MAX_INBOUND_FILES && (file_id.is_some() || url.is_some()) {
+                    parsed.files.push(FileRef { file_id, name, url });
+                }
+            }
+            "face" | "record" if parsed.media.len() < MAX_INBOUND_MEDIA_RECORDS => {
                 parsed.media.push(PlatformInboundMedia {
                     kind: match kind {
                         "face" => PlatformMediaKind::Emoji,
                         "record" => PlatformMediaKind::Audio,
-                        "video" => PlatformMediaKind::Video,
                         _ => PlatformMediaKind::Other,
                     },
                     id: data

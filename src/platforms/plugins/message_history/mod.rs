@@ -185,7 +185,12 @@ impl MessageHistoryPlugin {
                             media.name.clone().or_else(|| media.id.clone()),
                             None::<String>,
                         );
-                        if media.kind == PlatformMediaKind::File {
+                        // 视频和文件一样按 id 懒下载(09-04):不留 media_id,历史
+                        // 里的视频就只剩一个没法引用的标签。
+                        if matches!(
+                            media.kind,
+                            PlatformMediaKind::File | PlatformMediaKind::Video
+                        ) {
                             placeholder.with_media_id(media.id.clone())
                         } else {
                             placeholder
