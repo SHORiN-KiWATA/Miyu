@@ -911,6 +911,58 @@ fn real_config_window_source() {
 
 /// 08-20:Claude Code 是内置特殊供应商——normalize 自动注入、默认禁用、
 /// 模型预置 CLI 别名;未启用时不进任何模型选择器,启用即出现。
+/// 09-04:设置页给 agy 的 gemini 勾了图片/视频,多模态池却找不到它——因为
+/// "具备能力"和"能塞进消息"被合成了一个函数。拆开后:能力按声明算,池里
+/// 收得下;消息内联与视觉旁路仍按纯文本对待。
+#[test]
+fn antigravity_declared_modalities_count_for_pools_but_not_for_messages() {
+    let mut config = AppConfig::default();
+    config.normalize_builtin_providers();
+    let provider = config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.is_antigravity())
+        .expect("antigravity template");
+    provider.enabled = true;
+    provider.models = vec!["gemini-3.8-flash-high".to_string()];
+    provider.default_model = "gemini-3.8-flash-high".to_string();
+    provider.model_modalities.insert(
+        "gemini-3.8-flash-high".to_string(),
+        vec!["text".to_string(), "image".to_string(), "video".to_string()],
+    );
+    let provider = provider.clone();
+    assert_eq!(
+        provider.input_modalities("gemini-3.8-flash-high").unwrap(),
+        vec!["text", "image", "video"]
+    );
+    assert_eq!(
+        provider
+            .message_input_modalities("gemini-3.8-flash-high")
+            .unwrap(),
+        vec!["text"]
+    );
+    assert!(config.model_supports_any_input("antigravity", "gemini-3.8-flash-high", &["image"]));
+    assert!(!config.model_accepts_message_input(
+        "antigravity",
+        "gemini-3.8-flash-high",
+        &["image"]
+    ));
+    assert!(config
+        .multimodal_provider_model_choices()
+        .iter()
+        .any(|choice| choice.provider_id == "antigravity"));
+    config.active_multimodal_provider_models = Some(vec![ActiveProviderModelConfig {
+        provider_id: "antigravity".to_string(),
+        model: "gemini-3.8-flash-high".to_string(),
+    }]);
+    assert_eq!(config.active_multimodal_provider_model_choices().len(), 1);
+    // 视觉旁路不能落到这条线上:它收不了图。
+    assert!(
+        config.vision_provider_choice().is_err()
+            || config.vision_provider_choice().unwrap().0 != "antigravity"
+    );
+}
+
 #[test]
 fn claude_code_builtin_provider_is_injected_disabled_with_preset_models() {
     let mut config = AppConfig::default();

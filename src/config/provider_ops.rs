@@ -99,7 +99,7 @@ impl AppConfig {
                         vision_model
                     };
                     provider
-                        .input_modalities(model)
+                        .message_input_modalities(model)
                         .is_some_and(|modalities| modalities.iter().any(|item| item == "image"))
                 })
                 .unwrap_or(false);
@@ -394,6 +394,25 @@ impl AppConfig {
             .unwrap_or(false)
     }
 
+    /// 这些输入能不能直接放进**消息**发给该模型(内联图/视频、视觉旁路请求)。
+    /// 与 [`Self::model_supports_any_input`] 的差别见 `ProviderConfig::message_input_modalities`。
+    pub fn model_accepts_message_input(
+        &self,
+        provider_id: &str,
+        model: &str,
+        inputs: &[&str],
+    ) -> bool {
+        self.provider(Some(provider_id))
+            .ok()
+            .and_then(|provider| provider.message_input_modalities(model))
+            .map(|modalities| {
+                modalities
+                    .iter()
+                    .any(|m| inputs.iter().any(|input| m == input))
+            })
+            .unwrap_or(false)
+    }
+
     pub fn vision_provider_choice(&self) -> Result<(String, String)> {
         let vision = &self.plugins.vision;
         if !vision.vision_provider_id.trim().is_empty() {
@@ -404,11 +423,15 @@ impl AppConfig {
             } else {
                 vision.vision_model.trim().to_string()
             };
+            // 视觉旁路是往消息里塞图的请求:模型只能靠原生文件工具看媒体的线
+            // (agy)当不了旁路,哪怕目录里标着 image。
             if !provider
-                .input_modalities(&model)
+                .message_input_modalities(&model)
                 .is_some_and(|modalities| modalities.iter().any(|item| item == "image"))
             {
-                bail!("vision model does not declare image input: {provider_id} / {model}");
+                bail!(
+                    "vision model does not accept image input in messages: {provider_id} / {model}"
+                );
             }
             return Ok((provider_id, model));
         }
@@ -417,7 +440,7 @@ impl AppConfig {
                 .active_multimodal_provider_model_choices()
                 .into_iter()
                 .find(|choice| {
-                    self.model_supports_any_input(&choice.provider_id, &choice.model, &["image"])
+                    self.model_accepts_message_input(&choice.provider_id, &choice.model, &["image"])
                 })
             {
                 return Ok((choice.provider_id, choice.model));

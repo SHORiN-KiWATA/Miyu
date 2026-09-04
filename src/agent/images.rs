@@ -321,7 +321,7 @@ pub(in crate::agent) fn active_text_pool_supports_vision(config: &AppConfig) -> 
     let choices = config.active_provider_model_choices();
     !choices.is_empty()
         && choices.iter().all(|choice| {
-            config.model_supports_any_input(&choice.provider_id, &choice.model, &["image"])
+            config.model_accepts_message_input(&choice.provider_id, &choice.model, &["image"])
         })
 }
 
@@ -333,7 +333,7 @@ pub(in crate::agent) fn active_text_pool_supports_video(config: &AppConfig) -> b
     let choices = config.active_provider_model_choices();
     !choices.is_empty()
         && choices.iter().all(|choice| {
-            config.model_supports_any_input(&choice.provider_id, &choice.model, &["video"])
+            config.model_accepts_message_input(&choice.provider_id, &choice.model, &["video"])
         })
 }
 

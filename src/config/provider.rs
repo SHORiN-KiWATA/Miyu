@@ -556,21 +556,32 @@ impl ProviderConfig {
             .map(|modalities| modalities.iter().any(|m| m == "image"))
     }
 
+    /// 模型**具备**的输入能力(配置声明优先,否则查 models.dev 目录)。
+    ///
+    /// 这是"能不能看"的答案,决定它能不能进多模态池、能不能被标成看图模型。
+    /// "能不能把媒体塞进消息"是另一个问题,见 [`Self::message_input_modalities`]:
+    /// 09-04 两者曾被合成一个(antigravity 直接硬编码成 text),结果用户在设置页
+    /// 给 gemini 勾了视频、多模态池里却永远找不到它。
+    pub fn input_modalities(&self, model: &str) -> Option<Vec<String>> {
+        if let Some(modalities) = self.model_modalities.get(model) {
+            return Some(modalities.clone());
+        }
+        crate::models_cache::input_modalities(&self.id, model)
+    }
+
     /// 模型能直接吃进**消息**里的输入种类。
     ///
     /// agy 中转线恒为纯文本:它的 stream-json 只收 text 块(09-04 实测,image/
     /// media 块一律 `not supported (only "text")`),模型看媒体只能自己调原生
     /// `view_file`。目录里 Gemini 标着 image 输入,照抄就会让 Miyu 把图内联进
     /// 消息——中转层再降级成占位文本,图没到模型,活体消息与化石还因此字节
-    /// 不同,续传链逢图必断(09-04 群 130515298 实证)。
-    pub fn input_modalities(&self, model: &str) -> Option<Vec<String>> {
-        if self.is_antigravity() {
+    /// 不同,续传链逢图必断(09-04 群 130515298 实证)。内联、视觉旁路选客户端
+    /// 都要问这个;池成员资格问 [`Self::input_modalities`]。
+    pub fn message_input_modalities(&self, model: &str) -> Option<Vec<String>> {
+        if self.views_media_with_native_file_tool() {
             return Some(vec!["text".to_string()]);
         }
-        if let Some(modalities) = self.model_modalities.get(model) {
-            return Some(modalities.clone());
-        }
-        crate::models_cache::input_modalities(&self.id, model)
+        self.input_modalities(model)
     }
 
     /// 本线上模型看媒体靠自己调原生文件工具(`view_file` 对图片/视频/音频/PDF

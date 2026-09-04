@@ -461,6 +461,11 @@ fn video_client(config: &AppConfig, paths: &MiyuPaths) -> Result<OpenAiCompatibl
             bail!("plugins.vision.video_provider_id 与 video_model 需同时配置");
         }
         let mut provider = config.provider(Some(provider_id))?.clone();
+        if provider.views_media_with_native_file_tool() {
+            bail!(
+                "plugins.vision.video_provider_id={provider_id} cannot serve as a video model: that relay accepts text only (the model views media with its own view_file)"
+            );
+        }
         provider.default_model = model.to_string();
         if !provider
             .models
@@ -475,7 +480,7 @@ fn video_client(config: &AppConfig, paths: &MiyuPaths) -> Result<OpenAiCompatibl
         .active_multimodal_provider_model_choices()
         .into_iter()
         .filter(|choice| {
-            config.model_supports_any_input(&choice.provider_id, &choice.model, &["video"])
+            config.model_accepts_message_input(&choice.provider_id, &choice.model, &["video"])
         })
         .collect::<Vec<_>>();
     if !choices.is_empty() {
@@ -727,7 +732,7 @@ fn active_text_pool_for_vision(
     let pool = config.active_provider_model_choices();
     let usable = !pool.is_empty()
         && pool.iter().all(|choice| {
-            config.model_supports_any_input(&choice.provider_id, &choice.model, &["image"])
+            config.model_accepts_message_input(&choice.provider_id, &choice.model, &["image"])
         });
     usable.then_some(pool)
 }
@@ -770,7 +775,7 @@ fn active_text_pool_supports(config: &AppConfig, input: &str) -> bool {
     let pool = config.active_provider_model_choices();
     !pool.is_empty()
         && pool.iter().all(|choice| {
-            config.model_supports_any_input(&choice.provider_id, &choice.model, &[input])
+            config.model_accepts_message_input(&choice.provider_id, &choice.model, &[input])
         })
 }
 
@@ -868,7 +873,7 @@ fn vision_client(config: &AppConfig, paths: &MiyuPaths) -> Result<OpenAiCompatib
             .active_multimodal_provider_model_choices()
             .into_iter()
             .filter(|choice| {
-                config.model_supports_any_input(&choice.provider_id, &choice.model, &["image"])
+                config.model_accepts_message_input(&choice.provider_id, &choice.model, &["image"])
             })
             .collect::<Vec<_>>();
         if !choices.is_empty() {
