@@ -562,7 +562,7 @@ impl ProviderConfig {
     /// media 块一律 `not supported (only "text")`),模型看媒体只能自己调原生
     /// `view_file`。目录里 Gemini 标着 image 输入,照抄就会让 Miyu 把图内联进
     /// 消息——中转层再降级成占位文本,图没到模型,活体消息与化石还因此字节
-    /// 不同,续传链逢图必断(docs/issues/2026-09-04 案卷机制 1)。
+    /// 不同,续传链逢图必断(09-04 群 130515298 实证)。
     pub fn input_modalities(&self, model: &str) -> Option<Vec<String>> {
         if self.is_antigravity() {
             return Some(vec!["text".to_string()]);

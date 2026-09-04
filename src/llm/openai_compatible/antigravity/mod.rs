@@ -5,8 +5,7 @@
 //! 工具经 `miyu mcp-serve` 桥挂进去,回合循环看到的永远是「一次请求、纯文本回
 //! 来、没有 tool_calls」。
 //!
-//! 与 claude-code 的三处实质差异(09-03 实测,见
-//! docs/plan/2026-09-03-antigravity-provider-design-review.md):
+//! 与 claude-code 的三处实质差异(09-03 实测):
 //! ①没有 `--system-prompt`——人格写成全局自定义代理
 //! `~/.gemini/config/agents/miyu/agent.md`,正文整体替换 agy 默认指令,
 //! `tools:` 白名单同时决定原生工具面(不写只得缩水集;列全 57 件会整轮出错);
