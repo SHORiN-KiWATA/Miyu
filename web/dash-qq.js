@@ -1,5 +1,5 @@
 /*
- * 群聊面板(09-04):消息历史 / 发言统计 / 撤回记录。
+ * QQ 消息记录面板(09-04):消息历史 / 发言统计 / 撤回记录。
  *
  * 作用域 = 账号 + 会话;消息用游标向前翻,关键词 ≥3 字走全文索引;统计复用
  * 用量页的条形图与热力样式;删除历史与重置上下文边界放底部危险区。
@@ -40,7 +40,7 @@
     ui.account = D.select([], state.account, (value) => { state.account = value; D.remember("qq.account", value); state.conversation = ""; loadConversations(); }, "bot 账号");
     ui.conversation = D.select([], state.conversation, (value) => { state.conversation = value; D.remember("qq.conversation", value); resetPaging(); loadTab(); }, "会话");
     const head = D.el("div.con-head", null,
-      D.el("h2", { text: "群聊" }),
+      D.el("h2", { text: "QQ 消息记录" }),
       D.iconButton("refresh-cw", "刷新", () => reloadAll()),
       ui.stamp,
       D.el("span.dash-scope", null, D.el("span.dash-scope-label", { text: "账号" }), ui.account, D.el("span.dash-scope-label", { text: "会话" }), ui.conversation));

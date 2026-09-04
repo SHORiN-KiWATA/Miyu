@@ -89,14 +89,39 @@ window.MiyuDash = (() => {
     return payload;
   }
 
+  const reducedMotion = () => {
+    try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (_) { return false; }
+  };
+
+  /* 纯整数的统计值从 0 数到位;带单位/小数/文字的原样显示。 */
+  function countUp(node, value) {
+    const text = String(value ?? "—");
+    if (reducedMotion() || !/^\d{1,9}$/.test(text)) { node.textContent = text; return; }
+    const target = Number(text);
+    if (target < 8) { node.textContent = text; return; }
+    const start = performance.now();
+    const duration = 520;
+    const tick = (now) => {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      node.textContent = String(Math.round(target * eased));
+      if (p < 1) requestAnimationFrame(tick); else node.textContent = text;
+    };
+    requestAnimationFrame(tick);
+  }
+
   function statCards(items) {
     const grid = el("div.dash-cards");
-    for (const item of items) {
-      grid.append(el("div.dash-card", null,
+    items.forEach((item, index) => {
+      const value = el("strong.dash-card-value");
+      countUp(value, item.value);
+      const card = el("div.dash-card", null,
         el("span.dash-card-label", { text: item.label }),
-        el("strong.dash-card-value", { text: item.value ?? "—" }),
-        item.hint ? el("span.dash-card-hint", { text: item.hint }) : null));
-    }
+        value,
+        item.hint ? el("span.dash-card-hint", { text: item.hint }) : null);
+      card.style.setProperty("--i", String(index));
+      grid.append(card);
+    });
     return grid;
   }
 
@@ -252,6 +277,8 @@ window.MiyuDash = (() => {
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", points.map((p, i) => `${i ? "L" : "M"}${sx(p.x).toFixed(1)} ${sy(p.y).toFixed(1)}`).join(" "));
     path.setAttribute("class", "dash-sparkline-line");
+    // pathLength=1 让 CSS 里 stroke-dasharray:1 能做"画线"动画,不用量真实长度。
+    path.setAttribute("pathLength", "1");
     svg.append(path);
     return svg;
   }
@@ -294,6 +321,6 @@ window.MiyuDash = (() => {
     }
   }
 
-  return { register, has, open, api, el, icon, iconButton, statCards, pager, openDrawer, closeDrawer, confirmAction, formatTime,
+  return { register, has, open, api, countUp, el, icon, iconButton, statCards, pager, openDrawer, closeDrawer, confirmAction, formatTime,
     segmented, select, table, field, timeline, sparkline, toast, remember, recall };
 })();

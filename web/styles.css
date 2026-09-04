@@ -7916,3 +7916,100 @@ body.miyu-paused *::after {
 .dash-emo-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .dash-emo-form label { display: grid; grid-template-columns: 52px minmax(0, 1fr) 48px; align-items: center; gap: 10px; font-size: var(--fs-meta); color: var(--text-soft); }
 .dash-emo-form input[type="range"] { height: auto; padding: 0; border: none; background: transparent; accent-color: var(--accent); }
+
+/* ── 动效层(09-04):进场淡入上浮、抽屉滑入、条形/量表生长、折线画出;
+   全部短促克制,prefers-reduced-motion 一律关掉。 ── */
+@keyframes dash-fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes dash-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes dash-slide-in { from { transform: translateX(28px); opacity: .4; } to { transform: none; opacity: 1; } }
+@keyframes dash-grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes dash-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes dash-pop { 0% { transform: translate(-50%, -50%) scale(.6); } 70% { transform: translate(-50%, -50%) scale(1.15); } 100% { transform: translate(-50%, -50%) scale(1); } }
+
+.con-panel:not([hidden]) > .con-inner { animation: dash-fade-up .26s ease-out both; }
+.dash-card { animation: dash-fade-up .36s ease-out both; animation-delay: calc(var(--i, 0) * 45ms); transition: transform .16s ease, box-shadow .16s ease; }
+.dash-card:hover { transform: translateY(-2px); box-shadow: var(--card-shadow); }
+.dash-table, .dash-tree-pane, .dash-main-pane, .u-card, .dash-inline-card { animation: dash-fade-up .28s ease-out both; }
+.dash-row > span { animation: dash-fade-in .3s ease-out both; }
+.dash-row:nth-child(2) > span { animation-delay: 22ms; }
+.dash-row:nth-child(3) > span { animation-delay: 44ms; }
+.dash-row:nth-child(4) > span { animation-delay: 66ms; }
+.dash-row:nth-child(5) > span { animation-delay: 88ms; }
+.dash-row:nth-child(6) > span { animation-delay: 110ms; }
+.dash-row:nth-child(7) > span { animation-delay: 132ms; }
+.dash-row:nth-child(8) > span { animation-delay: 154ms; }
+.dash-row:nth-child(9) > span { animation-delay: 176ms; }
+.dash-row:nth-child(10) > span { animation-delay: 198ms; }
+.dash-row:nth-child(11) > span { animation-delay: 220ms; }
+.dash-row:nth-child(12) > span { animation-delay: 242ms; }
+.dash-row:nth-child(13) > span { animation-delay: 264ms; }
+.dash-row:nth-child(14) > span { animation-delay: 286ms; }
+.dash-row:nth-child(15) > span { animation-delay: 308ms; }
+.dash-row:not(.is-head) > span { transition: background-color .14s ease; }
+.dash-meme { animation: dash-fade-up .34s ease-out both; }
+.dash-meme:nth-child(1) { animation-delay: 0ms; }
+.dash-meme:nth-child(2) { animation-delay: 18ms; }
+.dash-meme:nth-child(3) { animation-delay: 36ms; }
+.dash-meme:nth-child(4) { animation-delay: 54ms; }
+.dash-meme:nth-child(5) { animation-delay: 72ms; }
+.dash-meme:nth-child(6) { animation-delay: 90ms; }
+.dash-meme:nth-child(7) { animation-delay: 108ms; }
+.dash-meme:nth-child(8) { animation-delay: 126ms; }
+.dash-meme:nth-child(9) { animation-delay: 144ms; }
+.dash-meme:nth-child(10) { animation-delay: 162ms; }
+.dash-meme:nth-child(11) { animation-delay: 180ms; }
+.dash-meme:nth-child(12) { animation-delay: 198ms; }
+.dash-meme:nth-child(13) { animation-delay: 216ms; }
+.dash-meme:nth-child(14) { animation-delay: 234ms; }
+.dash-meme:nth-child(15) { animation-delay: 252ms; }
+.dash-meme:nth-child(16) { animation-delay: 270ms; }
+.dash-meme:nth-child(17) { animation-delay: 288ms; }
+.dash-meme:nth-child(18) { animation-delay: 306ms; }
+.dash-meme:nth-child(19) { animation-delay: 324ms; }
+.dash-meme:nth-child(20) { animation-delay: 342ms; }
+.dash-meme:nth-child(21) { animation-delay: 360ms; }
+.dash-meme:nth-child(22) { animation-delay: 378ms; }
+.dash-meme:nth-child(23) { animation-delay: 396ms; }
+.dash-meme:nth-child(24) { animation-delay: 414ms; }
+.dash-timeline-item { animation: dash-fade-up .3s ease-out both; }
+.dash-timeline-item:nth-child(1) { animation-delay: 0ms; }
+.dash-timeline-item:nth-child(2) { animation-delay: 40ms; }
+.dash-timeline-item:nth-child(3) { animation-delay: 80ms; }
+.dash-timeline-item:nth-child(4) { animation-delay: 120ms; }
+.dash-timeline-item:nth-child(5) { animation-delay: 160ms; }
+.dash-timeline-item:nth-child(6) { animation-delay: 200ms; }
+.dash-timeline-item:nth-child(7) { animation-delay: 240ms; }
+.dash-timeline-item:nth-child(8) { animation-delay: 280ms; }
+.dash-timeline-item:nth-child(9) { animation-delay: 320ms; }
+.dash-timeline-item:nth-child(10) { animation-delay: 360ms; }
+.dash-timeline-item:nth-child(11) { animation-delay: 400ms; }
+.dash-timeline-item:nth-child(12) { animation-delay: 440ms; }
+.dash-timeline-item::before { transition: transform .16s ease; }
+.dash-timeline-item:hover::before { transform: scale(1.35); }
+.dash-drawer-overlay { animation: dash-fade-in .18s ease-out both; }
+.dash-drawer { animation: dash-slide-in .24s cubic-bezier(.2, .8, .2, 1) both; }
+.dash-confirm[open] { animation: dash-fade-up .18s ease-out both; }
+.dash-hbar-fill, .dash-meter-fill, .dash-level-cell { transform-origin: left center; animation: dash-grow-x .5s cubic-bezier(.2, .8, .2, 1) both; }
+.dash-hbar-track, .dash-meter-track { overflow: hidden; }
+.dash-level-bar .dash-level-cell:nth-child(n+2) { animation-delay: 60ms; }
+.dash-sparkline-line { stroke-dasharray: 1; stroke-dashoffset: 1; animation: dash-draw .9s ease-out .1s both; }
+.dash-heat i { animation: dash-fade-in .4s ease-out both; transition: transform .12s ease; }
+.dash-heat i:hover { transform: scale(1.35); }
+.dash-emo-dot { transition: left .5s cubic-bezier(.2, .8, .2, 1), top .5s cubic-bezier(.2, .8, .2, 1); }
+.dash-emo-dot.is-effective { animation: dash-pop .45s ease-out both; }
+.con-segmented button { transition: background-color .16s ease, color .16s ease, box-shadow .16s ease; }
+.dash-chip.is-clickable, .dash-button, .dash-icon-button { transition: background-color .14s ease, color .14s ease, transform .12s ease; }
+.dash-button:active, .dash-icon-button:active { transform: scale(.96); }
+.dash-tree-row { transition: background-color .12s ease; }
+.dash-index-dot.is-stale { animation: dash-fade-in 1.2s ease-in-out infinite alternate; }
+.con-rail-item { transition: background-color .16s ease, color .16s ease, transform .12s ease; }
+.con-rail-item:active { transform: scale(.98); }
+
+@media (prefers-reduced-motion: reduce) {
+  .con-panel > .con-inner, .dash-card, .dash-table, .dash-tree-pane, .dash-main-pane, .u-card, .dash-inline-card,
+  .dash-row > span, .dash-meme, .dash-timeline-item, .dash-drawer-overlay, .dash-drawer, .dash-confirm[open],
+  .dash-hbar-fill, .dash-meter-fill, .dash-level-cell, .dash-sparkline-line, .dash-heat i, .dash-emo-dot, .dash-index-dot.is-stale {
+    animation: none !important; transition: none !important;
+  }
+  .dash-sparkline-line { stroke-dasharray: none; stroke-dashoffset: 0; }
+}
