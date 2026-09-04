@@ -78,12 +78,12 @@ use turns::*;
 
 use crate::runtime::{
     cold_context, enqueue_turn_update, finish_run, random_id, random_token, release_admin,
-    reset_platform_persona_state, safe_error_message, validate_content, ActorCommand, AdminFailure,
-    AnswerFailure, ApiError, ContextSnapshot, DaemonState, EventHub, EventRecord, IpcRunGuard,
-    LoginFailure, ManagerState, PlatformPersonaResetError, PromptDocument, PromptDocuments,
-    QuestionBroker, RedoWebPrompt, RunInfo, RunOperation, SafeQueuedPrompt, SafeUserAttachment,
-    ThinkingVariantUpdate, TurnEngineState, TurnResourceCache, TurnUpdateMode, TurnUpdateRequest,
-    WebAuth,
+    reset_platform_persona_state, safe_error_message, startup_context, validate_content,
+    ActorCommand, AdminFailure, AnswerFailure, ApiError, ContextSnapshot, DaemonState, EventHub,
+    EventRecord, IpcRunGuard, LoginFailure, ManagerState, PlatformPersonaResetError,
+    PromptDocument, PromptDocuments, QuestionBroker, RedoWebPrompt, RunInfo, RunOperation,
+    SafeQueuedPrompt, SafeUserAttachment, ThinkingVariantUpdate, TurnEngineState,
+    TurnResourceCache, TurnUpdateMode, TurnUpdateRequest, WebAuth,
 };
 use crate::state::{
     ArtifactAsset, ImageAsset, PlatformPluginScopeKey, QueuedPrompt, StateStore, Turn,

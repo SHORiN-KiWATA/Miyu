@@ -14,7 +14,7 @@ use crate::paths::MiyuPaths;
 use crate::platforms::PlatformRuntime;
 use crate::state::StateStore;
 use crate::tools::build_tool_registry;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
@@ -22,8 +22,9 @@ use std::net::IpAddr;
 #[cfg(test)]
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
 
 // ── DaemonState / TurnEngineState / TurnResources 与其缓存 ──
@@ -342,8 +343,61 @@ pub(crate) fn cold_context(
     paths: &MiyuPaths,
     state_store: &StateStore,
 ) -> Result<ContextSnapshot> {
-    let cumulative = state_store.session_cumulative_token_totals()?;
     let tokens = cold_context_tokens(config, paths, state_store).unwrap_or(0);
+    cold_context_with_tokens(config, state_store, tokens)
+}
+
+/// 启动路径专用的 `cold_context`(09-04 issue #36)。
+///
+/// 现算 token 要建整套工具注册表,里面含 MCP tools/list:某个 MCP server
+/// 不可达时这一步要等到列举超时,而 CLI 只给 daemon 8 秒就绪窗口——过去
+/// 这条链跑在 IPC 起监听之前,一个死 server 就让整个 daemon(WebUI、QQ)
+/// 起不来。
+///
+/// 所以启动时只等 [`STARTUP_CONTEXT_BUDGET`]:算得快(常态)照旧拿真数,
+/// REPL 连上第一帧 footer 就是对的;算得慢就先用 0 占位放 daemon 就绪,
+/// 真数继续在线程里算,算完从返回的 receiver 送出,由调用方回填。
+pub(crate) const STARTUP_CONTEXT_BUDGET: Duration = Duration::from_secs(3);
+
+pub(crate) fn startup_context(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    state_store: &StateStore,
+) -> Result<(ContextSnapshot, Option<Receiver<Result<ContextSnapshot>>>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let config = config.clone();
+        let paths = paths.clone();
+        let state_store = state_store.clone();
+        std::thread::Builder::new()
+            .name("miyu-startup-context".to_string())
+            .spawn(move || {
+                let _ = tx.send(cold_context(&config, &paths, &state_store));
+            })
+            .context("spawning startup context worker")?;
+    }
+    match rx.recv_timeout(STARTUP_CONTEXT_BUDGET) {
+        Ok(context) => Ok((context?, None)),
+        Err(RecvTimeoutError::Timeout) => {
+            tracing::warn!(
+                budget_secs = STARTUP_CONTEXT_BUDGET.as_secs(),
+                "startup context calculation is slow (unreachable MCP server?); \
+                 daemon goes ready with a placeholder and backfills later"
+            );
+            Ok((cold_context_with_tokens(config, state_store, 0)?, Some(rx)))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            bail!("startup context worker exited without a result")
+        }
+    }
+}
+
+fn cold_context_with_tokens(
+    config: &AppConfig,
+    state_store: &StateStore,
+    tokens: u64,
+) -> Result<ContextSnapshot> {
+    let cumulative = state_store.session_cumulative_token_totals()?;
     let window = config.active_context_window_with_source()?;
     Ok(ContextSnapshot {
         tokens,

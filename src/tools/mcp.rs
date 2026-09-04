@@ -3,8 +3,10 @@ use crate::config::{AppConfig, McpServerConfig};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -37,7 +39,7 @@ struct ToolsListResult {
     tools: Vec<McpToolInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct McpToolInfo {
     name: String,
     #[serde(default)]
@@ -46,27 +48,164 @@ struct McpToolInfo {
     input_schema: Value,
 }
 
+// ── tools/list 缓存 ──
+//
+// 09-04 issue #36:注册表每次重建(cold_context、TurnResources 的 normal/dev
+// 两套、配置保存……)都对每个 MCP server 现 spawn 一次子进程做 tools/list,
+// 并且是串行的。一个不可达的 server 就把每次重建拖到 timeout_seconds + 5s,
+// 多个不可达的还累加;daemon 启动路径上这条链跑在 bind 之前,CLI 的 8 秒
+// 就绪窗口一到就把 daemon 杀了,失败 warn 都来不及打。
+//
+// 三刀:(1) 列举结果按 server 配置缓存在进程里,成功永久(配置一变键就变),
+// 失败带 TTL 免得每次重建都重试一遍死 server;(2) 未命中的 server 并行列举,
+// 总耗时取最大而非求和;(3) 列举预算与 `timeout_seconds` 解耦——那个值是
+// 给工具调用用的(60s 的调用很正常),tools/list 一个健康 server 一两秒就
+// 该答完,上限单独封顶。
+
+/// 失败的列举在这段时间内不再重试:死 server 让每次注册表重建都白等一轮
+/// 太浪费,但也不能永久判死——server 修好了得能自动回来。
+const FAILED_LISTING_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// tools/list 外层预算的封顶(秒),不含 5s 余量。
+const LIST_TIMEOUT_CAP_SECS: u64 = 15;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ListingKey {
+    id: String,
+    command: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_seconds: u64,
+}
+
+impl ListingKey {
+    fn of(server: &McpServerConfig) -> Self {
+        let mut env: Vec<(String, String)> = server
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        env.sort();
+        Self {
+            id: server.id.clone(),
+            command: server.command.clone(),
+            args: server.args.clone(),
+            env,
+            timeout_seconds: server.timeout_seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum CachedListing {
+    Tools(Arc<Vec<McpToolInfo>>),
+    Failed { at: Instant, error: String },
+}
+
+fn listing_cache() -> &'static Mutex<HashMap<ListingKey, CachedListing>> {
+    static CACHE: OnceLock<Mutex<HashMap<ListingKey, CachedListing>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 缓存里可用的条目:成功的永远可用,失败的在 TTL 内可用(返回 Err 让调用
+/// 方跳过、不重试),过期的当未命中。
+fn cached_listing(key: &ListingKey) -> Option<std::result::Result<Arc<Vec<McpToolInfo>>, String>> {
+    let cache = listing_cache().lock().unwrap();
+    match cache.get(key)? {
+        CachedListing::Tools(tools) => Some(Ok(tools.clone())),
+        CachedListing::Failed { at, error } => {
+            (at.elapsed() < FAILED_LISTING_RETRY_AFTER).then(|| Err(error.clone()))
+        }
+    }
+}
+
+fn store_listing(key: ListingKey, entry: CachedListing) {
+    listing_cache().lock().unwrap().insert(key, entry);
+}
+
+/// 把一批 server 的工具列表拿到手:命中缓存的直接用,未命中的并行列举后
+/// 回填。返回顺序与入参一致;列举失败的 server 值为 None。
+fn resolve_listings(servers: &[&McpServerConfig]) -> Vec<Option<Arc<Vec<McpToolInfo>>>> {
+    let mut resolved: Vec<Option<Arc<Vec<McpToolInfo>>>> = vec![None; servers.len()];
+    let mut pending = Vec::new();
+    for (index, server) in servers.iter().enumerate() {
+        let key = ListingKey::of(server);
+        match cached_listing(&key) {
+            Some(Ok(tools)) => resolved[index] = Some(tools),
+            Some(Err(error)) => tracing::debug!(
+                server = %server.id,
+                error = %error,
+                "MCP server listing recently failed; skipping until retry window passes"
+            ),
+            None => pending.push((index, key)),
+        }
+    }
+    if pending.is_empty() {
+        return resolved;
+    }
+    // 结果走 channel 按完成顺序收:秒退的 server 立刻落日志、进缓存,不用
+    // 排在最慢那个后面等。
+    let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+    let expected = pending.len();
+    for (index, key) in pending {
+        let server = servers[index].clone();
+        let outcome_tx = outcome_tx.clone();
+        tracing::info!(server = %server.id, "listing MCP server tools");
+        std::thread::spawn(move || {
+            let outcome = list_server_tools_with_timeout(&server);
+            let _ = outcome_tx.send((index, key, outcome));
+        });
+    }
+    drop(outcome_tx);
+    for (index, key, outcome) in outcome_rx.iter().take(expected) {
+        let server = servers[index];
+        match outcome {
+            Ok(tools) => {
+                tracing::info!(
+                    server = %server.id,
+                    tools = tools.len(),
+                    "MCP server tools listed"
+                );
+                let tools = Arc::new(tools);
+                store_listing(key, CachedListing::Tools(tools.clone()));
+                resolved[index] = Some(tools);
+            }
+            Err(error) => {
+                // 失败必须留日志,否则用户无从排查工具为何消失。daemon 默认
+                // 只记 error 级(见 logging::selected_level),warn 用户看不到。
+                let error = format!("{error:#}");
+                tracing::error!(
+                    server = %server.id,
+                    error = %error,
+                    retry_after_secs = FAILED_LISTING_RETRY_AFTER.as_secs(),
+                    "MCP server failed to start or list tools; its tools are skipped"
+                );
+                store_listing(
+                    key,
+                    CachedListing::Failed {
+                        at: Instant::now(),
+                        error,
+                    },
+                );
+            }
+        }
+    }
+    resolved
+}
+
 pub fn register(registry: &mut ToolRegistry, config: AppConfig) {
-    for server in config
+    let servers: Vec<&McpServerConfig> = config
         .mcp
         .servers
         .iter()
         .filter(|server| server.enabled && !server.id.trim().is_empty())
-    {
-        // 有界列举:一个挂起的 server 不能吊死整个注册流程(启动路径)。
-        // 失败必须留日志,否则用户无从排查工具为何消失。
-        let tools = match list_server_tools_with_timeout(server) {
-            Ok(tools) => tools,
-            Err(error) => {
-                tracing::warn!(
-                    server = %server.id,
-                    error = %format!("{error:#}"),
-                    "MCP server failed to start or list tools; its tools are skipped"
-                );
-                continue;
-            }
+        .collect();
+    let listings = resolve_listings(&servers);
+    for (server, tools) in servers.into_iter().zip(listings) {
+        let Some(tools) = tools else {
+            continue;
         };
-        for tool in tools {
+        for tool in tools.iter().cloned() {
             let tool_id = mcp_tool_id(&server.id, &tool.name);
             let display_name = if server.display_name.trim().is_empty() {
                 format!("MCP {} / {}", server.id, tool.name)
@@ -115,6 +254,12 @@ fn overall_timeout(server: &McpServerConfig) -> Duration {
     Duration::from_secs(server.timeout_seconds.max(1)) + Duration::from_secs(5)
 }
 
+/// tools/list 的外层预算:`timeout_seconds` 是给工具调用的,列举单独封顶。
+fn list_timeout(server: &McpServerConfig) -> Duration {
+    Duration::from_secs(server.timeout_seconds.clamp(1, LIST_TIMEOUT_CAP_SECS))
+        + Duration::from_secs(5)
+}
+
 fn list_server_tools(server: &McpServerConfig) -> Result<Vec<McpToolInfo>> {
     list_server_tools_inner(server, None)
 }
@@ -134,7 +279,7 @@ fn list_server_tools_inner(
 }
 
 fn list_server_tools_with_timeout(server: &McpServerConfig) -> Result<Vec<McpToolInfo>> {
-    let deadline = overall_timeout(server);
+    let deadline = list_timeout(server);
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     let (pid_tx, pid_rx) = std::sync::mpsc::channel();
     let server_clone = server.clone();
@@ -439,5 +584,141 @@ for line in sys.stdin:
         )
         .unwrap();
         assert_eq!(output, "echo: hi");
+    }
+}
+
+#[cfg(test)]
+mod listing_cache_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// 每次启动往 `marker` 追加一行,便于数子进程被 spawn 了几次。
+    /// `delay_secs` > 0 时先睡再应答,用来量并行度。`exit_early` 则记完
+    /// 标记直接退出,模拟起不来的 server。
+    fn mock_server(
+        id: &str,
+        marker: &std::path::Path,
+        delay_secs: f64,
+        exit_early: bool,
+    ) -> McpServerConfig {
+        let script = format!(
+            r#"
+import json, sys, time
+with open({marker:?}, 'a') as f:
+    f.write('start\n')
+if {exit_early}:
+    sys.exit(0)
+time.sleep({delay_secs})
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    if 'id' not in request:
+        continue
+    if method == 'initialize':
+        result = {{'protocolVersion':'2025-03-26','capabilities':{{}},'serverInfo':{{'name':'mock','version':'1'}}}}
+    elif method == 'tools/list':
+        result = {{'tools':[{{'name':'echo','description':'Echo text','inputSchema':{{'type':'object'}}}}]}}
+    else:
+        result = {{}}
+    print(json.dumps({{'jsonrpc':'2.0','id':request['id'],'result':result}}), flush=True)
+"#,
+            marker = marker.to_string_lossy(),
+            exit_early = if exit_early { "True" } else { "False" },
+        );
+        McpServerConfig {
+            id: id.to_string(),
+            display_name: String::new(),
+            command: "python".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: HashMap::new(),
+            timeout_seconds: 5,
+            enabled: true,
+        }
+    }
+
+    fn config_with(servers: Vec<McpServerConfig>) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.mcp.enabled = true;
+        config.mcp.servers = servers;
+        config
+    }
+
+    fn spawn_count(marker: &std::path::Path) -> usize {
+        std::fs::read_to_string(marker)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn successful_listing_is_reused_across_registry_rebuilds() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawns");
+        let config = config_with(vec![mock_server("cache-hit", &marker, 0.0, false)]);
+
+        let mut first = ToolRegistry::new();
+        register(&mut first, config.clone());
+        let mut second = ToolRegistry::new();
+        register(&mut second, config);
+
+        assert!(first.contains("mcp_cache_hit_echo"));
+        assert!(second.contains("mcp_cache_hit_echo"));
+        assert_eq!(spawn_count(&marker), 1, "second rebuild must hit the cache");
+    }
+
+    #[test]
+    fn failed_listing_is_not_retried_within_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawns");
+        let config = config_with(vec![mock_server("cache-miss", &marker, 0.0, true)]);
+
+        let mut first = ToolRegistry::new();
+        register(&mut first, config.clone());
+        let mut second = ToolRegistry::new();
+        register(&mut second, config);
+
+        assert!(!first.contains("mcp_cache_miss_echo"));
+        assert!(!second.contains("mcp_cache_miss_echo"));
+        assert_eq!(
+            spawn_count(&marker),
+            1,
+            "dead server must not be re-spawned per rebuild"
+        );
+    }
+
+    #[test]
+    fn uncached_servers_are_listed_in_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawns");
+        let config = config_with(vec![
+            mock_server("parallel-a", &marker, 1.0, false),
+            mock_server("parallel-b", &marker, 1.0, false),
+            mock_server("parallel-c", &marker, 1.0, false),
+        ]);
+
+        let started = Instant::now();
+        let mut registry = ToolRegistry::new();
+        register(&mut registry, config);
+        let elapsed = started.elapsed();
+
+        assert!(registry.contains("mcp_parallel_a_echo"));
+        assert!(registry.contains("mcp_parallel_c_echo"));
+        assert_eq!(spawn_count(&marker), 3);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "three 1s servers must overlap, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn list_budget_is_capped_independently_of_call_timeout() {
+        let mut server = mock_server("budget", std::path::Path::new("/dev/null"), 0.0, false);
+        server.timeout_seconds = 600;
+        assert_eq!(overall_timeout(&server), Duration::from_secs(605));
+        assert_eq!(
+            list_timeout(&server),
+            Duration::from_secs(LIST_TIMEOUT_CAP_SECS + 5)
+        );
+        server.timeout_seconds = 3;
+        assert_eq!(list_timeout(&server), Duration::from_secs(8));
     }
 }
