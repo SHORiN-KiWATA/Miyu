@@ -24,6 +24,7 @@ window.MiyuDash = (() => {
     eraser: [["path", { d: "m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" }], ["path", { d: "M22 21H7" }], ["path", { d: "m5 11 9 9" }]],
     "rotate-ccw": [["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }], ["path", { d: "M3 3v5h5" }]],
     check: [["path", { d: "M20 6 9 17l-5-5" }]],
+    "check-square": [["polyline", { points: "9 11 12 14 22 4" }], ["path", { d: "M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" }]],
     "external-link": [["path", { d: "M15 3h6v6" }], ["path", { d: "M10 14 21 3" }], ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" }]]
   };
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -308,6 +309,37 @@ window.MiyuDash = (() => {
     setTimeout(() => { toastNode?.remove(); toastNode = null; }, 3200);
   }
 
+  /* 批量选择条:count 已选,total 可见总数;actions [{label, icon, danger, primary, onClick}]。 */
+  function bulkBar({ count, total, noun = "项", onAll, onNone, actions = [] }) {
+    const bar = el("div.dash-bulk-bar", { role: "toolbar" });
+    bar.append(el("strong", { text: `已选 ${count} ${noun}` }));
+    if (onAll) bar.append(el("button.dash-button", { type: "button", text: total != null ? `全选可见 ${total}` : "全选", onclick: onAll }));
+    if (onNone) bar.append(el("button.dash-button", { type: "button", text: "清空选择", onclick: onNone }));
+    bar.append(el("span.dash-bulk-spacer"));
+    for (const action of actions) {
+      const button = el(`button.dash-button${action.danger ? ".is-danger" : ""}${action.primary ? ".is-primary" : ""}`, { type: "button", onclick: action.onClick });
+      button.disabled = !count;
+      if (action.icon) button.append(icon(action.icon));
+      button.append(action.label);
+      bar.append(button);
+    }
+    return bar;
+  }
+
+  /* 批量操作走现有单条接口逐个执行(条目通常几十个,不值得为它加后端批量口),
+     进度写在 toast;返回 { done, failed }。 */
+  async function runBatch(items, worker, label) {
+    let done = 0;
+    const failed = [];
+    for (const item of items) {
+      try { await worker(item); done += 1; } catch (error) { failed.push({ item, error }); }
+      toast(`${label} ${done + failed.length} / ${items.length}`);
+    }
+    if (failed.length) toast(`${label}:${done} 成功,${failed.length} 失败(${failed[0].error.message})`, "error");
+    else toast(`${label}完成:${done} 项`);
+    return { done, failed };
+  }
+
   /* 本地记住作用域选择(人格/账号/库),存取都包 try——隐私模式会抛。 */
   function remember(key, value) {
     try { localStorage.setItem(`miyu.dash.${key}`, value); } catch (_) { /* 忽略 */ }
@@ -338,5 +370,5 @@ window.MiyuDash = (() => {
   }
 
   return { register, has, open, api, countUp, el, icon, iconButton, statCards, pager, openDrawer, closeDrawer, confirmAction, formatTime,
-    segmented, select, table, field, timeline, sparkline, toast, remember, recall };
+    segmented, select, table, field, timeline, sparkline, toast, remember, recall, bulkBar, runBatch };
 })();

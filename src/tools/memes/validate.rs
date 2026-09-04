@@ -368,6 +368,13 @@ pub(in crate::tools::memes) fn item_from_classification(
     if !classification.save {
         bail!("vision classification rejected the image")
     }
+    // 调用方（保存工具）已经写了理由就尊重它，否则用分类模型给的那句。
+    let origin = origin.map(|mut origin| {
+        if origin.reason.trim().is_empty() {
+            origin.reason = classification.reason.trim().chars().take(200).collect();
+        }
+        origin
+    });
     let item = MemeItem {
         id,
         name: classification.name,

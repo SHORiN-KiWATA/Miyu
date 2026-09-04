@@ -120,6 +120,7 @@ impl PlatformPlugin for MemeCollectorPlugin {
                     message_id: event.message_id.clone(),
                     sent_at: platform_sent_at(event.timestamp),
                     collected_at: String::new(),
+                    reason: String::new(),
                 },
                 selected_indices,
                 images: context.message_images_task(event.message_id.clone()),
@@ -156,6 +157,10 @@ impl PlatformPlugin for MemeCollectorPlugin {
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": "当前消息中的图片序号，从 1 开始；默认保存第一张。"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "一句话说说为什么想把这张图存下来（只给库主人在面板里看，之后不会再回给你）。"
                             }
                         },
                         "additionalProperties": false
@@ -304,6 +309,15 @@ async fn save_current_message_meme(
     if !(1..=4).contains(&image_index) {
         bail!("image_index must be between 1 and 4");
     }
+    // 模型自己给的「添加理由」优先;没给就用分类模型的那句(见 item_from_classification)。
+    let reason: String = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(200)
+        .collect();
     let from_current_message = event
         .media
         .iter()
@@ -327,6 +341,7 @@ async fn save_current_message_meme(
             message_id: message_id.clone(),
             sent_at: platform_sent_at(event.timestamp),
             collected_at: String::new(),
+            reason: reason.clone(),
         }
     } else {
         let replied = event.replied_message.as_ref();
@@ -343,6 +358,7 @@ async fn save_current_message_meme(
                 .map(|m| platform_sent_at(m.timestamp))
                 .unwrap_or_default(),
             collected_at: String::new(),
+            reason: reason.clone(),
         }
     };
     let images = context.message_images_task(message_id.clone()).await?;

@@ -30,6 +30,9 @@ pub(crate) struct MemeClassification {
     #[serde(default)]
     pub(crate) avoid: String,
     pub(crate) tags: Vec<String>,
+    /// 给库主看的「添加理由」，见 MemeOrigin::reason。缺省允许为空。
+    #[serde(default)]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

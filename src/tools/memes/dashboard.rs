@@ -312,6 +312,7 @@ pub(crate) async fn dashboard_classify(
         "description": classification.description,
         "usage": classification.usage,
         "tags": classification.tags,
+        "reason": classification.reason,
         "confidence": classification.confidence,
     }))
 }

@@ -11,6 +11,7 @@
   if (!D) return;
 
   const state = {
+    selected: new Set(),
     persona: D.recall("memory.persona"),
     active: "",
     personas: [],
@@ -67,7 +68,7 @@
       D.el("button.dash-button.is-danger", { type: "button", onclick: resetPersona }, D.icon("rotate-ccw"), "重置此人格记忆"));
 
     ui.tabs = D.segmented(Object.entries(TAB_LABEL).map(([value, label]) => ({ value, label })), state.tab, (value) => {
-      state.tab = value; state.offset = 0; state.q = ""; ui.search.value = ""; renderFilters(); loadItems();
+      state.tab = value; state.offset = 0; state.q = ""; ui.search.value = ""; state.selected.clear(); renderFilters(); loadItems();
     });
     ui.filters = D.el("div.dash-filters");
     ui.search = D.el("input.dash-search", { type: "search", placeholder: "搜索内容…", oninput: () => {
@@ -78,7 +79,8 @@
 
     ui.list = D.el("div.dash-table-wrap");
     ui.pager = D.el("div");
-    root.append(head, ui.cards, ui.actions, toolbar, ui.list, ui.pager);
+    ui.bulk = D.el("div");
+    root.append(head, ui.cards, ui.actions, toolbar, ui.bulk, ui.list, ui.pager);
     renderFilters();
     reloadAll();
   }
@@ -188,6 +190,9 @@
       if (seq !== state.loadSeq) return;
       state.items = payload.items || [];
       state.total = payload.total || 0;
+      // 翻页 / 换筛选后,列表里已经没有的条目不再算选中。
+      const present = new Set(state.items.map((item) => `${state.tab}:${item.id}`));
+      for (const key of [...state.selected]) if (!present.has(key)) state.selected.delete(key);
       renderList();
       ui.stamp.textContent = `${state.persona || "当前人格"} · ${TAB_LABEL[state.tab]} ${state.total} 条`;
     } catch (error) {
@@ -208,23 +213,32 @@
     let grid;
     if (state.tab === "facts") {
       grid = D.table([
-        { label: "内容", width: "minmax(260px, 3fr)" }, { label: "类型", width: "72px" }, { label: "真值", width: "80px" },
+        { label: "", width: "36px" }, { label: "内容", width: "minmax(260px, 3fr)" }, { label: "类型", width: "72px" }, { label: "真值", width: "80px" },
         { label: "重要", width: "56px" }, { label: "状态", width: "76px" }, { label: "置信 / 强度", width: "108px" },
         { label: "召回", width: "56px" }, { label: "更新", width: "128px" }, { label: "", width: "40px" }]);
       for (const item of state.items) grid.append(factRow(item));
     } else if (state.tab === "episodes") {
       grid = D.table([
-        { label: "内容", width: "minmax(260px, 3fr)" }, { label: "保留", width: "64px" }, { label: "阶段", width: "76px" },
+        { label: "", width: "36px" }, { label: "内容", width: "minmax(260px, 3fr)" }, { label: "保留", width: "64px" }, { label: "阶段", width: "76px" },
         { label: "来源", width: "110px" }, { label: "状态", width: "76px" }, { label: "强度", width: "64px" },
         { label: "召回", width: "56px" }, { label: "更新", width: "128px" }, { label: "", width: "40px" }]);
       for (const item of state.items) grid.append(episodeRow(item));
     } else {
       grid = D.table([
-        { label: "时间", width: "140px" }, { label: "角色", width: "64px" }, { label: "内容", width: "minmax(260px, 4fr)" },
+        { label: "", width: "36px" }, { label: "时间", width: "140px" }, { label: "角色", width: "64px" }, { label: "内容", width: "minmax(260px, 4fr)" },
         { label: state.q ? "分数" : "向量", width: "64px" }, { label: "", width: "40px" }]);
       for (const item of state.items) grid.append(evictedRow(item));
     }
+    // 表头第一格放全选框(D.table 只认文字表头,这里事后换掉)。
+    const allBox = D.el("input.dash-row-check", { type: "checkbox", title: "全选本页", "aria-label": "全选本页" });
+    allBox.checked = state.items.length > 0 && state.items.every((item) => state.selected.has(`${state.tab}:${item.id}`));
+    allBox.addEventListener("change", () => {
+      for (const item of state.items) { const key = `${state.tab}:${item.id}`; if (allBox.checked) state.selected.add(key); else state.selected.delete(key); }
+      renderList();
+    });
+    grid.firstChild.firstChild.replaceChildren(allBox);
     ui.list.append(grid);
+    renderBulk();
     const pagerNode = state.tab === "evicted" && state.q
       ? D.el("div.dash-pager", null, D.el("span.dash-pager-text", { text: `搜索命中 ${state.total} 条(最多 50)` }))
       : D.pager({ offset: state.offset, limit: state.limit, total: state.total, onChange: (offset) => { state.offset = offset; loadItems(); } });
@@ -234,9 +248,41 @@
   const chip = (label, cls) => D.el(`span.dash-chip${cls ? `.${cls}` : ""}`, { text: label });
   const rowAttrs = (open) => ({ role: "row", tabindex: "0", onclick: open, onkeydown: (event) => { if (event.key === "Enter") open(); } });
   const trashCell = (onDelete) => D.el("span.dash-cell-actions", null, D.iconButton("trash-2", "删除", (event) => { event.stopPropagation(); onDelete(); }, "is-danger"));
+  const checkCell = (item) => {
+    const key = `${state.tab}:${item.id}`;
+    const box = D.el("input.dash-row-check", { type: "checkbox", "aria-label": "选择" });
+    box.checked = state.selected.has(key);
+    box.addEventListener("click", (event) => event.stopPropagation());
+    box.addEventListener("change", () => { if (box.checked) state.selected.add(key); else state.selected.delete(key); renderBulk(); });
+    return D.el("span.dash-cell-check", { onclick: (event) => event.stopPropagation() }, box);
+  };
+
+  function renderBulk() {
+    ui.bulk.textContent = "";
+    if (!state.selected.size) return;
+    ui.bulk.append(D.bulkBar({
+      count: state.selected.size, noun: "条",
+      onNone: () => { state.selected.clear(); renderList(); },
+      actions: [{ label: `删除所选${TAB_LABEL[state.tab]}`, icon: "trash-2", danger: true, onClick: bulkRemove }]
+    }));
+  }
+
+  async function bulkRemove() {
+    const ids = [...state.selected].filter((key) => key.startsWith(`${state.tab}:`)).map((key) => key.slice(state.tab.length + 1));
+    if (!ids.length) return;
+    const ok = await D.confirmAction(`删除选中的 ${ids.length} 条${TAB_LABEL[state.tab]}?此操作不可撤销。`);
+    if (!ok) return;
+    const url = (id) => state.tab === "evicted"
+      ? `/api/dash/memory/evicted/${id}?${personaQuery()}`
+      : `/api/dash/memory/items/${state.tab}/${id}?${personaQuery()}`;
+    await D.runBatch(ids, (id) => D.api(url(id), { method: "DELETE" }), "删除");
+    state.selected.clear();
+    await Promise.all([loadStats(), loadItems()]);
+  }
 
   function factRow(item) {
     return D.el("div.dash-row", rowAttrs(() => openDetail("facts", item.id)),
+      checkCell(item),
       D.el("span.dash-cell-main", { text: item.content }),
       D.el("span.dash-cell-muted", { text: TYPE[item.memory_type] || item.memory_type || "—" }),
       D.el("span", null, chip(TRUTH[item.truth_status] || item.truth_status || "—", TRUTH_CLASS[item.truth_status])),
@@ -254,6 +300,7 @@
       ? `${item.origin_platform || "平台"} ${item.origin_conversation_id || ""}`.trim()
       : (ORIGIN[item.origin_kind] || item.source || "—");
     return D.el("div.dash-row", rowAttrs(() => openDetail("episodes", item.id)),
+      checkCell(item),
       D.el("span.dash-cell-main", { text: item.content }),
       D.el("span.dash-cell-muted", { text: RETENTION[item.retention] || "—" }),
       D.el("span", null, chip(st.label, st.cls)),
@@ -267,6 +314,7 @@
 
   function evictedRow(item) {
     return D.el("div.dash-row", rowAttrs(() => openEvicted(item.id)),
+      checkCell(item),
       D.el("span.dash-cell-muted", { text: D.formatTime(item.timestamp) }),
       D.el("span", null, chip(ROLE[item.role] || item.role, item.role === "assistant" ? "is-active" : "")),
       D.el("span.dash-cell-main", { text: item.snippet }),

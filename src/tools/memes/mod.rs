@@ -390,6 +390,7 @@ mod tests {
             message_id: "msg-e2e-1".to_string(),
             sent_at: "2026-08-10T12:00:00+00:00".to_string(),
             collected_at: String::new(),
+            reason: String::new(),
         };
         let outcome = collect_meme_from_local_image(&image, &config, &paths, Some(origin))
             .await
@@ -593,6 +594,7 @@ mod tests {
             save: true,
             // 兼容字段:模型仍可能吐 avoid,收下即丢(见 crud.rs 的说明)
             avoid: String::new(),
+            reason: String::new(),
             confidence: 100,
             positive_gates: PositiveGates {
                 chat_reaction: true,

@@ -6547,7 +6547,7 @@ body[data-theme="linen"] {
 .con-rail-head .icon-button { margin-left: auto; }
 .con-rail-nav { flex: 1; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; }
 .con-rail-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px;
-  color: var(--text-soft); text-align: left; white-space: nowrap; width: 100%; }
+  background: transparent; color: var(--text-soft); text-align: left; white-space: nowrap; width: 100%; cursor: pointer; }
 .con-rail-item:hover { background: var(--surface-2); color: var(--text); }
 .con-rail-item.active { background: var(--accent-soft); color: var(--md-sys-color-on-primary-container); }
 .con-rail-item .icon-slot { width: 15px; height: 15px; flex: none; }
@@ -8377,3 +8377,23 @@ body.miyu-paused *::after {
   .st-input { width: 100%; }
     .st-cost-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ── 批量选择(09-04):表情包选择模式、记忆/知识库勾选列、批量操作条 ── */
+.dash-bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, var(--surface-1)); box-shadow: var(--card-shadow); animation: dash-fade-up .22s ease-out both; }
+.dash-bulk-bar strong { font-size: var(--fs-ui); }
+.dash-bulk-spacer { flex: 1 1 auto; }
+.dash-row-check { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.dash-cell-check { justify-content: center; padding: 0 !important; }
+.dash-tree-check { flex: none; }
+.dash-meme.is-selectable { cursor: pointer; }
+.dash-meme.is-selectable .dash-meme-thumb::after { content: ""; position: absolute; inset: 0; background: transparent; transition: background .12s ease; }
+.dash-meme.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.dash-meme.is-selected .dash-meme-thumb::after { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.dash-meme-check { position: absolute; top: 6px; left: 6px; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; border: 2px solid rgba(255, 255, 255, .85); background: rgba(0, 0, 0, .35); color: transparent; transition: background .12s ease, color .12s ease; }
+.dash-meme-check svg { width: 14px; height: 14px; }
+.dash-meme.is-selected .dash-meme-check { background: var(--accent); border-color: var(--accent); color: var(--inverse-text); }
+
+/* 表情包「添加理由」:只给人看的乐子,模型看不到 */
+.dash-meme-reason { margin: 0 0 14px; padding: 10px 12px 10px 14px; border-left: 3px solid var(--gold); border-radius: 8px; background: color-mix(in srgb, var(--gold) 12%, var(--surface-2)); }
+.dash-meme-reason-label { display: block; margin-bottom: 4px; color: var(--gold); font-size: var(--fs-micro); font-weight: 700; letter-spacing: .08em; }
+.dash-meme-reason p { margin: 0; font-size: var(--fs-ui); line-height: 1.6; }

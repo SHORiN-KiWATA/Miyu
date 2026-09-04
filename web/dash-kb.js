@@ -10,6 +10,7 @@
   if (!D) return;
 
   const state = {
+    picked: new Set(),
     overview: null,
     defaultKb: null,
     mode: "browse",      // browse | search
@@ -165,6 +166,15 @@
       return;
     }
     const tree = buildTree(o.files);
+    const names = new Set(o.files.map((file) => file.name));
+    for (const name of [...state.picked]) if (!names.has(name)) state.picked.delete(name);
+    if (state.picked.size) {
+      ui.tree.append(D.bulkBar({
+        count: state.picked.size, noun: "个文件",
+        onNone: () => { state.picked.clear(); renderTree(); },
+        actions: [{ label: "删除所选", icon: "trash-2", danger: true, onClick: bulkRemove }]
+      }));
+    }
     const list = D.el("ul.dash-tree");
     // 内置库先折叠、放最后;自有内容在前。
     const dirs = [...tree.dirs.entries()].sort(([a], [b]) => (a === "default-kb") - (b === "default-kb") || a.localeCompare(b));
@@ -204,8 +214,13 @@
 
   function fileNode(file, depth) {
     const short = file.name.split("/").pop();
+    const box = D.el("input.dash-row-check.dash-tree-check", { type: "checkbox", "aria-label": `选择 ${short}` });
+    box.checked = state.picked.has(file.name);
+    box.addEventListener("click", (event) => event.stopPropagation());
+    box.addEventListener("change", () => { if (box.checked) state.picked.add(file.name); else state.picked.delete(file.name); renderTree(); });
     const row = D.el("div.dash-tree-row.is-file", { title: file.name, onclick: () => { state.selected = file.name; state.mode = "browse"; ui.search.value = ""; state.q = ""; renderTree(); renderMain(); } },
       D.el("span.dash-tree-indent", { text: "" }),
+      box,
       D.el(`span.dash-index-dot.${INDEX_CLASS[file.index] || "is-none"}`, { title: INDEX_LABEL[file.index] || file.index }),
       D.el("span.dash-tree-name", { text: short }),
       D.el("span.dash-tree-size", { text: bytes(file.size_bytes) }),
@@ -344,6 +359,18 @@
   }
 
   /* ── 删除 / 重建 / 更新 ─────────────────────────────── */
+  async function bulkRemove() {
+    const files = state.overview.files.filter((file) => state.picked.has(file.name));
+    if (!files.length) return;
+    const builtin = files.filter((file) => file.builtin).length;
+    const ok = await D.confirmAction(`删除选中的 ${files.length} 个文件?${builtin ? `其中 ${builtin} 个是内置库文件,下次更新内置库时会回来。` : ""}\n\n文件和它们的语义块一起删除,不可撤销。`);
+    if (!ok) return;
+    await D.runBatch(files, (file) => D.api(`/api/dash/kb/files?name=${encodeURIComponent(file.name)}`, { method: "DELETE" }), "删除");
+    state.picked.clear();
+    if (files.some((file) => file.name === state.selected)) state.selected = null;
+    await loadOverview();
+  }
+
   async function removeFile(file) {
     const ok = await D.confirmAction(`删除 ${file.name}?${file.builtin ? "\n\n这是内置库文件,下次更新内置库时会回来。" : "\n\n文件和它的语义块一起删除,不可撤销。"}`);
     if (!ok) return;

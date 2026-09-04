@@ -62,6 +62,11 @@ pub(crate) struct MemeOrigin {
     /// 入库时刻（RFC3339）
     #[serde(default)]
     pub(crate) collected_at: String,
+    /// 「添加理由」：分类模型（或调保存工具的模型）用人格口吻说为什么把这张
+    /// 偷回来。只给 WebUI 里的人看乐子，搜索/展示表情时从不回给模型
+    /// （search_meme 的候选行本来就不带 origin）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

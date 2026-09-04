@@ -17,7 +17,9 @@
     refs: new Map(),
     filter: { state: "all", animated: "all", origin: "all", tag: "" },
     q: "",
-    loadSeq: 0
+    loadSeq: 0,
+    selecting: false,
+    selected: new Set()
   };
   const ui = {};
 
@@ -94,10 +96,13 @@
       filterSelect("state", [{ value: "all", label: "全部状态" }, { value: "builtin", label: "内置" }, { value: "user", label: "自有" }, { value: "shadowed", label: "已覆盖" }, { value: "disabled", label: "已禁用" }]),
       filterSelect("animated", [{ value: "all", label: "静图 + 动图" }, { value: "yes", label: "仅动图" }, { value: "no", label: "仅静图" }]),
       filterSelect("origin", [{ value: "all", label: "全部来源" }, { value: "collected", label: "QQ 收集" }, { value: "manual", label: "手工添加" }]),
-      D.el("label.dash-search-box", null, D.icon("search"), ui.search));
+      D.el("label.dash-search-box", null, D.icon("search"), ui.search),
+      D.el("button.dash-button", { type: "button", title: "进入选择模式,批量禁用 / 启用 / 删除", onclick: () => setSelecting(!state.selecting) }, D.icon("check-square"), "选择"));
+    ui.selectButton = toolbar.lastChild;
     ui.hint = D.el("p.dash-search-hint", { hidden: true });
+    ui.bulk = D.el("div");
     ui.gallery = D.el("div.dash-gallery");
-    root.append(head, ui.cards, toolbar, ui.tags, ui.hint, ui.gallery);
+    root.append(head, ui.cards, toolbar, ui.tags, ui.hint, ui.bulk, ui.gallery);
     reloadAll();
   }
 
@@ -198,17 +203,83 @@
       ui.gallery.append(D.el("p.dash-empty", { text: state.listing.items.length ? "没有匹配的表情。" : "这个库还是空的,上传几张吧。" }));
       return;
     }
+    renderBulk(items);
     for (const item of items) {
       const refs = state.refs.get(item.id);
-      const card = D.el("figure.dash-meme", { tabindex: "0", onclick: () => openDetail(item), onkeydown: (event) => { if (event.key === "Enter") openDetail(item); } },
+      const picked = state.selected.has(item.id);
+      const activate = () => { if (state.selecting) toggleSelected(item, card); else openDetail(item); };
+      const card = D.el("figure.dash-meme", { tabindex: "0", onclick: activate, onkeydown: (event) => { if (event.key === "Enter" || (state.selecting && event.key === " ")) { event.preventDefault(); activate(); } } },
         D.el("div.dash-meme-thumb", null,
+          state.selecting ? D.el("span.dash-meme-check", { "aria-hidden": "true" }, D.icon("check")) : null,
           D.el("img", { src: imageUrl(item), alt: item.name.zh, loading: "lazy", decoding: "async" }),
           item.animated ? D.el("span.dash-meme-badge", { text: "GIF" }) : null,
           refs?.outbound ? D.el("span.dash-meme-badge.is-count", { text: `↑${refs.outbound}` }) : null),
         D.el("figcaption.dash-meme-cap", null, D.el("span.dash-meme-name", { text: item.name.zh }), stateChip(item)));
       card.classList.toggle("is-disabled", item.disabled);
+      card.classList.toggle("is-selectable", state.selecting);
+      card.classList.toggle("is-selected", picked);
       ui.gallery.append(card);
     }
+  }
+
+  /* ── 选择模式 / 批量 ────────────────────────────────── */
+  function setSelecting(on) {
+    state.selecting = on;
+    if (!on) state.selected.clear();
+    ui.selectButton.classList.toggle("is-primary", on);
+    ui.selectButton.lastChild.textContent = on ? "退出选择" : "选择";
+    renderGallery();
+  }
+
+  function toggleSelected(item, card) {
+    if (state.selected.has(item.id)) state.selected.delete(item.id); else state.selected.add(item.id);
+    card.classList.toggle("is-selected", state.selected.has(item.id));
+    renderBulk(visibleItems());
+  }
+
+  function renderBulk(visible) {
+    ui.bulk.textContent = "";
+    if (!state.selecting) return;
+    const count = state.selected.size;
+    ui.bulk.append(D.bulkBar({
+      count, total: visible.length, noun: "张",
+      onAll: () => { for (const item of visible) state.selected.add(item.id); renderGallery(); },
+      onNone: () => { state.selected.clear(); renderGallery(); },
+      actions: [
+        { label: "启用", onClick: () => bulkPatch(true) },
+        { label: "禁用", onClick: () => bulkPatch(false) },
+        { label: "删除", icon: "trash-2", danger: true, onClick: bulkRemove }
+      ]
+    }));
+  }
+
+  function selectedItems() {
+    return state.listing.items.filter((item) => state.selected.has(item.id));
+  }
+
+  async function bulkPatch(enabled) {
+    const items = selectedItems();
+    if (!items.length) return;
+    await D.runBatch(items, (item) => D.api(`/api/dash/memes/items/${encodeURIComponent(item.id)}?${libQuery()}`, { method: "PATCH", body: { enabled } }), enabled ? "启用" : "禁用");
+    state.selected.clear();
+    await loadItems();
+  }
+
+  async function bulkRemove() {
+    const items = selectedItems();
+    if (!items.length) return;
+    const builtin = items.filter((item) => item.source === "builtin").length;
+    const own = items.length - builtin;
+    const parts = [];
+    if (own) parts.push(`删除 ${own} 张自有表情(图片进回收站)`);
+    if (builtin) parts.push(`禁用 ${builtin} 张内置表情(文件不删)`);
+    const ok = await D.confirmAction(`${parts.join(",")}?平台引用记录保留。`, "执行");
+    if (!ok) return;
+    await D.runBatch(items, (item) => item.source === "builtin"
+      ? D.api(`/api/dash/memes/items/${encodeURIComponent(item.id)}?${libQuery()}`, { method: "PATCH", body: { enabled: false } })
+      : D.api(`/api/dash/memes/items/${encodeURIComponent(item.id)}?${libQuery()}&hard=false`, { method: "DELETE" }), "删除");
+    state.selected.clear();
+    await loadItems();
   }
 
   /* ── 详情抽屉 ────────────────────────────────────────── */
@@ -245,6 +316,7 @@
       D.field("用法(什么时候发)", form.usage),
       D.field("标签", form.tags),
       item.source === "builtin" ? D.el("p.dash-banner", { text: "这是内置库条目:保存会把图片复制到自有库并生成覆盖项;删除只会禁用。" }) : null,
+      item.origin?.reason ? D.el("div.dash-meme-reason", null, D.el("span.dash-meme-reason-label", { text: "偷这张的理由" }), D.el("p", { text: item.origin.reason })) : null,
       D.el("h4.dash-section", { text: "元数据" }),
       D.el("dl.dash-meta", null, meta.flatMap(([key, value]) => [D.el("dt", { text: key }), D.el("dd", { text: String(value) })])));
 
