@@ -18,6 +18,7 @@
   <script defer src="/shared.js"></script>
   <script defer src="/dash/dashboards.js"></script>
   <script defer src="/dash/dash-memory.js"></script>
+  <script defer src="/dash/dash-kb.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body data-theme="graphite">
@@ -273,6 +274,10 @@
             <span class="icon-slot" data-icon="brain" aria-hidden="true"><span class="icon-fallback">◎</span></span>
             <span>记忆</span>
           </button>
+          <button class="con-rail-item" type="button" data-console-panel="kb">
+            <span class="icon-slot" data-icon="book-open" aria-hidden="true"><span class="icon-fallback">▤</span></span>
+            <span>知识库</span>
+          </button>
           <button class="con-rail-item" type="button" data-console-panel="settings">
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span>设置</span>
@@ -350,6 +355,9 @@
         </div>
         <div class="con-panel" data-console-panel="memory" hidden>
           <div class="con-inner" id="dashMemoryRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="kb" hidden>
+          <div class="con-inner is-wide" id="dashKbRoot"></div>
         </div>
         <div class="con-panel" data-console-panel="settings" hidden>
         <div class="settings-layout">

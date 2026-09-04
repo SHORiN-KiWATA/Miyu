@@ -329,6 +329,22 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         )
         .route("/api/dash/memory/pending/clear", post(dash_memory_pending_clear))
         .route("/api/dash/memory/reset", post(dash_memory_reset))
+        .route("/api/dash/kb/overview", get(dash_kb_overview))
+        .route("/api/dash/kb/file", get(dash_kb_file))
+        .route("/api/dash/kb/search", get(dash_kb_search))
+        .route(
+            "/api/dash/kb/files",
+            post(dash_kb_upload)
+                .layer(DefaultBodyLimit::max(KB_UPLOAD_LIMIT))
+                .delete(dash_kb_delete),
+        )
+        .route(
+            "/api/dash/kb/reindex",
+            get(dash_kb_reindex_status).post(dash_kb_reindex_start),
+        )
+        .route("/api/dash/kb/reindex/lock", axum::routing::delete(dash_kb_reindex_unlock))
+        .route("/api/dash/kb/default", get(dash_kb_default))
+        .route("/api/dash/kb/default/update", post(dash_kb_default_update))
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),

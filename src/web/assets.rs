@@ -162,6 +162,7 @@ pub(in crate::web) async fn shared_js_asset(headers: HeaderMap) -> Response {
 static DASH_SCRIPTS: &[(&str, &str)] = &[
     ("dashboards.js", include_str!("../../web/dashboards.js")),
     ("dash-memory.js", include_str!("../../web/dash-memory.js")),
+    ("dash-kb.js", include_str!("../../web/dash-kb.js")),
 ];
 
 pub(in crate::web) async fn dash_script_asset(

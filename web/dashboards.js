@@ -272,6 +272,9 @@ window.MiyuDash = (() => {
   function register(panel) {
     panels.set(panel.name, panel);
   }
+  function has(name) {
+    return panels.has(name);
+  }
   /* rail 切到某面板:首次挂载,之后只刷新。 */
   function open(name) {
     const panel = panels.get(name);
@@ -286,6 +289,6 @@ window.MiyuDash = (() => {
     }
   }
 
-  return { register, open, api, el, icon, iconButton, statCards, pager, openDrawer, closeDrawer, confirmAction, formatTime,
+  return { register, has, open, api, el, icon, iconButton, statCards, pager, openDrawer, closeDrawer, confirmAction, formatTime,
     segmented, select, table, field, timeline, sparkline, toast, remember, recall };
 })();

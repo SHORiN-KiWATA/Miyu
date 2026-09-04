@@ -4,4 +4,5 @@
 //! 写用 `require_mutation`。不走插件 trait 钩子——这些面板看的多是工具域数据,
 //! 与 `qq_history.rs` 一样直接挂在路由表上。
 
+pub(in crate::web) mod kb;
 pub(in crate::web) mod memory;

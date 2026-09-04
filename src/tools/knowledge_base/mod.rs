@@ -1,6 +1,7 @@
 mod search;
 mod store;
 pub(crate) use search::embed_text;
+mod dashboard;
 mod files;
 mod index;
 #[cfg(test)]
