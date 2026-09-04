@@ -7880,3 +7880,12 @@ body.miyu-paused *::after {
 .dash-event-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-ui); }
 .dash-danger { margin-top: 26px; padding-top: 6px; border-top: 1px solid var(--line); }
 .dash-timeline-card > .dash-chip { align-self: flex-start; }
+
+/* ── 好感·情绪面板:等级分布条、分数头、复选行 ── */
+.dash-level-bar { display: flex; gap: 3px; height: 26px; }
+.dash-level-cell { display: flex; align-items: center; justify-content: center; min-width: 6px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 28%, var(--surface-2)); overflow: hidden; }
+.dash-level-cell.is-empty { background: var(--surface-2); }
+.dash-level-cell i { font-style: normal; font-size: var(--fs-micro); color: var(--text); white-space: nowrap; padding: 0 6px; }
+.dash-score-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.dash-score-big { font-family: var(--serif); font-size: 30px; font-weight: 600; }
+.dash-check { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; font-size: var(--fs-ui); }

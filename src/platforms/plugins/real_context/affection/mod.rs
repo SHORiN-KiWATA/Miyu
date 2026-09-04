@@ -1,3 +1,4 @@
+pub(crate) mod dashboard;
 mod logging;
 mod parse;
 mod scoring;

@@ -53,6 +53,7 @@ use bridge_progress::*;
 use bridge_question::*;
 use commands_api::*;
 use config_api::*;
+use dashboards::affection::*;
 use dashboards::kb::*;
 use dashboards::memes::*;
 use dashboards::memory::*;

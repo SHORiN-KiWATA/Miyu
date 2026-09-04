@@ -649,6 +649,41 @@ impl ConversationDb {
         Ok(records)
     }
 
+    /// dashboard 用:某插件在某类会话下的全部 kv 行(好感度档案这种"每用户一行"的
+    /// 键要按前缀筛,只能整批拉回来再挑)。
+    pub fn plugin_rows(&self, plugin_id: &str, conversation_kind: &str) -> Result<Vec<PlatformPluginRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT platform, account_id, conversation_id, key, value_json, updated_at
+               FROM platform_plugin_kv
+              WHERE plugin_id = ?1 AND conversation_kind = ?2
+              ORDER BY account_id, conversation_id, key",
+        )?;
+        let rows = stmt
+            .query_map(params![plugin_id, conversation_kind], |row| {
+                let updated: rusqlite::types::Value = row.get(5)?;
+                Ok(PlatformPluginRow {
+                    scope: PlatformPluginScopeKey {
+                        plugin_id: plugin_id.to_string(),
+                        platform: row.get(0)?,
+                        account_id: row.get(1)?,
+                        conversation_kind: conversation_kind.to_string(),
+                        conversation_id: row.get(2)?,
+                    },
+                    key: row.get(3)?,
+                    value_json: row.get(4)?,
+                    updated_at: match updated {
+                        rusqlite::types::Value::Integer(v) => v.to_string(),
+                        rusqlite::types::Value::Real(v) => v.to_string(),
+                        rusqlite::types::Value::Text(v) => v,
+                        _ => String::new(),
+                    },
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// dashboard 用:某插件在哪些 (平台, 账号, 会话类型, 会话) 下留有记录。
     pub fn plugin_scopes(&self, plugin_id: &str, conversation_kind: Option<&str>) -> Result<Vec<PlatformPluginScopeKey>> {
         let conn = self.conn.lock().unwrap();

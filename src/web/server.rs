@@ -374,6 +374,14 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             "/api/dash/qq/management/events/clear",
             post(dash_qq_management_clear_events),
         )
+        .route("/api/dash/affection/scopes", get(dash_affection_scopes))
+        .route("/api/dash/affection/items", get(dash_affection_items))
+        .route(
+            "/api/dash/affection/items/{user}",
+            get(dash_affection_item)
+                .patch(dash_affection_patch)
+                .delete(dash_affection_delete),
+        )
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),

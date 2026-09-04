@@ -455,6 +455,14 @@ impl StateStore {
         self.conv_db.delete_platform_meme_ref(library, meme_id)
     }
 
+    pub fn plugin_rows(
+        &self,
+        plugin_id: &str,
+        conversation_kind: &str,
+    ) -> Result<Vec<crate::state::conversation_db::PlatformPluginRow>> {
+        self.conv_db.plugin_rows(plugin_id, conversation_kind)
+    }
+
     pub fn plugin_scopes(
         &self,
         plugin_id: &str,

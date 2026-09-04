@@ -488,6 +488,14 @@ pub struct PlatformMemeRefRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlatformPluginRow {
+    pub scope: PlatformPluginScopeKey,
+    pub key: String,
+    pub value_json: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PlatformMemeRefCount {
     pub meme_id: String,

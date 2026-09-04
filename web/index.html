@@ -22,6 +22,7 @@
   <script defer src="/dash/dash-memes.js"></script>
   <script defer src="/dash/dash-qq.js"></script>
   <script defer src="/dash/dash-groups.js"></script>
+  <script defer src="/dash/dash-affection.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body data-theme="graphite">
@@ -293,6 +294,10 @@
             <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">⚑</span></span>
             <span>群管</span>
           </button>
+          <button class="con-rail-item" type="button" data-console-panel="affection">
+            <span class="icon-slot" data-icon="sparkles" aria-hidden="true"><span class="icon-fallback">♥</span></span>
+            <span>好感·情绪</span>
+          </button>
           <button class="con-rail-item" type="button" data-console-panel="settings">
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span>设置</span>
@@ -382,6 +387,9 @@
         </div>
         <div class="con-panel" data-console-panel="groups" hidden>
           <div class="con-inner is-wide" id="dashGroupsRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="affection" hidden>
+          <div class="con-inner is-wide" id="dashAffectionRoot"></div>
         </div>
         <div class="con-panel" data-console-panel="settings" hidden>
         <div class="settings-layout">

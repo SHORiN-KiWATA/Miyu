@@ -11,7 +11,7 @@ use runtime::*;
 pub(crate) use targeting::safe_prompt_field;
 pub(in crate::platforms::plugins::real_context) use targeting::*;
 pub(super) mod active_judgement_skip;
-mod affection;
+pub(crate) mod affection;
 mod judge;
 
 use super::message_history::{self, store, ORIGINAL_TEXT_KEY};

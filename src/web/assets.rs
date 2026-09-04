@@ -166,6 +166,7 @@ static DASH_SCRIPTS: &[(&str, &str)] = &[
     ("dash-memes.js", include_str!("../../web/dash-memes.js")),
     ("dash-qq.js", include_str!("../../web/dash-qq.js")),
     ("dash-groups.js", include_str!("../../web/dash-groups.js")),
+    ("dash-affection.js", include_str!("../../web/dash-affection.js")),
 ];
 
 pub(in crate::web) async fn dash_script_asset(

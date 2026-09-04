@@ -54,7 +54,7 @@ pub(crate) fn format_affection_initialized_log(
     }
 }
 
-pub(crate) fn log_update_skipped(
+pub(super) fn log_update_skipped(
     job: &AffectionUpdateJob,
     reason: &str,
     confidence: Option<f64>,

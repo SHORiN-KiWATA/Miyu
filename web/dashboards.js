@@ -234,7 +234,12 @@ window.MiyuDash = (() => {
     const xs = points.map((p) => p.x);
     const ys = points.map((p) => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = options.min ?? Math.min(...ys), maxY = options.max ?? Math.max(...ys);
+    let minY = options.min ?? Math.min(...ys), maxY = options.max ?? Math.max(...ys);
+    if (options.min === undefined && options.max === undefined) {
+      if (options.baseline !== undefined) { minY = Math.min(minY, options.baseline); maxY = Math.max(maxY, options.baseline); }
+      const pad = Math.max((maxY - minY) * 0.15, 0.5);
+      minY -= pad; maxY += pad;
+    }
     const sx = (x) => maxX === minX ? 0 : ((x - minX) / (maxX - minX)) * (width - 4) + 2;
     const sy = (y) => maxY === minY ? height / 2 : height - 2 - ((y - minY) / (maxY - minY)) * (height - 4);
     if (options.baseline !== undefined && options.baseline >= minY && options.baseline <= maxY) {
