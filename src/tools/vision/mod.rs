@@ -159,6 +159,7 @@ fn register_scoped(
         // 只为生图的参考图建作用域:看图插件关着就不注册 vision_analyze。
         return;
     }
+    let native_viewer = active_pool_views_media_natively(&config);
     registry.register(ToolSpec::new(
         "vision_analyze",
         "Analyze an image or a video. image can be an image path from this turn's prompt, context_image_N, or a file_<message_id>_<n> id from chat history (videos and image files shared in the chat); context media is fetched on demand.",
@@ -179,6 +180,12 @@ fn register_scoped(
             async move { analyze_scoped_image(args, config, paths, state).await }
         },
     ));
+    if native_viewer {
+        registry.amend_description(
+            "vision_analyze",
+            " On this relay the tool does not analyze anything: it fetches the referenced media into a local file and returns the absolute path for you to open with view_file.",
+        );
+    }
     registry.amend_description(
         "vision_analyze",
         if allow_general_access {
@@ -527,6 +534,9 @@ async fn analyze_scoped_image_one(
         .trim();
     if state.context_images.contains_key(image) {
         let resolved = resolve_context_image(&paths, &state, image).await?;
+        if active_pool_views_media_natively(&config) {
+            return Ok(native_viewer_handoff(&resolved.cache_path));
+        }
         let cache_key = (resolved.digest.clone(), prompt.to_string());
         if let Some(cached) = state.analyses.lock().unwrap().get(&cache_key).cloned() {
             return Ok(cached);
@@ -552,6 +562,9 @@ async fn analyze_scoped_image_one(
     }
     if state.context_files.contains_key(image) {
         let download = resolve_context_file(&paths, &state, image).await?;
+        if active_pool_views_media_natively(&config) {
+            return Ok(native_viewer_handoff(&download.path));
+        }
         return analyze_platform_cache_file(&config, &paths, &download.path, prompt).await;
     }
     if state.allow_general_access {
@@ -572,10 +585,16 @@ async fn analyze_scoped_image_one(
     // 已经懒下载进 platform_files 缓存的文件(read_platform_file / 上一次
     // vision_analyze 落下的)按路径也放行:目录只装本会话链路下来的东西。
     if is_platform_cache_path(&paths.cache_dir, &image) {
+        if active_pool_views_media_natively(&config) {
+            return Ok(native_viewer_handoff(&image));
+        }
         return analyze_platform_cache_file(&config, &paths, &image, prompt).await;
     }
     if !state.allowed_paths.iter().any(|allowed| allowed == &image) {
         bail!("image is not attached to the current platform turn")
+    }
+    if active_pool_views_media_natively(&config) {
+        return Ok(native_viewer_handoff(&image));
     }
     if let Some(output) = try_inline_targets(&config, &[image.display().to_string()])? {
         return Ok(output);
@@ -711,6 +730,35 @@ fn active_text_pool_for_vision(
             config.model_supports_any_input(&choice.provider_id, &choice.model, &["image"])
         });
     usable.then_some(pool)
+}
+
+/// 活跃池整池走"模型自己用原生文件工具看媒体"的线(agy 中转,09-04):消息
+/// 只收文本、视觉旁路又多半没配,这种池上 vision_analyze 的正确产出是**把
+/// 媒体落成本地文件、把绝对路径交出去**,让模型自己 `view_file`。
+fn active_pool_views_media_natively(config: &AppConfig) -> bool {
+    let pool = config.active_provider_model_choices();
+    !pool.is_empty()
+        && pool.iter().all(|choice| {
+            config
+                .provider(Some(&choice.provider_id))
+                .map(|provider| provider.views_media_with_native_file_tool())
+                .unwrap_or(false)
+        })
+}
+
+/// 原生看媒体线的工具回执:只给路径与体积,不做任何分析。
+fn native_viewer_handoff(path: &Path) -> String {
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let kind = if video_mime(&path.display().to_string()).is_some() {
+        "video"
+    } else {
+        "image"
+    };
+    format!(
+        "Saved the {kind} to {} ({} bytes). This relay carries text only, so open that path with view_file to look at it yourself.",
+        path.display(),
+        size
+    )
 }
 
 /// 活跃文本池整池支持某种输入(image/video)。池是负载均衡的,有一个不认
