@@ -18,6 +18,7 @@
     tab: "affection",
     level: "all",
     sort: "score",
+    sortDir: "desc",
     q: "",
     loadSeq: 0
   };
@@ -53,6 +54,7 @@
     ui.filters.append(
       D.select([{ value: "all", label: "全部等级" }, ...LEVELS.map((l) => ({ value: l, label: l }))], state.level, (value) => { state.level = value; renderList(); }),
       D.select([{ value: "score", label: "按分数" }, { value: "recent", label: "按最近互动" }, { value: "messages", label: "按消息数" }, { value: "events", label: "按事件数" }], state.sort, (value) => { state.sort = value; renderList(); }));
+    ui.sortSelect = ui.filters.lastElementChild;
   }
 
   async function reloadAll() {
@@ -125,14 +127,16 @@
     let items = (state.listing?.items || []).filter((p) => (state.level === "all" || p.level === state.level)
       && (!state.q || [p.sender_name, p.user_id, p.note, ...(p.tags || [])].some((f) => String(f || "").toLowerCase().includes(state.q))));
     const key = { score: (p) => p.score, recent: (p) => p.last_interaction_at, messages: (p) => p.message_count, events: (p) => p.event_count }[state.sort];
-    items.sort((a, b) => key(b) - key(a));
+    const sign = state.sortDir === "asc" ? 1 : -1;
+    items.sort((a, b) => (key(a) - key(b)) * sign || a.user_id.localeCompare(b.user_id));
     return items;
   }
 
   function renderList() {
     const items = visible();
     if (!items.length) { ui.body.replaceChildren(D.el("p.dash-empty", { text: state.listing?.items.length ? "没有匹配的档案。" : "这个账号 + 人格下还没有档案。" })); return; }
-    const grid = D.table([{ label: "#", width: "40px" }, { label: "成员", width: "minmax(170px, 2fr)" }, { label: "分数", width: "72px" }, { label: "等级", width: "84px" }, { label: "标签", width: "minmax(160px, 2fr)" }, { label: "互动", width: "150px" }, { label: "最近", width: "128px" }, { label: "自动", width: "56px" }, { label: "", width: "40px" }]);
+    const grid = D.table([{ label: "#", width: "40px" }, { label: "成员", width: "minmax(170px, 2fr)" }, { label: "分数", width: "80px", sort: "score" }, { label: "等级", width: "84px" }, { label: "标签", width: "minmax(160px, 2fr)" }, { label: "互动", width: "150px", sort: "messages" }, { label: "最近", width: "128px", sort: "recent" }, { label: "自动", width: "56px" }, { label: "", width: "40px" }],
+      { sort: { key: state.sort, dir: state.sortDir, onChange: (key, dir) => { state.sort = key; state.sortDir = dir; if (ui.sortSelect) ui.sortSelect.value = key; renderList(); } } });
     items.forEach((p, index) => {
       grid.append(D.el("div.dash-row", { role: "row", tabindex: "0", onclick: () => openProfile(p), onkeydown: (event) => { if (event.key === "Enter") openProfile(p); } },
         D.el("span.dash-cell-mono", { text: String(index + 1) }),

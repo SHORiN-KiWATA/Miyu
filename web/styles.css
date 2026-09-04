@@ -8013,3 +8013,10 @@ body.miyu-paused *::after {
   }
   .dash-sparkline-line { stroke-dasharray: none; stroke-dashoffset: 0; }
 }
+
+/* ── 可排序表头 ── */
+.dash-row.is-head > span.is-sortable { cursor: pointer; user-select: none; gap: 4px; }
+.dash-row.is-head > span.is-sortable:hover, .dash-row.is-head > span.is-sortable.is-active { color: var(--text); }
+.dash-sort-arrow { font-style: normal; font-size: 9px; opacity: .45; transition: opacity .14s ease, transform .14s ease; }
+.is-sortable.is-active .dash-sort-arrow { opacity: 1; color: var(--accent); }
+.is-sortable:hover .dash-sort-arrow { opacity: .9; }

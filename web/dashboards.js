@@ -216,12 +216,28 @@ window.MiyuDash = (() => {
 
   /* 表格:columns [{label, width}] 决定列模板,rows 由调用方渲染成 dash-row。
      列宽走 CSSOM 自定义属性——CSP 禁 style 属性,不禁 element.style。 */
-  function table(columns) {
+  /* 可排序列:column.sort 给键名,options.sort = {key, dir: "asc"|"desc", onChange(key, dir)};
+     点当前列翻转方向,点别的列切到那列并按默认方向(desc)。 */
+  function table(columns, options = {}) {
     const grid = el("div.dash-table", { role: "table" });
     grid.style.setProperty("--dash-cols", columns.map((column) => column.width || "1fr").join(" "));
     grid.style.setProperty("--dash-min", columns.length > 5 ? "820px" : "0");
     const head = el("div.dash-row.is-head", { role: "row" });
-    for (const column of columns) head.append(el("span", { text: column.label || "" }));
+    const sort = options.sort;
+    for (const column of columns) {
+      if (column.sort && sort) {
+        const active = sort.key === column.sort;
+        const cell = el(`span.is-sortable${active ? ".is-active" : ""}`, {
+          role: "columnheader", tabindex: "0", title: "点击排序",
+          "aria-sort": active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+          onclick: () => sort.onChange(column.sort, active && sort.dir === "desc" ? "asc" : "desc"),
+          onkeydown: (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); cell.click(); } }
+        }, column.label || "", el("i.dash-sort-arrow", { text: active ? (sort.dir === "asc" ? "▲" : "▼") : "▾" }));
+        head.append(cell);
+      } else {
+        head.append(el("span", { text: column.label || "" }));
+      }
+    }
     grid.append(head);
     return grid;
   }
