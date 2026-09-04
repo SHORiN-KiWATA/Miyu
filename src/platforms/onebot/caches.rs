@@ -101,6 +101,14 @@ pub(in crate::platforms::onebot) fn group_name_cache() -> &'static Mutex<GroupNa
     GROUP_NAME_CACHE.get_or_init(|| Mutex::new(GroupNameCache::default()))
 }
 
+/// dashboard 用:只查缓存,不打平台请求;没见过的群返回 None。
+pub(crate) fn cached_group_name(account_id: i64, group_id: i64) -> Option<String> {
+    group_name_cache()
+        .lock()
+        .ok()?
+        .get((account_id, group_id), Instant::now())
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::platforms::onebot) struct MentionNameCacheEntry {
     pub(in crate::platforms::onebot) name: String,

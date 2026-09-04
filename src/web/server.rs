@@ -358,6 +358,22 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         )
         .route("/api/dash/memes/items/{id}/classify", post(dash_memes_classify))
         .route("/api/dash/memes/image", get(dash_memes_image))
+        .route("/api/dash/qq/accounts", get(dash_qq_accounts))
+        .route("/api/dash/qq/conversations", get(dash_qq_conversations))
+        .route("/api/dash/qq/messages", get(dash_qq_messages))
+        .route("/api/dash/qq/messages/delete", post(dash_qq_delete))
+        .route("/api/dash/qq/stats", get(dash_qq_stats))
+        .route("/api/dash/qq/recalls", get(dash_qq_recalls))
+        .route(
+            "/api/dash/qq/boundary",
+            get(dash_qq_boundary).post(dash_qq_reset_context),
+        )
+        .route("/api/dash/qq/groups", get(dash_qq_groups))
+        .route("/api/dash/qq/management", get(dash_qq_management))
+        .route(
+            "/api/dash/qq/management/events/clear",
+            post(dash_qq_management_clear_events),
+        )
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),

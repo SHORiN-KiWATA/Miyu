@@ -213,16 +213,21 @@ pub(in crate::platforms::plugins::group_management) fn load_all_events(
     context: &PlatformTurnContext,
     scope: &PlatformPluginScopeKey,
 ) -> Result<Vec<ManagementEvent>> {
-    let mut events = context
-        .state_store
+    load_all_events_from(&context.state_store, scope)
+}
+
+pub(in crate::platforms::plugins::group_management) fn load_all_events_from(
+    store: &crate::state::StateStore,
+    scope: &PlatformPluginScopeKey,
+) -> Result<Vec<ManagementEvent>> {
+    let mut events = store
         .plugin_get_json::<Vec<ManagementEvent>>(scope, EVENTS_KEY)?
         .unwrap_or_default();
     let mut seen = events
         .iter()
         .map(|event| event.record_id.clone())
         .collect::<HashSet<_>>();
-    let kicks = context
-        .state_store
+    let kicks = store
         .plugin_get_json::<Vec<KickRecord>>(scope, KICKS_KEY)?
         .unwrap_or_default();
     for kick in kicks {
@@ -246,8 +251,7 @@ pub(in crate::platforms::plugins::group_management) fn load_all_events(
             });
         }
     }
-    let offenders = context
-        .state_store
+    let offenders = store
         .plugin_get_json::<HashMap<String, OffenderHistory>>(scope, OFFENDERS_KEY)?
         .unwrap_or_default();
     for offender in offenders.into_values() {

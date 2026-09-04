@@ -7,3 +7,4 @@
 pub(in crate::web) mod kb;
 pub(in crate::web) mod memes;
 pub(in crate::web) mod memory;
+pub(in crate::web) mod qq;

@@ -33,9 +33,9 @@ async fn send_fixed_tool_output(context: &PlatformTurnContext, text: &str) -> Re
 }
 
 mod access_manager;
-mod group_management;
+pub(crate) mod group_management;
 mod meme_collector;
-mod message_history;
+pub(crate) mod message_history;
 mod message_recall;
 pub(crate) mod real_context;
 mod renderer;

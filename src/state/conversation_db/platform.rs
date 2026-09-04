@@ -649,6 +649,34 @@ impl ConversationDb {
         Ok(records)
     }
 
+    /// dashboard 用:某插件在哪些 (平台, 账号, 会话类型, 会话) 下留有记录。
+    pub fn plugin_scopes(&self, plugin_id: &str, conversation_kind: Option<&str>) -> Result<Vec<PlatformPluginScopeKey>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT DISTINCT platform, account_id, conversation_kind, conversation_id
+               FROM platform_plugin_kv WHERE plugin_id = ?1",
+        );
+        let mut args: Vec<String> = vec![plugin_id.to_string()];
+        if let Some(kind) = conversation_kind {
+            sql.push_str(" AND conversation_kind = ?2");
+            args.push(kind.to_string());
+        }
+        sql.push_str(" ORDER BY platform, account_id, conversation_kind, conversation_id");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |row| {
+                Ok(PlatformPluginScopeKey {
+                    plugin_id: plugin_id.to_string(),
+                    platform: row.get(0)?,
+                    account_id: row.get(1)?,
+                    conversation_kind: row.get(2)?,
+                    conversation_id: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// dashboard 用:某个库里每张表情的入站/出站引用次数与最近一次时间。
     pub fn platform_meme_ref_counts(&self, library: &str) -> Result<Vec<PlatformMemeRefCount>> {
         let conn = self.conn.lock().unwrap();

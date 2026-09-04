@@ -1,3 +1,4 @@
+pub(crate) mod dashboard;
 pub(super) mod store;
 pub(super) mod tools;
 
@@ -40,7 +41,7 @@ pub(super) fn store_for_paths(paths: &MiyuPaths) -> HistoryStore {
         .clone()
 }
 
-fn history_db_path(paths: &MiyuPaths) -> PathBuf {
+pub(super) fn history_db_path(paths: &MiyuPaths) -> PathBuf {
     let path = paths.data_dir.join(HISTORY_DB);
     if path.exists() {
         return path;

@@ -1,4 +1,5 @@
 mod args;
+pub(crate) mod dashboard;
 mod records;
 use args::*;
 use records::*;

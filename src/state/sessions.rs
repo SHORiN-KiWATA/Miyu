@@ -455,6 +455,14 @@ impl StateStore {
         self.conv_db.delete_platform_meme_ref(library, meme_id)
     }
 
+    pub fn plugin_scopes(
+        &self,
+        plugin_id: &str,
+        conversation_kind: Option<&str>,
+    ) -> Result<Vec<PlatformPluginScopeKey>> {
+        self.conv_db.plugin_scopes(plugin_id, conversation_kind)
+    }
+
     pub fn platform_meme_ref_counts(
         &self,
         library: &str,

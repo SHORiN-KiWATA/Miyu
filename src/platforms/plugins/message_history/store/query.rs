@@ -325,35 +325,23 @@ pub(crate) fn query_activity_ranking(
     conn: &Connection,
     query: ActivityRankingQuery,
 ) -> Result<ActivityRanking> {
+    // 09-04:原先用 ROW_NUMBER() 窗口给每个发送者挑最新昵称,再把 1216 个聚合行
+    // LEFT JOIN 到 13 万行的窗口结果上,没有索引可用,一个大群要跑 40 秒。
+    // 改为聚合时记下 MAX(id)(插入序即时间序),昵称按主键单点回查。
     let mut stmt = conn.prepare(
-        "WITH scoped AS (
-             SELECT id,
-                     CASE WHEN is_bot = 1 THEN ?2 ELSE sender_id END AS effective_sender_id,
-                    sender_name,
-                    sent_at
-              FROM messages
+        "WITH aggregated AS (
+             SELECT CASE WHEN is_bot = 1 THEN ?2 ELSE sender_id END AS effective_sender_id,
+                    COUNT(*) AS message_count,
+                    COUNT(DISTINCT date(sent_at, 'unixepoch', 'localtime')) AS active_days,
+                    MIN(sent_at) AS first_sent_at,
+                    MAX(sent_at) AS last_sent_at,
+                    MAX(id) AS last_id
+               FROM messages
               WHERE platform = ?1 AND account_id = ?2
                 AND conversation_kind = ?3 AND conversation_id = ?4
                 AND sent_at >= ?5 AND sent_at <= ?6
                 AND (?7 OR is_bot = 0)
-         ),
-         named AS (
-             SELECT effective_sender_id,
-                    sender_name,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY effective_sender_id
-                        ORDER BY sent_at DESC, id DESC
-                    ) AS name_rank
-             FROM scoped
-         ),
-         aggregated AS (
-             SELECT effective_sender_id,
-                    COUNT(*) AS message_count,
-                    COUNT(DISTINCT date(sent_at, 'unixepoch', 'localtime')) AS active_days,
-                    MIN(sent_at) AS first_sent_at,
-                    MAX(sent_at) AS last_sent_at
-             FROM scoped
-             GROUP BY effective_sender_id
+              GROUP BY effective_sender_id
          ),
          ranked AS (
              SELECT ROW_NUMBER() OVER (
@@ -362,7 +350,10 @@ pub(crate) fn query_activity_ranking(
                                  aggregated.effective_sender_id ASC
                     ) AS rank,
                     aggregated.effective_sender_id,
-                    COALESCE(named.sender_name, aggregated.effective_sender_id) AS sender_name,
+                    COALESCE(
+                        (SELECT m.sender_name FROM messages AS m WHERE m.id = aggregated.last_id),
+                        aggregated.effective_sender_id
+                    ) AS sender_name,
                     aggregated.message_count,
                     aggregated.active_days,
                     aggregated.first_sent_at,
@@ -370,9 +361,6 @@ pub(crate) fn query_activity_ranking(
                     SUM(aggregated.message_count) OVER () AS total_messages,
                     COUNT(*) OVER () AS participant_count
              FROM aggregated
-             LEFT JOIN named
-               ON named.effective_sender_id = aggregated.effective_sender_id
-              AND named.name_rank = 1
          )
          SELECT rank, effective_sender_id, sender_name, message_count, active_days,
                 first_sent_at, last_sent_at, total_messages, participant_count

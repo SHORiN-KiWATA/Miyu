@@ -289,11 +289,6 @@
     pluginEditor: document.getElementById("pluginEditor"),
     promptEditor: document.getElementById("promptEditor"),
     advancedConfigEditor: document.getElementById("advancedConfigEditor"),
-    qqHistoryForm: document.getElementById("qqHistoryForm"),
-    qqHistoryAccount: document.getElementById("qqHistoryAccount"),
-    qqHistoryGroup: document.getElementById("qqHistoryGroup"),
-    qqHistoryStatus: document.getElementById("qqHistoryStatus"),
-    qqHistoryOutput: document.getElementById("qqHistoryOutput"),
     applyAdvancedConfigButton: document.getElementById("applyAdvancedConfigButton"),
     reloadConfigButton: document.getElementById("reloadConfigButton"),
     saveConfigButton: document.getElementById("saveConfigButton"),
@@ -2307,122 +2302,6 @@
     }
     if (!response.ok) throw new ApiError(await readErrorMessage(response), response.status);
     return response;
-  }
-
-  function qqHistoryQuery() {
-    return new URLSearchParams({
-      account_id: elements.qqHistoryAccount.value.trim(),
-      group_id: elements.qqHistoryGroup.value.trim()
-    });
-  }
-
-  function qqHistoryButton(label, className, onClick) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-    button.textContent = label;
-    button.addEventListener("click", onClick);
-    return button;
-  }
-
-  function renderQqHistory(data) {
-    const offenderValue = data?.offender_history ?? data?.offenders;
-    const offenders = offenderValue && typeof offenderValue === "object" && !Array.isArray(offenderValue) ? offenderValue : {};
-    const kickValue = data?.kick_history ?? data?.kicks;
-    const kicks = Array.isArray(kickValue) ? kickValue : [];
-    const output = elements.qqHistoryOutput;
-    output.replaceChildren();
-    const heading = document.createElement("div");
-    heading.className = "qq-history-summary";
-    heading.textContent = `违规者 ${formatInteger(Object.keys(offenders).length)} 人 · 踢人 ${formatInteger(kicks.length)} 条`;
-    output.appendChild(heading);
-
-    const offenderSection = document.createElement("section");
-    offenderSection.className = "qq-history-list";
-    const offenderTitle = document.createElement("h3");
-    offenderTitle.textContent = "违规者统计";
-    offenderSection.appendChild(offenderTitle);
-    for (const [userId, record] of Object.entries(offenders)) {
-      const row = document.createElement("div");
-      row.className = "qq-history-row";
-      const text = document.createElement("span");
-      text.textContent = `${record?.user_name || "未知用户"} (${userId}) · ${formatInteger(record?.ban_count)} 次 · ${record?.last_reason || "无原因"}`;
-      const remove = qqHistoryButton("删除", "text-button danger-text", async () => {
-        if (!window.confirm(`删除 ${userId} 的违规记录？`)) return;
-        try {
-          await apiRequest(`/api/qq-group-management/offenders/${encodeURIComponent(userId)}?${qqHistoryQuery()}`, { method: "DELETE" });
-          await loadQqHistory();
-        } catch (error) { showToast(error.message, "error"); }
-      });
-      row.append(text, remove);
-      offenderSection.appendChild(row);
-    }
-    if (!Object.keys(offenders).length) offenderSection.appendChild(qqHistoryEmpty("暂无违规者记录"));
-    output.appendChild(offenderSection);
-
-    const kickSection = document.createElement("section");
-    kickSection.className = "qq-history-list";
-    const kickHeader = document.createElement("div");
-    kickHeader.className = "qq-history-list-heading";
-    const kickTitle = document.createElement("h3");
-    kickTitle.textContent = "踢人历史";
-    kickHeader.appendChild(kickTitle);
-    if (kicks.length) kickHeader.appendChild(qqHistoryButton("清空", "text-button danger-text", () => clearQqHistory("kicks")));
-    kickSection.appendChild(kickHeader);
-    for (const record of kicks.slice().reverse()) {
-      const row = document.createElement("div");
-      row.className = "qq-history-row qq-history-kick";
-      const kickedAt = typeof record?.kicked_at === "number" ? record.kicked_at * 1000 : record?.kicked_at;
-      row.textContent = `${record?.user_name || "未知用户"} (${record?.user_id || "--"}) · ${record?.reason || "无原因"} · ${formatDateTime(kickedAt)}`;
-      kickSection.appendChild(row);
-    }
-    if (!kicks.length) kickSection.appendChild(qqHistoryEmpty("暂无踢人记录"));
-    output.appendChild(kickSection);
-    if (Object.keys(offenders).length) {
-      const clear = qqHistoryButton("清空违规者", "text-button danger-text", () => clearQqHistory("offenders"));
-      offenderTitle.appendChild(clear);
-      offenderTitle.className = "qq-history-list-heading";
-    }
-    output.hidden = false;
-  }
-
-  function qqHistoryEmpty(text) {
-    const empty = document.createElement("p");
-    empty.className = "settings-empty";
-    empty.textContent = text;
-    return empty;
-  }
-
-  async function loadQqHistory() {
-    const account = elements.qqHistoryAccount.value.trim();
-    const group = elements.qqHistoryGroup.value.trim();
-    if (!/^\d{5,12}$/.test(account) || !/^\d{5,12}$/.test(group)) {
-      showToast("请输入有效的 bot QQ 和群号", "error");
-      return;
-    }
-    elements.qqHistoryStatus.textContent = "正在加载记录...";
-    try {
-      const response = await apiRequest(`/api/qq-group-management/history?${qqHistoryQuery()}`);
-      const data = await response.json();
-      const accounts = Array.isArray(data.connected_accounts) ? data.connected_accounts : [];
-      elements.qqHistoryStatus.textContent = accounts.length ? `当前连接账户：${accounts.join("、")}` : "当前没有在线连接账户";
-      renderQqHistory(data);
-    } catch (error) {
-      elements.qqHistoryStatus.textContent = "";
-      showToast(error.message, "error");
-    }
-  }
-
-  async function clearQqHistory(kind) {
-    const title = kind === "offenders" ? "违规者记录" : "踢人记录";
-    if (!window.confirm(`清空全部${title}？此操作无法撤销。`)) return;
-    try {
-      await apiRequest("/api/qq-group-management/history/clear", {
-        method: "POST",
-        body: JSON.stringify({ account_id: elements.qqHistoryAccount.value.trim(), group_id: elements.qqHistoryGroup.value.trim(), kind })
-      });
-      await loadQqHistory();
-    } catch (error) { showToast(error.message, "error"); }
   }
 
   function asFiniteNumber(value, fallback = 0) {
@@ -10557,10 +10436,7 @@
     elements.settingsNav.querySelectorAll("[data-settings-view]").forEach((button) => {
       button.addEventListener("click", () => setSettingsView(button.dataset.settingsView));
     });
-    elements.qqHistoryForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      loadQqHistory();
-    });
+    document.getElementById("openGroupsPanel")?.addEventListener("click", () => setConsolePanel("groups"));
     elements.addProviderButton.addEventListener("click", () => {
       if (!state.configDraft) return;
       state.configDraft.providers = Array.isArray(state.configDraft.providers) ? state.configDraft.providers : [];

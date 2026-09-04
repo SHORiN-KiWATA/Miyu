@@ -20,6 +20,8 @@
   <script defer src="/dash/dash-memory.js"></script>
   <script defer src="/dash/dash-kb.js"></script>
   <script defer src="/dash/dash-memes.js"></script>
+  <script defer src="/dash/dash-qq.js"></script>
+  <script defer src="/dash/dash-groups.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body data-theme="graphite">
@@ -283,6 +285,14 @@
             <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
             <span>表情包</span>
           </button>
+          <button class="con-rail-item" type="button" data-console-panel="qq">
+            <span class="icon-slot" data-icon="messages-square" aria-hidden="true"><span class="icon-fallback">▥</span></span>
+            <span>群聊</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="groups">
+            <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">⚑</span></span>
+            <span>群管</span>
+          </button>
           <button class="con-rail-item" type="button" data-console-panel="settings">
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span>设置</span>
@@ -367,6 +377,12 @@
         <div class="con-panel" data-console-panel="memes" hidden>
           <div class="con-inner is-wide" id="dashMemesRoot"></div>
         </div>
+        <div class="con-panel" data-console-panel="qq" hidden>
+          <div class="con-inner is-wide" id="dashQqRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="groups" hidden>
+          <div class="con-inner is-wide" id="dashGroupsRoot"></div>
+        </div>
         <div class="con-panel" data-console-panel="settings" hidden>
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="设置分类">
@@ -447,17 +463,7 @@
              <section class="settings-section settings-panel" data-settings-panel="plugins" hidden>
              <h2>插件配置</h2>
              <div class="plugin-editor" id="pluginEditor"></div>
-             <section class="qq-history-tool" aria-labelledby="qqHistoryTitle">
-               <h2 id="qqHistoryTitle">QQ群管理记录</h2>
-               <p class="settings-description">输入 bot QQ 和群号，查看已保存的违规者与踢人记录。</p>
-               <form class="qq-history-form" id="qqHistoryForm">
-                 <label>bot QQ<input id="qqHistoryAccount" inputmode="numeric" pattern="[0-9]*" maxlength="12" required></label>
-                 <label>群号<input id="qqHistoryGroup" inputmode="numeric" pattern="[0-9]*" maxlength="12" required></label>
-                 <button class="secondary-button compact-button" type="submit">加载</button>
-               </form>
-               <div class="qq-history-status" id="qqHistoryStatus" role="status"></div>
-               <div class="qq-history-output" id="qqHistoryOutput" hidden></div>
-             </section>
+             <p class="settings-description">QQ 群管理记录(违规者、踢人、禁言时间线)已搬到控制台的「群管」面板。<button class="text-button" id="openGroupsPanel" type="button">打开群管面板</button></p>
              </section>
             <section class="settings-section settings-panel" data-settings-panel="advanced" hidden>
             <h2>完整配置</h2>
