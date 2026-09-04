@@ -8,6 +8,8 @@ mod plugin_settings;
 mod plugins;
 mod providers;
 mod quota;
+pub(crate) use cli_catalog::builtin_cli_binary;
+pub(crate) use providers::fetch_models;
 mod real_context;
 mod scheduled_messages;
 mod settings;
@@ -559,7 +561,13 @@ impl<'a> ProviderBrowser<'a> {
                         auto_configure_model_tags(self.paths, provider, &model.full);
                     }
                     if let Some(provider) = self.config.providers.get_mut(self.provider_idx) {
-                        if edit_model_form(stdout, provider, &model.full, self.thinking_variants)? {
+                        if edit_model_form(
+                            stdout,
+                            self.paths,
+                            provider,
+                            &model.full,
+                            self.thinking_variants,
+                        )? {
                             self.config.active_provider = provider.id.clone();
                             model_updated = true;
                             self.status = if is_zh() {

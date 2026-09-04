@@ -284,6 +284,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             post(upload_persona_asset).layer(DefaultBodyLimit::max(PERSONA_ASSET_LIMIT)),
         )
         .route("/api/config", get(get_config).put(update_config))
+        .route("/api/providers/models", post(provider_models))
         .route(
             "/api/qq-group-management/history",
             get(qq_group_history_http),

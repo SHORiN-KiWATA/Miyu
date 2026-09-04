@@ -2,7 +2,7 @@ use crate::agent::{
     archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
 };
 use crate::args::WebArgs;
-use crate::config::{ActiveProviderModelConfig, AppConfig, PromptAudience};
+use crate::config::{ActiveProviderModelConfig, AppConfig, PromptAudience, ProviderConfig};
 use crate::i18n::text as t;
 use crate::ipc::{
     self, Command as IpcCommand, Frame as IpcFrame, ImageAttachment, Request as IpcRequest,
@@ -31,6 +31,7 @@ mod event_map;
 mod goal_driver;
 mod persona;
 mod prompt_files;
+mod providers_api;
 mod qq_history;
 mod security;
 mod server;
@@ -64,6 +65,7 @@ use goal_driver::*;
 use ipc_server::*;
 use persona::*;
 use prompt_files::*;
+use providers_api::*;
 use qq_history::*;
 use security::*;
 pub(crate) use server::run;

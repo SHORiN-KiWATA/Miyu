@@ -23,6 +23,8 @@
   <script defer src="/dash/dash-qq.js"></script>
   <script defer src="/dash/dash-groups.js"></script>
   <script defer src="/dash/dash-affection.js"></script>
+  <script defer src="/dash/settings-schema.js"></script>
+  <script defer src="/dash/settings.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body data-theme="graphite">
@@ -395,11 +397,13 @@
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="设置分类">
             <button class="active" type="button" data-settings-view="interface">界面</button>
-            <button type="button" data-settings-view="prompts">提示词</button>
-            <button type="button" data-settings-view="general">全局</button>
+            <button type="button" data-settings-view="prompts">人格</button>
             <button type="button" data-settings-view="providers">供应商</button>
             <button type="button" data-settings-view="models">模型池</button>
+            <button type="button" data-settings-view="general">全局</button>
+            <button type="button" data-settings-view="mcp">MCP</button>
             <button type="button" data-settings-view="plugins">插件</button>
+            <button type="button" data-settings-view="qq">QQ 平台</button>
             <button type="button" data-settings-view="advanced">高级</button>
           </nav>
           <div class="settings-content">
@@ -452,36 +456,22 @@
             <h2>关于</h2>
             <div class="about-row"><span>Miyu WebUI</span><span id="versionLabel">--</span></div>
             </section>
-            <section class="settings-section settings-panel" data-settings-panel="prompts" hidden>
-            <h2>自定义提示词</h2>
-            <div class="prompt-editor" id="promptEditor"></div>
-            </section>
-            <section class="settings-section settings-panel" data-settings-panel="general" hidden>
-            <h2>全局设置</h2>
-            <div class="config-form" id="generalConfigForm"></div>
-            </section>
-            <section class="settings-section settings-panel" data-settings-panel="providers" hidden>
-            <div class="settings-section-heading"><h2>供应商</h2><button class="secondary-button compact-button" id="addProviderButton" type="button">添加</button></div>
-            <div class="provider-editor" id="providerEditor"></div>
-            </section>
-            <section class="settings-section settings-panel" data-settings-panel="models" hidden>
-            <h2>模型池</h2>
-            <div class="model-pool-editor" id="modelPoolEditor"></div>
-            </section>
-             <section class="settings-section settings-panel" data-settings-panel="plugins" hidden>
-             <h2>插件配置</h2>
-             <div class="plugin-editor" id="pluginEditor"></div>
-             <p class="settings-description">QQ 群管理记录(违规者、踢人、禁言时间线)已搬到控制台的「群管」面板。<button class="text-button" id="openGroupsPanel" type="button">打开群管面板</button></p>
-             </section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="prompts" hidden><div class="st-root" id="settings-prompts"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="providers" hidden><div class="st-root" id="settings-providers"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="models" hidden><div class="st-root" id="settings-models"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="general" hidden><div class="st-root" id="settings-general"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="mcp" hidden><div class="st-root" id="settings-mcp"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="plugins" hidden><div class="st-root" id="settings-plugins"></div></section>
+            <section class="settings-section settings-panel st-page" data-settings-panel="qq" hidden><div class="st-root" id="settings-qq"></div></section>
             <section class="settings-section settings-panel" data-settings-panel="advanced" hidden>
             <h2>完整配置</h2>
-            <p class="settings-description">这里包含结构化表单未单独展示的所有配置项。应用到草稿后仍需保存。</p>
+            <p class="settings-description">逃生舱：完整配置 JSON，包含表单未单独展示的所有项。应用到草稿后仍需保存。</p>
             <textarea class="config-json-editor" id="advancedConfigEditor" spellcheck="false" aria-label="完整配置 JSON"></textarea>
             <button class="secondary-button" id="applyAdvancedConfigButton" type="button">应用到草稿</button>
             </section>
           </div>
         </div>
-        <footer class="settings-footer">
+        <footer class="settings-footer" id="settingsFooter">
           <span id="settingsStatus">尚未载入配置</span>
           <div>
             <button class="secondary-button" id="reloadConfigButton" type="button">重新载入</button>

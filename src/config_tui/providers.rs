@@ -56,7 +56,7 @@ impl ModelEntry {
 
 /// `cli_binary`:内置 CLI 供应商列模型要跑的二进制(见 `cli_catalog`);
 /// HTTP 供应商忽略。
-pub(in crate::config_tui) fn fetch_models(
+pub(crate) fn fetch_models(
     provider: &ProviderConfig,
     cli_binary: Option<&str>,
 ) -> Result<Vec<String>> {
@@ -100,21 +100,45 @@ pub(in crate::config_tui) fn fetch_models(
         .collect())
 }
 
+/// 该模型在 models.dev 目录里的条目(读磁盘全量目录,没有就联网取一次)。
+pub(in crate::config_tui) fn catalog_entry(
+    paths: &MiyuPaths,
+    provider: &ProviderConfig,
+    model: &str,
+) -> Option<crate::models_cache::ModelCatalogEntry> {
+    crate::models_cache::describe_models(paths, &provider.id, &provider.base_url, &[model.to_string()])
+        .pop()
+}
+
+/// 从目录自动同步模型元数据:输入模态、上下文窗口,只补空缺不覆盖手填
+/// (09-04,与 WebUI 「从目录补全」同一语义)。价格不落盘——运行时本来就按
+/// 目录价估算,编辑表单里只把目录价显示出来。
 pub(in crate::config_tui) fn auto_configure_model_tags(
     paths: &MiyuPaths,
     provider: &mut ProviderConfig,
     model: &str,
 ) {
-    if provider.model_modalities.contains_key(model) {
+    let needs_modalities = !provider.model_modalities.contains_key(model);
+    let needs_window = !provider.model_context_window.contains_key(model);
+    if !needs_modalities && !needs_window {
         return;
     }
-    if let Some(modalities) =
-        crate::models_cache::input_modalities_blocking(paths, &provider.id, model)
-            .filter(|modalities| !modalities.is_empty())
-    {
-        provider
-            .model_modalities
-            .insert(model.to_string(), modalities);
+    let Some(entry) = catalog_entry(paths, provider, model) else {
+        return;
+    };
+    if needs_modalities {
+        if let Some(modalities) = entry.modalities.filter(|modalities| !modalities.is_empty()) {
+            provider
+                .model_modalities
+                .insert(model.to_string(), modalities);
+        }
+    }
+    if needs_window {
+        if let Some(window) = entry.context_window.filter(|window| *window > 0) {
+            provider
+                .model_context_window
+                .insert(model.to_string(), window as usize);
+        }
     }
 }
 
@@ -699,15 +723,36 @@ pub(in crate::config_tui) fn parse_extra_body(
 
 pub(in crate::config_tui) fn edit_model_form(
     stdout: &mut io::Stdout,
+    paths: &MiyuPaths,
     provider: &mut ProviderConfig,
     model: &str,
     thinking_variants: &mut ThinkingVariantPreferences,
 ) -> Result<bool> {
+    // 目录信息只用来预填与提示;真正落盘的仍是表单里保存的值。
+    let catalog = catalog_entry(paths, provider, model);
     let context_window = provider
         .model_context_window
         .get(model)
         .copied()
+        .or_else(|| {
+            catalog
+                .as_ref()
+                .and_then(|entry| entry.context_window)
+                .map(|window| window as usize)
+        })
         .unwrap_or_default();
+    let catalog_price_label: &'static str = match catalog.as_ref().and_then(|entry| entry.cost.as_ref()) {
+        Some(cost) => Box::leak(
+            format!(
+                "{} ${}/{}",
+                t("catalogue", "目录价"),
+                trim_price(cost.input),
+                trim_price(cost.output)
+            )
+            .into_boxed_str(),
+        ),
+        None => t("catalogue", "目录价"),
+    };
     let stored_variant = thinking_variants
         .selected(&provider.id, model)
         .filter(|selected| !selected.trim().is_empty())
@@ -760,7 +805,7 @@ pub(in crate::config_tui) fn edit_model_form(
             currency_value,
         )
         .choices(&["", "USD", "CNY"])
-        .empty_choice_label(t("catalogue", "目录价")),
+        .empty_choice_label(catalog_price_label),
         Field::new(
             t("Input price / 1M tokens", "输入价 / 1M tokens"),
             price_text(cost.map(|c| c.input)),
@@ -894,6 +939,11 @@ pub(in crate::config_tui) fn edit_model_form(
         }
         return Ok(true);
     }
+}
+
+fn trim_price(value: f64) -> String {
+    let text = format!("{value:.4}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 pub(in crate::config_tui) fn thinking_variant_field(

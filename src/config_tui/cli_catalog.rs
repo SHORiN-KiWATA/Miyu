@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 const CLI_LIST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 该供应商列模型要跑的二进制;`None` = 没有对应的 CLI 子命令。
-pub(in crate::config_tui) fn builtin_cli_binary(
+pub(crate) fn builtin_cli_binary(
     config: &AppConfig,
     provider: &ProviderConfig,
 ) -> Option<String> {

@@ -264,3 +264,87 @@ pub fn pricing_resolver(
         model_cost(provider_id, base_url, model_id)
     }
 }
+
+/// 供 WebUI「拉取模型列表 / 从目录补全」用的一次性全量查询。
+///
+/// 常驻缓存在 daemon 里是按已配置模型裁剪过的(`retain_configured_models`),
+/// 新拉下来的模型查不到;这里直接读磁盘上的完整目录(没有就联网取一次),
+/// 不碰全局缓存。3.6MB 的解析只在用户点按钮时发生。
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelCatalogEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ModelCatalogCost>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelCatalogCost {
+    pub input: f64,
+    pub output: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+}
+
+pub fn describe_models(
+    paths: &crate::paths::MiyuPaths,
+    provider_id: &str,
+    base_url: &str,
+    models: &[String],
+) -> Vec<ModelCatalogEntry> {
+    let path = super::cache_file(paths);
+    let cache = match super::load_from_disk(&path).or_else(|_| super::fetch_and_cache(&path)) {
+        Ok(cache) => cache,
+        Err(_) => {
+            return models
+                .iter()
+                .map(|id| ModelCatalogEntry {
+                    id: id.clone(),
+                    context_window: None,
+                    modalities: None,
+                    cost: None,
+                })
+                .collect();
+        }
+    };
+    let normalized_base = base_url.trim().trim_end_matches('/');
+    let aligned_providers: Vec<&String> = cache
+        .provider_api
+        .iter()
+        .filter(|(_, api)| !normalized_base.is_empty() && api.as_str() == normalized_base)
+        .map(|(key, _)| key)
+        .collect();
+    models
+        .iter()
+        .map(|model_id| {
+            let cost = cache
+                .data
+                .get(provider_id)
+                .and_then(|models| models.get(model_id))
+                .and_then(|info| info.cost)
+                .or_else(|| {
+                    aligned_providers.iter().find_map(|key| {
+                        cache
+                            .data
+                            .get(key.as_str())
+                            .and_then(|models| models.get(model_id))
+                            .and_then(|info| info.cost)
+                    })
+                })
+                .map(|cost| ModelCatalogCost {
+                    input: cost.input,
+                    output: cost.output,
+                    cache_read: cost.cache_read,
+                });
+            ModelCatalogEntry {
+                id: model_id.clone(),
+                context_window: lookup_context_window(&cache.data, provider_id, model_id),
+                modalities: lookup_input_modalities(&cache.data, provider_id, model_id),
+                cost,
+            }
+        })
+        .collect()
+}

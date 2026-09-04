@@ -1,0 +1,6 @@
+home/
+xdg-run/
+shots/
+node_modules/
+package.json
+package-lock.json
