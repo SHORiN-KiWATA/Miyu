@@ -112,9 +112,16 @@ impl OneBotAdapter {
         push_message_frame(&mut frames, &mut current, &mut current_image_digests);
 
         let has_message_frames = !frames.is_empty();
-        let target_on_first_frame = has_message_frames
-            && matches!(self.target, Target::Group { .. })
-            && response_target.is_some_and(ResponseTarget::is_effective);
+        // 引用/@ 挂在第一条**非语音**帧上:QQ 语音消息(record 段)必须独占一条,
+        // 和 reply/at 段同在一条里时消息能发出去,但别人点不动播放(09-05 用户
+        // 报)。全是语音就不带引用。
+        let target_frame = if matches!(self.target, Target::Group { .. })
+            && response_target.is_some_and(ResponseTarget::is_effective)
+        {
+            frames.iter().position(|frame| !frame_is_voice(&frame.segments))
+        } else {
+            None
+        };
         let mut receipt = SendReceipt::default();
         for (index, frame) in frames.into_iter().enumerate() {
             let MessageFrame {
@@ -122,7 +129,8 @@ impl OneBotAdapter {
                 image_digests,
             } = frame;
             let has_image = !image_digests.is_empty();
-            if index == 0 && target_on_first_frame {
+            let carries_target = target_frame == Some(index);
+            if carries_target {
                 prepend_response_target(
                     &mut segments,
                     response_target.expect("effective response target exists"),
@@ -133,7 +141,7 @@ impl OneBotAdapter {
                 Err(error) => return Err(partial_send_error(error, receipt)),
             };
             receipt.delivered_parts += 1;
-            if index == 0 && target_on_first_frame {
+            if carries_target {
                 receipt.response_target_delivered = true;
             }
             receipt.image_digests.extend(image_digests);
@@ -377,4 +385,11 @@ impl OneBotAdapter {
             .await?;
         Ok(data.get("file_id").and_then(value_id_string))
     }
+}
+
+/// 这一帧是不是语音消息(record 段)。语音必须独占一条 QQ 消息。
+fn frame_is_voice(segments: &[Value]) -> bool {
+    segments
+        .iter()
+        .any(|segment| segment.get("type").and_then(Value::as_str) == Some("record"))
 }
