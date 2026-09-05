@@ -271,7 +271,61 @@ pub(in crate::config_tui) fn embedding_model_label(config: &AppConfig) -> String
             embedding.model.trim()
         ),
         crate::config::EmbeddingBackend::Remote => t("remote: not set", "远程：未设置").to_string(),
-        _ => format!("{} {}", t("local:", "本地："), embedding.local_model.trim()),
+        _ => format!("{} · {}", t("local", "本地"), embedding.local_model.trim()),
+    }
+}
+
+/// Embedding 模型菜单的一行。本地模型来自模型搜索链上装好的目录，远程模型来自
+/// 供应商里标了 embedding 模态的模型；两类平铺在一个单选里，选哪个就用哪个。
+enum EmbeddingRow {
+    Local { id: String, installed: bool },
+    Remote { provider: String, model: String },
+    Advanced,
+}
+
+fn embedding_rows(config: &AppConfig) -> Vec<EmbeddingRow> {
+    let mut rows = Vec::new();
+    let installed: Vec<String> = crate::embedding::installed_local_models()
+        .into_iter()
+        .map(|model| model.manifest.id)
+        .collect();
+    let configured_local = config.embedding.local_model.trim();
+    // 配置里写的本地模型装好了就正常列出；没装（拼错、目录删了）也得列出来，
+    // 否则用户看不见自己当前选的是什么，也无从换掉它。
+    if !configured_local.is_empty() && !installed.iter().any(|id| id == configured_local) {
+        rows.push(EmbeddingRow::Local {
+            id: configured_local.to_string(),
+            installed: false,
+        });
+    }
+    rows.extend(installed.into_iter().map(|id| EmbeddingRow::Local {
+        id,
+        installed: true,
+    }));
+    for provider in &config.providers {
+        for model in &provider.models {
+            if model_is_embedding(provider, model) {
+                rows.push(EmbeddingRow::Remote {
+                    provider: provider.id.clone(),
+                    model: model.clone(),
+                });
+            }
+        }
+    }
+    rows.push(EmbeddingRow::Advanced);
+    rows
+}
+
+fn embedding_row_is_current(config: &AppConfig, row: &EmbeddingRow) -> bool {
+    let embedding = &config.embedding;
+    match (row, embedding.resolved_backend()) {
+        (EmbeddingRow::Local { id, .. }, crate::config::EmbeddingBackend::Local) => {
+            id == embedding.local_model.trim()
+        }
+        (EmbeddingRow::Remote { provider, model }, crate::config::EmbeddingBackend::Remote) => {
+            provider == embedding.provider_id.trim() && model == embedding.model.trim()
+        }
+        _ => false,
     }
 }
 
@@ -281,45 +335,45 @@ pub(in crate::config_tui) fn edit_embedding_model(
 ) -> Result<()> {
     // 候选每轮从 config 重建：删除和撤销都改的是 config 本身，重建比两边各维护
     // 一份再想办法同步简单，也不会漏。
-    fn embedding_candidates(config: &AppConfig) -> Vec<(String, String)> {
-        let mut candidates = Vec::new();
-        for provider in &config.providers {
-            for model in &provider.models {
-                if model_is_embedding(provider, model) {
-                    candidates.push((provider.id.clone(), model.clone()));
-                }
-            }
-        }
-        candidates
-    }
-
-    if embedding_candidates(config).is_empty() {
-        message(
-            stdout,
-            t(
-                "No embedding models yet. Mark one in Providers and models -> Edit model.",
-                "还没有语义模型。请在「供应商和模型」->「编辑模型」里把某个模型标记为语义模型。",
-            ),
-        )?;
-        return Ok(());
-    }
-    let mut selected = embedding_candidates(config)
+    let mut selected = embedding_rows(config)
         .iter()
-        .position(|(provider, model)| {
-            provider == config.embedding.provider_id.trim()
-                && model == config.embedding.model.trim()
-        })
+        .position(|row| embedding_row_is_current(config, row))
         .unwrap_or(0);
     let mut undo = ConfigUndo::default();
     loop {
-        let candidates = embedding_candidates(config);
-        // 尾部两项不是模型，删除键要挡住它们
-        let mut options: Vec<String> = candidates
+        let rows = embedding_rows(config);
+        let options: Vec<String> = rows
             .iter()
-            .map(|(provider, model)| format!("{provider}/{model}"))
+            .map(|row| {
+                let marker = if embedding_row_is_current(config, row) {
+                    "(•) "
+                } else {
+                    "( ) "
+                };
+                match row {
+                    EmbeddingRow::Local {
+                        id,
+                        installed: true,
+                    } => {
+                        format!("{marker}{} · {id}", t("local", "本地"))
+                    }
+                    EmbeddingRow::Local {
+                        id,
+                        installed: false,
+                    } => format!(
+                        "{marker}{} · {id} ({})",
+                        t("local", "本地"),
+                        t("not found", "未找到")
+                    ),
+                    EmbeddingRow::Remote { provider, model } => {
+                        format!("{marker}{provider}/{model}")
+                    }
+                    EmbeddingRow::Advanced => {
+                        format!("    {}", t("Advanced settings", "高级设置"))
+                    }
+                }
+            })
             .collect();
-        options.push(t("Advanced settings", "高级设置").to_string());
-        options.push(t("Clear selection", "清除选择").to_string());
         selected = selected.min(options.len() - 1);
         draw_menu(
             stdout,
@@ -329,8 +383,8 @@ pub(in crate::config_tui) fn edit_embedding_model(
             &format!(
                 "{}{}",
                 t(
-                    "[Enter]select [j/k]move [d]remove [q]back",
-                    "[Enter]选择 [j/k]移动 [d]移除 [q]返回",
+                    "[Enter]select [j/k]move [d]remove remote model [q]back",
+                    "[Enter]选择 [j/k]移动 [d]移除远程模型 [q]返回",
                 ),
                 undo.hint()
             ),
@@ -339,54 +393,47 @@ pub(in crate::config_tui) fn edit_embedding_model(
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Char('d') if selected < candidates.len() => {
-                undo.record(config);
-                let (provider, model) = candidates[selected].clone();
-                config.remove_active_provider_model(&provider, &model)?;
-                if embedding_candidates(config).is_empty() {
-                    // 空列表没法继续画，当场撤销并说明
-                    undo.undo(config);
-                    message(
-                        stdout,
-                        t(
-                            "That was the last embedding model; removal was undone.",
-                            "这是最后一个语义模型，已撤销该删除。",
-                        ),
-                    )?;
+            KeyCode::Char('d') => {
+                if let EmbeddingRow::Remote { provider, model } = &rows[selected] {
+                    undo.record(config);
+                    config.remove_active_provider_model(provider, model)?;
                 }
             }
             KeyCode::Char('u') => {
                 undo.undo(config);
             }
-            KeyCode::Enter => {
-                if selected == options.len() - 1 {
-                    config.embedding.provider_id.clear();
-                    config.embedding.model.clear();
+            KeyCode::Enter => match &rows[selected] {
+                EmbeddingRow::Local { id, .. } => {
+                    // 配了远程模型时 auto 会选远程，这时选本地必须写死 local；没配
+                    // 远程就留 auto，配置文件里少一行显式后端。
+                    config.embedding.local_model = id.clone();
+                    config.embedding.backend = if config.embedding.remote_is_configured() {
+                        crate::config::EmbeddingBackend::Local
+                    } else {
+                        crate::config::EmbeddingBackend::Auto
+                    };
                     return Ok(());
                 }
-                if selected == options.len() - 2 {
-                    edit_embedding_advanced(stdout, config)?;
-                    continue;
+                EmbeddingRow::Remote { provider, model } => {
+                    // auto 在配了远程模型时就是远程，不必写死 remote——写死了以后
+                    // 清掉远程模型会变成「远程：未设置」的死局。
+                    config.embedding.provider_id = provider.clone();
+                    config.embedding.model = model.clone();
+                    config.embedding.backend = crate::config::EmbeddingBackend::Auto;
+                    return Ok(());
                 }
-                let (provider, model) = candidates[selected].clone();
-                config.embedding.provider_id = provider;
-                config.embedding.model = model;
-                return Ok(());
-            }
+                EmbeddingRow::Advanced => edit_embedding_advanced(stdout, config)?,
+            },
             _ => {}
         }
     }
 }
 
+/// 模型之外的几个数值；用哪个模型在上一层菜单里选，这里不再重复。
 pub(in crate::config_tui) fn edit_embedding_advanced(
     stdout: &mut io::Stdout,
     config: &mut AppConfig,
 ) -> Result<()> {
-    let backend_label = match config.embedding.backend {
-        crate::config::EmbeddingBackend::Auto => "auto",
-        crate::config::EmbeddingBackend::Local => "local",
-        crate::config::EmbeddingBackend::Remote => "remote",
-    };
     let mut fields = vec![
         Field::new(
             t(
@@ -394,14 +441,6 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
                 "启用语义检索（true/false）",
             ),
             config.embedding.enabled.to_string(),
-        ),
-        Field::new(
-            t("Backend (auto/local/remote)", "后端（auto/local/remote）"),
-            backend_label.to_string(),
-        ),
-        Field::new(
-            t("Local model id or directory", "本地模型 id 或目录"),
-            config.embedding.local_model.clone(),
         ),
         Field::new(
             t(
@@ -427,29 +466,17 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
         return Ok(());
     }
     let enabled = parse_bool_field(&fields[0].value)?;
-    let backend = match fields[1].value.trim().to_ascii_lowercase().as_str() {
-        "auto" | "" => crate::config::EmbeddingBackend::Auto,
-        "local" => crate::config::EmbeddingBackend::Local,
-        "remote" => crate::config::EmbeddingBackend::Remote,
-        _ => {
-            return Err(anyhow::anyhow!(t(
-                "Backend must be auto, local or remote.",
-                "后端只能是 auto、local 或 remote。"
-            )))
-        }
-    };
-    let local_model = fields[2].value.trim().to_string();
-    let idle: u64 = fields[3]
+    let idle: u64 = fields[1]
         .value
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!(t("Invalid idle timeout.", "空闲卸载数值无效。")))?;
-    let timeout: u64 = fields[4]
+    let timeout: u64 = fields[2]
         .value
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!(t("Invalid timeout.", "超时数值无效。")))?;
-    let score: f32 = fields[5]
+    let score: f32 = fields[3]
         .value
         .trim()
         .parse()
@@ -472,15 +499,7 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
             "空闲卸载必须大于 0。"
         )));
     }
-    if local_model.is_empty() {
-        return Err(anyhow::anyhow!(t(
-            "Local model must not be empty.",
-            "本地模型不能为空。"
-        )));
-    }
     config.embedding.enabled = enabled;
-    config.embedding.backend = backend;
-    config.embedding.local_model = local_model;
     config.embedding.idle_unload_seconds = idle;
     config.embedding.timeout_seconds = timeout;
     config.embedding.min_score = score;

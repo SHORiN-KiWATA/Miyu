@@ -249,7 +249,7 @@ pub(in crate::config_tui) fn edit_qq(
             ),
             format!(
                 "{}: {}",
-                t("Model assignment", "模型分配"),
+                t("Configure models", "配置模型"),
                 qq_model_assignment_label(config)
             ),
             format!(

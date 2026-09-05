@@ -5,20 +5,21 @@
 //! 结构；插件未启用时它的槽位不出现。会话专属配置不在这里，它按会话一条条
 //! 配，留在原来的位置。
 //!
-//! 选择框是「池单选 + 模型多选」：上半区 inherit / global / 四档，下半区
+//! 选择框是「池单选 + 模型多选」：上半区 继承 / 全局池 / 四档，下半区
 //! 文本或多模态模型；两区互斥，勾一个模型就是「指定模型」，勾几个就是这一处
 //! 专属的小池子。`d` 把一行清回它声明的缺省值。
-use crate::config::{
-    ActiveProviderModelConfig, ModelPoolRef, ModelTier, ProviderModelChoice, GLOBAL_POOL_LABEL,
-    INHERIT_POOL_LABEL,
-};
+//!
+//! 界面上不出现 `inherit` / `global` / `lite` 这些配置 id，只按 locale 显示一个
+//! 名字；「继承」一律写成「继承 xx 池」，说清继承到哪一层。
+use crate::config::{ActiveProviderModelConfig, ModelPoolRef, ModelTier, ProviderModelChoice};
 use crate::config_tui::*;
 
 /// One model-consuming slot on a platform.
 pub(in crate::config_tui) struct PoolSlot {
     pub(in crate::config_tui) label: &'static str,
-    /// What `inherit` resolves to, for the row summary and the picker.
-    pub(in crate::config_tui) parent: &'static str,
+    /// How the `inherit` value reads on this slot, e.g. "继承平台池": names the
+    /// layer it resolves to, for the row summary and the picker.
+    pub(in crate::config_tui) inherit_label: &'static str,
     /// Whether the parent *is* the global pool: then `global` duplicates
     /// `inherit` and the picker hides it.
     pub(in crate::config_tui) parent_is_global: bool,
@@ -84,8 +85,8 @@ fn group_join_set(config: &mut AppConfig, value: ModelPoolRef) {
 pub(in crate::config_tui) fn qq_pool_slots() -> Vec<PoolSlot> {
     vec![
         PoolSlot {
-            label: t("Default text", "默认文本"),
-            parent: t("global text pool", "全局文本池"),
+            label: t("Platform text pool", "平台文本池"),
+            inherit_label: inherits_global_pool_label(),
             parent_is_global: true,
             multimodal: false,
             default: ModelPoolRef::inherit(),
@@ -94,8 +95,8 @@ pub(in crate::config_tui) fn qq_pool_slots() -> Vec<PoolSlot> {
             set: |config, value| config.platforms.qq.text_models = value,
         },
         PoolSlot {
-            label: t("Default multimodal", "默认多模态"),
-            parent: t("global multimodal pool", "全局多模态池"),
+            label: t("Platform multimodal pool", "平台多模态池"),
+            inherit_label: inherits_global_pool_label(),
             parent_is_global: true,
             multimodal: true,
             default: ModelPoolRef::inherit(),
@@ -105,7 +106,7 @@ pub(in crate::config_tui) fn qq_pool_slots() -> Vec<PoolSlot> {
         },
         PoolSlot {
             label: t("Non-whitelist text", "非白名单文本"),
-            parent: t("default text", "默认文本"),
+            inherit_label: t("inherits platform pool", "继承平台池"),
             parent_is_global: false,
             multimodal: false,
             default: ModelPoolRef::inherit(),
@@ -115,7 +116,7 @@ pub(in crate::config_tui) fn qq_pool_slots() -> Vec<PoolSlot> {
         },
         PoolSlot {
             label: t("Reply judge", "回复判定"),
-            parent: t("conversation text pool", "会话文本池"),
+            inherit_label: t("inherits conversation pool", "继承会话池"),
             parent_is_global: false,
             multimodal: false,
             default: ModelPoolRef::tier(ModelTier::Lite),
@@ -125,7 +126,7 @@ pub(in crate::config_tui) fn qq_pool_slots() -> Vec<PoolSlot> {
         },
         PoolSlot {
             label: t("Affection", "好感度"),
-            parent: t("reply judge", "回复判定"),
+            inherit_label: t("inherits reply judge", "继承回复判定"),
             parent_is_global: false,
             multimodal: false,
             default: ModelPoolRef::inherit(),
@@ -135,7 +136,7 @@ pub(in crate::config_tui) fn qq_pool_slots() -> Vec<PoolSlot> {
         },
         PoolSlot {
             label: t("Group join approval", "入群审批"),
-            parent: t("default text", "默认文本"),
+            inherit_label: t("inherits platform pool", "继承平台池"),
             parent_is_global: false,
             multimodal: false,
             default: ModelPoolRef::tier(ModelTier::Lite),
@@ -158,36 +159,26 @@ pub(in crate::config_tui) fn qq_model_assignment_label(config: &AppConfig) -> St
     format!("{} {}", visible_slots(config).len(), t("items", "项"))
 }
 
-/// 一处引用的摘要：`inherit (→ 上一层)`、`global`、`cheap`、`deepseek-chat`、`3 个模型`。
+/// 一处引用的摘要：`继承平台池`、`全局池`、`便宜`、`deepseek-chat`、`3 个模型`。
+/// 档位池空了会在运行时回退全局池，这里不重复说——分级模型池那一屏已经写着。
 pub(in crate::config_tui) fn pool_ref_summary(
-    config: &AppConfig,
+    _config: &AppConfig,
     pool: &ModelPoolRef,
-    parent: &str,
+    inherit_label: &str,
 ) -> String {
     if pool.is_inherit() {
-        return format!("{INHERIT_POOL_LABEL} (→ {parent})");
+        return inherit_label.to_string();
     }
     if pool.is_global() {
-        return GLOBAL_POOL_LABEL.to_string();
+        return global_pool_label().to_string();
     }
     if let Some(tier) = pool.tier_ref() {
-        return if config.tier_choices(tier).is_empty() {
-            format!(
-                "{} ({})",
-                tier.label(),
-                t(
-                    "not configured, falls back to global pool",
-                    "未配置, 回退全局池"
-                )
-            )
-        } else {
-            tier.label().to_string()
-        };
+        return tier_hint(tier).to_string();
     }
     match pool.explicit_models() {
         Some([single]) => single.model.clone(),
         Some(entries) => format!("{} {}", entries.len(), t("models", "个模型")),
-        None => INHERIT_POOL_LABEL.to_string(),
+        None => inherit_label.to_string(),
     }
 }
 
@@ -200,23 +191,22 @@ pub(in crate::config_tui) fn select_qq_model_assignment(
         let slots = visible_slots(config);
         let width = slots
             .iter()
-            .map(|slot| slot.label.chars().count())
+            .map(|slot| display_width(slot.label))
             .max()
             .unwrap_or(8);
         let options: Vec<String> = slots
             .iter()
             .map(|slot| {
                 format!(
-                    "{:<width$}  {}",
-                    slot.label,
-                    pool_ref_summary(config, &(slot.get)(config), slot.parent),
-                    width = width
+                    "{}: {}",
+                    pad(slot.label, width),
+                    pool_ref_summary(config, &(slot.get)(config), slot.inherit_label),
                 )
             })
             .collect();
         draw_menu(
             stdout,
-            t(" QQ · MODEL ASSIGNMENT ", " QQ · 模型分配 "),
+            t(" QQ · CONFIGURE MODELS ", " QQ · 配置模型 "),
             &options,
             selected,
             t(
@@ -268,32 +258,24 @@ pub(in crate::config_tui) fn select_pool_ref(
     };
     let mut rows = vec![PickRow::Named(
         ModelPoolRef::inherit(),
-        format!(
-            "{:<9} {} ({})",
-            INHERIT_POOL_LABEL,
-            t("inherit from parent", "继承上一层"),
-            slot.parent
-        ),
+        slot.inherit_label.to_string(),
     )];
     if !slot.parent_is_global {
         rows.push(PickRow::Named(
             ModelPoolRef::global(),
-            format!(
-                "{:<9} {}",
-                GLOBAL_POOL_LABEL,
-                if slot.multimodal {
-                    t("global multimodal pool", "全局多模态池")
-                } else {
-                    t("global text pool", "全局文本池")
-                }
-            ),
+            if slot.multimodal {
+                t("global multimodal pool", "全局多模态池")
+            } else {
+                t("global text pool", "全局文本池")
+            }
+            .to_string(),
         ));
     }
     if !slot.multimodal {
         for tier in ModelTier::ALL {
             rows.push(PickRow::Named(
                 ModelPoolRef::tier(tier),
-                format!("{:<9} {}", tier.label(), tier_hint(tier)),
+                tier_hint(tier).to_string(),
             ));
         }
     }
@@ -387,13 +369,13 @@ pub(in crate::config_tui) fn select_plugin_pool_ref(
     stdout: &mut io::Stdout,
     config: &AppConfig,
     label: &'static str,
-    parent: &'static str,
+    inherit_label: &'static str,
     default: ModelPoolRef,
     value: &mut ModelPoolRef,
 ) -> Result<()> {
     let slot = PoolSlot {
         label,
-        parent,
+        inherit_label,
         parent_is_global: false,
         multimodal: false,
         default,

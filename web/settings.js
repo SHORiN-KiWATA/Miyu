@@ -870,10 +870,13 @@ window.MiyuSettings = (() => {
   }
 
 
-  /* 池引用：上半区单选(inherit / global / 四档),下半区多选模型;两区互斥。
-     值形态:字符串 = 池名,数组 = 显式列表(长度 1 即"指定模型"),空 = inherit。 */
+  /* 池引用：上半区单选(继承 / 全局池 / 四档),下半区多选模型;两区互斥。
+     值形态:字符串 = 池名,数组 = 显式列表(长度 1 即"指定模型"),空 = inherit。
+     界面只显示中文名,不露 inherit/global/lite 这些配置 id;"继承"写成"继承 xx 池"。 */
   const TIER_NAMES = ["lite", "cheap", "standard", "flagship"];
   const TIER_HINTS = { lite: "轻量", cheap: "便宜", standard: "普通", flagship: "旗舰" };
+  const inheritLabelOf = (options) => `继承${options.parentLabel || "上一层"}`;
+  const globalPoolLabelOf = (options) => options.capability === "image" ? "全局多模态池" : "全局文本池";
 
   function poolRefKind(value) {
     if (Array.isArray(value)) return value.length ? "models" : "inherit";
@@ -893,16 +896,15 @@ window.MiyuSettings = (() => {
       const kind = poolRefKind(value);
       anchor.replaceChildren();
       if (kind === "inherit") {
-        anchor.append(el("span.st-picker-text.is-muted", { text: `inherit → ${options.parentLabel || "上一层"}` }));
+        anchor.append(el("span.st-picker-text.is-muted", { text: inheritLabelOf(options) }));
       } else if (kind === "global") {
-        anchor.append(el("span.st-picker-text", null, el("strong", { text: "global" }), el("small", { text: options.capability === "image" ? "全局多模态池" : "全局文本池" })));
+        anchor.append(el("span.st-picker-text", null, el("strong", { text: globalPoolLabelOf(options) })));
       } else if (kind === "models") {
         const visible = value.slice(0, 3);
         for (const item of visible) anchor.append(chip(item.model, "is-model"));
         if (value.length > visible.length) anchor.append(chip(`+${value.length - visible.length}`));
       } else {
-        const empty = TIER_NAMES.includes(kind) && tierPoolEmpty(kind);
-        anchor.append(el("span.st-picker-text", null, el("strong", { text: kind }), el("small", { text: empty ? "未配置, 回退全局池" : (TIER_HINTS[kind] || "") })));
+        anchor.append(el("span.st-picker-text", null, el("strong", { text: TIER_HINTS[kind] || kind })));
       }
       anchor.append(icon("chevron-down", "st-picker-caret"));
     };
@@ -922,15 +924,15 @@ window.MiyuSettings = (() => {
           paint();
           sync();
         };
-        const named = [["inherit", "inherit", `继承上一层（${options.parentLabel || "上一层"}）`]];
-        if (!options.parentIsGlobal) named.push(["global", "global", options.capability === "image" ? "全局多模态池" : "全局文本池"]);
-        if (options.capability !== "image") for (const tier of TIER_NAMES) named.push([tier, tier, TIER_HINTS[tier]]);
+        const named = [["inherit", inheritLabelOf(options)]];
+        if (!options.parentIsGlobal) named.push(["global", globalPoolLabelOf(options)]);
+        if (options.capability !== "image") for (const tier of TIER_NAMES) named.push([tier, TIER_HINTS[tier]]);
         const poolGroup = el("div.st-pick-group", null, el("div.st-pick-group-title", { text: "池" }));
-        for (const [name, label, hint] of named) {
+        for (const [name, label] of named) {
           const input = el("input", { type: "radio", name: "st-pool-ref", checked: kind === name });
           input.addEventListener("change", () => { if (input.checked) { kind = name; selected = []; commit(); } });
           radios.push([name, input]);
-          poolGroup.append(el("label.st-check-row", null, input, el("span", null, el("strong", { text: label }), el("small", { text: hint }))));
+          poolGroup.append(el("label.st-check-row", null, input, el("span", null, el("strong", { text: label }))));
         }
         body.append(poolGroup);
         const groups = new Map();
@@ -1734,25 +1736,25 @@ window.MiyuSettings = (() => {
 
   /* ───────────────────────── 模型池矩阵 ───────────────────────── */
 
-  const POOL_COLUMNS = [
-    { id: "text", label: "全局文本", hint: "主对话，以及未分配的旁路请求", path: "active_provider_models" },
-    { id: "multimodal", label: "全局多模态", hint: "看图/看视频时用", path: "active_multimodal_provider_models", capability: "image" },
-    { id: "lite", label: "lite", hint: "轻量档", tier: "lite" },
-    { id: "cheap", label: "cheap", hint: "便宜档", tier: "cheap" },
-    { id: "standard", label: "standard", hint: "普通档 · task 默认", tier: "standard" },
-    { id: "flagship", label: "flagship", hint: "旗舰档", tier: "flagship" }
+  /* 页面分三段:全局池(两张)/分级池(四张)/旁路请求(一张通栏)。卡片标题就是池名,
+     档位只显示中文,配置 id 留在 tier 字段里。 */
+  const GLOBAL_POOL_COLUMNS = [
+    { id: "text", label: "全局文本池", hint: "主对话，以及未分配的旁路请求", path: "active_provider_models" },
+    { id: "multimodal", label: "全局多模态池", hint: "看图/看视频时用", path: "active_multimodal_provider_models", capability: "image" }
   ];
+  const TIER_POOL_COLUMNS = TIER_NAMES.map((tier) => ({ id: tier, label: `${TIER_HINTS[tier]}档`, hint: tier === "standard" ? "task 子代理的默认档" : "", tier, emptyHint: "未配置，继承全局池" }));
+  const POOL_COLUMNS = [...GLOBAL_POOL_COLUMNS, ...TIER_POOL_COLUMNS];
 
-  /* 旁路请求 → 档位。缺省值由代码内置(标题/整理 lite,deep_research standard);
+  /* 旁路请求 → 档位。缺省值由代码内置(标题/整理 lite,深度研究 standard);
      "缺省"就是删掉这个键。 */
   const AUX_ROLES = [
     { key: "session_title", label: "会话标题", fallback: "lite" },
     { key: "memory_organizer", label: "日记整理", fallback: "lite" },
-    { key: "deep_research", label: "deep_research", fallback: "standard" }
+    { key: "deep_research", label: "深度研究", fallback: "standard" }
   ];
 
   function auxRolesCard() {
-    const node = el("section.st-pool-card");
+    const node = el("section.st-pool-card.is-wide");
     node.style.setProperty("--i", String(POOL_COLUMNS.length));
     const list = el("div.st-pool-list");
     const paint = () => {
@@ -1760,12 +1762,10 @@ window.MiyuSettings = (() => {
       const roles = S().configDraft?.model_tiers?.roles || {};
       for (const role of AUX_ROLES) {
         const current = typeof roles[role.key] === "string" ? roles[role.key] : "";
-        const effective = current || role.fallback;
-        const note = TIER_NAMES.includes(effective) && tierPoolEmpty(effective) ? "未配置, 回退全局池" : "";
         const rowNode = el("div.st-pool-member");
         rowNode.append(
-          el("span.st-pool-member-copy", null, el("strong", { text: role.label }), el("small", { text: current ? note : `缺省 ${role.fallback}${note ? " · " + note : ""}` })),
-          selectInput([{ value: "", label: `缺省 (${role.fallback})` }, ...TIER_NAMES.map((tier) => ({ value: tier, label: tier })), { value: "global", label: "global" }], current, (next) => {
+          el("span.st-pool-member-copy", null, el("strong", { text: role.label }), current ? el("small", { text: `缺省是${TIER_HINTS[role.fallback]}` }) : null),
+          selectInput([{ value: "", label: `缺省（${TIER_HINTS[role.fallback]}）` }, ...TIER_NAMES.map((tier) => ({ value: tier, label: TIER_HINTS[tier] })), { value: "global", label: "全局池" }], current, (next) => {
             const draft = S().configDraft;
             if (!draft.model_tiers || typeof draft.model_tiers !== "object") draft.model_tiers = {};
             if (!draft.model_tiers.roles || typeof draft.model_tiers.roles !== "object") draft.model_tiers.roles = {};
@@ -1776,9 +1776,7 @@ window.MiyuSettings = (() => {
         list.append(rowNode);
       }
     };
-    node.append(
-      el("header.st-pool-head", null, el("div", null, el("h3", { text: "旁路请求" }), el("p", { text: "没有共享前缀的侧信道请求各走哪一档；QQ 侧的分配在通讯平台里。" }))),
-      list);
+    node.append(list);
     paint();
     return node;
   }
@@ -1835,12 +1833,17 @@ window.MiyuSettings = (() => {
   }
 
   function renderModelsPage(root) {
-    root.append(el("div.st-page-head", null, el("div", null, el("h2", { text: "模型池" }), el("p.st-page-desc", { text: "每个池是一组候选模型，请求时在池里轮询。全局文本池和多模态池给主对话；四个分级池给 task 子代理按任务难度挑，也可被旁路请求和通讯平台各处引用。" }))));
+    root.append(el("div.st-page-head", null, el("div", null, el("h2", { text: "模型池" }), el("p.st-page-desc", { text: "每个池是一组候选模型，请求时在池里轮询。" }))));
     if (!modelChoices().length) { root.append(empty("请先在供应商中配置模型。", button("去供应商", { onClick: () => ctx.setSettingsView("providers") }))); return; }
-    const grid = el("div.st-pool-grid");
-    POOL_COLUMNS.forEach((column, index) => grid.append(poolCard(column, index)));
-    grid.append(auxRolesCard());
-    root.append(grid);
+    const section = (title, desc, gridClass, cards) => {
+      const grid = el(`div.st-pool-grid.${gridClass}`);
+      cards.forEach((card) => grid.append(card));
+      return el("section.st-pool-section", null, el("div.st-pool-section-head", null, el("h3", { text: title }), el("p", { text: desc })), grid);
+    };
+    root.append(
+      section("全局池", "主对话用的池。分级档没配模型时也落到这里。", "is-global", GLOBAL_POOL_COLUMNS.map((column, index) => poolCard(column, index))),
+      section("分级池", "按任务难度分四档，给 task 子代理、旁路请求和 QQ 各处引用；留空即继承全局池。", "is-tiers", TIER_POOL_COLUMNS.map((column, index) => poolCard(column, index + GLOBAL_POOL_COLUMNS.length))),
+      section("旁路请求", "会话标题、日记整理、深度研究各走哪一档；QQ 侧的模型在「QQ 平台」页配置。", "is-roles", [auxRolesCard()]));
   }
 
   function poolCard(column, index) {
@@ -1886,10 +1889,10 @@ window.MiyuSettings = (() => {
           }
           body.append(groupNode);
         }
-      }, { title: `加入${column.label}池`, width: "340px", align: "start" });
+      }, { title: `加入${column.label}`, width: "340px", align: "start" });
     } });
     node.append(
-      el("header.st-pool-head", null, el("div", null, el("h3", { text: `${column.label}池` }), el("p", { text: column.hint })), count),
+      el("header.st-pool-head", null, el("div", null, el("h3", { text: column.label }), column.hint ? el("p", { text: column.hint }) : null), count),
       list,
       el("footer.st-pool-foot", null, add));
     paint();
@@ -2336,7 +2339,7 @@ window.MiyuSettings = (() => {
     { id: "connection", title: "连接", description: "NapCat / OneBot 反向 WebSocket 接入与基础行为。" },
     { id: "access", title: "权限与白名单", description: "谁能找她说话、谁是管理员。" },
     { id: "limits", title: "限流与并发", description: "非白名单的节流，以及同时能跑几轮。" },
-    { id: "models", title: "模型", description: "QQ 里用哪些模型；不设则继承全局池。" }
+    { id: "models", title: "配置模型", description: "QQ 里用哪些模型；不设则继承全局池。" }
   ];
 
   function renderQqPage(root) {

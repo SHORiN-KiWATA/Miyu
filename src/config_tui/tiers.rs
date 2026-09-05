@@ -1,17 +1,20 @@
 //! 分级模型池：四个档位池的成员编辑，以及旁路请求（会话标题 / 日记整理 /
-//! deep_research）指向哪一档。
+//! 深度研究）指向哪一档。
 //!
 //! 一屏平铺：四档在上、旁路在下，每行 Enter 打开子菜单——档位行打开与文本池
-//! 一样的多选框，旁路行打开单选（四档 + global）。`d` 只对旁路行生效：清掉显式
+//! 一样的多选框，旁路行打开单选（四档 + 全局池）。`d` 只对旁路行生效：清掉显式
 //! 值，回到代码内置的缺省档。通讯平台的池不在这里，它们各归各的平台菜单。
-use crate::config::{AuxRole, ModelTier, GLOBAL_POOL_LABEL};
+//!
+//! 界面上档位只按 locale 显示一个名字（中文「轻量」/ 英文 `lite`），配置文件里
+//! 存的仍是 `ModelTier::label()` 那套英文 id。
+use crate::config::{AuxRole, ModelTier};
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn tier_display_name(tier: ModelTier) -> &'static str {
-    tier.label()
+    tier_hint(tier)
 }
 
-/// 档位定位的一句话：只说「什么档」，不说工具——档位不影响工具集。
+/// 档位在当前 locale 下的显示名：只说「什么档」，不说工具——档位不影响工具集。
 pub(in crate::config_tui) fn tier_hint(tier: ModelTier) -> &'static str {
     match tier {
         ModelTier::Lite => t("lite", "轻量"),
@@ -25,19 +28,25 @@ pub(in crate::config_tui) fn aux_role_label(role: AuxRole) -> &'static str {
     match role {
         AuxRole::SessionTitle => t("Session title", "会话标题"),
         AuxRole::MemoryOrganizer => t("Diary organizer", "日记整理"),
-        AuxRole::DeepResearch => "deep_research",
+        AuxRole::DeepResearch => t("Deep research", "深度研究"),
     }
 }
 
-/// 池成员摘要；空池明说会回退到全局文本池。
+/// 「空池 = 继承全局池」的统一措辞，档位行和各处池引用共用。
+pub(in crate::config_tui) fn inherits_global_pool_label() -> &'static str {
+    t("inherits global pool", "继承全局池")
+}
+
+/// 显式指向全局池时的措辞。
+pub(in crate::config_tui) fn global_pool_label() -> &'static str {
+    t("global pool", "全局池")
+}
+
+/// 池成员摘要；空池就是继承全局池。
 pub(in crate::config_tui) fn tier_pool_summary(config: &AppConfig, tier: ModelTier) -> String {
     let pool = config.tier_choices(tier);
     if pool.is_empty() {
-        t(
-            "not configured, falls back to global pool",
-            "未配置, 回退全局池",
-        )
-        .to_string()
+        inherits_global_pool_label().to_string()
     } else {
         pool.iter()
             .map(|choice| choice.model.as_str())
@@ -46,19 +55,12 @@ pub(in crate::config_tui) fn tier_pool_summary(config: &AppConfig, tier: ModelTi
     }
 }
 
-/// 旁路行右列：档位名，档位空了追加回退说明；显式 global 就写 global。
+/// 旁路行右列：档位显示名；显式 global 就写全局池。档位池空了会在运行时回退
+/// 全局池，这一层不再重复说——档位行自己已经写着「继承全局池」。
 pub(in crate::config_tui) fn aux_role_summary(config: &AppConfig, role: AuxRole) -> String {
     match config.model_tiers.role_tier(role) {
-        None => GLOBAL_POOL_LABEL.to_string(),
-        Some(tier) if config.tier_choices(tier).is_empty() => format!(
-            "{} ({})",
-            tier.label(),
-            t(
-                "not configured, falls back to global pool",
-                "未配置, 回退全局池"
-            )
-        ),
-        Some(tier) => tier.label().to_string(),
+        None => global_pool_label().to_string(),
+        Some(tier) => tier_hint(tier).to_string(),
     }
 }
 
@@ -83,35 +85,33 @@ pub(in crate::config_tui) fn select_model_tiers(
 ) -> Result<()> {
     let mut selected = 0usize;
     loop {
+        // 两组共用一个左列宽度，冒号才能对齐；按显示宽度算，中文双宽不会错位。
         let name_width = ModelTier::ALL
             .iter()
-            .map(|tier| tier.label().chars().count())
+            .map(|tier| display_width(tier_hint(*tier)))
+            .chain(
+                AuxRole::ALL
+                    .iter()
+                    .map(|role| display_width(aux_role_label(*role))),
+            )
             .max()
             .unwrap_or(8);
         let mut options: Vec<String> = ModelTier::ALL
             .iter()
             .map(|tier| {
                 format!(
-                    "{:<width$} ({}): {}",
-                    tier.label(),
-                    tier_hint(*tier),
+                    "{}: {}",
+                    pad(tier_hint(*tier), name_width),
                     tier_pool_summary(config, *tier),
-                    width = name_width
                 )
             })
             .collect();
         options.push("─".repeat(44));
-        let role_width = AuxRole::ALL
-            .iter()
-            .map(|role| aux_role_label(*role).chars().count())
-            .max()
-            .unwrap_or(8);
         options.extend(AuxRole::ALL.iter().map(|role| {
             format!(
-                "{:<width$}: {}",
-                aux_role_label(*role),
+                "{}: {}",
+                pad(aux_role_label(*role), name_width),
                 aux_role_summary(config, *role),
-                width = role_width
             )
         }));
         draw_menu(
@@ -163,7 +163,7 @@ pub(in crate::config_tui) fn select_tier_models(
         return Ok(());
     }
     let mut selected = 0usize;
-    let title = format!(" {} · {} ", t("TIER POOL", "档位池"), tier.label());
+    let title = format!(" {} · {} ", t("TIER POOL", "档位池"), tier_hint(tier));
     loop {
         let options = choices
             .iter()
@@ -199,7 +199,7 @@ pub(in crate::config_tui) fn select_tier_models(
     }
 }
 
-/// 旁路请求的档位单选：四档 + global。选定即写入显式值（含 global）。
+/// 旁路请求的档位单选：四档 + 全局池。选定即写入显式值（含 global）。
 pub(in crate::config_tui) fn select_aux_role_tier(
     stdout: &mut io::Stdout,
     config: &mut AppConfig,
@@ -217,13 +217,9 @@ pub(in crate::config_tui) fn select_aux_role_tier(
     );
     let mut options: Vec<String> = ModelTier::ALL
         .iter()
-        .map(|tier| format!("{:<9} ({})", tier.label(), tier_hint(*tier)))
+        .map(|tier| tier_hint(*tier).to_string())
         .collect();
-    options.push(format!(
-        "{:<9} ({})",
-        GLOBAL_POOL_LABEL,
-        t("global text pool", "全局文本池")
-    ));
+    options.push(t("global text pool", "全局文本池").to_string());
     loop {
         draw_menu(
             stdout,

@@ -67,7 +67,7 @@ pub(in crate::config_tui) fn edit_real_context(
                 pool_ref_summary(
                     config,
                     &settings.text_models,
-                    t("conversation text pool", "会话文本池")
+                    t("inherits conversation pool", "继承会话池")
                 )
             ),
             format!(
@@ -76,7 +76,7 @@ pub(in crate::config_tui) fn edit_real_context(
                 pool_ref_summary(
                     config,
                     &settings.affection_text_models,
-                    t("reply judge", "回复判定")
+                    t("inherits reply judge", "继承回复判定")
                 )
             ),
             format!(
@@ -119,7 +119,7 @@ pub(in crate::config_tui) fn edit_real_context(
                     stdout,
                     config,
                     t("Reply judge", "回复判定"),
-                    t("conversation text pool", "会话文本池"),
+                    t("inherits conversation pool", "继承会话池"),
                     ModelPoolRef::tier(ModelTier::Lite),
                     &mut settings.text_models,
                 )?,
@@ -127,7 +127,7 @@ pub(in crate::config_tui) fn edit_real_context(
                     stdout,
                     config,
                     t("Affection", "好感度"),
-                    t("reply judge", "回复判定"),
+                    t("inherits reply judge", "继承回复判定"),
                     ModelPoolRef::inherit(),
                     &mut settings.affection_text_models,
                 )?,

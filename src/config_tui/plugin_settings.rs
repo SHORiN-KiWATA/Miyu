@@ -378,7 +378,11 @@ pub(in crate::config_tui) fn edit_group_join_approval(
             format!(
                 "{}: {}",
                 labels[3],
-                pool_ref_summary(config, &settings.text_models, t("default text", "默认文本"))
+                pool_ref_summary(
+                    config,
+                    &settings.text_models,
+                    t("inherits platform pool", "继承平台池")
+                )
             ),
             format!(
                 "{}: {} {}",
@@ -477,7 +481,7 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                     stdout,
                     config,
                     t("Group join approval", "入群审批"),
-                    t("default text", "默认文本"),
+                    t("inherits platform pool", "继承平台池"),
                     ModelPoolRef::tier(ModelTier::Lite),
                     &mut settings.text_models,
                 )?,
