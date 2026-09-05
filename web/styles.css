@@ -7685,6 +7685,9 @@ body.miyu-paused *::after {
   font-size: var(--fs-micro);
   background: var(--chip-neutral, var(--surface-3));
   color: var(--text-soft);
+  /* 药丸不许内部折行:窄列里「index 覆盖」曾被挤成两行(09-05 用户截图)。 */
+  white-space: nowrap;
+  vertical-align: middle;
 }
 .dash-chip.is-active { background: color-mix(in srgb, var(--online) 22%, transparent); color: var(--online); }
 .dash-chip.is-archived,
@@ -7810,6 +7813,7 @@ body.miyu-paused *::after {
 .dash-drawer-desc { margin: 0 0 12px; color: var(--text-soft); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .dash-cell-main .dash-chip,
 .dash-cell-main .dash-cell-muted { margin-left: 6px; }
+.dash-cell-main .dash-chip { font-size: var(--fs-micro); line-height: 1.3; }
 .dash-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; flex: 1; min-width: 0; }
 .dash-field-label { color: var(--text-soft); font-size: var(--fs-meta); }
 .dash-field-hint { color: var(--text-faint); font-size: var(--fs-micro); }
