@@ -106,6 +106,8 @@ pub enum Command {
     History(HistoryArgs),
     Pop(PopArgs),
     Kb(KbArgs),
+    /// Semantic embedding: status, installed models, rebuild vectors.
+    Embed(EmbedArgs),
     Export(ExportArgs),
     Import(ImportArgs),
     UpdateDefaultKb,

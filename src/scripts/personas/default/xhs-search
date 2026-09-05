@@ -1,8 +1,53 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：小红书搜索
-# 描述：搜索小红书(RED)笔记，返回标题、作者、点赞收藏评论数、笔记链接；可取单篇正文与评论。需扫码登录一次。
-# Description: Search Xiaohongshu (RED) notes. Returns title, author, engagement counts and note URL. Requires one-time QR login.
+# Description: Search Xiaohongshu (RED) notes or read one note. Pass a keyword in query to search, or a note URL to read its body; action can be omitted. Search returns title, author, likes, saves, comment count and URL, without bodies (to keep context small); pass a returned url again to read the body. sort: 综合/最新/最多点赞/最多评论/最多收藏; type: 全部/视频/图文. Reading a note returns body, tags, images and, when limit>0, comments. Comments are often richer than the body (real experiences, prices, warnings), and replies are richer than top-level comments: RED Q&A happens almost entirely in reply threads, where the top-level comment asks 'what is the name' or 'how much' and the author's answer sits in that comment's replies array. Always read replies together with the comments. Before concluding check these fields: warnings (results are degraded; follow it or tell the user); degraded/sort/sort_requested (sort and type report the values actually applied; when the site changes and a filter silently falls back to default sort, degraded=true, so the first item is no longer 'most liked'); truncated (rate-limited mid-scrape, the result is partial, retry later); comments_count is the site's figure including replies and will not match comments_returned + replies_returned, raise limit for more, comments_has_more=false means the end. action=status checks login. Search requires login: run `xhs-search login` once on the desktop to scan a QR code in the terminal, after which the session renews itself. One call takes 10-30 s (real browser) and search has a per-account daily quota, so avoid needless repeats. Misspelled parameter names, sort or type values fail loudly instead of silently using defaults. Errors return error and fix fields; relay fix to the user, who will handle it.
+# Timeout: 300
+# Group: research, shopping
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "A keyword such as '手冲咖啡' searches; a note link (https://www.xiaohongshu.com/explore/xxx?xsec_token=...) reads the note. Prefer the url from search results, it carries the required xsec_token. Not needed for action=status"
+#     },
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "note",
+#         "status"
+#       ],
+#       "description": "Usually omitted: inferred from whether query is a keyword or a link. Pass status explicitly only to check login"
+#     },
+#     "sort": {
+#       "type": "string",
+#       "enum": [
+#         "综合",
+#         "最新",
+#         "最多点赞",
+#         "最多评论",
+#         "最多收藏"
+#       ],
+#       "description": "action=search only, default 综合"
+#     },
+#     "type": {
+#       "type": "string",
+#       "enum": [
+#         "全部",
+#         "视频",
+#         "图文"
+#       ],
+#       "description": "action=search only, default 全部"
+#     },
+#     "limit": {
+#       "type": "integer",
+#       "description": "search: number of results (1-100, default 20); note: number of top-level comments (0-100, default 0 = no comments). Counts top-level comments only; each one's replies come along without using the quota"
+#     }
+#   },
+#   "additionalProperties": false
+# }
 """
 xhs-search — 小红书笔记检索 CLI
 

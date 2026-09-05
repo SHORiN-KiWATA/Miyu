@@ -2,5 +2,6 @@
 
 mod fields;
 mod plugins;
+mod pools;
 mod qq;
 mod shared;

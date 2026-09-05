@@ -1,7 +1,7 @@
 {
   "name": "task",
   "display_name": "子代理",
-  "description": "Delegate a task to a subagent with your tool set. It starts with a fresh context and returns only one final message, so the prompt must be self-contained: background, conclusions you already confirmed, the goal, and what it should return. Use background=true for long tasks; you are woken automatically on completion.",
+  "description": "Delegate a task to a subagent that has your full tool set. Use it when the work would flood this conversation with tool output (reading many files, paging through search results, long command runs), when independent pieces can run in parallel, or for a one-off investigation unrelated to the main thread. The subagent starts with a fresh context and returns only one final message, so the prompt must be self-contained: background, conclusions you already confirmed, the goal, and what it should return. Use background=true for long tasks; you are woken automatically on completion.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -20,11 +20,12 @@
       "tier": {
         "type": "string",
         "enum": [
+          "lite",
           "cheap",
-          "balanced",
-          "strong"
+          "standard",
+          "flagship"
         ],
-        "description": "Optional model tier: cheap for simple lookups, balanced for regular multi-step work, strong for hard reasoning. Defaults to balanced; unconfigured tiers fall back to the main model."
+        "description": "Optional model tier by task difficulty: lite for trivial lookups and formatting, cheap for simple tool-using work, standard for regular multi-step work (default), flagship for hard reasoning. Every tier has the full tool set; an unconfigured tier falls back to the main model."
       },
       "background": {
         "type": "boolean",

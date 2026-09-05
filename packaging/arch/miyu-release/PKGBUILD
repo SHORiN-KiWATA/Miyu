@@ -25,7 +25,14 @@ url='https://github.com/SHORiN-KiWATA/Miyu'
 license=('MIT' 'OFL-1.1')
 options=('!lto' '!debug')
 export LC_ALL=C.UTF-8
-makedepends=('cargo' 'git' 'pkgconf' 'alsa-lib')
+depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'ripgrep')
+makedepends=('cargo' 'git' 'pkgconf')
+optdepends=(
+  'git: update default Shorin Wiki knowledge base'
+  'fish: fish shell integration support'
+  'bash: bash shell integration support'
+  'zsh: zsh shell integration support'
+)
 # sherpa-onnx 预编译静态库：由 sherpa-onnx-sys 的 build.rs 在编译期读取
 # （SHERPA_ONNX_ARCHIVE_DIR），放进 source 让 makepkg 负责下载与校验，
 # 构建阶段无需联网。版本号必须与 Cargo.lock 里的 sherpa-onnx-sys 一致。
@@ -71,6 +78,13 @@ package_miyu() {
   install -Dm644 "assets/fonts/NotoSansCJK.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/NotoSansCJK.LICENSE"
   install -Dm644 "assets/fonts/NotoColorEmoji.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/NotoColorEmoji.LICENSE"
   install -Dm644 "assets/fonts/JetBrainsMono.LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/JetBrainsMono.LICENSE"
+
+  # 内置本地 embedding 模型（语义检索辅助；运行库来自 onnxruntime-cpu）
+  while IFS= read -r -d '' file; do
+    local rel="${file#assets/models/}"
+    install -Dm644 "${file}" "${pkgdir}/usr/share/miyu/models/${rel}"
+  done < <(find assets/models -mindepth 2 -type f -print0 | sort -z)
+  install -Dm644 "assets/models/bge-small-zh-v1.5-int8/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/bge-small-zh-v1.5.LICENSE"
 
   if [[ -d src/memes ]]; then
     while IFS= read -r -d '' file; do

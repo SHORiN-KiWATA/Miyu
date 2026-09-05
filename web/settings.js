@@ -869,6 +869,100 @@ window.MiyuSettings = (() => {
     return anchor;
   }
 
+
+  /* 池引用：上半区单选(继承 / 全局池 / 四档),下半区多选模型;两区互斥。
+     值形态:字符串 = 池名,数组 = 显式列表(长度 1 即"指定模型"),空 = inherit。
+     界面只显示中文名,不露 inherit/global/lite 这些配置 id;"继承"写成"继承 xx 池"。 */
+  const TIER_NAMES = ["lite", "cheap", "standard", "flagship"];
+  const TIER_HINTS = { lite: "轻量", cheap: "便宜", standard: "普通", flagship: "旗舰" };
+  const inheritLabelOf = (options) => `继承${options.parentLabel || "上一层"}`;
+  const globalPoolLabelOf = (options) => options.capability === "image" ? "全局多模态池" : "全局文本池";
+
+  function poolRefKind(value) {
+    if (Array.isArray(value)) return value.length ? "models" : "inherit";
+    if (typeof value === "string" && value.trim() && value.trim() !== "inherit") return value.trim();
+    return "inherit";
+  }
+
+  function tierPoolEmpty(tier) {
+    const pool = S().configDraft?.model_tiers?.[tier];
+    return !Array.isArray(pool) || !pool.length;
+  }
+
+  function poolRefControl(getValue, setValue, options = {}) {
+    const anchor = el("button.st-picker", { type: "button", "aria-haspopup": "dialog" });
+    const paint = () => {
+      const value = getValue();
+      const kind = poolRefKind(value);
+      anchor.replaceChildren();
+      if (kind === "inherit") {
+        anchor.append(el("span.st-picker-text.is-muted", { text: inheritLabelOf(options) }));
+      } else if (kind === "global") {
+        anchor.append(el("span.st-picker-text", null, el("strong", { text: globalPoolLabelOf(options) })));
+      } else if (kind === "models") {
+        const visible = value.slice(0, 3);
+        for (const item of visible) anchor.append(chip(item.model, "is-model"));
+        if (value.length > visible.length) anchor.append(chip(`+${value.length - visible.length}`));
+      } else {
+        anchor.append(el("span.st-picker-text", null, el("strong", { text: TIER_HINTS[kind] || kind })));
+      }
+      anchor.append(icon("chevron-down", "st-picker-caret"));
+    };
+    anchor.addEventListener("click", () => {
+      openPopover(anchor, (body) => {
+        const value = getValue();
+        let kind = poolRefKind(value);
+        let selected = kind === "models" ? value.map((item) => ({ provider_id: item.provider_id, model: item.model })) : [];
+        const radios = [];
+        const checks = [];
+        const sync = () => {
+          for (const [name, input] of radios) input.checked = kind === name;
+          for (const [ref, input] of checks) input.checked = kind === "models" && selected.some((item) => sameRef(item, ref));
+        };
+        const commit = () => {
+          setValue(kind === "models" ? selected : kind === "inherit" ? "inherit" : kind);
+          paint();
+          sync();
+        };
+        const named = [["inherit", inheritLabelOf(options)]];
+        if (!options.parentIsGlobal) named.push(["global", globalPoolLabelOf(options)]);
+        if (options.capability !== "image") for (const tier of TIER_NAMES) named.push([tier, TIER_HINTS[tier]]);
+        const poolGroup = el("div.st-pick-group", null, el("div.st-pick-group-title", { text: "池" }));
+        for (const [name, label] of named) {
+          const input = el("input", { type: "radio", name: "st-pool-ref", checked: kind === name });
+          input.addEventListener("change", () => { if (input.checked) { kind = name; selected = []; commit(); } });
+          radios.push([name, input]);
+          poolGroup.append(el("label.st-check-row", null, input, el("span", null, el("strong", { text: label }))));
+        }
+        body.append(poolGroup);
+        const groups = new Map();
+        for (const choice of modelChoices()) {
+          if (options.capability === "image" && !supportsMedia(choice.provider, choice.model)) continue;
+          if (!groups.has(choice.provider_id)) groups.set(choice.provider_id, { name: choice.provider_name, items: [] });
+          groups.get(choice.provider_id).items.push(choice);
+        }
+        if (!groups.size) body.append(el("p.st-hint", { text: options.capability ? "没有具备该能力的模型，先去供应商里标注模态。" : "请先在供应商中配置模型。" }));
+        for (const [providerId, group] of groups) {
+          const groupNode = el("div.st-pick-group", null, el("div.st-pick-group-title", { text: `模型 · ${group.name}` }));
+          for (const choice of group.items) {
+            const ref = { provider_id: providerId, model: choice.model };
+            const input = el("input", { type: "checkbox", checked: kind === "models" && selected.some((item) => sameRef(item, ref)) });
+            input.addEventListener("change", () => {
+              if (input.checked) { if (kind !== "models") { kind = "models"; selected = []; } if (!selected.some((item) => sameRef(item, ref))) selected = [...selected, ref]; }
+              else { selected = selected.filter((item) => !sameRef(item, ref)); if (!selected.length) kind = "inherit"; }
+              commit();
+            });
+            checks.push([ref, input]);
+            groupNode.append(el("label.st-check-row", null, input, el("span", null, el("strong", { text: choice.model }))));
+          }
+          body.append(groupNode);
+        }
+      }, { title: options.title || "选择模型", width: "360px" });
+    });
+    paint();
+    return anchor;
+  }
+
   /* 单选「供应商/模型」(识图、嵌入):下拉菜单,可清空。 */
   function modelRefControl(getValue, setValue, options = {}) {
     const anchor = el("button.st-picker", { type: "button", "aria-haspopup": "menu" });
@@ -959,6 +1053,13 @@ window.MiyuSettings = (() => {
         return modelPoolControl(() => binding.get(), (next) => binding.set(next), {
           capability: field.capability || null,
           inherit: field.optional ? { label: field.inheritLabel || "继承", hint: field.inheritHint || "" } : null,
+          title: field.label
+        });
+      case "pool-ref":
+        return poolRefControl(() => binding.get(), (next) => binding.set(next), {
+          capability: field.capability || null,
+          parentLabel: field.parentLabel || "上一层",
+          parentIsGlobal: Boolean(field.parentIsGlobal),
           title: field.label
         });
       case "model-ref":
@@ -1161,6 +1262,7 @@ window.MiyuSettings = (() => {
     for (const [pluginId, instance] of Object.entries(qq.plugins || {})) {
       const settings = instance?.settings;
       if (Array.isArray(settings?.text_models)) callback(settings, "text_models", settings.text_models);
+      if (Array.isArray(settings?.affection_text_models)) callback(settings, "affection_text_models", settings.affection_text_models);
       if (pluginId === "real_context" || pluginId === "qq_group_join_approval") continue;
     }
     for (const route of Array.isArray(qq.conversations) ? qq.conversations : []) {
@@ -1172,7 +1274,7 @@ window.MiyuSettings = (() => {
   }
 
   function forEachTierPool(callback) {
-    const tiers = S().configDraft?.subagent_tiers;
+    const tiers = S().configDraft?.model_tiers;
     if (!tiers || typeof tiers !== "object") return;
     for (const [tierName, pool] of Object.entries(tiers)) if (Array.isArray(pool)) callback(tiers, tierName, pool);
   }
@@ -1658,20 +1760,57 @@ window.MiyuSettings = (() => {
 
   /* ───────────────────────── 模型池矩阵 ───────────────────────── */
 
-  const POOL_COLUMNS = [
-    { id: "text", label: "文本", hint: "主对话与辅助任务", path: "active_provider_models" },
-    { id: "multimodal", label: "多模态", hint: "看图/看视频时用", path: "active_multimodal_provider_models", capability: "image" },
-    { id: "cheap", label: "cheap", hint: "子代理 · 简单任务", tier: "cheap" },
-    { id: "balanced", label: "balanced", hint: "子代理 · 普通任务", tier: "balanced" },
-    { id: "strong", label: "strong", hint: "子代理 · 复杂任务", tier: "strong" }
+  /* 页面分三段:全局池(两张)/分级池(四张)/旁路请求(一张通栏)。卡片标题就是池名,
+     档位只显示中文,配置 id 留在 tier 字段里。 */
+  const GLOBAL_POOL_COLUMNS = [
+    { id: "text", label: "全局文本池", hint: "主对话，以及未分配的旁路请求", path: "active_provider_models" },
+    { id: "multimodal", label: "全局多模态池", hint: "看图/看视频时用", path: "active_multimodal_provider_models", capability: "image" }
   ];
+  const TIER_POOL_COLUMNS = TIER_NAMES.map((tier) => ({ id: tier, label: `${TIER_HINTS[tier]}档`, hint: tier === "standard" ? "task 子代理的默认档" : "", tier, emptyHint: "未配置，继承全局池" }));
+  const POOL_COLUMNS = [...GLOBAL_POOL_COLUMNS, ...TIER_POOL_COLUMNS];
+
+  /* 旁路请求 → 档位。缺省值由代码内置(标题/整理 lite,深度研究 standard);
+     "缺省"就是删掉这个键。 */
+  const AUX_ROLES = [
+    { key: "session_title", label: "会话标题", fallback: "lite" },
+    { key: "memory_organizer", label: "日记整理", fallback: "lite" },
+    { key: "deep_research", label: "深度研究", fallback: "standard" }
+  ];
+
+  function auxRolesCard() {
+    const node = el("section.st-pool-card.is-wide");
+    node.style.setProperty("--i", String(POOL_COLUMNS.length));
+    const list = el("div.st-pool-list");
+    const paint = () => {
+      list.replaceChildren();
+      const roles = S().configDraft?.model_tiers?.roles || {};
+      for (const role of AUX_ROLES) {
+        const current = typeof roles[role.key] === "string" ? roles[role.key] : "";
+        const rowNode = el("div.st-pool-member");
+        rowNode.append(
+          el("span.st-pool-member-copy", null, el("strong", { text: role.label }), current ? el("small", { text: `缺省是${TIER_HINTS[role.fallback]}` }) : null),
+          selectInput([{ value: "", label: `缺省（${TIER_HINTS[role.fallback]}）` }, ...TIER_NAMES.map((tier) => ({ value: tier, label: TIER_HINTS[tier] })), { value: "global", label: "全局池" }], current, (next) => {
+            const draft = S().configDraft;
+            if (!draft.model_tiers || typeof draft.model_tiers !== "object") draft.model_tiers = {};
+            if (!draft.model_tiers.roles || typeof draft.model_tiers.roles !== "object") draft.model_tiers.roles = {};
+            if (next) draft.model_tiers.roles[role.key] = next; else delete draft.model_tiers.roles[role.key];
+            dirty();
+            paint();
+          }, role.label));
+        list.append(rowNode);
+      }
+    };
+    node.append(list);
+    paint();
+    return node;
+  }
 
   function poolArray(column) {
     const draft = S().configDraft;
     if (column.tier) {
-      if (!draft.subagent_tiers || typeof draft.subagent_tiers !== "object") draft.subagent_tiers = {};
-      if (!Array.isArray(draft.subagent_tiers[column.tier])) draft.subagent_tiers[column.tier] = [];
-      return draft.subagent_tiers[column.tier];
+      if (!draft.model_tiers || typeof draft.model_tiers !== "object") draft.model_tiers = {};
+      if (!Array.isArray(draft.model_tiers[column.tier])) draft.model_tiers[column.tier] = [];
+      return draft.model_tiers[column.tier];
     }
     if (!Array.isArray(draft[column.path])) {
       // 文本池缺省 = 当前供应商的默认模型;第一次改动前先把这层隐含语义落成显式数组。
@@ -1685,7 +1824,7 @@ window.MiyuSettings = (() => {
 
   function poolHas(column, ref) {
     const draft = S().configDraft;
-    const pool = column.tier ? draft.subagent_tiers?.[column.tier] : draft[column.path];
+    const pool = column.tier ? draft.model_tiers?.[column.tier] : draft[column.path];
     if (!Array.isArray(pool)) {
       if (column.path === "active_provider_models") {
         const provider = providerById(draft.active_provider);
@@ -1708,7 +1847,7 @@ window.MiyuSettings = (() => {
   /* 池里现在有谁:文本池没显式设置时 = 当前供应商的默认模型(隐含成员)。 */
   function poolMembers(column) {
     const draft = S().configDraft;
-    const pool = column.tier ? draft.subagent_tiers?.[column.tier] : draft[column.path];
+    const pool = column.tier ? draft.model_tiers?.[column.tier] : draft[column.path];
     if (Array.isArray(pool)) return { items: pool.map((item) => ({ provider_id: item.provider_id, model: item.model })), implicit: false };
     if (column.path === "active_provider_models") {
       const provider = providerById(draft.active_provider);
@@ -1718,11 +1857,17 @@ window.MiyuSettings = (() => {
   }
 
   function renderModelsPage(root) {
-    root.append(el("div.st-page-head", null, el("div", null, el("h2", { text: "模型池" }), el("p.st-page-desc", { text: "每个池是一组候选模型，请求时在池里轮询。文本池和多模态池给主对话；三个档位池给子代理按任务难度挑。" }))));
+    root.append(el("div.st-page-head", null, el("div", null, el("h2", { text: "模型池" }), el("p.st-page-desc", { text: "每个池是一组候选模型，请求时在池里轮询。" }))));
     if (!modelChoices().length) { root.append(empty("请先在供应商中配置模型。", button("去供应商", { onClick: () => ctx.setSettingsView("providers") }))); return; }
-    const grid = el("div.st-pool-grid");
-    POOL_COLUMNS.forEach((column, index) => grid.append(poolCard(column, index)));
-    root.append(grid);
+    const section = (title, desc, gridClass, cards) => {
+      const grid = el(`div.st-pool-grid.${gridClass}`);
+      cards.forEach((card) => grid.append(card));
+      return el("section.st-pool-section", null, el("div.st-pool-section-head", null, el("h3", { text: title }), el("p", { text: desc })), grid);
+    };
+    root.append(
+      section("全局池", "主对话用的池。分级档没配模型时也落到这里。", "is-global", GLOBAL_POOL_COLUMNS.map((column, index) => poolCard(column, index))),
+      section("分级池", "按任务难度分四档，给 task 子代理、旁路请求和 QQ 各处引用；留空即继承全局池。", "is-tiers", TIER_POOL_COLUMNS.map((column, index) => poolCard(column, index + GLOBAL_POOL_COLUMNS.length))),
+      section("旁路请求", "会话标题、日记整理、深度研究各走哪一档；QQ 侧的模型在「QQ 平台」页配置。", "is-roles", [auxRolesCard()]));
   }
 
   function poolCard(column, index) {
@@ -1768,10 +1913,10 @@ window.MiyuSettings = (() => {
           }
           body.append(groupNode);
         }
-      }, { title: `加入${column.label}池`, width: "340px", align: "start" });
+      }, { title: `加入${column.label}`, width: "340px", align: "start" });
     } });
     node.append(
-      el("header.st-pool-head", null, el("div", null, el("h3", { text: `${column.label}池` }), el("p", { text: column.hint })), count),
+      el("header.st-pool-head", null, el("div", null, el("h3", { text: column.label }), column.hint ? el("p", { text: column.hint }) : null), count),
       list,
       el("footer.st-pool-foot", null, add));
     paint();
@@ -2218,7 +2363,7 @@ window.MiyuSettings = (() => {
     { id: "connection", title: "连接", description: "NapCat / OneBot 反向 WebSocket 接入与基础行为。" },
     { id: "access", title: "权限与白名单", description: "谁能找她说话、谁是管理员。" },
     { id: "limits", title: "限流与并发", description: "非白名单的节流，以及同时能跑几轮。" },
-    { id: "models", title: "模型", description: "QQ 里用哪些模型；不设则继承全局池。" }
+    { id: "models", title: "配置模型", description: "QQ 里用哪些模型；不设则继承全局池。" }
   ];
 
   function renderQqPage(root) {

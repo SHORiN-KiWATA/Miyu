@@ -16,6 +16,7 @@ pub(in crate::config_tui) use emotion::*;
 pub(in crate::config_tui) use identity::*;
 pub(in crate::config_tui) use reply::*;
 
+use crate::config::{ModelPoolRef, ModelTier};
 use crate::config_tui::*;
 
 pub(in crate::config_tui) fn real_context_values(
@@ -62,8 +63,21 @@ pub(in crate::config_tui) fn edit_real_context(
             format!("{}: {state}", t("Plugin", "插件状态")),
             format!(
                 "{}: {}",
-                t("Text model pool", "文本模型池"),
-                real_context_model_pool_summary(settings.text_models.as_deref())
+                t("Reply judge model pool", "回复判定模型池"),
+                pool_ref_summary(
+                    config,
+                    &settings.text_models,
+                    t("inherits conversation pool", "继承会话池")
+                )
+            ),
+            format!(
+                "{}: {}",
+                t("Affection model pool", "好感度模型池"),
+                pool_ref_summary(
+                    config,
+                    &settings.affection_text_models,
+                    t("inherits reply judge", "继承回复判定")
+                )
             ),
             format!(
                 "{}: {}",
@@ -101,16 +115,31 @@ pub(in crate::config_tui) fn edit_real_context(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => match selected {
                 0 => enabled = select_bool(stdout, t("Plugin", "插件状态"), enabled)?,
-                1 => select_real_context_model_pool(stdout, config, &mut settings.text_models)?,
-                2 => edit_real_context_number(
+                1 => select_plugin_pool_ref(
+                    stdout,
+                    config,
+                    t("Reply judge", "回复判定"),
+                    t("inherits conversation pool", "继承会话池"),
+                    ModelPoolRef::tier(ModelTier::Lite),
+                    &mut settings.text_models,
+                )?,
+                2 => select_plugin_pool_ref(
+                    stdout,
+                    config,
+                    t("Affection", "好感度"),
+                    t("inherits reply judge", "继承回复判定"),
+                    ModelPoolRef::inherit(),
+                    &mut settings.affection_text_models,
+                )?,
+                3 => edit_real_context_number(
                     stdout,
                     t("Reply context window", "回复上下文消息数"),
                     settings.reply_context_window,
                     &mut settings,
                     |candidate, value| candidate.reply_context_window = value,
                 )?,
-                3 => edit_real_context_history(stdout, &mut settings)?,
-                4 => match StateStore::new(paths) {
+                4 => edit_real_context_history(stdout, &mut settings)?,
+                5 => match StateStore::new(paths) {
                     Ok(state) => edit_real_context_active_reply(stdout, &state, &mut settings)?,
                     Err(error) => message(
                         stdout,
@@ -120,11 +149,11 @@ pub(in crate::config_tui) fn edit_real_context(
                         ),
                     )?,
                 },
-                5 => edit_real_context_reply_target(stdout, &mut settings)?,
-                6 => edit_real_context_moderation(stdout, &mut settings)?,
-                7 => edit_real_context_affection(stdout, config, &mut settings)?,
-                8 => edit_real_context_emotion(stdout, &mut settings)?,
-                9 => edit_real_context_identities(stdout, &mut settings)?,
+                6 => edit_real_context_reply_target(stdout, &mut settings)?,
+                7 => edit_real_context_moderation(stdout, &mut settings)?,
+                8 => edit_real_context_affection(stdout, config, &mut settings)?,
+                9 => edit_real_context_emotion(stdout, &mut settings)?,
+                10 => edit_real_context_identities(stdout, &mut settings)?,
                 _ => {}
             },
             _ => {}
@@ -235,28 +264,4 @@ pub(in crate::config_tui) fn real_context_media_mode_value(value: &str) -> Optio
         "metadata" | "Metadata" | "保留元数据" => Some("metadata"),
         _ => None,
     }
-}
-
-pub(in crate::config_tui) fn real_context_model_pool_summary(
-    pool: Option<&[ActiveProviderModelConfig]>,
-) -> String {
-    match pool {
-        None | Some([]) => t("inherit platform", "继承平台池").to_string(),
-        Some(entries) => route_pool_summary(Some(entries), PlatformModelPoolInheritance::Platform),
-    }
-}
-
-pub(in crate::config_tui) fn select_real_context_model_pool(
-    stdout: &mut io::Stdout,
-    config: &AppConfig,
-    pool: &mut Option<Vec<ActiveProviderModelConfig>>,
-) -> Result<()> {
-    select_model_pool(
-        stdout,
-        config.text_provider_model_choices(),
-        pool,
-        false,
-        t(" REAL-CONTEXT TEXT MODELS ", " 真实上下文文本模型 "),
-        t("Inherit QQ platform model pool", "继承 QQ 平台模型池"),
-    )
 }

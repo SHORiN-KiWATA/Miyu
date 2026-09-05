@@ -1,10 +1,16 @@
-//! CLI 侧会话与 Miyu 消息前缀的对应关系(进程内;三条中转线共用,键含 provider)。
+//! CLI 侧会话与 Miyu 消息前缀的对应关系(三条中转线共用,键含 provider)。
 //!
 //! 键是「逐消息哈希链」:chain[i] = 前 i 条会话消息的链哈希,种子掺入
 //! provider/model/system prompt。Miyu 的历史回放是字节级 append-only 的,
 //! 所以"本次请求延续上次"⇔"上次记录的 (长度, 链哈希) 是本次链的前缀"。
-//! 匹配不上(redo/compact/系统提示词变更/daemon 重启)就重开会话全量重放
-//! ——只损失效率,不损失正确性,因此状态不做持久化。
+//! 匹配不上(redo/compact/系统提示词变更)就重开会话全量重放。
+//!
+//! 映射**落盘**到 `<state>/relay/sessions.json`(09-05 起)。此前它是纯进程
+//! 内存,理由是「全量重放只损失效率,不损失正确性」——这个前提被 agy 对单条
+//! 输入 192,000 字节的尾部静默截断废掉了:daemon 一重启,每个会话第一轮都全量
+//! 重放,历史一超线本轮消息就被砍掉(09-04/09-05 群 130515298 案卷)。CLI 那头
+//! 的会话本来就在磁盘上,Miyu 这边不该忘。哈希用 blake3 而不是
+//! `DefaultHasher`:落盘的哈希要跨进程、跨工具链版本稳定。
 //!
 //! 键里还有一维**工具面档位**(`host_tools`)。claude 的工具全靠 MCP 桥,而桥
 //! 每轮按触发者身份重算工具面(管理员给全量底座、其他人给受限底座),同一条
@@ -19,8 +25,9 @@
 
 use crate::llm::openai_compatible::*;
 use crate::llm::{ChatContent, ChatContentPart};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{MutexGuard, OnceLock};
 
+#[derive(Clone, Serialize, Deserialize)]
 struct SessionEntry {
     provider_id: String,
     model: String,
@@ -36,16 +43,136 @@ struct SessionEntry {
     claude_session: String,
 }
 
-static SESSIONS: Mutex<Vec<SessionEntry>> = Mutex::new(Vec::new());
+struct Store {
+    loaded: bool,
+    entries: Vec<SessionEntry>,
+}
+
+static SESSIONS: Mutex<Store> = Mutex::new(Store {
+    loaded: false,
+    entries: Vec::new(),
+});
 
 /// clear-at-cap 定式:超上限整表清空,宁可全量重放一轮,不做 LRU 簿记。
-const SESSION_CAP: usize = 64;
+/// 落盘后条目跨重启累积(孤儿条目要等 CLI 侧报"会话不存在"才被摘),上限比
+/// 纯内存时代放宽一倍。
+const SESSION_CAP: usize = 128;
+
+/// 落盘格式版本:哈希算法或条目形状一变就加一,旧文件整体作废(只多一轮
+/// 全量重放,不会拿错误的前缀去续)。
+const STORE_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct StoreFile {
+    version: u32,
+    entries: Vec<SessionEntry>,
+}
+
+/// 落盘路径。`MIYU_RELAY_SESSIONS_FILE` 显式指定(空串=关掉落盘);测试构建
+/// 默认不落盘——单测共用一个进程的全局表,不能把彼此的条目写进真实 state。
+fn persist_path() -> Option<&'static PathBuf> {
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        if let Some(explicit) = std::env::var_os("MIYU_RELAY_SESSIONS_FILE") {
+            if explicit.is_empty() {
+                return None;
+            }
+            return Some(PathBuf::from(explicit));
+        }
+        if cfg!(test) {
+            return None;
+        }
+        MiyuPaths::new()
+            .ok()
+            .map(|paths| paths.state_dir.join("relay").join("sessions.json"))
+    })
+    .as_ref()
+}
+
+fn load_entries_from(path: &std::path::Path) -> Vec<SessionEntry> {
+    let Ok(raw) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    match serde_json::from_slice::<StoreFile>(&raw) {
+        Ok(file) if file.version == STORE_VERSION => file.entries,
+        Ok(file) => {
+            tracing::info!(
+                path = %path.display(),
+                found = file.version,
+                expected = STORE_VERSION,
+                "relay session map has an old format version; starting empty"
+            );
+            Vec::new()
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "relay session map is unreadable; starting empty"
+            );
+            Vec::new()
+        }
+    }
+}
+
+fn save_entries_to(path: &std::path::Path, entries: &[SessionEntry]) -> std::io::Result<()> {
+    // 回合作用域外(miyu_session=None)的映射活不过本进程:那些会话没有落库的
+    // 历史可以重建前缀,存了也永远匹配不上。
+    let persisted: Vec<&SessionEntry> = entries
+        .iter()
+        .filter(|entry| entry.miyu_session.is_some())
+        .collect();
+    let file = serde_json::json!({ "version": STORE_VERSION, "entries": persisted });
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(&file)?)?;
+    std::fs::rename(&temporary, path)
+}
+
+/// 拿全局表;首次访问时从磁盘装入。
+fn store() -> Option<MutexGuard<'static, Store>> {
+    let mut guard = SESSIONS.lock().ok()?;
+    if !guard.loaded {
+        guard.loaded = true;
+        if let Some(path) = persist_path() {
+            guard.entries = load_entries_from(path);
+            if !guard.entries.is_empty() {
+                tracing::info!(
+                    path = %path.display(),
+                    entries = guard.entries.len(),
+                    "relay session map restored from disk"
+                );
+            }
+        }
+    }
+    Some(guard)
+}
+
+fn persist(store: &Store) {
+    let Some(path) = persist_path() else {
+        return;
+    };
+    if let Err(error) = save_entries_to(path, &store.entries) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %error,
+            "relay session map could not be written"
+        );
+    }
+}
 
 fn hash_step(previous: u64, bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    previous.hash(&mut hasher);
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&previous.to_le_bytes());
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    u64::from_le_bytes(
+        digest.as_bytes()[..8]
+            .try_into()
+            .expect("blake3 digest is 32 bytes"),
+    )
 }
 
 /// 进哈希链的是消息的**纯文本投影**:多段内容只留文本块,图片/视频块不参与。
@@ -82,11 +209,18 @@ pub(in crate::llm::openai_compatible) fn prefix_chain(
     conversation: &[ChatMessage],
 ) -> Vec<u64> {
     let seed = {
-        let mut hasher = DefaultHasher::new();
-        provider_id.hash(&mut hasher);
-        model.hash(&mut hasher);
-        system_prompt.hash(&mut hasher);
-        hasher.finish()
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(provider_id.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(model.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(system_prompt.as_bytes());
+        let digest = hasher.finalize();
+        u64::from_le_bytes(
+            digest.as_bytes()[..8]
+                .try_into()
+                .expect("blake3 digest is 32 bytes"),
+        )
     };
     let mut chain = Vec::with_capacity(conversation.len() + 1);
     chain.push(seed);
@@ -105,6 +239,67 @@ pub(in crate::llm::openai_compatible) fn extend_chain(
     hash_step(chain_end, &message_bytes(message))
 }
 
+/// 一次续传查找为什么落空(给日志用;09-04 案卷 B′:不把失配原因写出来,
+/// 每次全量重放都得靠猜)。
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::llm::openai_compatible) enum ResumeMiss {
+    /// 这条 Miyu 会话在本档名下没有任何登记(首轮 / 重启后未落盘 / 已被清空)。
+    NoEntry,
+    /// 有登记,但只在另一档工具面名下。
+    OtherTierOnly,
+    /// 有登记,前缀哈希对不上(历史被改写:redo/compact/pop/提示词变更)。
+    PrefixMismatch { recorded_len: usize },
+    /// 有登记,但长度不短于本次会话(增量为空,不是正常的新一轮)。
+    NoDelta,
+}
+
+fn find_in(
+    entries: &[SessionEntry],
+    provider_id: &str,
+    model: &str,
+    miyu_session: Option<&str>,
+    host_tools: bool,
+    chain: &[u64],
+    conversation_len: usize,
+) -> Result<(String, usize), ResumeMiss> {
+    let mine: Vec<&SessionEntry> = entries
+        .iter()
+        .filter(|entry| entry.provider_id == provider_id && entry.model == model)
+        .filter(|entry| entry.miyu_session.as_deref() == miyu_session)
+        .collect();
+    if mine.is_empty() {
+        return Err(ResumeMiss::NoEntry);
+    }
+    let tier: Vec<&SessionEntry> = mine
+        .iter()
+        .copied()
+        .filter(|entry| entry.host_tools == host_tools)
+        .collect();
+    if tier.is_empty() {
+        return Err(ResumeMiss::OtherTierOnly);
+    }
+    if let Some(entry) = tier
+        .iter()
+        .filter(|entry| {
+            entry.prefix_len < conversation_len && chain[entry.prefix_len] == entry.prefix_hash
+        })
+        .max_by_key(|entry| entry.prefix_len)
+    {
+        return Ok((entry.claude_session.clone(), entry.prefix_len));
+    }
+    let longest = tier.iter().map(|entry| entry.prefix_len).max().unwrap_or(0);
+    if tier
+        .iter()
+        .all(|entry| entry.prefix_len >= conversation_len)
+    {
+        Err(ResumeMiss::NoDelta)
+    } else {
+        Err(ResumeMiss::PrefixMismatch {
+            recorded_len: longest,
+        })
+    }
+}
+
 /// 找可续传的最长前缀:返回 (claude 会话 id, 已覆盖的消息数)。要求严格短于
 /// 本次会话消息数——增量为空说明不是正常的新一轮,按全量重放处理。
 pub(in crate::llm::openai_compatible) fn find_resumable(
@@ -114,18 +309,17 @@ pub(in crate::llm::openai_compatible) fn find_resumable(
     host_tools: bool,
     chain: &[u64],
     conversation_len: usize,
-) -> Option<(String, usize)> {
-    let sessions = SESSIONS.lock().ok()?;
-    sessions
-        .iter()
-        .filter(|entry| entry.provider_id == provider_id && entry.model == model)
-        .filter(|entry| entry.miyu_session.as_deref() == miyu_session)
-        .filter(|entry| entry.host_tools == host_tools)
-        .filter(|entry| {
-            entry.prefix_len < conversation_len && chain[entry.prefix_len] == entry.prefix_hash
-        })
-        .max_by_key(|entry| entry.prefix_len)
-        .map(|entry| (entry.claude_session.clone(), entry.prefix_len))
+) -> Result<(String, usize), ResumeMiss> {
+    let store = store().ok_or(ResumeMiss::NoEntry)?;
+    find_in(
+        &store.entries,
+        provider_id,
+        model,
+        miyu_session,
+        host_tools,
+        chain,
+        conversation_len,
+    )
 }
 
 pub(in crate::llm::openai_compatible) fn record_session(
@@ -137,15 +331,17 @@ pub(in crate::llm::openai_compatible) fn record_session(
     prefix_hash: u64,
     claude_session: String,
 ) {
-    let Ok(mut sessions) = SESSIONS.lock() else {
+    let Some(mut store) = store() else {
         return;
     };
-    if sessions.len() >= SESSION_CAP {
-        sessions.clear();
+    if store.entries.len() >= SESSION_CAP {
+        store.entries.clear();
     }
     // 同一 claude 会话只保留最新指针:续传成功后旧前缀已被新前缀覆盖。
-    sessions.retain(|entry| entry.claude_session != claude_session);
-    sessions.push(SessionEntry {
+    store
+        .entries
+        .retain(|entry| entry.claude_session != claude_session);
+    store.entries.push(SessionEntry {
         provider_id: provider_id.to_string(),
         model: model.to_string(),
         miyu_session: miyu_session.map(str::to_string),
@@ -154,16 +350,17 @@ pub(in crate::llm::openai_compatible) fn record_session(
         prefix_hash,
         claude_session,
     });
+    persist(&store);
 }
 
 /// 清空 Miyu 会话时联动:丢弃它名下的全部映射,返回对应的 claude 会话 id
 /// (调用方拿去做 claude 侧转录的尽力删除)。
 pub(in crate::llm::openai_compatible) fn forget_miyu_session(miyu_session: &str) -> Vec<String> {
-    let Ok(mut sessions) = SESSIONS.lock() else {
+    let Some(mut store) = store() else {
         return Vec::new();
     };
     let mut removed = Vec::new();
-    sessions.retain(|entry| {
+    store.entries.retain(|entry| {
         if entry.miyu_session.as_deref() == Some(miyu_session) {
             removed.push(entry.claude_session.clone());
             false
@@ -171,12 +368,21 @@ pub(in crate::llm::openai_compatible) fn forget_miyu_session(miyu_session: &str)
             true
         }
     });
+    if !removed.is_empty() {
+        persist(&store);
+    }
     removed
 }
 
 pub(in crate::llm::openai_compatible) fn forget_session(claude_session: &str) {
-    if let Ok(mut sessions) = SESSIONS.lock() {
-        sessions.retain(|entry| entry.claude_session != claude_session);
+    if let Some(mut store) = store() {
+        let before = store.entries.len();
+        store
+            .entries
+            .retain(|entry| entry.claude_session != claude_session);
+        if store.entries.len() != before {
+            persist(&store);
+        }
     }
 }
 
@@ -209,13 +415,13 @@ mod tests {
         let chain = prefix_chain("p", "m", "sys", &extended);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-a"), true, &chain, extended.len()),
-            Some(("sess-1".to_string(), 2))
+            Ok(("sess-1".to_string(), 2))
         );
 
         // 别的 Miyu 会话即使字节级同前缀,也绝不共用 claude 会话。
         assert_eq!(
             find_resumable("p", "m", Some("miyu-b"), true, &chain, extended.len()),
-            None
+            Err(ResumeMiss::NoEntry)
         );
 
         // 改写历史(redo):第 2 条字节变了,匹配不上。
@@ -224,21 +430,21 @@ mod tests {
         let chain = prefix_chain("p", "m", "sys", &rewritten);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-a"), true, &chain, rewritten.len()),
-            None
+            Err(ResumeMiss::PrefixMismatch { recorded_len: 2 })
         );
 
         // 系统提示词变更:种子不同,匹配不上。
         let chain = prefix_chain("p", "m", "other-sys", &extended);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-a"), true, &chain, extended.len()),
-            None
+            Err(ResumeMiss::PrefixMismatch { recorded_len: 2 })
         );
 
         // 增量为空(长度相同)不算续传。
         let chain = prefix_chain("p", "m", "sys", &base);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-a"), true, &chain, base.len()),
-            None
+            Err(ResumeMiss::NoDelta)
         );
 
         // 清空 Miyu 会话 ⇒ 名下映射整体丢弃,并交回 claude 会话 id。
@@ -246,7 +452,7 @@ mod tests {
         let chain = prefix_chain("p", "m", "sys", &extended);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-a"), true, &chain, extended.len()),
-            None
+            Err(ResumeMiss::NoEntry)
         );
         forget_session("sess-1");
     }
@@ -284,7 +490,7 @@ mod tests {
         let chain = prefix_chain("p", "m", "sys", &next);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-img"), true, &chain, next.len()),
-            Some(("sess-img".to_string(), 2))
+            Ok(("sess-img".to_string(), 2))
         );
         forget_session("sess-img");
     }
@@ -316,11 +522,11 @@ mod tests {
         let chain = prefix_chain("p", "m", "sys", &admin_turn);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-t"), true, &chain, admin_turn.len()),
-            None
+            Err(ResumeMiss::OtherTierOnly)
         );
         assert_eq!(
             find_resumable("p", "m", Some("miyu-t"), false, &chain, admin_turn.len()),
-            Some(("guest-1".to_string(), 2))
+            Ok(("guest-1".to_string(), 2))
         );
         let admin_reply = message("assistant", "管理员答");
         record_session(
@@ -341,17 +547,95 @@ mod tests {
         let chain = prefix_chain("p", "m", "sys", &back);
         assert_eq!(
             find_resumable("p", "m", Some("miyu-t"), false, &chain, back.len()),
-            Some(("guest-1".to_string(), 2))
+            Ok(("guest-1".to_string(), 2))
         );
         // 两档并存,各认各的:管理员档从自己上次覆盖点(4)续。
         assert_eq!(
             find_resumable("p", "m", Some("miyu-t"), true, &chain, back.len()),
-            Some(("admin-1".to_string(), 4))
+            Ok(("admin-1".to_string(), 4))
         );
 
         // 清空 Miyu 会话要把两档一起丢掉,不能只丢一档。
         let mut removed = forget_miyu_session("miyu-t");
         removed.sort();
         assert_eq!(removed, vec!["admin-1".to_string(), "guest-1".to_string()]);
+    }
+
+    /// 落盘往返:重启(新进程、空表)后从文件装回的条目照样命中续传。这是
+    /// 09-05 案卷的正因——daemon 重启把纯内存表清空,重启后每个会话第一轮都
+    /// 全量重放,历史一超 agy 的 192K 上限本轮消息就被砍。
+    #[test]
+    fn persisted_entries_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay/sessions.json");
+        let base = vec![message("user", "hi"), message("assistant", "hello")];
+        let chain = prefix_chain("p", "m", "sys", &base);
+        let entries = vec![
+            SessionEntry {
+                provider_id: "p".into(),
+                model: "m".into(),
+                miyu_session: Some("miyu-persist".into()),
+                host_tools: true,
+                prefix_len: 2,
+                prefix_hash: chain[2],
+                claude_session: "sess-disk".into(),
+            },
+            // 回合作用域外的映射不落盘:没有落库历史可重建前缀。
+            SessionEntry {
+                provider_id: "p".into(),
+                model: "m".into(),
+                miyu_session: None,
+                host_tools: true,
+                prefix_len: 2,
+                prefix_hash: chain[2],
+                claude_session: "sess-direct".into(),
+            },
+        ];
+        save_entries_to(&path, &entries).unwrap();
+
+        // "重启":全新的表,只从磁盘装。
+        let restored = load_entries_from(&path);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].claude_session, "sess-disk");
+
+        let mut extended = base.clone();
+        extended.push(message("user", "next"));
+        // 链在另一次进程里重新算——blake3 稳定,与落盘的哈希一致。
+        let chain = prefix_chain("p", "m", "sys", &extended);
+        assert_eq!(
+            find_in(
+                &restored,
+                "p",
+                "m",
+                Some("miyu-persist"),
+                true,
+                &chain,
+                extended.len()
+            ),
+            Ok(("sess-disk".to_string(), 2))
+        );
+
+        // 旧格式版本整体作废,不拿错误哈希去续。
+        std::fs::write(
+            &path,
+            serde_json::json!({ "version": STORE_VERSION + 1, "entries": [] }).to_string(),
+        )
+        .unwrap();
+        assert!(load_entries_from(&path).is_empty());
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(load_entries_from(&path).is_empty());
+    }
+
+    /// 哈希链跨进程稳定:同样的输入永远得到同样的链(落盘的前提)。钉一个
+    /// 具体值,换哈希算法时必须同时改 STORE_VERSION。
+    #[test]
+    fn chain_hash_is_stable_across_processes() {
+        let chain = prefix_chain("p", "m", "sys", &[message("user", "hi")]);
+        assert_eq!(
+            chain,
+            prefix_chain("p", "m", "sys", &[message("user", "hi")])
+        );
+        assert_ne!(chain[0], chain[1]);
+        assert_ne!(chain[0], prefix_chain("p", "m", "sys2", &[])[0]);
     }
 }

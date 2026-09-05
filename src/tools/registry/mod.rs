@@ -28,6 +28,7 @@ pub struct ToolRegistry {
     script_tool_names: BTreeSet<String>,
     unregistered_scripts: Vec<UnregisteredScript>,
     skill_catalog_fingerprint: Option<[u8; 32]>,
+    script_catalog_fingerprint: Option<[u8; 32]>,
     /// 兜底超时：工具未声明 timeout_seconds 时生效。None=不兜底（默认构
     /// 造/测试保持旧行为），工厂函数按 config.tools.default_timeout_secs
     /// 注入。防的是 MCP/web/生图这类没有自管超时的工具把回合无限挂死；
@@ -84,6 +85,14 @@ impl ToolRegistry {
 
     pub(crate) fn set_skill_catalog_fingerprint(&mut self, fingerprint: [u8; 32]) {
         self.skill_catalog_fingerprint = Some(fingerprint);
+    }
+
+    pub(crate) fn script_catalog_fingerprint(&self) -> Option<[u8; 32]> {
+        self.script_catalog_fingerprint
+    }
+
+    pub(crate) fn set_script_catalog_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        self.script_catalog_fingerprint = Some(fingerprint);
     }
 
     /// Appends runtime info to a registered tool's description. Applied

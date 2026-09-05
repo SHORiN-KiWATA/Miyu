@@ -7740,6 +7740,9 @@ body.miyu-paused *::after {
   font-size: var(--fs-micro);
   background: var(--chip-neutral, var(--surface-3));
   color: var(--text-soft);
+  /* 药丸不许内部折行:窄列里「index 覆盖」曾被挤成两行(09-05 用户截图)。 */
+  white-space: nowrap;
+  vertical-align: middle;
 }
 .dash-chip.is-active { background: color-mix(in srgb, var(--online) 22%, transparent); color: var(--online); }
 .dash-chip.is-archived,
@@ -7849,6 +7852,23 @@ body.miyu-paused *::after {
   resize: vertical;
 }
 .dash-textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+/* 脚本面板(09-05):抽屉里的单行输入与描述段。 */
+.dash-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-body);
+}
+.dash-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+.dash-drawer-desc { margin: 0 0 12px; color: var(--text-soft); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.dash-cell-main .dash-chip,
+.dash-cell-main .dash-cell-muted { margin-left: 6px; }
+.dash-cell-main .dash-chip { font-size: var(--fs-micro); line-height: 1.3; }
 .dash-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; flex: 1; min-width: 0; }
 .dash-field-label { color: var(--text-soft); font-size: var(--fs-meta); }
 .dash-field-hint { color: var(--text-faint); font-size: var(--fs-micro); }
@@ -8453,7 +8473,20 @@ body.miyu-paused *::after {
 .settings-footer.is-dirty .primary-button:not(:disabled) { animation: st-pop .3s ease-out both; }
 
 /* 模型池:池子装模型 */
+.st-pool-section { display: grid; gap: 10px; }
+.st-pool-section + .st-pool-section { margin-top: 18px; }
+.st-pool-section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 0 2px; }
+.st-pool-section-head h3 { margin: 0; font-size: var(--fs-ui); font-weight: 700; }
+.st-pool-section-head p { margin: 0; color: var(--text-faint); font-size: var(--fs-micro); line-height: 1.5; }
+.st-pool-section-head p:empty { display: none; }
 .st-pool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.st-pool-grid.is-global { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.st-pool-grid.is-tiers { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.st-pool-grid.is-roles { grid-template-columns: minmax(0, 1fr); }
+.st-pool-card.is-wide { min-height: 0; }
+.st-pool-card.is-wide .st-pool-member-copy strong { font-family: inherit; font-size: var(--fs-ui); }
+@media (max-width: 1180px) { .st-pool-grid.is-tiers { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .st-pool-grid.is-global, .st-pool-grid.is-tiers { grid-template-columns: minmax(0, 1fr); } }
 .st-pool-card { display: flex; flex-direction: column; min-height: 180px; border-radius: 12px; background: var(--surface-1); box-shadow: var(--card-shadow); animation: st-fade-up .34s ease-out both; animation-delay: calc(var(--i, 0) * 50ms); }
 .st-pool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 14px 16px 10px; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
 .st-pool-head h3 { margin: 0; font-size: var(--fs-ui); font-weight: 700; }

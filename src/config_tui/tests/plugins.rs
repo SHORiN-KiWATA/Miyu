@@ -20,7 +20,10 @@ fn group_join_approval_defaults_to_enabled_with_empty_groups() {
     assert!(settings.groups.is_empty());
     assert_eq!(settings.timeout_seconds, 60);
     assert_eq!(settings.max_retries, 1);
-    assert!(settings.text_models.is_none());
+    assert_eq!(
+        settings.text_models.tier_ref(),
+        Some(crate::config::ModelTier::Lite)
+    );
 }
 
 #[test]

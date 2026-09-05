@@ -766,7 +766,7 @@ impl Default for KnowledgeBasePluginConfig {
             allowed_extensions: default_kb_allowed_extensions(),
             allowed_filenames: default_kb_allowed_filenames(),
             upload_tool_enabled: default_true(),
-            embedding_enabled: false,
+            embedding_enabled: true,
             embedding_provider_id: String::new(),
             embedding_model: String::new(),
             semantic_chunk_chars: default_kb_semantic_chunk_chars(),

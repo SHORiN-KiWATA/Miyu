@@ -336,13 +336,6 @@ pub(in crate::config_tui) fn route_pool_summary(
     }
 }
 
-pub(in crate::config_tui) fn qq_pool_summary(pool: Option<&[ActiveProviderModelConfig]>) -> String {
-    match pool {
-        None | Some([]) => t("inherit global", "继承全局").to_string(),
-        Some(entries) => route_pool_summary(Some(entries), PlatformModelPoolInheritance::Platform),
-    }
-}
-
 pub(in crate::config_tui) fn select_platform_route_models(
     stdout: &mut io::Stdout,
     config: &AppConfig,
@@ -443,56 +436,4 @@ pub(in crate::config_tui) fn select_platform_route_models(
             _ => {}
         }
     }
-}
-
-pub(in crate::config_tui) fn select_qq_model_pool(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-    multimodal: bool,
-) -> Result<()> {
-    let choices = if multimodal {
-        config.multimodal_provider_model_choices()
-    } else {
-        config.text_provider_model_choices()
-    };
-    let title = if multimodal {
-        t(" QQ MULTIMODAL MODELS ", " QQ 多模态模型 ")
-    } else {
-        t(" QQ TEXT MODELS ", " QQ 文本模型 ")
-    };
-    let inherit = if multimodal {
-        t(
-            "Inherit global multimodal model pool",
-            "继承全局多模态模型池",
-        )
-    } else {
-        t("Inherit global model pool", "继承全局模型池")
-    };
-    select_model_pool(
-        stdout,
-        choices,
-        if multimodal {
-            &mut config.platforms.qq.multimodal_models
-        } else {
-            &mut config.platforms.qq.text_models
-        },
-        multimodal,
-        title,
-        inherit,
-    )
-}
-
-pub(in crate::config_tui) fn select_non_whitelist_model_pool(
-    stdout: &mut io::Stdout,
-    config: &mut AppConfig,
-) -> Result<()> {
-    let choices = config.text_provider_model_choices();
-    select_model_pool(
-        stdout,
-        choices,
-        &mut config.platforms.qq.non_whitelist_text_models,
-        false,
-        t(" NON-WHITELIST TEXT MODELS ", " 非白名单模型池 "),
-        t("Inherit QQ platform model pool", "继承 QQ 平台模型池"),
-    )
 }

@@ -539,7 +539,11 @@ pub(in crate::web) fn spawn_session_title_refinement(
     fallback: String,
     seed: &str,
 ) {
-    let Ok(client) = OpenAiCompatibleClient::from_config(config, paths) else {
+    // 标题走 model_tiers.roles.session_title 指定的档位池(未配置=主池):
+    // 一条 16 字标题不值一次旗舰调用。
+    let Ok(client) =
+        OpenAiCompatibleClient::from_aux_role(config, paths, crate::config::AuxRole::SessionTitle)
+    else {
         return;
     };
     // 标题生成是侧信道:scope 留在默认 "chat" 会让缓存记账把它算进主对话

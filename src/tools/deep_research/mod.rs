@@ -98,9 +98,14 @@ async fn run_deep_research(
     } else {
         plugin.max_tool_steps_per_round
     };
-    let client = OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
-        .for_subagent_output(sa_mode == ProgressMode::Full)
-        .with_request_scope("deep-research");
+    // 走 model_tiers.roles.deep_research 指定的档位池(未配置=主池)。
+    let client = OpenAiCompatibleClient::from_aux_role(
+        &context.config,
+        &context.paths,
+        crate::config::AuxRole::DeepResearch,
+    )?
+    .for_subagent_output(sa_mode == ProgressMode::Full)
+    .with_request_scope("deep-research");
     let state = Arc::new(Mutex::new(ResearchState::default()));
     let mut draft = String::new();
     let mut review =

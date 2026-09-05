@@ -13,6 +13,7 @@ pub(crate) use providers::fetch_models;
 mod real_context;
 mod scheduled_messages;
 mod settings;
+mod tiers;
 mod undo;
 mod voice;
 mod widgets;
@@ -28,6 +29,7 @@ use quota::*;
 use real_context::*;
 use scheduled_messages::*;
 use settings::*;
+use tiers::*;
 use undo::*;
 use voice::*;
 use widgets::*;
@@ -130,12 +132,12 @@ fn run_main_menu(
             t("Providers and models", "供应商和模型").to_string(),
             format!(
                 "{} ({}: {active})",
-                t("Configure text model", "配置文本模型"),
+                t("Configure global text models", "配置全局文本模型"),
                 t("Current", "当前")
             ),
             format!(
                 "{} ({}: {multimodal})",
-                t("Configure multimodal model", "配置多模态模型"),
+                t("Configure global multimodal models", "配置全局多模态模型"),
                 t("Current", "当前")
             ),
             format!(
@@ -144,11 +146,7 @@ fn run_main_menu(
                 t("Current", "当前"),
                 embedding_model_label(config)
             ),
-            format!(
-                "{} ({})",
-                t("Configure subagent tier pools", "配置子代理档位池"),
-                subagent_tiers_label(config)
-            ),
+            t("Configure tiered model pools", "配置分级模型池").to_string(),
             t("Plugins", "插件配置").to_string(),
             t("Custom prompts", "自定义提示词").to_string(),
             format!(
@@ -205,7 +203,7 @@ fn run_main_menu(
                     1 => select_active_provider(stdout, config),
                     2 => select_active_multimodal_provider(stdout, config),
                     3 => edit_embedding_model(stdout, config),
-                    4 => select_subagent_tiers(stdout, config),
+                    4 => select_model_tiers(stdout, config),
                     5 => edit_plugins(stdout, config),
                     6 => edit_custom_prompts(stdout, paths, config),
                     7 => select_platforms(stdout, paths, config),

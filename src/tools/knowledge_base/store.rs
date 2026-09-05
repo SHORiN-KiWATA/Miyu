@@ -58,6 +58,15 @@ pub(in crate::tools::knowledge_base) fn init_semantic_db(conn: &Connection) -> R
         [],
     )?;
     conn.execute("CREATE INDEX IF NOT EXISTS idx_semantic_file ON semantic_chunks(file_name, content_sha256)", [])?;
+    // 09-05: vectors moved from JSON text to f32 BLOBs (136 MB → 43 MB for a
+    // 10k-chunk library, and no per-query parse). Legacy rows keep their JSON
+    // until the next reindex rewrites them.
+    let has_blob_column = conn
+        .prepare("SELECT embedding FROM semantic_chunks LIMIT 0")
+        .is_ok();
+    if !has_blob_column {
+        conn.execute("ALTER TABLE semantic_chunks ADD COLUMN embedding BLOB", [])?;
+    }
     Ok(())
 }
 

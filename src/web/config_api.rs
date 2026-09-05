@@ -334,7 +334,7 @@ pub(in crate::web) fn rebuild_for_config(
     let _ = reset_conversation;
     let mut next_config = next_config;
     // Models removed from the text models must leave the tier pools too.
-    next_config.prune_subagent_tiers();
+    next_config.prune_model_tiers();
     let previous_prompts = read_prompt_documents(config, paths)
         .map_err(|error| AdminFailure::Internal(safe_error_message(error)))?;
     let persona_changes = persona_document_changes(&previous_prompts, prompts);

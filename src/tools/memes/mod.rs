@@ -1,10 +1,12 @@
 mod crud;
 mod dashboard;
 mod library;
+mod semantic;
 mod validate;
 pub(crate) use crud::*;
 pub(crate) use dashboard::*;
 pub(crate) use library::*;
+pub(crate) use semantic::reindex_library;
 pub(crate) use validate::*;
 
 use super::{vision, ToolRegistry, ToolSpec};
@@ -154,6 +156,47 @@ fn register_manage(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPa
     );
 }
 
+/// Keyword ranking fused with an optional semantic ranking (RRF); keyword-only
+/// when the semantic pass is unavailable. Returns at most `limit` memes.
+/// 返回体只留"挑哪张"真正要用的字段(08-17 实测:125 条记录 55,708 字符里,
+/// origin 采集元数据占 20.2%、score 全精度浮点 5.4%、source 4.3%、name.en
+/// 约 5%,对选表情包零价值)。tags 参与排序,只是不再发给模型。
+fn rank_memes(
+    loaded: Vec<LoadedMeme>,
+    query: &str,
+    tags: &[String],
+    semantic_rank: Option<Vec<String>>,
+    limit: usize,
+) -> Vec<LoadedMeme> {
+    let mut keyword = loaded
+        .iter()
+        .filter_map(|meme| {
+            let score = score_meme(&meme.item, query, tags);
+            (score > 0.0).then_some((score, meme.item.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    keyword.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let keyword_ids: Vec<String> = keyword.into_iter().map(|(_, id)| id).collect();
+    let ordered_ids: Vec<String> = match semantic_rank {
+        Some(semantic_ids) if !semantic_ids.is_empty() => {
+            crate::embedding::rrf_fuse(&[keyword_ids, semantic_ids], crate::embedding::RRF_K)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        }
+        _ => keyword_ids,
+    };
+    let mut by_id: HashMap<String, LoadedMeme> = loaded
+        .into_iter()
+        .map(|meme| (meme.item.id.clone(), meme))
+        .collect();
+    ordered_ids
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .take(limit)
+        .collect()
+}
+
 async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
     let library = selected_library(&args, config);
     let query = args
@@ -168,23 +211,11 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &MiyuPaths) -> Resu
         .clamp(1, 3) as usize;
     let loaded = load_library(paths, &library)?;
     let ids = meme_ids(&loaded);
-    let mut scored = loaded
-        .into_iter()
-        .filter_map(|meme| {
-            let score = score_meme(&meme.item, query, &tags);
-            (score > 0.0).then_some((score, meme))
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    let results = scored
-        .into_iter()
-        .take(limit)
-        // 返回体只留"挑哪张"真正要用的字段(08-17 实测:125 条记录 55,708
-        // 字符里,origin 采集元数据占 20.2%、score 全精度浮点 5.4%、
-        // source 4.3%、name.en 约 5%,对选表情包零价值)。tags 照旧参与
-        // 上面的 score_meme 排序,只是不再发给模型。
-        .map(|(_score, meme)| meme)
-        .collect::<Vec<_>>();
+    // 语义排名是辅助:不可用(没配/没装运行库/超时)时 None,关键词排名独立成立。
+    let semantic_query = format!("{query} {}", tags.join(" "));
+    let semantic_rank =
+        semantic::semantic_rank(config, paths, &library, &loaded, &semantic_query).await;
+    let results = rank_memes(loaded, query, &tags, semantic_rank, limit);
     // 08-21 token-diet:候选列表改为行格式,不再逐条 JSON 重复键名。
     let mut output = format!("library {library}: {} candidate(s)\n", results.len());
     for meme in &results {

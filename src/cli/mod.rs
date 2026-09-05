@@ -31,6 +31,8 @@ use usage_view::*;
 mod alarm_worker;
 mod daemon_log;
 mod data_cmds;
+mod embed_cmds;
+use embed_cmds::*;
 mod footer;
 mod migrate_cmds;
 mod model_cmds;
@@ -269,6 +271,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             }
         }
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
+        Some(Command::Embed(args)) => run_embed(&paths, args).await,
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),

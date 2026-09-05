@@ -51,6 +51,12 @@ if-addrs = "0.13"
 libc = "0.2"
 md5 = "0.7"
 pulldown-cmark = { version = "0.13.4", default-features = false }
+# Local embedding inference. ONNX Runtime is loaded at runtime from the system
+# library (`onnxruntime-cpu` on Arch); nothing is downloaded at build time, so
+# `cargo build --locked` stays offline-clean. The tokenizer uses the pure-Rust
+# regex engine to avoid a C build dependency.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std"] }
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream", "gzip", "deflate"] }
 rand = "0.8"
 rpassword = "7.4"

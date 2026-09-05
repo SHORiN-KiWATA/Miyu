@@ -50,49 +50,6 @@ pub(in crate::tools::knowledge_base) struct Chunk {
     pub(in crate::tools::knowledge_base) text: String,
 }
 
-pub async fn embed_text(
-    config: &AppConfig,
-    provider: &ProviderConfig,
-    model: &str,
-    text: &str,
-) -> Result<Vec<f32>> {
-    let api_key = provider.api_key.as_deref().unwrap_or_default().trim();
-    if api_key.is_empty() {
-        bail!("embedding provider {} has no api_key", provider.id)
-    }
-    let client = Client::builder()
-        .timeout(Duration::from_secs(config.embedding.timeout_seconds.max(1)))
-        .build()?;
-    let url = format!("{}/embeddings", provider.base_url.trim_end_matches('/'));
-    let response = client
-        .post(&url)
-        .bearer_auth(api_key)
-        .json(&json!({ "model": model, "input": text }))
-        .send()
-        .await?;
-    let status = response.status();
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        bail!(
-            "embedding API error at {url} ({status}): {}",
-            compact_whitespace(&text)
-        );
-    }
-    let data: Value = response.json().await?;
-    let embedding = data
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("embedding"))
-        .and_then(Value::as_array)
-        .context("embedding response missing data[0].embedding")?;
-    Ok(embedding
-        .iter()
-        .filter_map(Value::as_f64)
-        .map(|value| value as f32)
-        .collect())
-}
-
 pub(in crate::tools::knowledge_base) fn query_tokens(value: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut ascii = String::new();

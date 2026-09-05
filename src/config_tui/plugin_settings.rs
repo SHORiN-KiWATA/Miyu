@@ -6,6 +6,7 @@
 //! `validate_reply_processor_settings` 单独存在是因为它的字段互相约束（比如某
 //! 个模式下另一项必填），表单本身校验不了。
 
+use crate::config::{ModelPoolRef, ModelTier};
 use crate::config_tui::*;
 
 pub(in crate::config_tui) const REPLY_PROCESSOR_PLUGIN_ID: &str = "reply_processor";
@@ -377,7 +378,11 @@ pub(in crate::config_tui) fn edit_group_join_approval(
             format!(
                 "{}: {}",
                 labels[3],
-                real_context_model_pool_summary(settings.text_models.as_deref())
+                pool_ref_summary(
+                    config,
+                    &settings.text_models,
+                    t("inherits platform pool", "继承平台池")
+                )
             ),
             format!(
                 "{}: {} {}",
@@ -472,13 +477,13 @@ pub(in crate::config_tui) fn edit_group_join_approval(
                     let cursor = value.chars().count();
                     editing = Some((2, value, cursor));
                 }
-                3 => select_model_pool(
+                3 => select_plugin_pool_ref(
                     stdout,
-                    config.text_provider_model_choices(),
+                    config,
+                    t("Group join approval", "入群审批"),
+                    t("inherits platform pool", "继承平台池"),
+                    ModelPoolRef::tier(ModelTier::Lite),
                     &mut settings.text_models,
-                    false,
-                    t(" GROUP JOIN APPROVAL TEXT MODELS ", " 入群审批文本模型 "),
-                    t("Inherit QQ platform model pool", "继承 QQ 平台模型池"),
                 )?,
                 4 => edit_group_join_approval_groups(stdout, &mut settings)?,
                 _ => {}

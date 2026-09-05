@@ -188,7 +188,7 @@ impl KnowledgeBase {
         if !self.config.plugins.knowledge_base.embedding_enabled {
             bail!("embedding is disabled in config")
         }
-        if self.embedding_provider()?.is_none() {
+        if self.embedder().is_none() {
             bail!("embedding provider/model is not configured")
         }
         let status = self.dashboard_reindex_status()?;
@@ -220,7 +220,7 @@ impl KnowledgeBase {
             "stale_lock": stale_lock,
             "lock_age_secs": lock_age_secs,
             "configured": self.config.plugins.knowledge_base.embedding_enabled
-                && self.embedding_provider().ok().flatten().is_some(),
+                && self.embedder().is_some(),
         }))
     }
 

@@ -1,7 +1,59 @@
 #!/usr/bin/env python3
 # 显示名称：哔哩哔哩直播控制
-# 描述：控制哔哩哔哩直播间：改直播标题、改分区、开播并取得推流地址与推流码（流密钥，可直接填入 OBS / ffmpeg）、下播。支持扫码登录（生成二维码 PNG 由调用方转交用户），以及只读的直播间状态与分区查询。分区可以直接写中文名或拼音，脚本自己解析成 id。开播会使直播间立刻对外可见并推送给粉丝，须先获得用户明确同意。仅依赖 Python 标准库，凭据存于缓存目录。
-# Description: Control a Bilibili live room: set the room title, set the category (area), start streaming and obtain the RTMP/SRT push address and stream key for OBS/ffmpeg, and stop. Supports QR login (writes a PNG for the caller to hand to the user) plus read-only room status and area lookup; areas can be named in Chinese or pinyin and are resolved to ids by the script. Starting a stream makes the room publicly visible and notifies followers, so it requires explicit user consent. Stdlib-only; credentials live in the cache directory.
+# Description: Control a Bilibili live room: title, area, go live, stop. command=status shows room state (read-only). areas lists partitions (read-only, no login; search matches a keyword, parent lists one parent's children). update changes title and/or area atomically. start goes live and returns the RTMP address and stream key for OBS or ffmpeg. stop ends the stream. login/logout manage credentials. Areas accept Chinese names, pinyin or 'parent/child'; the script resolves the id. WARNING: start makes the room public immediately and pushes a notification to followers; it cannot be silently undone, so get the user's explicit consent first. update during a live stream is visible to viewers at once. When not logged in it returns kind=auth: guide the user to run login (two-step QR code, written as a PNG whose path is returned).
+# Timeout: 120
+# Group: streaming
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "command": {
+#       "type": "string",
+#       "enum": [
+#         "status",
+#         "areas",
+#         "update",
+#         "start",
+#         "stop",
+#         "login",
+#         "logout"
+#       ],
+#       "description": "Operation to run. status and areas are read-only"
+#     },
+#     "title": {
+#       "type": "string",
+#       "description": "New stream title. For update; with start it is applied before going live"
+#     },
+#     "area": {
+#       "type": "string",
+#       "description": "New area, any form: numeric id (371), child name (虚拟日常), pinyin (xunirichang) or 'parent/child' (虚拟主播/虚拟日常). For update; with start applied before going live. Ambiguity fails with candidates in error.detail.candidates"
+#     },
+#     "search": {
+#       "type": "string",
+#       "description": "areas only: keyword matched against child names, pinyin and parent names"
+#     },
+#     "parent": {
+#       "type": "string",
+#       "description": "areas only: list only the children of this parent (name or id)"
+#     },
+#     "refresh": {
+#       "type": "boolean",
+#       "description": "areas only: ignore the local cache (kept one day) and refetch the area list"
+#     },
+#     "cookie": {
+#       "type": "string",
+#       "description": "login only: log in with browser cookies instead, like \"SESSDATA=..; bili_jct=..\". Normally the QR flow is enough"
+#     },
+#     "json": {
+#       "type": "boolean",
+#       "description": "Return full JSON. Default is a compact text summary to save tokens"
+#     }
+#   },
+#   "required": [
+#     "command"
+#   ],
+#   "additionalProperties": false
+# }
 
 """哔哩哔哩直播控制工具（面向 AI 调用设计）。
 

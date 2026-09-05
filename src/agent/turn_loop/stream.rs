@@ -99,7 +99,8 @@ impl Agent {
                 });
         if let Some(mut association) = self
             .memory
-            .association(&input, association_exclusion.as_ref())?
+            .association_with_semantic(&input, association_exclusion.as_ref())
+            .await?
         {
             if association.organization_due {
                 self.wake_memory_organizer();

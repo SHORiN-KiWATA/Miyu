@@ -27,6 +27,14 @@ pub fn miyu_executable() -> Result<PathBuf> {
 }
 
 /// 进程启动早期预热一次，趁二进制还没被换掉。
+/// `~/.miyu` (or `MIYU_HOME`) without building the whole `MiyuPaths`, for
+/// asset lookups that run before or outside path setup.
+pub fn miyu_home_dir() -> Option<PathBuf> {
+    std::env::var_os("MIYU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| BaseDirs::new().map(|dirs| dirs.home_dir().join(".miyu")))
+}
+
 pub fn prime_miyu_executable() {
     let _ = miyu_executable();
 }

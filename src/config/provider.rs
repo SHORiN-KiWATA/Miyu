@@ -9,69 +9,196 @@
 
 use crate::config::*;
 
-/// Subagent model tier pools. When the main agent spawns a subagent it
-/// picks a tier by task complexity (cheap/balanced/strong); requests then
-/// load-balance across that tier's pool exactly like the main text-model
-/// pool. Tiers are subagent-only — the main conversation and auxiliary
-/// work always use the user-selected main models. An unconfigured or
-/// unavailable pool falls back to the main model pool.
+/// Tiered model pools. Four capability tiers, each a load-balanced pool the
+/// same way the global text pool is. Consumers: the `task` tool (the main
+/// model picks a tier per task), the auxiliary roles under `roles`, and any
+/// platform slot that references a tier by name (see `ModelPoolRef`).
+///
+/// An unconfigured tier falls back to the global text pool — never to a
+/// neighbouring tier (user decision 2026-09-05).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SubagentTiersConfig {
+pub struct ModelTiersConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lite: Vec<ActiveProviderModelConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cheap: Vec<ActiveProviderModelConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub balanced: Vec<ActiveProviderModelConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub strong: Vec<ActiveProviderModelConfig>,
+    /// Old name `balanced` stays readable; saving writes `standard`.
+    #[serde(default, alias = "balanced", skip_serializing_if = "Vec::is_empty")]
+    pub standard: Vec<ActiveProviderModelConfig>,
+    /// Old name `strong` stays readable; saving writes `flagship`.
+    #[serde(default, alias = "strong", skip_serializing_if = "Vec::is_empty")]
+    pub flagship: Vec<ActiveProviderModelConfig>,
+    /// Auxiliary request roles (see [`AuxRole`]) → tier name or `"global"`.
+    /// A missing key means the role's built-in default
+    /// ([`AuxRole::default_tier`]), so roles take effect the moment the
+    /// matching tier is configured; `"global"` pins a role to the global
+    /// text pool explicitly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roles: BTreeMap<String, String>,
 }
 
-impl SubagentTiersConfig {
+impl ModelTiersConfig {
     pub fn is_empty(&self) -> bool {
-        self.cheap.is_empty() && self.balanced.is_empty() && self.strong.is_empty()
+        ModelTier::ALL
+            .iter()
+            .all(|tier| self.pool(*tier).is_empty())
+            && self.roles.is_empty()
     }
 
     pub fn pool(&self, tier: ModelTier) -> &Vec<ActiveProviderModelConfig> {
         match tier {
+            ModelTier::Lite => &self.lite,
             ModelTier::Cheap => &self.cheap,
-            ModelTier::Balanced => &self.balanced,
-            ModelTier::Strong => &self.strong,
+            ModelTier::Standard => &self.standard,
+            ModelTier::Flagship => &self.flagship,
         }
     }
 
     pub fn pool_mut(&mut self, tier: ModelTier) -> &mut Vec<ActiveProviderModelConfig> {
         match tier {
+            ModelTier::Lite => &mut self.lite,
             ModelTier::Cheap => &mut self.cheap,
-            ModelTier::Balanced => &mut self.balanced,
-            ModelTier::Strong => &mut self.strong,
+            ModelTier::Standard => &mut self.standard,
+            ModelTier::Flagship => &mut self.flagship,
         }
+    }
+
+    /// The tier an auxiliary role routes through; `None` means the global
+    /// text pool. Absent key → the role's default; `"global"` → `None`.
+    /// Unknown values also resolve to `None` here — `validate_roles` rejects
+    /// them at load time so a typo never silently downgrades.
+    pub fn role_tier(&self, role: AuxRole) -> Option<ModelTier> {
+        match self.roles.get(role.key()) {
+            None => Some(role.default_tier()),
+            Some(value) => ModelTier::from_str(value),
+        }
+    }
+
+    /// Whether the role carries an explicit value (as opposed to its default).
+    pub fn role_is_explicit(&self, role: AuxRole) -> bool {
+        self.roles.contains_key(role.key())
+    }
+
+    /// Set a role to a tier (`Some`) or the global pool (`None`).
+    pub fn set_role(&mut self, role: AuxRole, tier: Option<ModelTier>) {
+        let value = tier.map_or(GLOBAL_POOL_LABEL, |tier| tier.label());
+        self.roles.insert(role.key().to_string(), value.to_string());
+    }
+
+    /// Drop the explicit value so the role returns to its default.
+    pub fn reset_role(&mut self, role: AuxRole) {
+        self.roles.remove(role.key());
+    }
+
+    /// Rejects unknown role keys and unknown tier names. The error names the
+    /// accepted values so a config typo is fixable without reading source.
+    pub(crate) fn validate_roles(&self) -> Result<()> {
+        for (role, tier) in &self.roles {
+            if AuxRole::from_key(role).is_none() {
+                bail!(
+                    "model_tiers.roles: unknown role '{role}'; accepted roles: {}",
+                    AuxRole::ALL
+                        .iter()
+                        .map(|role| role.key())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if ModelTier::from_str(tier).is_none() && tier.trim() != GLOBAL_POOL_LABEL {
+                bail!(
+                    "model_tiers.roles.{role}: unknown tier '{tier}'; accepted: lite, cheap, standard, flagship, global"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelTier {
+    Lite,
     Cheap,
-    Balanced,
-    Strong,
+    Standard,
+    Flagship,
 }
 
 impl ModelTier {
-    pub const ALL: [Self; 3] = [Self::Cheap, Self::Balanced, Self::Strong];
+    pub const ALL: [Self; 4] = [Self::Lite, Self::Cheap, Self::Standard, Self::Flagship];
 
+    /// Accepts the current names plus the pre-09-05 `balanced` / `strong`.
     pub fn from_str(value: &str) -> Option<Self> {
         match value.trim() {
+            "lite" => Some(Self::Lite),
             "cheap" => Some(Self::Cheap),
-            "balanced" => Some(Self::Balanced),
-            "strong" => Some(Self::Strong),
+            "standard" | "balanced" => Some(Self::Standard),
+            "flagship" | "strong" => Some(Self::Flagship),
             _ => None,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Lite => "lite",
             Self::Cheap => "cheap",
-            Self::Balanced => "balanced",
-            Self::Strong => "strong",
+            Self::Standard => "standard",
+            Self::Flagship => "flagship",
         }
+    }
+}
+
+/// Explicit "use the global text pool" value for `model_tiers.roles` and for
+/// platform pool references.
+pub const GLOBAL_POOL_LABEL: &str = "global";
+/// "Inherit from the parent slot" value for platform pool references.
+pub const INHERIT_POOL_LABEL: &str = "inherit";
+
+/// Auxiliary LLM requests routed through a tier via `model_tiers.roles`.
+/// Each is an independent cache/session state (AGENTS 1.7), so moving it off
+/// the global pool never touches the main conversation's prefix cache.
+/// Compaction is deliberately absent: its fork-style summary reuses the live
+/// conversation prefix and must stay on the model that owns that cache.
+/// Platform-side requests (QQ judge, affection, group-join approval) are not
+/// roles either — they are platform slots resolved through `ModelPoolRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuxRole {
+    /// WebUI session title refinement from the first user message.
+    SessionTitle,
+    /// Background diary → long-term memory distillation (memory organizer).
+    MemoryOrganizer,
+    /// The `deep_research` tool's researcher/reviewer loop.
+    DeepResearch,
+}
+
+impl AuxRole {
+    pub const ALL: [Self; 3] = [
+        Self::SessionTitle,
+        Self::MemoryOrganizer,
+        Self::DeepResearch,
+    ];
+
+    /// Config key under `model_tiers.roles`.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::SessionTitle => "session_title",
+            Self::MemoryOrganizer => "memory_organizer",
+            Self::DeepResearch => "deep_research",
+        }
+    }
+
+    /// Built-in tier when the role has no explicit value. With no tiers
+    /// configured every default still resolves to the global pool, so a
+    /// fresh install behaves exactly as before.
+    pub fn default_tier(&self) -> ModelTier {
+        match self {
+            Self::SessionTitle | Self::MemoryOrganizer => ModelTier::Lite,
+            Self::DeepResearch => ModelTier::Standard,
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|role| role.key() == value.trim())
     }
 }
 
@@ -270,29 +397,59 @@ pub fn resolve_provider_model_argument<'a>(
     }
 }
 
+/// Which backend produces vectors. `Auto` (the default, and what every config
+/// written before 2026-09 reads as) keeps a configured remote model and falls
+/// back to the bundled local model otherwise, so upgrading never silently
+/// swaps a user's remote bge-m3 for the local small model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingBackend {
+    #[default]
+    Auto,
+    Local,
+    Remote,
+}
+
 /// Which model turns text into vectors, and the settings that belong to that
 /// model rather than to any one feature — a similarity floor means different
-/// things on different models. Deliberately has no on/off switch: configuring a
-/// model only makes it available, and each feature decides whether to use it.
+/// things on different models. Semantic retrieval is an assist on top of
+/// keyword search everywhere it is used: `enabled: false`, a missing runtime
+/// or a dead endpoint all degrade to keyword-only, never to an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
+    /// Master switch for the semantic assist across knowledge base, memory
+    /// association, memes and evicted-context search.
+    pub enabled: bool,
+    pub backend: EmbeddingBackend,
+    /// Local model id (a directory under the model search chain) or a path to
+    /// a model directory. Only used by the local backend.
+    pub local_model: String,
     /// Id of an existing provider; the model is named separately, so a provider
     /// serving both chat and embedding models is still configured once.
+    /// Only used by the remote backend.
     pub provider_id: String,
     pub model: String,
     pub timeout_seconds: u64,
-    /// Cosine similarity below this is not a hit.
+    /// Cosine similarity below this is not a hit (remote backend; local models
+    /// carry their own floor in `manifest.json`).
     pub min_score: f32,
+    /// The local inference worker exits after this much idle time so an idle
+    /// daemon holds no model in memory.
+    pub idle_unload_seconds: u64,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
+            backend: EmbeddingBackend::Auto,
+            local_model: DEFAULT_LOCAL_EMBEDDING_MODEL.to_string(),
             provider_id: String::new(),
             model: String::new(),
             timeout_seconds: 60,
             min_score: 0.35,
+            idle_unload_seconds: 600,
         }
     }
 }
@@ -300,15 +457,39 @@ impl Default for EmbeddingConfig {
 /// Marks a model as producing vectors rather than chat.
 pub const EMBEDDING_MODALITY: &str = "embedding";
 
+/// The model shipped under `assets/models/`.
+pub const DEFAULT_LOCAL_EMBEDDING_MODEL: &str = "bge-small-zh-v1.5-int8";
+
 impl EmbeddingConfig {
     pub(crate) fn is_default(&self) -> bool {
         *self == Self::default()
     }
 
-    /// A model is configured; whether any feature uses it is that feature's
-    /// business.
-    pub fn is_configured(&self) -> bool {
+    /// A remote provider/model pair is named. Says nothing about reachability.
+    pub fn remote_is_configured(&self) -> bool {
         !self.provider_id.trim().is_empty() && !self.model.trim().is_empty()
+    }
+
+    /// `Auto` resolved: remote when a remote model is named, local otherwise.
+    pub fn resolved_backend(&self) -> EmbeddingBackend {
+        match self.backend {
+            EmbeddingBackend::Auto if self.remote_is_configured() => EmbeddingBackend::Remote,
+            EmbeddingBackend::Auto => EmbeddingBackend::Local,
+            explicit => explicit,
+        }
+    }
+
+    /// Something is configured for the semantic pass. Whether it actually
+    /// works (runtime library present, endpoint reachable) is only known at
+    /// call time; `Embedder::from_config` is the runtime-side check.
+    pub fn is_configured(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.resolved_backend() {
+            EmbeddingBackend::Remote => self.remote_is_configured(),
+            _ => !self.local_model.trim().is_empty(),
+        }
     }
 }
 

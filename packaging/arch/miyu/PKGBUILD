@@ -13,7 +13,7 @@ url='https://github.com/SHORiN-KiWATA/Miyu'
 license=('MIT' 'OFL-1.1')
 options=('!strip' '!debug')
 export LC_ALL=C.UTF-8
-depends=('chafa' 'gcc-libs' 'ripgrep' 'alsa-lib')
+depends=('chafa' 'gcc-libs' 'ripgrep' 'alsa-lib' 'onnxruntime')
 optdepends=(
   'miyu-voice: voice wake word + speech recognition front end'
   'git: update default Shorin Wiki knowledge base'
