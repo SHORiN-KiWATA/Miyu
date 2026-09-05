@@ -9,7 +9,7 @@ url='https://github.com/SHORiN-KiWATA/Miyu'
 license=('MIT' 'OFL-1.1')
 options=('!lto' '!strip' '!debug')
 export LC_ALL=C.UTF-8
-depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime-cpu' 'ripgrep')
+depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'ripgrep')
 makedepends=('cargo' 'git' 'pkgconf')
 optdepends=(
   'git: update default Shorin Wiki knowledge base'

@@ -30,4 +30,4 @@
 | `/usr/share/miyu/memes/miyu/` | 内置表情库 | `src/memes/miyu/` | 默认人格无内置表情 |
 | `/usr/share/miyu/default-kb/` | 默认知识库 | 本仓库 `kb/` + Shorin Wiki 仓库，运行时 `miyu update-default-kb` 更新 | 默认知识库为空 |
 | `/usr/share/miyu/scripts/personas/default/` | 内置脚本（属默认人格 Miyu） | `src/scripts/personas/default/` | 无内置脚本 |
-| `/usr/share/miyu/models/<id>/` | 内置本地 embedding 模型（语义检索辅助，默认 `bge-small-zh-v1.5-int8`） | `assets/models/` | 语义检索静默退回关键词；运行库 `libonnxruntime` 来自 `onnxruntime-cpu` 包 |
+| `/usr/share/miyu/models/<id>/` | 内置本地 embedding 模型（语义检索辅助，默认 `bge-small-zh-v1.5-int8`） | `assets/models/` | 语义检索静默退回关键词；运行库 `libonnxruntime` 来自 `onnxruntime-cpu` 或 `onnxruntime-cuda`（都 provides `onnxruntime`） |
