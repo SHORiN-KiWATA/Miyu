@@ -148,6 +148,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     let (ipc_lease, ipc_task) = start_ipc_server(&state)?;
     install_background_job_hook(&state);
     // 语音前端(独立 miyu-voice 进程):只在 voice.enabled 时拉起。
+    voice_bridge::install_state(&state);
     voice_bridge::spawn_if_enabled(&state);
     // 目标续轮驱动器。启动时故意**不**恢复任何自动续跑：目标还在库里，但
     // 「是否自动跑」驻内存、重启即失，必须由人 `/goal resume` 重新授权。
@@ -317,6 +318,8 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/voice/status", get(voice_status))
         .route("/api/voice/devices", get(voice_devices))
         .route("/api/voice/stream", get(voice_stream))
+        .route("/api/voice/tts/voices", get(voice_tts_voices))
+        .route("/api/voice/tts/preview", post(voice_tts_preview))
         .route(
             "/api/voice/transcribe",
             post(voice_transcribe).layer(DefaultBodyLimit::max(VOICE_UPLOAD_LIMIT)),

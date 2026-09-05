@@ -128,6 +128,14 @@ pub(in crate::platforms::onebot) fn send_timeout_for(segments: &[Value]) -> Dura
     }
 }
 
+/// 语音消息段。NapCat 收到 wav/mp3 会自己转 silk(需要它那边有 ffmpeg)。
+pub(in crate::platforms::onebot) fn record_segment(bytes: &[u8]) -> Value {
+    json!({
+        "type": "record",
+        "data": { "file": format!("base64://{}", BASE64.encode(bytes)) },
+    })
+}
+
 pub(in crate::platforms::onebot) fn image_segment(bytes: &[u8]) -> Value {
     json!({
         "type": "image",

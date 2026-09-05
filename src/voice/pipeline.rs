@@ -99,7 +99,7 @@ pub struct Pipeline {
     kws: KeywordSpotter,
     stt: Box<dyn SttEngine>,
     gate: EnergyGate,
-    wake_keyword: String,
+    wake_keywords: Vec<String>,
     follow_up: usize,
     min_utterance_chars: usize,
     stt_unload_after: Duration,
@@ -114,21 +114,11 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(config: &VoiceRuntimeConfig) -> Result<Self> {
-        let stt: Box<dyn SttEngine> =
-            match &config.stt {
-                SttChoice::Local { threads, language } => Box::new(
-                    super::stt::LocalSenseVoice::new(&config.models_dir, *threads, language)?,
-                ),
-                SttChoice::Cloud {
-                    base_url,
-                    api_key,
-                    model,
-                } => Box::new(super::stt::CloudTranscriber::new(
-                    base_url.clone(),
-                    api_key.clone(),
-                    model.clone(),
-                )),
-            };
+        let stt: Box<dyn SttEngine> = match &config.stt {
+            SttChoice::Local { threads, language } => Box::new(
+                super::stt::LocalSenseVoice::new(&config.models_dir, *threads, language)?,
+            ),
+        };
         Self::with_stt(config, stt)
     }
 
@@ -154,7 +144,13 @@ impl Pipeline {
             VoiceActivityDetector::create(&vad_config, 60.0).context("加载 Silero VAD 模型失败")?;
 
         let kws_paths = models::kws_paths(&config.models_dir);
-        let keyword_line = keywords::encode_keyword(&config.wake_keyword, &kws_paths.tokens)?;
+        let keyword_lines = config
+            .wake_keywords
+            .iter()
+            .map(|keyword| keywords::encode_keyword(keyword, &kws_paths.tokens))
+            .collect::<Result<Vec<_>>>()?;
+        anyhow::ensure!(!keyword_lines.is_empty(), "至少要有一个唤醒词");
+        let keyword_line = keyword_lines.join("\n");
         let mut kws_config = KeywordSpotterConfig::default();
         kws_config.model_config.transducer = OnlineTransducerModelConfig {
             encoder: Some(kws_paths.encoder.to_string_lossy().into_owned()),
@@ -173,7 +169,7 @@ impl Pipeline {
             kws,
             stt,
             gate: EnergyGate::new(),
-            wake_keyword: config.wake_keyword.clone(),
+            wake_keywords: config.wake_keywords.clone(),
             follow_up: samples(config.follow_up),
             min_utterance_chars: config.min_utterance_chars,
             stt_unload_after: config.stt_unload_after,
@@ -193,6 +189,18 @@ impl Pipeline {
                 Vec::new()
             }
             Control::CloseWindow => self.close_window(),
+            Control::Listen => match self.phase {
+                Phase::Window {
+                    dictation: true, ..
+                } => Vec::new(),
+                _ => {
+                    self.phase = Phase::Awaiting { silent: 0 };
+                    self.speech_run = 0;
+                    self.speech_start_emitted = false;
+                    let _ = self.stt.preload();
+                    vec![VoiceEvent::Wake]
+                }
+            },
             // 音频来源(麦克风/外部)由 VoiceService 分流,管线不区分。
             Control::StartDictation { .. } => {
                 self.phase = Phase::Window {
@@ -214,7 +222,7 @@ impl Pipeline {
                 _ => Vec::new(),
             },
             // 外部帧由 VoiceService 决定是否喂进来,走的是 feed(),这里不该收到。
-            Control::Audio(_) => Vec::new(),
+            Control::Audio(_) | Control::Playback(_) => Vec::new(),
             Control::Transcribe {
                 request_id,
                 samples,
@@ -349,7 +357,7 @@ impl Pipeline {
                     Ok(text) => {
                         // 时间戳缺失时 remainder 是整段,退回字面剥离兜底。
                         let command = if keyword_end == 0 {
-                            strip_wake_keyword(&text, &self.wake_keyword)
+                            strip_any_wake_keyword(&text, &self.wake_keywords)
                         } else {
                             text.trim().to_string()
                         };
@@ -508,6 +516,18 @@ impl Pipeline {
     }
 }
 
+/// 多唤醒词版:哪个能从开头剥掉就用哪个,都对不上原样返回整句。
+pub fn strip_any_wake_keyword(text: &str, keywords: &[String]) -> String {
+    let whole = text.trim().to_string();
+    for keyword in keywords {
+        let stripped = strip_wake_keyword(text, keyword);
+        if stripped != whole {
+            return stripped;
+        }
+    }
+    whole
+}
+
 /// 从识别文本里剥掉开头的唤醒词(容忍标点/空白夹杂)。只在 KWS 没给出
 /// 时间戳、唤醒词没能从音频上切掉时兜底使用。识别文本与唤醒词对不上时
 /// 保守地原样返回整句,宁可多带前缀也不吞指令。
@@ -568,6 +588,14 @@ mod tests {
     fn bare_keyword_becomes_empty() {
         assert_eq!(strip_wake_keyword("未有未有。", "未有未有"), "");
         assert_eq!(strip_wake_keyword("未有未", "未有未有"), "");
+    }
+
+    #[test]
+    fn any_keyword_strips_first_match() {
+        let keywords = vec!["未有未有".to_string(), "小未".to_string()];
+        assert_eq!(strip_any_wake_keyword("小未,开灯", &keywords), "开灯");
+        assert_eq!(strip_any_wake_keyword("未有未有。", &keywords), "");
+        assert_eq!(strip_any_wake_keyword("开灯", &keywords), "开灯");
     }
 
     #[test]

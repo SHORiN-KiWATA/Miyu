@@ -20,7 +20,7 @@ fn models_dir() -> Option<PathBuf> {
 fn config(dir: &std::path::Path, keyword: &str) -> VoiceRuntimeConfig {
     VoiceRuntimeConfig {
         models_dir: dir.to_path_buf(),
-        wake_keyword: keyword.to_string(),
+        wake_keywords: vec![keyword.to_string()],
         wake_threshold: 0.25,
         wake_boost: 1.0,
         microphone: None,

@@ -90,12 +90,20 @@ pub struct PlatformsConfig {
         skip_serializing_if = "is_default_platform_max_tool_rounds"
     )]
     pub max_tool_rounds: usize,
+    /// 允许 AI 从终端/WebUI/shellhook 会话主动发消息到通讯平台(`send_qq_message`
+    /// 工具)。收件人只能是各平台配置的管理员,QQ 即 `qq.admin_users`,第一个为主管理员。
+    #[serde(default = "default_terminal_outreach")]
+    pub terminal_outreach: bool,
     #[serde(default, skip_serializing_if = "OneBotConfig::is_default")]
     pub qq: OneBotConfig,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn default_terminal_outreach() -> bool {
+    true
 }
 
 pub(crate) fn default_platform_max_tool_rounds() -> usize {
@@ -112,6 +120,7 @@ impl Default for PlatformsConfig {
             command_prefix: default_platform_command_prefix(),
             commands: BTreeMap::new(),
             max_tool_rounds: default_platform_max_tool_rounds(),
+            terminal_outreach: default_terminal_outreach(),
             qq: OneBotConfig::default(),
         }
     }
@@ -687,6 +696,10 @@ pub struct OneBotConfig {
     /// Empty tokens are accepted only from a loopback peer.
     pub access_token: String,
     pub admin_users: Vec<i64>,
+    /// 管理员别名(键 = QQ 号字符串):终端发消息工具的 `to` 选项用它列出
+    /// 能发给谁;没有别名的显示号码。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub admin_aliases: BTreeMap<String, String>,
     /// Grants full host tools only to non-admin users in `private_chats.whitelist`.
     pub allow_non_admin_host_tools: bool,
     /// Send each model round's text to group chats as its own message while
@@ -883,6 +896,7 @@ impl Default for OneBotConfig {
             reverse_ws_port: 8300,
             access_token: String::new(),
             admin_users: Vec::new(),
+            admin_aliases: BTreeMap::new(),
             allow_non_admin_host_tools: false,
             group_intermediate_messages: false,
             private_intermediate_messages: true,

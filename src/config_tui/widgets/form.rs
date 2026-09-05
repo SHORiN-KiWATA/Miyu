@@ -211,6 +211,10 @@ pub(in crate::config_tui) fn run_form_from(
                 edit_dialog_list(stdout, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
+            KeyCode::Enter if !editing && fields[selected].string_list => {
+                edit_string_list(stdout, fields[selected].label, &mut fields[selected].value)?;
+                cursors[selected] = fields[selected].value.chars().count();
+            }
             KeyCode::Enter if !editing && fields[selected].textarea => {
                 edit_textarea(stdout, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();
@@ -431,6 +435,75 @@ pub(in crate::config_tui) fn edit_dialog_list(
 /// user/assistant 双框表单:打开即落在 user 框内直接输入,回车确认后
 /// j 移到 assistant 框。空的一侧视为放弃(与 `parse_dialogs` 丢弃
 /// 空对的语义一致)。
+/// 字符串列表式编辑器(唤醒词这类"几个短词"):回车编辑、[a] 新增、
+/// [d] 删除、[j/k] 移动;value 是逗号分隔的序列化文本。
+pub(in crate::config_tui) fn edit_string_list(
+    stdout: &mut io::Stdout,
+    title: &'static str,
+    value: &mut String,
+) -> Result<()> {
+    let mut items: Vec<String> = crate::config::split_wake_keywords(value);
+    let mut selected = 0usize;
+    loop {
+        let mut options: Vec<String> = items.clone();
+        if options.is_empty() {
+            options.push(t("(empty)", "(空)").to_string());
+        }
+        selected = selected.min(options.len() - 1);
+        draw_menu(
+            stdout,
+            &format!(" {title} "),
+            &options,
+            selected,
+            t(
+                "[Enter]edit [a]add [d]delete [j/k]move [q]done",
+                "[Enter]编辑 [a]新增 [d]删除 [j/k]移动 [q]完成",
+            ),
+        )?;
+        match read_key()? {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                *value = items.join(", ");
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Char('a') => {
+                if let Some(item) = edit_single_line(stdout, t(" ADD ", " 新增 "), title, "")? {
+                    if !items.contains(&item) {
+                        items.push(item);
+                        selected = items.len() - 1;
+                    }
+                }
+            }
+            KeyCode::Enter if !items.is_empty() => {
+                let current = items[selected].clone();
+                if let Some(item) = edit_single_line(stdout, t(" EDIT ", " 编辑 "), title, &current)? {
+                    items[selected] = item;
+                }
+            }
+            KeyCode::Char('d') if !items.is_empty() => {
+                items.remove(selected);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 弹一个单行输入表单;取消或留空返回 None。
+pub(in crate::config_tui) fn edit_single_line(
+    stdout: &mut io::Stdout,
+    title: &str,
+    label: &'static str,
+    initial: &str,
+) -> Result<Option<String>> {
+    let mut fields = vec![Field::new(label, initial.to_string())];
+    if !run_form_editing(stdout, title, &mut fields)? {
+        return Ok(None);
+    }
+    let text = fields[0].value.trim().to_string();
+    Ok((!text.is_empty()).then_some(text))
+}
+
 pub(in crate::config_tui) fn edit_dialog_pair(
     stdout: &mut io::Stdout,
     title: &str,
@@ -671,6 +744,8 @@ pub(in crate::config_tui) struct Field {
     /// 预设对话列表:Enter 进入列表式子编辑器而不是 $EDITOR(验收 #19),
     /// value 仍是 `user:`/`assistant:` 行格式的序列化文本。
     pub(in crate::config_tui) dialog_list: bool,
+    /// 短字符串列表(唤醒词):Enter 进入 [a]/[d] 列表编辑器,value 为逗号分隔文本。
+    pub(in crate::config_tui) string_list: bool,
     pub(in crate::config_tui) sensitive: bool,
     pub(in crate::config_tui) boolean: bool,
     pub(in crate::config_tui) modalities: bool,
@@ -688,6 +763,7 @@ impl Field {
             value,
             textarea: false,
             dialog_list: false,
+            string_list: false,
             sensitive: false,
             boolean: false,
             modalities: false,
@@ -704,6 +780,7 @@ impl Field {
             value: value.to_string(),
             textarea: false,
             dialog_list: false,
+            string_list: false,
             sensitive: false,
             boolean: true,
             modalities: false,
@@ -720,6 +797,7 @@ impl Field {
             value,
             textarea: true,
             dialog_list: false,
+            string_list: false,
             sensitive: false,
             boolean: false,
             modalities: false,
@@ -727,6 +805,13 @@ impl Field {
             choices: Vec::new(),
             empty_choice_label: t("Use current provider", "使用当前 Provider"),
             raw_choice_labels: false,
+        }
+    }
+
+    pub(in crate::config_tui) fn string_list(label: &'static str, value: String) -> Self {
+        Self {
+            string_list: true,
+            ..Self::new(label, value)
         }
     }
 
@@ -758,6 +843,7 @@ impl Field {
             value,
             textarea: false,
             dialog_list: false,
+            string_list: false,
             sensitive: false,
             boolean: false,
             modalities: true,

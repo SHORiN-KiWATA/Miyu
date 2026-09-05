@@ -229,6 +229,11 @@ pub(crate) fn apply_platform_turn_scope(
     // 平台身份走,管理员会话也一并摘掉。该委托工具 08-21 已删除,这行是它
     // 万一回归时的常备闸——当下不生效,也无法被测试钉住。
     registry.unregister("claude_code");
+    // 扬声器与「发到 QQ」都是本机 owner 面的东西:QQ 聊天通常是远程的,
+    // 从群里让电脑开口没有意义;从 QQ 会话再发 QQ 更是绕圈(那边有
+    // send_message_to_user)。管理员会话也一并摘掉。
+    registry.unregister("speak");
+    registry.unregister("send_qq_message");
 }
 
 pub(crate) use assets::platform_asset;

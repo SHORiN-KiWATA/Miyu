@@ -15,6 +15,9 @@ pub(crate) fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnCon
         register_mention(registry, context.clone());
     }
     register_usage_query(registry, context.clone());
+    if crate::web::voice_bridge::tts_available() {
+        register_voice_message(registry, context.clone());
+    }
     let host_tools_allowed = context.host_tools_allowed();
     let parameters = if host_tools_allowed {
         json!({
@@ -86,6 +89,55 @@ pub(crate) fn register(registry: &mut ToolRegistry, context: Arc<PlatformTurnCon
         )
         .writes()
         .with_display_name("Send message"),
+    );
+}
+
+/// `send_voice_message`:文本经播报供应商合成后作为 QQ 语音消息发到当前会话。
+fn register_voice_message(registry: &mut ToolRegistry, context: Arc<PlatformTurnContext>) {
+    registry.register(
+        ToolSpec::new(
+            "send_voice_message",
+            "Send the given text as a spoken voice message (text-to-speech) to the current messaging-platform conversation.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "What to say, in natural spoken language (a few sentences at most)." }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+            move |arguments| {
+                let context = context.clone();
+                async move {
+                    let text = arguments
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .unwrap_or_default()
+                        .to_string();
+                    if text.is_empty() {
+                        bail!("text is required");
+                    }
+                    let path = crate::web::voice_bridge::synthesize_for_platform(&text).await?;
+                    let outcome = context
+                        .send(OutboundMessage::segments(
+                            OutboundOrigin::Tool,
+                            vec![OutboundSegment::AudioPath { path: path.clone() }],
+                        ))
+                        .await;
+                    let _ = std::fs::remove_file(&path);
+                    let receipt = outcome?;
+                    Ok(json!({
+                        "ok": true,
+                        "message_ids": receipt.message_ids,
+                        "conversation": context.conversation.scope_key(),
+                    })
+                    .to_string())
+                }
+            },
+        )
+        .writes()
+        .with_display_name("Send voice message"),
     );
 }
 

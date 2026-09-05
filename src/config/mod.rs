@@ -6,6 +6,7 @@ mod platform;
 mod platform_ops;
 mod platform_plugins;
 mod provider;
+pub(crate) use provider::append_resolved_api_keys;
 mod provider_ops;
 mod tool_plugins;
 pub(crate) use defaults::*;
@@ -101,11 +102,18 @@ pub struct AppConfig {
 /// 进程,关着时 daemon 零占用;主程序不含任何识别模型代码。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceConfig {
+    /// 语音唤醒开关:麦克风常开、唤醒词、听写。与 `tts.enabled` 独立。
     #[serde(default)]
     pub enabled: bool,
     /// 中文唤醒词,任意汉字,内部转拼音送 KWS 模型,不用重训。
-    #[serde(default = "default_wake_keyword")]
-    pub wake_keyword: String,
+    /// 唤醒词,可多个,任一命中即唤醒。配置里写数组或逗号分隔的字符串都行,
+    /// 旧键名 `wake_keyword` 照样读。
+    #[serde(
+        default = "default_wake_keywords",
+        alias = "wake_keyword",
+        deserialize_with = "deserialize_wake_keywords"
+    )]
+    pub wake_keywords: Vec<String>,
     /// 唤醒判定阈值(0~1,越低越灵敏;sherpa 默认 0.25)。
     #[serde(default = "default_wake_threshold")]
     pub wake_threshold: f32,
@@ -116,8 +124,6 @@ pub struct VoiceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
     /// "local"(SenseVoice,本地)| "cloud"(OpenAI 兼容 transcriptions)。
-    #[serde(default = "default_stt_engine")]
-    pub stt_engine: String,
     /// 本地识别线程数。
     #[serde(default = "default_stt_threads")]
     pub stt_threads: usize,
@@ -125,11 +131,6 @@ pub struct VoiceConfig {
     /// 认成日文碎片。
     #[serde(default = "default_stt_language")]
     pub stt_language: String,
-    /// 云端识别用的供应商 id(providers 里的)。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stt_cloud_provider: Option<String>,
-    #[serde(default = "default_stt_cloud_model")]
-    pub stt_cloud_model: String,
     /// 本地识别模型闲置多少秒后卸载(0 = 常驻)。
     #[serde(default = "default_stt_unload_seconds")]
     pub stt_unload_seconds: u64,
@@ -150,10 +151,160 @@ pub struct VoiceConfig {
     /// REPL 听写:识别一句就直接提交(true)还是先填进编辑框等回车(false)。
     #[serde(default)]
     pub dictation_auto_submit: bool,
+    /// 回复播报(语音合成)。
+    #[serde(default)]
+    pub tts: VoiceTtsConfig,
 }
 
-fn default_wake_keyword() -> String {
-    "未有未有".to_string()
+/// 回复播报(语音合成)。供应商各自独立配置(不共用 providers 里的 LLM
+/// 供应商,免得混),`active` 指向激活的那一个;空 = 不播报,只弹通知和提示音。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VoiceTtsConfig {
+    /// 文本转语音开关:开了才播报回复、才注册 `speak` 工具。与语音唤醒独立,
+    /// 任一开启都会拉起 miyu-voice(唤醒关闭时它只管播放,不开麦克风)。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 激活的播报供应商:minimax;None = 没选。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    /// 播报文本上限(字),超出截断。
+    #[serde(default = "default_tts_max_chars")]
+    pub max_chars: usize,
+    /// 试听用的句子。
+    #[serde(default = "default_tts_preview_text")]
+    pub preview_text: String,
+    #[serde(default)]
+    pub minimax: MiniMaxTtsConfig,
+}
+
+/// MiniMax `t2a_v2` 播报配置。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MiniMaxTtsConfig {
+    /// API key,支持 `$env:VAR` 引用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// 国内 `https://api.minimaxi.com/v1`,国际 `https://api.minimax.io/v1`。
+    #[serde(default = "default_minimax_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_tts_model")]
+    pub model: String,
+    /// 音色 id(系统音色名或克隆音色 id)。
+    #[serde(default = "default_tts_voice")]
+    pub voice_id: String,
+    /// 语速 0.5~2.0。
+    #[serde(default = "default_unit")]
+    pub speed: f32,
+    /// 音量 0.1~10。
+    #[serde(default = "default_unit")]
+    pub vol: f32,
+    /// 音调:半音偏移 -12~12,0 原声。
+    #[serde(default)]
+    pub pitch: i32,
+    /// 情绪:空=模型自定;happy | sad | angry | fearful | disgusted | surprised | calm | fluent | whisper
+    #[serde(default)]
+    pub emotion: String,
+    /// 语种增强:auto 或语种名(Chinese / English / Japanese …)。
+    #[serde(default = "default_language_boost")]
+    pub language_boost: String,
+}
+
+fn default_minimax_base_url() -> String {
+    "https://api.minimaxi.com/v1".to_string()
+}
+fn default_tts_model() -> String {
+    "speech-2.6-turbo".to_string()
+}
+fn default_tts_voice() -> String {
+    "Chinese_sweet_girl_nv1".to_string()
+}
+fn default_unit() -> f32 {
+    1.0
+}
+fn default_language_boost() -> String {
+    "auto".to_string()
+}
+fn default_tts_max_chars() -> usize {
+    300
+}
+fn default_tts_preview_text() -> String {
+    "今天也是充满希望的一天".to_string()
+}
+
+impl Default for VoiceTtsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active: None,
+            max_chars: default_tts_max_chars(),
+            preview_text: default_tts_preview_text(),
+            minimax: MiniMaxTtsConfig::default(),
+        }
+    }
+}
+
+impl Default for MiniMaxTtsConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            base_url: default_minimax_base_url(),
+            model: default_tts_model(),
+            voice_id: default_tts_voice(),
+            speed: 1.0,
+            vol: 1.0,
+            pitch: 0,
+            emotion: String::new(),
+            language_boost: default_language_boost(),
+        }
+    }
+}
+
+impl VoiceTtsConfig {
+    /// 播报可用:开关开着且选了供应商。
+    pub fn is_active(&self) -> bool {
+        self.enabled && matches!(self.active.as_deref(), Some("minimax"))
+    }
+}
+
+fn default_wake_keywords() -> Vec<String> {
+    vec!["未有未有".to_string()]
+}
+
+/// 把 "未有未有, 小未" 这样的文本拆成唤醒词列表(逗号/顿号/分号/换行分隔,去重)。
+pub fn split_wake_keywords(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in text.split(|ch: char| matches!(ch, ',' | '，' | '、' | ';' | '；' | '\n')) {
+        let part = part.trim();
+        if !part.is_empty() && !out.iter().any(|seen| seen == part) {
+            out.push(part.to_string());
+        }
+    }
+    out
+}
+
+fn deserialize_wake_keywords<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let mut out = Vec::new();
+    match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(text) => out = split_wake_keywords(&text),
+        OneOrMany::Many(items) => {
+            for item in items {
+                for keyword in split_wake_keywords(&item) {
+                    if !out.contains(&keyword) {
+                        out.push(keyword);
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        out = default_wake_keywords();
+    }
+    Ok(out)
 }
 fn default_wake_threshold() -> f32 {
     0.25
@@ -161,18 +312,12 @@ fn default_wake_threshold() -> f32 {
 fn default_wake_boost() -> f32 {
     1.0
 }
-fn default_stt_engine() -> String {
-    "local".to_string()
-}
 fn default_stt_threads() -> usize {
     2
 }
 fn default_stt_language() -> String {
     // SenseVoice 自动判语种会把普通话片段判成日语吐假名,默认锁中文。
     "zh".to_string()
-}
-fn default_stt_cloud_model() -> String {
-    "whisper-1".to_string()
 }
 fn default_stt_unload_seconds() -> u64 {
     60
@@ -194,15 +339,12 @@ impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            wake_keyword: default_wake_keyword(),
+            wake_keywords: default_wake_keywords(),
             wake_threshold: default_wake_threshold(),
             wake_boost: default_wake_boost(),
             microphone: None,
-            stt_engine: default_stt_engine(),
             stt_threads: default_stt_threads(),
             stt_language: default_stt_language(),
-            stt_cloud_provider: None,
-            stt_cloud_model: default_stt_cloud_model(),
             stt_unload_seconds: default_stt_unload_seconds(),
             follow_up_seconds: default_follow_up_seconds(),
             min_utterance_chars: default_min_utterance_chars(),
@@ -210,6 +352,7 @@ impl Default for VoiceConfig {
             sound_volume: default_sound_volume(),
             notify_reply_chars: default_notify_reply_chars(),
             dictation_auto_submit: false,
+            tts: VoiceTtsConfig::default(),
         }
     }
 }

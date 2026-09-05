@@ -265,6 +265,19 @@ pub enum Command {
     /// 语音前端状态(二进制是否存在、是否在跑、设备名等)。应答
     /// Event `voice.status`。
     VoiceStatus,
+    /// 让语音前端不用唤醒词直接进入等待指令状态(`miyu listen`,桌面
+    /// 快捷键呼叫)。应答 Ack;语音未启用/前端未就绪/听写中为 Error。
+    VoiceListen,
+    /// 合成并播出一段文本(`miyu voice say`、设置页试听)。`tts` 为 Some 时用
+    /// 这份配置(TUI 里试听尚未保存的音色/语速),否则用 daemon 当前配置。
+    /// 应答 Ack(已交给前端播)或 Error。
+    VoiceSpeak {
+        text: String,
+        #[serde(default)]
+        tts: Option<crate::config::VoiceTtsConfig>,
+    },
+    /// 删除唤醒对话的专属会话,下次唤醒重建(`miyu voice reset`)。应答 Ack。
+    VoiceReset,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

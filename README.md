@@ -100,6 +100,7 @@ miyu config
   喊唤醒词(默认「未有未有」)→ 提示音 + 桌面通知「在听」→ 说指令 → 执行完
   提示音 + 通知回复摘要。识别全在本机(SenseVoice,不联网);不开语音时零占用。
   REPL 里 `/stt`、终端 `miyu stt`、WebUI 麦克风按钮可用同一套识别做听写。
+  可选回复播报(MiniMax 语音合成);`miyu listen` 绑快捷键一键收听。
   详见 `docs/voice.md`。
 
 ## 重要配置调整

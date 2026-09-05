@@ -100,6 +100,13 @@ impl OneBotAdapter {
                     push_message_frame(&mut frames, &mut current, &mut current_image_digests);
                     files.push((path, name));
                 }
+                OutboundSegment::AudioPath { path } => {
+                    // QQ 语音消息不能和文字/图片混在一条里:前后各切一帧。
+                    push_message_frame(&mut frames, &mut current, &mut current_image_digests);
+                    let bytes = read_file_capped(&path, MAX_OUTBOUND_IMAGE_BYTES).await?;
+                    current.push(record_segment(&bytes));
+                    push_message_frame(&mut frames, &mut current, &mut current_image_digests);
+                }
             }
         }
         push_message_frame(&mut frames, &mut current, &mut current_image_digests);
@@ -199,6 +206,9 @@ impl OneBotAdapter {
                     }
                     OutboundSegment::FilePath { .. } => {
                         bail!("files cannot be embedded in a OneBot forward node")
+                    }
+                    OutboundSegment::AudioPath { .. } => {
+                        bail!("voice messages cannot be embedded in a OneBot forward node")
                     }
                 }
             }

@@ -40,11 +40,15 @@ pub(in crate::web) async fn voice_devices(
     .await;
     match output {
         Ok(Ok(output)) if output.status.success() => {
+            // 每行 `源名<TAB>描述`;老版本只有一列时描述取源名。
             let devices = String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .map(str::trim)
                 .filter(|line| !line.is_empty())
-                .map(str::to_string)
+                .map(|line| {
+                    let (name, label) = line.split_once('\t').unwrap_or((line, line));
+                    json!({ "value": name.trim(), "label": label.trim() })
+                })
                 .collect();
             Ok(json_devices(devices, None))
         }
@@ -55,6 +59,51 @@ pub(in crate::web) async fn voice_devices(
         Ok(Err(error)) => Ok(json_devices(Vec::new(), Some(&error.to_string()))),
         Err(_) => Ok(json_devices(Vec::new(), Some("timed out listing devices"))),
     }
+}
+
+/// `GET /api/voice/tts/voices`:按已保存的 MiniMax 播报配置拉音色列表。
+pub(in crate::web) async fn voice_tts_voices(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_auth(&headers, &state)?;
+    let cfg = state.manager.lock().unwrap().config.voice.tts.minimax.clone();
+    match voice_tts::list_minimax_voices(&cfg).await {
+        Ok(voices) => Ok(Json(json!({ "voices": voices, "error": null }))),
+        Err(error) => Ok(Json(json!({ "voices": [], "error": format!("{error:#}") }))),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(in crate::web) struct TtsPreviewRequest {
+    #[serde(default)]
+    text: String,
+}
+
+/// `POST /api/voice/tts/preview`:用当前(已保存的)TTS 配置合成并播一句。
+pub(in crate::web) async fn voice_tts_preview(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<TtsPreviewRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_mutation(&headers, &state)?;
+    let text = if request.text.trim().is_empty() {
+        let preview = state.manager.lock().unwrap().config.voice.tts.preview_text.clone();
+        if preview.trim().is_empty() {
+            "今天也是充满希望的一天".to_string()
+        } else {
+            preview
+        }
+    } else {
+        request.text
+    };
+    voice_bridge::wait_attached_public(&state)
+        .await
+        .map_err(|message| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message))?;
+    voice_bridge::speak(&state, &text)
+        .await
+        .map_err(|error| ApiError::new(StatusCode::BAD_GATEWAY, format!("{error:#}")))?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 pub(in crate::web) async fn voice_stream(
@@ -117,7 +166,7 @@ async fn stream_dictation(state: DaemonState, mut socket: WebSocket) {
     let _ = socket.send(Message::Close(None)).await;
 }
 
-fn json_devices(devices: Vec<String>, error: Option<&str>) -> Json<Value> {
+fn json_devices(devices: Vec<Value>, error: Option<&str>) -> Json<Value> {
     Json(json!({ "devices": devices, "error": error.map(|text| text.trim().to_string()) }))
 }
 

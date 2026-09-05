@@ -88,6 +88,10 @@ pub enum Command {
     Ask(MessageArgs),
     /// 用麦克风说一句话,识别成文字后当作消息发送(需开启语音功能)
     Stt,
+    /// 让语音前端立刻进入收听状态,不用喊唤醒词(给桌面快捷键用)
+    Listen,
+    /// 语音会话与播报管理:say / reset / history / status
+    Voice(VoiceArgs),
     Init,
     Paths,
     Config(ConfigArgs),
@@ -199,6 +203,28 @@ pub struct ToolCallArgs {
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub command: Option<ConfigCommand>,
+}
+
+#[derive(Debug, Args)]
+pub struct VoiceArgs {
+    #[command(subcommand)]
+    pub command: VoiceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VoiceCommand {
+    /// 用当前 TTS 配置合成并播出一句话(试听)
+    Say { text: String },
+    /// 清空唤醒对话的专属会话(下次唤醒重新开始)
+    Reset,
+    /// 打印语音会话最近的对话
+    History {
+        /// 最多打印多少轮
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// 语音前端状态
+    Status,
 }
 
 #[derive(Debug, Args)]

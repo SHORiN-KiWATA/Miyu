@@ -27,7 +27,7 @@ enum Command {
         #[arg(long)]
         timings: bool,
     },
-    /// 列出可选的麦克风设备名。
+    /// 列出可选的输入源(`源名<TAB>描述`),源名写进配置的 microphone。
     Devices,
     /// 试听提示音:wake | heard | done | error。
     Cue {
@@ -61,8 +61,9 @@ fn main() {
             timings,
         }) => miyu::voice::worker::run_test(keyword, device, timings),
         Some(Command::Devices) => {
-            for name in miyu::voice::mic::list_input_devices() {
-                println!("{name}");
+            // 一行一个:`源名<TAB>描述`,源名写进配置。
+            for source in miyu::voice::mic::list_input_sources() {
+                println!("{}\t{}", source.name, source.label);
             }
             Ok(())
         }

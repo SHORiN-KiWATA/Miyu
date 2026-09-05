@@ -166,7 +166,8 @@ pub(crate) fn message_is_parenthetical_only(message: &OutboundMessage) -> bool {
             OutboundSegment::Mention(_) => {}
             OutboundSegment::ImageBytes { .. }
             | OutboundSegment::ImagePath { .. }
-            | OutboundSegment::FilePath { .. } => return false,
+            | OutboundSegment::FilePath { .. }
+            | OutboundSegment::AudioPath { .. } => return false,
         }
     }
     let text = text.trim();
@@ -207,6 +208,7 @@ pub(crate) fn outbound_text_for_history(message: &OutboundMessage) -> String {
                 OutboundSegment::ImageBytes { .. }
                 | OutboundSegment::ImagePath { .. }
                 | OutboundSegment::FilePath { .. } => {}
+                OutboundSegment::AudioPath { .. } => parts.push("[语音]".to_string()),
             }
         }
     }

@@ -50,6 +50,18 @@ pub(in crate::config_tui) fn select_platforms(
                 "{}: {max_rounds_label}",
                 t("Max tool rounds per turn", "最大工具轮数")
             ),
+            format!(
+                "{}: {}",
+                t(
+                    "Allow the AI to message platforms from the terminal",
+                    "允许 AI 从终端发消息到通讯平台"
+                ),
+                if config.platforms.terminal_outreach {
+                    t("true", "true")
+                } else {
+                    t("false", "false")
+                }
+            ),
         ];
         draw_menu(
             stdout,
@@ -70,6 +82,7 @@ pub(in crate::config_tui) fn select_platforms(
                 1 => edit_platform_command_prefix(stdout, config)?,
                 2 => select_platform_commands(stdout, config)?,
                 3 => edit_platform_max_tool_rounds(stdout, config)?,
+                4 => config.platforms.terminal_outreach = !config.platforms.terminal_outreach,
                 _ => {}
             },
             _ => {}
@@ -441,14 +454,14 @@ pub(in crate::config_tui) fn edit_qq(
                     config.platforms.qq.memory.write_enabled =
                         !config.platforms.qq.memory.write_enabled
                 }
-                8 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
+                8 if matches!(key, KeyCode::Enter) => edit_qq_admin_list(
                     stdout,
                     t(
                         " TERMINAL-ENABLED ADMINISTRATORS ",
                         " 允许使用终端的管理员 QQ 号 ",
                     ),
-                    t("QQ id", "QQ 号"),
                     &mut config.platforms.qq.admin_users,
+                    &mut config.platforms.qq.admin_aliases,
                 )?,
                 9 => {
                     config.platforms.qq.allow_non_admin_host_tools =

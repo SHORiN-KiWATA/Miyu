@@ -57,6 +57,9 @@ pub const DEV_PERSONA: &str = "dev";
 /// Backs a one-shot `miyu ask` / `miyu '<message>'` turn: created just before
 /// the turn, deleted right after, and invisible to every listing in between.
 pub const ASK_SESSION_KIND: &str = "ask";
+/// 唤醒对话的专属会话:不进 WebUI 列表(列表只取 user),用 `miyu voice`
+/// 命令组管理(reset / history)。
+pub const VOICE_SESSION_KIND: &str = "voice";
 
 type PlatformAccessSubjects = HashSet<String>;
 type PlatformAccessKinds = HashMap<String, PlatformAccessSubjects>;

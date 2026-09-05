@@ -338,6 +338,7 @@ pub(in crate::web) fn resolve_available_local_session_ref(
 pub(in crate::web) const TURN_TARGET_KINDS: &[&str] = &[
     crate::state::USER_SESSION_KIND,
     crate::state::ASK_SESSION_KIND,
+    crate::state::VOICE_SESSION_KIND,
 ];
 
 /// Most recently updated other user session, or a fresh default session when

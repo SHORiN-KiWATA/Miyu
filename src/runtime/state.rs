@@ -144,8 +144,17 @@ impl TurnResourceCache {
     }
 
     pub(crate) fn key(config: &AppConfig) -> Result<[u8; 32]> {
-        let encoded =
+        let mut encoded =
             serde_json::to_vec(config).context("serializing effective turn configuration")?;
+        // 「从终端发到 QQ」工具只在 ws 连上时注册:连接状态并入缓存键,连上/掉线
+        // 各自一份 TurnResources,否则注册表建好后就不会再看连接状态。
+        if config.platforms.terminal_outreach {
+            encoded.extend_from_slice(if crate::tools::platform_outreach::qq_connected() {
+                b"|qq=1"
+            } else {
+                b"|qq=0"
+            });
+        }
         Ok(*blake3::hash(&encoded).as_bytes())
     }
 

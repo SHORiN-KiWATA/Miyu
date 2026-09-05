@@ -20,6 +20,24 @@ pub(crate) async fn send_direct_text(
     if text.is_empty() {
         bail!("scheduled message text is empty");
     }
+    send_direct(
+        state,
+        account,
+        conversation_kind,
+        conversation_id,
+        OutboundMessage::text(OutboundOrigin::Plugin, text),
+    )
+    .await
+}
+
+/// 同 [`send_direct_text`],但可以带任意出站消息(语音段等)。
+pub(crate) async fn send_direct(
+    state: &DaemonState,
+    account: Option<i64>,
+    conversation_kind: &str,
+    conversation_id: &str,
+    message: OutboundMessage,
+) -> Result<()> {
     let registry = state.platforms.onebot.clone();
     let (self_id, conn) = {
         let locked = registry.lock().unwrap();
@@ -62,8 +80,6 @@ pub(crate) async fn send_direct_text(
         max_reply_chars,
         file_store_lock: state.platforms.file_store_lock.clone(),
     };
-    adapter
-        .send_message(OutboundMessage::text(OutboundOrigin::Plugin, text))
-        .await?;
+    adapter.send_message(message).await?;
     Ok(())
 }

@@ -140,6 +140,15 @@ pub(in crate::web) async fn handle_ipc_connection(
         IpcCommand::VoiceStatus => {
             voice_bridge::handle_voice_status(&state, &mut stream).await?;
         }
+        IpcCommand::VoiceListen => {
+            voice_bridge::handle_voice_listen(&state, &mut stream).await?;
+        }
+        IpcCommand::VoiceSpeak { text, tts } => {
+            voice_bridge::handle_voice_speak(&state, &mut stream, text, tts).await?;
+        }
+        IpcCommand::VoiceReset => {
+            voice_bridge::handle_voice_reset(&state, &mut stream).await?;
+        }
         IpcCommand::StopSessionJobs { session_id } => {
             let stopped = tools::jobs::stop_session_jobs(&session_id).await;
             state

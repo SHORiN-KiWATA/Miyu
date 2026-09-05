@@ -39,7 +39,9 @@ mod skills;
 mod subagent_runner;
 mod task;
 mod todowrite;
+pub(crate) mod platform_outreach;
 pub(crate) mod voice_chat;
+pub(crate) mod voice_speak;
 pub(crate) use todowrite::{clear_session_todos, session_todos};
 pub mod tool_descriptions;
 pub(crate) mod usage_query;
@@ -254,6 +256,9 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "use_meme" => t("Meme", "表情包"),
         "manage_meme" => t("Manage memes", "管理表情包"),
         "end_voice_chat" => t("End voice chat", "结束语音对话"),
+        "speak" => t("Speak", "说话"),
+        "send_qq_message" => t("Send to QQ", "发送到 QQ"),
+        "send_voice_message" => t("Send voice message", "发送语音"),
         "deep_research" => t("Deep research", "深度研究"),
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
@@ -435,6 +440,18 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     }
     if config.voice.enabled {
         voice_chat::register(&mut registry);
+    }
+    if config.voice.tts.is_active() {
+        voice_speak::register(&mut registry);
+    }
+    // 本地会话专属:平台会话有 send_message_to_user,不在 restricted 注册表里重复。
+    // 只在 QQ 的 ws 已连上时注册(TurnResources 的缓存键带了连接位,连上/掉线
+    // 会各自重建一份)。
+    if config.platforms.terminal_outreach
+        && config.platforms.qq.enabled
+        && platform_outreach::qq_connected()
+    {
+        platform_outreach::register(&mut registry, config);
     }
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());

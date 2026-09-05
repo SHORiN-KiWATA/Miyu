@@ -197,10 +197,20 @@ try:
     results["voice_session_marker"] = marker.exists()
     if marker.exists():
         sid = marker.read_text().strip()
-        turns = http("GET", f"/api/sessions/{sid}/turns")
-        count = len(turns.get("turns", turns) if isinstance(turns, dict) else turns)
+        # 语音会话是 voice kind,不走 WebUI 的会话接口;用 `miyu voice history` 读。
+        history = subprocess.run([str(MIYU), "voice", "history", "--limit", "5"], env=env, capture_output=True, text=True, timeout=30)
+        count = sum(1 for line in history.stdout.splitlines() if line.rstrip().endswith(" user\x1b[0m"))
         say(f"voice session {sid} turns={count}")
         results["voice_session_turns"] = count
+        results["history_has_reply"] = "词元" in history.stdout
+    # 语音回合送给模型的用户消息要带 <voice_input> 包裹(语音协议):查隔离库。
+    try:
+        import sqlite3
+        db = sqlite3.connect(str(HOME / "state" / "conversation.db"))
+        rows = db.execute("SELECT user_content FROM turns ORDER BY seq DESC LIMIT 3").fetchall(); db.close()
+        results["voice_input_wrapped"] = any("<voice_input>" in (row[0] or "") for row in rows)
+    except Exception as error:
+        say(f"read turns failed: {error}"); results["voice_input_wrapped"] = False
     time.sleep(2)
     # 5. 听写
     sock, frames = ipc({"command": "start_dictation"}, read_events=0, timeout=20)

@@ -213,6 +213,8 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
             run_stt_once(&paths, cli.stdout, mode, session).await
         }
+        Some(Command::Listen) => run_listen(&paths).await,
+        Some(Command::Voice(args)) => run_voice_command(&paths, args.command).await,
         Some(Command::Init) => run_init(&paths, InitKind::Explicit),
         Some(Command::Paths) => {
             paths.print();

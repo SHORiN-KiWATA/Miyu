@@ -23,7 +23,7 @@ mod images;
 mod inbound;
 mod notices;
 mod outbound;
-mod proactive;
+pub(crate) mod proactive;
 mod send;
 mod turn;
 use adapter::*;

@@ -96,63 +96,6 @@ impl SttEngine for LocalSenseVoice {
     }
 }
 
-/// 云端:OpenAI 兼容 `POST {base_url}/audio/transcriptions`(multipart,
-/// 16kHz 单声道 16-bit WAV)。零本地内存,代价是网络往返。
-pub struct CloudTranscriber {
-    endpoint: String,
-    api_key: Option<String>,
-    model: String,
-    client: reqwest::blocking::Client,
-}
-
-impl CloudTranscriber {
-    pub fn new(base_url: String, api_key: Option<String>, model: String) -> Self {
-        let base = base_url.trim_end_matches('/');
-        // providers 里的 base_url 通常已含 /v1;没有的补上。
-        let endpoint = if base.ends_with("/v1") {
-            format!("{base}/audio/transcriptions")
-        } else {
-            format!("{base}/v1/audio/transcriptions")
-        };
-        Self {
-            endpoint,
-            api_key,
-            model,
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("reqwest client"),
-        }
-    }
-}
-
-impl SttEngine for CloudTranscriber {
-    fn transcribe(&mut self, sample_rate: u32, samples: &[f32]) -> Result<String> {
-        let wav = encode_wav(sample_rate, samples);
-        let part = reqwest::blocking::multipart::Part::bytes(wav)
-            .file_name("speech.wav")
-            .mime_str("audio/wav")?;
-        let form = reqwest::blocking::multipart::Form::new()
-            .text("model", self.model.clone())
-            .text("response_format", "json")
-            .part("file", part);
-        let mut request = self.client.post(&self.endpoint).multipart(form);
-        if let Some(key) = &self.api_key {
-            request = request.bearer_auth(key);
-        }
-        let response = request.send().context("云端转写请求失败")?;
-        let status = response.status();
-        let body: serde_json::Value = response.json().context("云端转写应答不是 JSON")?;
-        anyhow::ensure!(status.is_success(), "云端转写 HTTP {status}: {body}");
-        Ok(body
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string())
-    }
-}
-
 /// f32 采样 → 16-bit PCM WAV 字节。
 pub fn encode_wav(sample_rate: u32, samples: &[f32]) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;

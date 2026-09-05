@@ -63,11 +63,69 @@ impl Drop for SilencedStderr {
     }
 }
 
-/// 枚举输入设备名,给配置界面的选择列表用。
-///
-/// cpal 经 ALSA 枚举出的大半是采样率转换/路由插件(lavrate、speexrate、
-/// upmix…),对选麦克风毫无意义;只留真正指向声卡的条目(带 CARD= 且
-/// 不是 surround 输出布局)。"系统默认"由配置里的空值表达,不列 default。
+/// 一个可选的输入源:`name` 写进配置,`label` 给人看。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputSource {
+    pub name: String,
+    pub label: String,
+}
+
+/// 枚举输入源,给配置界面的选择列表用。优先问 PipeWire/PulseAudio
+/// (`pactl`):名字和描述与系统设置里看到的一致(如「fifine Microphone」),
+/// 打开时经 `PIPEWIRE_NODE` 指到这个源。没有 pactl 时退回 cpal 的 ALSA
+/// 设备名。"系统默认"由配置里的空值表达,不列 default。
+pub fn list_input_sources() -> Vec<InputSource> {
+    let pipewire = list_pipewire_sources();
+    if !pipewire.is_empty() {
+        return pipewire;
+    }
+    list_input_devices()
+        .into_iter()
+        .map(|name| InputSource {
+            label: name.clone(),
+            name,
+        })
+        .collect()
+}
+
+fn list_pipewire_sources() -> Vec<InputSource> {
+    let Ok(output) = std::process::Command::new("pactl")
+        .args(["-f", "json", "list", "sources"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let Ok(list) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|source| {
+            let name = source.get("name")?.as_str()?.trim();
+            // 输出设备的 monitor 不是麦克风。
+            if name.is_empty() || name.ends_with(".monitor") {
+                return None;
+            }
+            let label = source
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(name);
+            Some(InputSource {
+                name: name.to_string(),
+                label: label.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// cpal 经 ALSA 枚举出的设备名(退路)。大半是采样率转换/路由插件
+/// (lavrate、speexrate、upmix…),只留真正指向声卡的条目。
 pub fn list_input_devices() -> Vec<String> {
     let _quiet = SilencedStderr::new();
     let host = cpal::default_host();
@@ -130,11 +188,22 @@ fn open_stream(
 ) -> Result<(cpal::Stream, String)> {
     let _quiet = SilencedStderr::new();
     let host = cpal::default_host();
+    let mut pipewire_target: Option<String> = None;
     let device = match device_name {
-        Some(name) => host
+        Some(name) => match host
             .input_devices()?
             .find(|device| device.name().map(|n| n == name).unwrap_or(false))
-            .with_context(|| format!("找不到麦克风设备「{name}」"))?,
+        {
+            Some(device) => device,
+            None => {
+                // 不是 ALSA 设备名,当作 PipeWire 源名:让 pipewire-alsa 的
+                // default 设备接到这个源上。环境变量要在打开 PCM 之前设好。
+                std::env::set_var("PIPEWIRE_NODE", name);
+                pipewire_target = Some(name.to_string());
+                host.default_input_device()
+                    .with_context(|| format!("找不到麦克风「{name}」,且没有默认输入设备"))?
+            }
+        },
         None => host
             .default_input_device()
             .ok_or_else(|| anyhow!("没有可用的输入设备"))?,
@@ -146,7 +215,8 @@ fn open_stream(
     let channels = config.channels() as usize;
     let description = format!(
         "{} ({source_rate}Hz {channels}ch {:?})",
-        device.name().unwrap_or_else(|_| "unknown".to_string()),
+        pipewire_target
+            .unwrap_or_else(|| device.name().unwrap_or_else(|_| "unknown".to_string())),
         config.sample_format()
     );
     let stream_config: cpal::StreamConfig = config.clone().into();

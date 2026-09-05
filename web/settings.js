@@ -910,8 +910,32 @@ window.MiyuSettings = (() => {
         if (field.unit) return el("span.st-unit-wrap", null, input, el("span.st-unit", { text: field.unit }));
         return input;
       }
-      case "select":
-        return selectInput(field.choices || [], current ?? "", (next) => binding.set(next), field.label);
+      case "select": {
+        if (!field.choicesFrom) return selectInput(field.choices || [], current ?? "", (next) => binding.set(next), field.label);
+        // 动态选项:先用静态 choices(加上当前值)画出来,再从接口补全,选中值不变。
+        const base = [...(field.choices || [])];
+        const currentValue = String(current ?? "");
+        if (currentValue && !base.some((choice) => (typeof choice === "string" ? choice : choice.value) === currentValue)) base.push({ value: currentValue, label: currentValue });
+        const wrap = selectInput(base, currentValue, (next) => binding.set(next), field.label);
+        const node = wrap.querySelector("select");
+        fetch(field.choicesFrom.url, { credentials: "same-origin", cache: "no-store" })
+          .then((response) => (response.ok ? response.json() : Promise.reject(new Error(response.statusText))))
+          .then((payload) => {
+            const items = Array.isArray(payload?.[field.choicesFrom.key]) ? payload[field.choicesFrom.key] : [];
+            for (const item of items) {
+              const value = String(typeof item === "string" ? item : item?.value ?? "");
+              const label = String(typeof item === "string" ? item : item?.label ?? value);
+              if (!value) continue;
+              const existing = [...node.options].find((option) => option.value === value);
+              if (existing) { existing.text = label; continue; }
+              node.append(el("option", { value, text: label }));
+            }
+            node.value = currentValue;
+            if (node.value !== currentValue && node.options.length) node.selectedIndex = 0;
+          })
+          .catch(() => { /* 拉不到就留静态选项 */ });
+        return wrap;
+      }
       case "text":
         return textInput(current ?? "", (next) => binding.set(next), { placeholder: field.placeholder || "", mono: Boolean(field.mono), ariaLabel: field.label });
       case "textarea":

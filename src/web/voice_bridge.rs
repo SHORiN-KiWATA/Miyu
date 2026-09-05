@@ -82,16 +82,18 @@ pub(crate) fn worker_running() -> bool {
 
 /// `/api/voice/status` 与 IPC `VoiceStatus` 共用的状态快照。
 pub(crate) fn status(state: &DaemonState) -> Value {
-    let (enabled, models_dir) = {
+    let (enabled, tts_enabled, models_dir) = {
         let manager = state.manager.lock().unwrap();
         (
             manager.config.voice.enabled,
+            manager.config.voice.tts.is_active(),
             state.paths.state_dir.join("models"),
         )
     };
     let binary = locate_binary();
     json!({
         "enabled": enabled,
+        "tts": tts_enabled,
         "binary": binary.as_ref().map(|path| path.display().to_string()),
         "spawned": WORKER_PID.load(Ordering::Relaxed) != 0,
         "attached": worker_running(),
@@ -103,9 +105,14 @@ pub(crate) fn status(state: &DaemonState) -> Value {
 }
 
 /// daemon 启动时调用:语音开启才拉 worker。
+/// 语音唤醒或文本转语音任一开启都需要前端进程。
+fn worker_wanted(voice: &crate::config::VoiceConfig) -> bool {
+    voice.enabled || voice.tts.enabled
+}
+
 pub(crate) fn spawn_if_enabled(state: &DaemonState) {
-    let enabled = state.manager.lock().unwrap().config.voice.enabled;
-    if enabled {
+    let wanted = worker_wanted(&state.manager.lock().unwrap().config.voice);
+    if wanted {
         ensure_worker(state);
     }
 }
@@ -121,7 +128,7 @@ pub(crate) fn on_config_reload(
     if previous_json == next_json {
         return;
     }
-    if next.enabled {
+    if worker_wanted(next) {
         // 让看护循环用新配置重启:worker 收到 SIGTERM 退出,循环立刻重拉。
         if WORKER_PID.load(Ordering::Relaxed) != 0 {
             kill_worker();
@@ -228,8 +235,8 @@ pub(crate) fn ensure_worker(state: &DaemonState) {
             tracing::warn!("语音前端退出({status:?}),{backoff_secs}s 后重启");
             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
             backoff_secs = (backoff_secs * 2).min(60);
-            let enabled = state.manager.lock().unwrap().config.voice.enabled;
-            if !enabled {
+            let wanted = worker_wanted(&state.manager.lock().unwrap().config.voice);
+            if !wanted {
                 break;
             }
         }
@@ -427,7 +434,7 @@ fn resolve_voice_session(state: &DaemonState) -> Result<String> {
     let record = state.state_store.create_session(
         &persona,
         crate::i18n::text("Voice chat", "语音会话"),
-        "user",
+        crate::state::VOICE_SESSION_KIND,
         None,
     )?;
     std::fs::write(&marker, &record.session_id)
@@ -464,13 +471,16 @@ fn cancel_active_run(state: &DaemonState) {
 async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
     use crate::i18n::text as t;
     let session_id = resolve_voice_session(state)?;
-    let reply_chars = state
-        .manager
-        .lock()
-        .unwrap()
-        .config
-        .voice
-        .notify_reply_chars;
+    let (reply_chars, tts) = {
+        let manager = state.manager.lock().unwrap();
+        (
+            manager.config.voice.notify_reply_chars,
+            manager.config.voice.tts.clone(),
+        )
+    };
+    // 语音协议(agent::prompt::VOICE_PROTOCOL):用户消息带这个包裹,模型才会
+    // 在回复末尾给 <speak> 口语版。
+    let content = format!("<voice_input>{content}</voice_input>");
     let socket = state.paths.ipc_socket();
     send_signal("voice.hold", json!({ "on": true }));
     let outcome = async {
@@ -535,13 +545,15 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
     let (reply, how) = outcome?;
     match how {
         "completed" => {
-            let body = if reply.trim().is_empty() {
-                t("done", "办好了").to_string()
-            } else {
-                clip(&reply, reply_chars)
-            };
-            notify(state, t("Miyu", "未有"), &body);
-            send_signal("voice.cue", json!({ "name": "done" }));
+            // 通知正文与播报用同一份口语版:有 <speak> 用 <speak>,没有就清洗正文。
+            let spoken = crate::web::voice_tts::spoken_text(&reply, &tts);
+            notify(state, t("Miyu", "未有"), &clip(&spoken, reply_chars));
+            if !tts.is_active() {
+                send_signal("voice.cue", json!({ "name": "done" }));
+            } else if let Err(error) = speak(state, &spoken).await {
+                tracing::warn!("播报失败: {error:#}");
+                send_signal("voice.cue", json!({ "name": "done" }));
+            }
         }
         "cancelled" => {}
         _ => {
@@ -558,11 +570,137 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
     Ok(())
 }
 
+/// 按当前 TTS 配置把文本变成语音交给前端播:daemon 调 MiniMax 合成 wav 落到
+/// cache,再 `voice.play` 让前端播。
+pub(crate) async fn speak(state: &DaemonState, text: &str) -> Result<()> {
+    speak_with(state, text, None).await
+}
+
+/// 同 [`speak`],`override_tts` 为 Some 时用这份配置代替 daemon 当前配置
+/// (设置界面试听未保存的音色/语速)。
+pub(crate) async fn speak_with(
+    state: &DaemonState,
+    text: &str,
+    override_tts: Option<crate::config::VoiceTtsConfig>,
+) -> Result<()> {
+    let tts = override_tts.unwrap_or_else(|| state.manager.lock().unwrap().config.voice.tts.clone());
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    if !tts.is_active() {
+        anyhow::bail!("回复播报未激活(语音功能 → 配置播报供应商 → Tab 激活)");
+    }
+    let path = synthesize_to_cache(state, &tts, text).await?;
+    send_signal("voice.play", json!({ "wav_path": path.display().to_string() }));
+    Ok(())
+}
+
+/// 合成到 cache/voice/<id>.wav,返回路径。
+async fn synthesize_to_cache(
+    state: &DaemonState,
+    tts: &crate::config::VoiceTtsConfig,
+    text: &str,
+) -> Result<PathBuf> {
+    let wav = crate::web::voice_tts::synthesize_minimax(&tts.minimax, text).await?;
+    let dir = state.paths.cache_dir.join("voice");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.wav", crate::runtime::random_id("tts", 12)));
+    std::fs::write(&path, wav)?;
+    Ok(path)
+}
+
+/// 播报是否可用(daemon 内、开关开着、供应商激活)。平台工具注册用。
+pub(crate) fn tts_available() -> bool {
+    DAEMON_STATE
+        .get()
+        .is_some_and(|state| state.manager.lock().unwrap().config.voice.tts.is_active())
+}
+
+/// `send_voice_message` 工具用:把文本合成成 wav 文件(QQ 语音消息),不播。
+pub(crate) async fn synthesize_for_platform(text: &str) -> Result<PathBuf> {
+    let state = DAEMON_STATE
+        .get()
+        .context("send_voice_message 只能在 daemon 里用")?;
+    let tts = state.manager.lock().unwrap().config.voice.tts.clone();
+    if !tts.is_active() {
+        anyhow::bail!("文本转语音未开启或未激活供应商(设置 → 语音功能)");
+    }
+    let text = text.trim();
+    anyhow::ensure!(!text.is_empty(), "text is empty");
+    let spoken = crate::web::voice_tts::sanitize_for_speech(text);
+    let spoken = if spoken.trim().is_empty() { text.to_string() } else { spoken };
+    synthesize_to_cache(state, &tts, &spoken).await
+}
+
+/// daemon 的状态句柄,给 `speak` 工具这类没有 state 参数的调用点用。
+static DAEMON_STATE: std::sync::OnceLock<DaemonState> = std::sync::OnceLock::new();
+
+pub(crate) fn install_state(state: &DaemonState) {
+    let _ = DAEMON_STATE.set(state.clone());
+}
+
+/// daemon 状态句柄(非 daemon 进程里为 None)。
+pub(crate) fn daemon_state() -> Option<&'static DaemonState> {
+    DAEMON_STATE.get()
+}
+
+/// `speak` 工具入口:模型主动说话。前端未就绪时拉起并等它。
+pub(crate) async fn speak_from_tool(text: &str) -> Result<()> {
+    let state = DAEMON_STATE
+        .get()
+        .context("speak 只能在 daemon 里用(当前不是 daemon 进程)")?;
+    if let Err(message) = wait_attached(state, 20_000).await {
+        anyhow::bail!("{message}");
+    }
+    speak(state, text).await
+}
+
+/// VoiceSpeak 处理:`miyu voice say` / 设置页试听。
+pub(crate) async fn handle_voice_speak(
+    state: &DaemonState,
+    stream: &mut tokio::net::UnixStream,
+    text: String,
+    override_tts: Option<crate::config::VoiceTtsConfig>,
+) -> Result<()> {
+    if let Err(message) = wait_attached(state, 20_000).await {
+        crate::ipc::send(stream, &crate::ipc::Frame::error(message)).await?;
+        return Ok(());
+    }
+    match speak_with(state, &text, override_tts).await {
+        Ok(()) => crate::ipc::send(stream, &crate::ipc::Frame::Ack).await?,
+        Err(error) => {
+            crate::ipc::send(stream, &crate::ipc::Frame::error(format!("{error:#}"))).await?
+        }
+    }
+    Ok(())
+}
+
+/// VoiceReset 处理:删掉语音会话与 id 标记,下次唤醒重建。
+pub(crate) async fn handle_voice_reset(
+    state: &DaemonState,
+    stream: &mut tokio::net::UnixStream,
+) -> Result<()> {
+    cancel_active_run(state);
+    let marker = state.paths.state_dir.join(SESSION_ID_FILE);
+    if let Ok(saved) = std::fs::read_to_string(&marker) {
+        let saved = saved.trim();
+        if !saved.is_empty() {
+            if let Err(error) = state.state_store.delete_session(saved) {
+                tracing::warn!("删除语音会话 {saved} 失败: {error:#}");
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&marker);
+    crate::ipc::send(stream, &crate::ipc::Frame::Ack).await?;
+    Ok(())
+}
+
 /// 等 worker 的信令连接就绪(冷启动要加载模型,给足时间)。
 async fn wait_attached(state: &DaemonState, timeout_ms: u64) -> Result<(), &'static str> {
-    let enabled = state.manager.lock().unwrap().config.voice.enabled;
-    if !enabled {
-        return Err("语音功能未启用(设置 → 语音功能)");
+    let wanted = worker_wanted(&state.manager.lock().unwrap().config.voice);
+    if !wanted {
+        return Err("语音唤醒和文本转语音都没开(设置 → 语音功能)");
     }
     if locate_binary().is_none() {
         return Err("找不到 miyu-voice 可执行文件,请安装语音组件");
@@ -586,6 +724,9 @@ pub(crate) async fn claim_dictation(
     state: &DaemonState,
     external: bool,
 ) -> std::result::Result<UnboundedReceiver<DictationRelay>, &'static str> {
+    if !state.manager.lock().unwrap().config.voice.enabled {
+        return Err("语音唤醒未开启(设置 → 语音功能),听写需要麦克风");
+    }
     wait_attached(state, 20_000).await?;
     let (tx, rx) = unbounded_channel();
     {
@@ -619,6 +760,11 @@ pub(crate) fn push_audio(pcm16: &[u8]) {
         "voice.audio",
         json!({ "pcm16": base64::engine::general_purpose::STANDARD.encode(pcm16) }),
     );
+}
+
+/// HTTP 面用的就绪等待(错误文本直接给前端)。
+pub(crate) async fn wait_attached_public(state: &DaemonState) -> std::result::Result<(), String> {
+    wait_attached(state, 20_000).await.map_err(str::to_string)
 }
 
 /// StartDictation 处理:认领听写流,转写 Event 帧流回客户端,断开即释放。
@@ -661,6 +807,29 @@ pub(crate) async fn handle_start_dictation(
         }
     }
     release_dictation();
+    Ok(())
+}
+
+/// VoiceListen 处理:快捷键呼叫。前端进入等待指令,后续与唤醒命中一样。
+pub(crate) async fn handle_voice_listen(
+    state: &DaemonState,
+    stream: &mut tokio::net::UnixStream,
+) -> Result<()> {
+    if !state.manager.lock().unwrap().config.voice.enabled {
+        crate::ipc::send(stream, &crate::ipc::Frame::error("语音唤醒未开启(设置 → 语音功能)")).await?;
+        return Ok(());
+    }
+    if let Err(message) = wait_attached(state, 20_000).await {
+        crate::ipc::send(stream, &crate::ipc::Frame::error(message)).await?;
+        return Ok(());
+    }
+    if DICTATION.lock().unwrap().is_some() {
+        crate::ipc::send(stream, &crate::ipc::Frame::error("听写进行中,先结束听写")).await?;
+        return Ok(());
+    }
+    cancel_active_run(state);
+    send_signal("voice.listen", json!({}));
+    crate::ipc::send(stream, &crate::ipc::Frame::Ack).await?;
     Ok(())
 }
 

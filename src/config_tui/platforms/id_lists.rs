@@ -66,6 +66,100 @@ pub(in crate::config_tui) fn prompt_single_id(
     }
 }
 
+/// 管理员列表:每项 QQ 号 + 别名(别名给终端发消息工具的 `to` 列表用)。
+/// 第一项是主管理员。
+pub(in crate::config_tui) fn edit_qq_admin_list(
+    stdout: &mut io::Stdout,
+    title: &'static str,
+    ids: &mut Vec<i64>,
+    aliases: &mut std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let mut selected = 0usize;
+    loop {
+        let mut options = vec![t("+ Add", "+ 新增").to_string()];
+        options.extend(ids.iter().enumerate().map(|(index, id)| {
+            let alias = aliases.get(&id.to_string()).map(String::as_str).unwrap_or("");
+            let primary = if index == 0 { t(" (primary)", "(主管理员)") } else { "" };
+            if alias.is_empty() {
+                format!("{id}{primary}")
+            } else {
+                format!("{id}  {alias}{primary}")
+            }
+        }));
+        draw_menu(
+            stdout,
+            title,
+            &options,
+            selected,
+            t(
+                "[Enter]add/edit [Delete]remove [j/k]move [q]back",
+                "[Enter]新增/编辑 [Delete]删除 [j/k]移动 [q]返回",
+            ),
+        )?;
+        match read_key()? {
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Enter => {
+                let index = if selected == 0 { None } else { Some(selected - 1) };
+                let current_id = index.and_then(|i| ids.get(i).copied());
+                let current_alias = current_id
+                    .and_then(|id| aliases.get(&id.to_string()).cloned())
+                    .unwrap_or_default();
+                let mut fields = vec![
+                    Field::new(
+                        t("QQ id", "QQ 号"),
+                        current_id.map(|id| id.to_string()).unwrap_or_default(),
+                    ),
+                    Field::new(
+                        t("Alias (recipient name shown to the AI)", "别名(AI 发消息时的收件人名)"),
+                        current_alias,
+                    ),
+                ];
+                if !run_form_editing(stdout, t(" ADMINISTRATOR ", " 管理员 "), &mut fields)? {
+                    continue;
+                }
+                let id = match parse_positive_id(&fields[0].value) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        message(stdout, &error)?;
+                        continue;
+                    }
+                };
+                let alias = fields[1].value.trim().to_string();
+                if ids
+                    .iter()
+                    .enumerate()
+                    .any(|(other, item)| Some(other) != index && *item == id)
+                {
+                    message(stdout, t("That id already exists.", "该号码已存在。"))?;
+                    continue;
+                }
+                match index {
+                    Some(i) => {
+                        if let Some(old) = ids.get(i).copied() {
+                            aliases.remove(&old.to_string());
+                        }
+                        ids[i] = id;
+                    }
+                    None => ids.push(id),
+                }
+                if alias.is_empty() {
+                    aliases.remove(&id.to_string());
+                } else {
+                    aliases.insert(id.to_string(), alias);
+                }
+            }
+            KeyCode::Delete | KeyCode::Backspace if selected >= 1 => {
+                let removed = ids.remove(selected - 1);
+                aliases.remove(&removed.to_string());
+                selected = selected.min(ids.len());
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(in crate::config_tui) fn edit_qq_id_list(
     stdout: &mut io::Stdout,
     title: &'static str,

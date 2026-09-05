@@ -82,6 +82,50 @@ AUR 包装包 `packaging/arch/miyu-voice`。
 | 回合失败 | error(低音) | 「语音会话出错 / …」 |
 | 窗口关闭/超时 | 无 | 无 |
 
+**语音会话**:唤醒对话落在一条专属会话(kind = `voice`,id 记在
+`state/voice-session-id`),不进 WebUI 列表;用 `miyu voice history [--limit n]`
+回看、`miyu voice reset` 清空(下次唤醒重建)、`miyu voice status` 看前端状态。
+
+**回复播报(TTS)**:播报供应商独立于 LLM 的 providers 配置(免得混),目前预置
+MiniMax:`voice.tts.minimax` 里填自己的 api_key(账号级,对话与语音共用一把,
+支持 `$env:VAR`)、国内/国际站地址、模型、音色、语速/音量/音调/情绪/语种增强;
+`voice.tts.active = "minimax"` 即激活,空则只弹通知和提示音。合成走 `t2a_v2`
+返回 wav,由 daemon 交给 miyu-voice 播放;播报期间麦克风帧丢弃(没有回声消除,
+半双工),`miyu listen` 会先掐掉播报再收听。
+
+两个独立开关:`voice.enabled` = **语音唤醒**(麦克风常开、唤醒词、听写、
+`miyu listen`),`voice.tts.enabled` = **文本转语音**(回复播报、`speak` 工具)。
+任一开启都会拉起 miyu-voice;唤醒关闭时它不开麦克风、不下载识别模型,只管播放。
+
+TUI「语音功能」菜单:语音唤醒开关 → 文本转语音开关 → 「配置播报供应商」(列表里 Tab 激活、Enter 进
+MiniMax:连接与模型 / **选择音色** / 播报参数(语速、音量、音调、情绪、试听语句)/ 试听)→ 「识别与唤醒设置」。
+选择音色的列表来自 `get_voice`(名字 + 描述,含克隆音色),`/` 搜索、`t` 按标签
+(语种 / 女声 / 男声 / 克隆,标签由 id 与描述推得)筛选、`p` 试听当前行、
+`Enter` 选用;默认只显示「中文」标签。试听走 daemon(IPC `VoiceSpeak` 可携带
+整份未保存的 tts 配置),默认句子「今天也是充满希望的一天」,可在播报参数里改。音调是半音偏移:
+0 原声,正数更高更细,负数更低更沉,±12 一个八度。
+`miyu voice say "文本"` / WebUI `POST /api/voice/tts/preview` 同样可试听。
+
+**模型主动说话**:`speak` 工具(文本转语音激活时注册,只在本地会话;QQ 会话
+通常是远程的,平台回合统一摘掉)把一句口语文本经播报供应商从扬声器播出。工具描述只说"这是说话的工具",什么时候用写在提示词里。
+
+**从终端发到 QQ**:「接入通讯平台 → 允许 AI 从终端发消息到通讯平台」打开后,
+本地会话(REPL / WebUI / shellhook)注册 `send_qq_message` 工具(平台会话不注册,
+那边已有 `send_message_to_user`):`text` 必填,`voice: true` 发语音消息,`to` 的
+可选项是管理员列表的别名(「允许使用终端的管理员 QQ 号」里每个号码可配别名,
+没别名显示号码),不传发给第一个(主管理员)。工具只在 NapCat 的反向 ws 已连上
+时注册(连接状态并入回合资源的缓存键,连上/掉线各自重建一份工具表,也就是
+这两个时刻本地会话的缓存前缀会变一次);掉线时模型根本看不到它。
+
+**QQ 语音消息**:`send_voice_message` 工具(平台会话、文本转语音激活时注册)
+把文本合成后作为 OneBot `record` 段单独发一条(QQ 语音不能和文字混发),
+NapCat 那边把 wav 转 silk。合成文本先过一遍清洗(去代码/链接/路径)。
+
+**快捷键呼叫**:`miyu listen` 让前端直接进入等待指令状态(提示音 + 「在听」
+通知,8 秒内说指令),效果与喊唤醒词一样。绑到合成器快捷键上,例如 niri:
+`Mod+Space { spawn "miyu" "listen"; }`。成功时不输出;语音未启用或前端未就绪
+时报错退出。
+
 对话中说「没事了 / 就这样 / 去忙吧」→ 模型调 `end_voice_chat` 工具(仅
 `voice.enabled` 时注册)→ 关窗。免唤醒追问窗口 `follow_up_seconds` 默认 300。
 文字照常落「语音会话」lane(独立 user lane,id 记在 `state/voice-session-id`),
@@ -110,20 +154,28 @@ WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模�
 ```jsonc
 "voice": {
   "enabled": false,
-  "wake_keyword": "未有未有",
+  "wake_keywords": ["未有未有"],   // 可多个,任一命中即唤醒;写逗号分隔的字符串也行
   "wake_threshold": 0.25, "wake_boost": 1.0,
-  "microphone": null,                 // `miyu-voice devices` 列名;null=系统默认
-  "stt_engine": "local",              // local | cloud
+  "microphone": null,                 // TUI/WebUI 从 `miyu-voice devices` 列表里选;null=系统默认
   "stt_threads": 2,
   "stt_language": "zh",               // auto | zh | en | ja | ko | yue;auto 会把普通话判成日语
   "stt_unload_seconds": 60,           // 0 = 常驻
-  "stt_cloud_provider": null,         // providers 里的 id(OpenAI 兼容 /audio/transcriptions)
-  "stt_cloud_model": "whisper-1",
   "follow_up_seconds": 300,
   "min_utterance_chars": 2,
   "sounds": true, "sound_volume": 0.6,
   "notify_reply_chars": 120,
-  "dictation_auto_submit": false
+  "dictation_auto_submit": false,
+  "tts": {
+    "active": "minimax",              // minimax | 缺省 = 不播报
+    "max_chars": 300,
+    "minimax": {
+      "api_key": "…",                 // 支持 "$env:MINIMAX_API_KEY"
+      "base_url": "https://api.minimaxi.com/v1",   // 国际站 https://api.minimax.io/v1
+      "model": "speech-2.6-turbo",
+      "voice_id": "Chinese_sweet_girl_nv1",        // get_voice 列表里的 voice_id
+      "speed": 1.0, "vol": 1.0, "pitch": 0, "emotion": "", "language_boost": "auto"
+    }
+  }
 }
 ```
 

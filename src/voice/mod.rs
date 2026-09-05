@@ -11,6 +11,7 @@ pub mod keywords;
 pub mod mic;
 pub mod models;
 pub mod pipeline;
+pub mod speaker;
 pub mod stt;
 pub mod worker;
 
@@ -58,6 +59,9 @@ pub enum Control {
     Hold(bool),
     /// 立即关闭会话/听写窗口。
     CloseWindow,
+    /// 不用唤醒词,直接进入等待指令状态(快捷键呼叫)。行为与唤醒命中
+    /// 后无指令一致:吐 [`VoiceEvent::Wake`],等下一句当指令。听写中忽略。
+    Listen,
     /// 进入听写:免唤醒短窗,识别结果以 [`VoiceEvent::Dictation`] 吐出。
     /// `external` 为 true 时音频不来自麦克风,而是宿主经 [`Control::Audio`]
     /// 推入(浏览器麦克风走 WebSocket 到 daemon 再转到这里);期间本机
@@ -67,6 +71,9 @@ pub enum Control {
     StopDictation,
     /// 一段外部 16kHz 单声道音频,只在外部听写期间被消费。
     Audio(Vec<f32>),
+    /// 播报中(true)丢弃麦克风帧:没有回声消除,不这样它会听见自己。
+    /// 窗口静默计时随之停走,播完再继续。
+    Playback(bool),
     /// 转写一段外部 16kHz 单声道音频。
     Transcribe {
         request_id: String,
@@ -75,17 +82,11 @@ pub enum Control {
     Stop,
 }
 
-/// STT 引擎选择。
+/// STT 引擎选择(目前只有本地 SenseVoice)。
 #[derive(Debug, Clone)]
 pub enum SttChoice {
     /// 本地 SenseVoice(sherpa-onnx)。language: auto | zh | en | ja | ko | yue。
     Local { threads: usize, language: String },
-    /// OpenAI 兼容 `/v1/audio/transcriptions`。
-    Cloud {
-        base_url: String,
-        api_key: Option<String>,
-        model: String,
-    },
 }
 
 /// 启动语音服务所需的全部参数,与 AppConfig 解耦以保持模块独立。
@@ -93,8 +94,8 @@ pub enum SttChoice {
 pub struct VoiceRuntimeConfig {
     /// 模型根目录(state_dir/models)。
     pub models_dir: PathBuf,
-    /// 中文唤醒词,如"未有未有"。
-    pub wake_keyword: String,
+    /// 中文唤醒词,可多个(任一命中即唤醒),如 ["未有未有", "小未"]。
+    pub wake_keywords: Vec<String>,
     /// 唤醒词判定阈值(0~1,越低越灵敏,sherpa 默认 0.25)。
     pub wake_threshold: f32,
     /// 唤醒词路径加分(sherpa 默认 1.0,越大越灵敏)。
@@ -148,6 +149,8 @@ impl VoiceService {
                 };
                 // 外部音频听写中:管线吃宿主推来的帧,麦克风帧丢弃。
                 let mut external = false;
+                // 播报中:麦克风帧丢弃(半双工)。
+                let mut playback = false;
                 loop {
                     // 控制命令优先(非阻塞排空)。
                     loop {
@@ -174,6 +177,10 @@ impl VoiceService {
                                     Vec::new()
                                 }
                             }
+                            Ok(Control::Playback(on)) => {
+                                playback = on;
+                                Vec::new()
+                            }
                             Ok(command) => pipeline.control(command),
                             Err(mpsc::TryRecvError::Empty) => break,
                             Err(mpsc::TryRecvError::Disconnected) => return,
@@ -186,7 +193,7 @@ impl VoiceService {
                     }
                     // 100ms 超时轮询控制通道,平时阻塞在 recv 上不空转。
                     match frame_rx.recv_timeout(Duration::from_millis(100)) {
-                        Ok(_) if external => {
+                        Ok(_) if external || playback => {
                             for event in pipeline.tick() {
                                 if event_tx.send(event).is_err() {
                                     return;

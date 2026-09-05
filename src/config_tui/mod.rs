@@ -158,13 +158,11 @@ fn run_main_menu(
             ),
             t("Global settings", "全局参数设置").to_string(),
             format!(
-                "{} ({})",
+                "{} ({}: {} · TTS: {})",
                 t("Voice", "语音功能"),
-                if config.voice.enabled {
-                    t("on", "开")
-                } else {
-                    t("off", "关")
-                }
+                t("wake", "唤醒"),
+                if config.voice.enabled { t("on", "开") } else { t("off", "关") },
+                if config.voice.tts.enabled { t("on", "开") } else { t("off", "关") },
             ),
             t("Save and exit", "保存并退出").to_string(),
         ];
@@ -212,7 +210,7 @@ fn run_main_menu(
                     6 => edit_custom_prompts(stdout, paths, config),
                     7 => select_platforms(stdout, paths, config),
                     8 => edit_settings(stdout, config),
-                    9 => edit_voice(stdout, config),
+                    9 => edit_voice(stdout, paths, config),
                     10 => match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;

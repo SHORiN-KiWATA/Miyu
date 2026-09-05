@@ -13,14 +13,19 @@
 //! | w→d | voice.error | {message} |
 //! | d→w | voice.hold | {on} |
 //! | d→w | voice.close_window | {} |
+//! | d→w | voice.listen | {}(快捷键呼叫:不用唤醒词直接进入等待指令) |
 //! | d→w | voice.dictation | {on, source: "mic" \| "stream"} |
 //! | d→w | voice.audio | {pcm16: base64 的 16kHz 单声道 PCM16 LE}(stream 听写期间) |
 //! | d→w | voice.transcribe | {request_id, wav_path} |
 //! | d→w | voice.cue | {name} |
+//! | d→w | voice.play | {wav_path}(daemon 已合成好的音频,播完删文件) |
+//! | d→w | voice.stop_speaking | {} |
+//! | w→d | voice.speaking | {on}(播报开始/结束;播报期间麦克风帧丢弃) |
 //!
 //! daemon 消失(attach 断开)即退出,由 daemon 侧负责重启。
 
 use super::cues::{Cue, Player};
+use super::speaker::Speaker;
 use super::{models, Control, SttChoice, VoiceEvent, VoiceRuntimeConfig, VoiceService};
 use crate::config::{AppConfig, VoiceConfig};
 use crate::i18n::text as t;
@@ -35,6 +40,8 @@ use std::time::Duration;
 enum WorkerEvent {
     Voice(VoiceEvent),
     Signal(String, Value),
+    /// 播报开始/结束(来自播报线程)。
+    Speaking(bool),
     /// 信令连接断开:daemon 没了,worker 退出。
     AttachLost,
 }
@@ -42,31 +49,13 @@ enum WorkerEvent {
 /// 从配置拼出管线参数。云端 STT 的供应商按 id 在 providers 里找。
 pub fn runtime_config(config: &AppConfig, paths: &MiyuPaths) -> Result<VoiceRuntimeConfig> {
     let voice = &config.voice;
-    let stt = if voice.stt_engine.eq_ignore_ascii_case("cloud") {
-        let provider_id = voice
-            .stt_cloud_provider
-            .as_deref()
-            .filter(|id| !id.trim().is_empty())
-            .context("stt_engine 为 cloud 但未指定 stt_cloud_provider")?;
-        let provider = config
-            .providers
-            .iter()
-            .find(|provider| provider.id == provider_id)
-            .with_context(|| format!("找不到供应商「{provider_id}」"))?;
-        SttChoice::Cloud {
-            base_url: provider.base_url.clone(),
-            api_key: provider.api_key.clone(),
-            model: voice.stt_cloud_model.clone(),
-        }
-    } else {
-        SttChoice::Local {
-            threads: voice.stt_threads.max(1),
-            language: voice.stt_language.clone(),
-        }
+    let stt = SttChoice::Local {
+        threads: voice.stt_threads.max(1),
+        language: voice.stt_language.clone(),
     };
     Ok(VoiceRuntimeConfig {
         models_dir: models_dir(paths),
-        wake_keyword: voice.wake_keyword.clone(),
+        wake_keywords: voice.wake_keywords.clone(),
         wake_threshold: voice.wake_threshold,
         wake_boost: voice.wake_boost,
         // WebUI 的文本框留空写回的是 "",与 null 同义。
@@ -88,11 +77,10 @@ pub fn models_dir(paths: &MiyuPaths) -> std::path::PathBuf {
 }
 
 /// 模型缺失时现场下载;下载前后各发一条桌面通知,让人知道在忙什么。
-fn ensure_models_with_notice(dir: &std::path::Path, needs_local_stt: bool) -> Result<()> {
+fn ensure_models_with_notice(dir: &std::path::Path) -> Result<()> {
     if models::models_ready(dir) {
         return Ok(());
     }
-    let _ = needs_local_stt;
     crate::notify::notify(
         t("Miyu voice", "未有语音"),
         &format!(
@@ -113,11 +101,12 @@ fn ensure_models_with_notice(dir: &std::path::Path, needs_local_stt: bool) -> Re
 pub fn run_worker() -> Result<()> {
     let paths = MiyuPaths::new()?;
     let config = AppConfig::load_or_default(&paths)?;
+    // 语音唤醒关着(只开了播报)就不碰麦克风和识别模型:进程只管播放。
+    let wake_enabled = config.voice.enabled;
     let runtime = runtime_config(&config, &paths)?;
-    ensure_models_with_notice(
-        &runtime.models_dir,
-        matches!(runtime.stt, SttChoice::Local { .. }),
-    )?;
+    if wake_enabled {
+        ensure_models_with_notice(&runtime.models_dir)?;
+    }
     let voice_config = config.voice.clone();
 
     let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
@@ -137,9 +126,9 @@ pub fn run_worker() -> Result<()> {
             })?;
     }
 
-    let (service, voice_events) = VoiceService::start(runtime)?;
-    // 语音事件桥接线程。
-    {
+    let service = if wake_enabled {
+        let (service, voice_events) = VoiceService::start(runtime)?;
+        // 语音事件桥接线程。
         let event_tx = event_tx.clone();
         std::thread::Builder::new()
             .name("miyu-voice-events".into())
@@ -150,7 +139,15 @@ pub fn run_worker() -> Result<()> {
                     }
                 }
             })?;
-    }
+        Some(service)
+    } else {
+        None
+    };
+    let control = |command: Control| {
+        if let Some(service) = &service {
+            service.control(command);
+        }
+    };
     let player = Player::start()?;
     let cue = |name: Cue| {
         if voice_config.sounds {
@@ -160,12 +157,21 @@ pub fn run_worker() -> Result<()> {
     let send = |kind: &str, data: Value| {
         let _ = outbound_tx.send((kind.to_string(), data));
     };
+    let speaker = {
+        let event_tx = event_tx.clone();
+        Speaker::start(Box::new(move |on| {
+            let _ = event_tx.send(WorkerEvent::Speaking(on));
+        }))?
+    };
+    // 正在播的 daemon 合成文件,播完删。
+    let mut playing_file: Option<String> = None;
 
-    tracing::info!("语音前端就绪:采集 {}", service.device_description);
-    send(
-        "voice.ready",
-        json!({ "device": service.device_description }),
-    );
+    let device = service
+        .as_ref()
+        .map(|service| service.device_description.clone())
+        .unwrap_or_else(|| t("(wake off, playback only)", "(唤醒关闭,仅播报)").to_string());
+    tracing::info!("语音前端就绪:采集 {device}");
+    send("voice.ready", json!({ "device": device }));
 
     for event in event_rx {
         match event {
@@ -204,19 +210,39 @@ pub fn run_worker() -> Result<()> {
                 }
             },
             WorkerEvent::Signal(kind, data) => match kind.as_str() {
-                "voice.hold" => service.control(Control::Hold(
+                "voice.hold" => control(Control::Hold(
                     data.get("on").and_then(Value::as_bool).unwrap_or(false),
                 )),
-                "voice.close_window" => service.control(Control::CloseWindow),
+                "voice.close_window" => control(Control::CloseWindow),
+                "voice.listen" => {
+                    // 快捷键呼叫要立刻听得见:先掐掉正在播的。
+                    speaker.stop();
+                    control(Control::Listen)
+                }
+                "voice.play" => {
+                    let path = data
+                        .get("wav_path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            playing_file = Some(path);
+                            speaker.play_wav(bytes);
+                        }
+                        Err(error) => tracing::warn!("读取播报音频失败 {path}: {error}"),
+                    }
+                }
+                "voice.stop_speaking" => speaker.stop(),
                 "voice.dictation" => {
                     if data.get("on").and_then(Value::as_bool).unwrap_or(false) {
                         let external = data
                             .get("source")
                             .and_then(Value::as_str)
                             .is_some_and(|source| source == "stream");
-                        service.control(Control::StartDictation { external });
+                        control(Control::StartDictation { external });
                     } else {
-                        service.control(Control::StopDictation);
+                        control(Control::StopDictation);
                     }
                 }
                 "voice.audio" => {
@@ -225,9 +251,7 @@ pub fn run_worker() -> Result<()> {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     match decode_pcm16(encoded) {
-                        Ok(samples) if !samples.is_empty() => {
-                            service.control(Control::Audio(samples))
-                        }
+                        Ok(samples) if !samples.is_empty() => control(Control::Audio(samples)),
                         Ok(_) => {}
                         Err(error) => tracing::warn!("外部音频帧解码失败: {error:#}"),
                     }
@@ -243,7 +267,7 @@ pub fn run_worker() -> Result<()> {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     match load_wav_16k(path) {
-                        Ok(samples) => service.control(Control::Transcribe {
+                        Ok(samples) => control(Control::Transcribe {
                             request_id,
                             samples,
                         }),
@@ -267,6 +291,15 @@ pub fn run_worker() -> Result<()> {
                 }
                 other => tracing::debug!("忽略未知信令 {other}"),
             },
+            WorkerEvent::Speaking(on) => {
+                control(Control::Playback(on));
+                send("voice.speaking", json!({ "on": on }));
+                if !on {
+                    if let Some(path) = playing_file.take() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
             WorkerEvent::AttachLost => {
                 tracing::info!("daemon 信令连接断开,worker 退出");
                 break;
@@ -344,9 +377,9 @@ pub fn run_test(keyword: Option<String>, device: Option<String>, timings: bool) 
     let paths = MiyuPaths::new()?;
     let config = AppConfig::load_or_default(&paths)?;
     let mut runtime = runtime_config(&config, &paths)?;
-    ensure_models_with_notice(&runtime.models_dir, true)?;
+    ensure_models_with_notice(&runtime.models_dir)?;
     if let Some(keyword) = keyword {
-        runtime.wake_keyword = keyword;
+        runtime.wake_keywords = crate::config::split_wake_keywords(&keyword);
     }
     if device.is_some() {
         runtime.microphone = device;
@@ -356,20 +389,20 @@ pub fn run_test(keyword: Option<String>, device: Option<String>, timings: bool) 
         if crate::i18n::is_zh() {
             format!(
                 "语音测试:唤醒词「{}」,对着麦克风说话,Ctrl+C 退出",
-                runtime.wake_keyword
+                runtime.wake_keywords.join(" / ")
             )
         } else {
             format!(
-                "voice test: keyword \"{}\", speak into the mic, Ctrl+C to quit",
-                runtime.wake_keyword
+                "voice test: keywords \"{}\", speak into the mic, Ctrl+C to quit",
+                runtime.wake_keywords.join(" / ")
             )
         }
     );
-    let devices = super::mic::list_input_devices();
-    if !devices.is_empty() {
-        println!("{}:", t("available input devices", "可用输入设备"));
-        for name in &devices {
-            println!("  - {name}");
+    let sources = super::mic::list_input_sources();
+    if !sources.is_empty() {
+        println!("{}:", t("available input sources", "可用输入源"));
+        for source in &sources {
+            println!("  - {}  ({})", source.label, source.name);
         }
     }
     let player = Player::start()?;

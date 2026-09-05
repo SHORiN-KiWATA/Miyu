@@ -44,6 +44,7 @@ mod tty;
 mod turns;
 mod voice_api;
 pub(crate) mod voice_bridge;
+pub(crate) mod voice_tts;
 // 叫 ipc_server 而不是 ipc：`web::ipc` 会把 `crate::ipc` 遮住，本文件里几十处
 // `ipc::send` 会突然解析到子模块上——编译期就报，但报错信息（找不到 send）
 // 离真正的原因很远。

@@ -6,6 +6,7 @@ mod images;
 mod input;
 mod journal;
 mod prompt;
+pub(crate) use prompt::prompt_strip_tagged;
 mod pruning;
 mod reasoning;
 mod reports;

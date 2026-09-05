@@ -467,6 +467,7 @@ fn append_segment_text(parts: &mut Vec<String>, segments: &[OutboundSegment]) {
             OutboundSegment::ImageBytes { .. }
             | OutboundSegment::ImagePath { .. }
             | OutboundSegment::FilePath { .. } => {}
+            OutboundSegment::AudioPath { .. } => parts.push("[语音]".to_string()),
         }
     }
 }

@@ -288,6 +288,10 @@ pub(crate) enum OutboundSegment {
         path: PathBuf,
         name: Option<String>,
     },
+    /// 语音消息(wav/mp3 文件),适配器按平台规则单独成一条消息发。
+    AudioPath {
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug)]
