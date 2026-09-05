@@ -170,6 +170,7 @@ static DASH_SCRIPTS: &[(&str, &str)] = &[
         "dash-affection.js",
         include_str!("../../web/dash-affection.js"),
     ),
+    ("dash-scripts.js", include_str!("../../web/dash-scripts.js")),
     // 设置页(09-04 重做):字段模式表 + 渲染层,走同一条静态表。
     (
         "settings-schema.js",

@@ -59,6 +59,7 @@ use dashboards::kb::*;
 use dashboards::memes::*;
 use dashboards::memory::*;
 use dashboards::qq::*;
+use dashboards::scripts::*;
 use dto::*;
 use event_map::*;
 use goal_driver::*;

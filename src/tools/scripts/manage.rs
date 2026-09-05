@@ -45,7 +45,7 @@ fn layer_for_scope(scope: Option<&str>, layers: &[ScriptLayer; 2]) -> Result<Scr
 }
 
 /// 文件直接躺在哪个用户层的顶层目录里。扫描只看顶层,子目录不算。
-fn layer_containing(path: &Path, layers: &[ScriptLayer; 2]) -> Option<ScriptLayer> {
+pub(crate) fn layer_containing(path: &Path, layers: &[ScriptLayer; 2]) -> Option<ScriptLayer> {
     let parent = path.parent()?.canonicalize().ok()?;
     layers
         .iter()
@@ -175,21 +175,32 @@ fn validate_parameters(parameters: &Value) -> Result<()> {
     Ok(())
 }
 
-fn clear_disabled_id(index_path: &Path, id: &str) -> Result<()> {
+/// 清掉某层 disabled 名单里的一个 id;返回是否真的删了记录。
+pub(crate) fn clear_disabled_id(index_path: &Path, id: &str) -> Result<bool> {
     if !index_path.is_file() {
-        return Ok(());
+        return Ok(false);
     }
     let mut index = read_script_index_value(index_path)?;
     let disabled = index_array_mut(&mut index, "disabled")?;
     let before = disabled.len();
     disabled.retain(|entry| raw_entry_field(entry, "id") != Some(id));
-    if disabled.len() != before {
+    let changed = disabled.len() != before;
+    if changed {
         write_script_index_value(index_path, &index)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 pub(crate) async fn register_script_handler(
+    args: Value,
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Result<String> {
+    register_script(args, config, paths)
+}
+
+/// 同步核心:工具闭包与 dashboard(spawn_blocking)共用。
+pub(crate) fn register_script(
     args: Value,
     config: &AppConfig,
     paths: &MiyuPaths,
@@ -382,6 +393,14 @@ fn builtin_has_script(config: &AppConfig, paths: &MiyuPaths, id: &str) -> Result
 }
 
 pub(crate) async fn unregister_script_handler(
+    args: Value,
+    config: &AppConfig,
+    paths: &MiyuPaths,
+) -> Result<String> {
+    unregister_script(args, config, paths)
+}
+
+pub(crate) fn unregister_script(
     args: Value,
     config: &AppConfig,
     paths: &MiyuPaths,

@@ -7794,6 +7794,22 @@ body.miyu-paused *::after {
   resize: vertical;
 }
 .dash-textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+/* 脚本面板(09-05):抽屉里的单行输入与描述段。 */
+.dash-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-body);
+}
+.dash-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+.dash-drawer-desc { margin: 0 0 12px; color: var(--text-soft); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.dash-cell-main .dash-chip,
+.dash-cell-main .dash-cell-muted { margin-left: 6px; }
 .dash-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; flex: 1; min-width: 0; }
 .dash-field-label { color: var(--text-soft); font-size: var(--fs-meta); }
 .dash-field-hint { color: var(--text-faint); font-size: var(--fs-micro); }

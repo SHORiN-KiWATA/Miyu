@@ -1,7 +1,9 @@
+mod dashboard;
 mod header;
 mod index;
 mod manage;
 mod refresh;
+pub(crate) use dashboard::*;
 pub(crate) use header::*;
 pub(crate) use index::*;
 pub(crate) use manage::*;

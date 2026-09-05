@@ -1,6 +1,7 @@
 //! 脚本工具的测试。
 
 mod bundled;
+mod dashboard;
 mod header;
 mod index;
 mod manage;
