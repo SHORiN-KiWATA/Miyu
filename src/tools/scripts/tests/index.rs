@@ -1,4 +1,4 @@
-//! 索引扫描、ID 校验与元数据解析。
+//! 索引扫描、ID 校验与头部/索引合并。
 
 use crate::tools::scripts::*;
 
@@ -14,69 +14,12 @@ fn migrated_script_index_absolute_paths_follow_the_data_directory() {
 }
 
 #[test]
-fn extracts_description_from_shebang_script() {
-    let raw = "#!/bin/bash\ndescription: Check system status\n\necho ok";
-    assert_eq!(
-        extract_description(raw),
-        Some("Check system status".to_string())
-    );
-}
-
-#[test]
-fn extracts_chinese_description() {
-    let raw = "#!/usr/bin/env python3\n功能介绍: 检查系统状态\n\nprint('ok')";
-    assert_eq!(extract_description(raw), Some("检查系统状态".to_string()));
-}
-
-#[test]
-fn extracts_bilingual_script_descriptions() {
-    let raw = "#!/bin/bash\n# 描述： Pacman/AUR安装软件的TUI\n# Description: Pacman/AUR pkg installation TUI\n\necho ok";
-    assert_eq!(
-        extract_metadata(raw).descriptions,
-        ScriptDescriptions {
-            zh: Some("Pacman/AUR安装软件的TUI".to_string()),
-            en: Some("Pacman/AUR pkg installation TUI".to_string()),
-        }
-    );
-}
-
-#[test]
-fn extracts_lowercase_english_description() {
-    let raw = "#!/bin/bash\n# description: Pacman/AUR pkg installation TUI\n\necho ok";
-    assert_eq!(
-        extract_metadata(raw).descriptions,
-        ScriptDescriptions {
-            zh: None,
-            en: Some("Pacman/AUR pkg installation TUI".to_string()),
-        }
-    );
-}
-
-#[test]
-fn script_description_falls_back_when_locale_description_missing() {
-    let english_only = ScriptDescriptions {
-        zh: None,
-        en: Some("English only".to_string()),
-    };
-    assert_eq!(
-        select_script_description(&english_only),
-        Some("English only".to_string())
-    );
-}
-
-#[test]
-fn returns_none_when_no_description() {
-    let raw = "#!/bin/bash\necho hello";
-    assert_eq!(extract_description(raw), None);
-}
-
-#[test]
 fn auto_detects_executable_script() {
     let temp = tempfile::tempdir().unwrap();
     let script_path = temp.path().join("hello.sh");
     std::fs::write(
         &script_path,
-        "#!/bin/bash\ndescription: Say hello\n\necho hello",
+        "#!/bin/bash\n# description: Say hello\n\necho hello",
     )
     .unwrap();
     let entry = auto_detect_script(&script_path).unwrap();
@@ -84,6 +27,7 @@ fn auto_detects_executable_script() {
     assert_eq!(entry.display_name, "hello");
     assert_eq!(entry.description, "Say hello");
     assert_eq!(entry.path, "hello.sh");
+    assert!(entry.parameters.is_null());
 }
 
 #[test]
@@ -97,8 +41,9 @@ fn extracts_script_display_name_metadata() {
     );
 }
 
+/// 文件名里的连字符折成下划线:工具名两套规则(自动检测 vs manage_script)统一。
 #[test]
-fn auto_detect_uses_script_display_name() {
+fn auto_detect_uses_script_display_name_and_normalized_id() {
     let temp = tempfile::tempdir().unwrap();
     let script_path = temp.path().join("battery-care.sh");
     std::fs::write(
@@ -107,7 +52,7 @@ fn auto_detect_uses_script_display_name() {
     )
     .unwrap();
     let entry = auto_detect_script(&script_path).unwrap();
-    assert_eq!(entry.id, "battery-care");
+    assert_eq!(entry.id, "battery_care");
     assert_eq!(entry.display_name, "电池护理");
     assert_eq!(entry.description, "管理电池充电阈值");
 }
@@ -118,7 +63,7 @@ fn scan_finds_auto_detected_scripts() {
     let scripts_dir = temp.path();
     std::fs::write(
         scripts_dir.join("greet.sh"),
-        "#!/bin/bash\ndescription: Greet user\n\necho hi",
+        "#!/bin/bash\n# description: Greet user\n\necho hi",
     )
     .unwrap();
     let scan = scan_scripts(&[scripts_dir]).unwrap();
@@ -139,7 +84,7 @@ fn scan_merges_index_and_auto_detected() {
     std::fs::write(scripts_dir.join("custom.sh"), "#!/bin/bash\necho custom").unwrap();
     std::fs::write(
         scripts_dir.join("auto.sh"),
-        "#!/bin/bash\ndescription: Auto detected\n\necho auto",
+        "#!/bin/bash\n# description: Auto detected\n\necho auto",
     )
     .unwrap();
     let scan = scan_scripts(&[scripts_dir]).unwrap();
@@ -168,33 +113,86 @@ fn scan_fills_empty_index_description_from_script_header() {
     assert_eq!(scan.entries[0].description, "Custom header description");
 }
 
-#[tokio::test]
-async fn register_script_uses_header_description_when_omitted() {
+/// index 是覆盖层:写了的字段压住头部,没写的从头部补。
+#[test]
+fn index_overrides_header_fields_and_header_fills_the_rest() {
     let temp = tempfile::tempdir().unwrap();
     let scripts_dir = temp.path();
     std::fs::write(
-        scripts_dir.join("pkg.sh"),
-        "#!/bin/bash\n# Description: Pacman/AUR pkg installation TUI\n\necho ok",
+        scripts_dir.join("lookup.py"),
+        "#!/usr/bin/env python3\n\
+# Display name: 头部名\n\
+# Description: Header description\n\
+# Timeout: 60\n\
+# Group: research\n\
+# Argv: flags\n\
+# Parameters: {\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}\n\
+print(1)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scripts_dir.join("index.json"),
+        serde_json::to_string(&json!({
+            "scripts": [{
+                "id": "lookup",
+                "path": "lookup.py",
+                "description": "Index description",
+                "timeout_seconds": 10
+            }]
+        }))
+        .unwrap(),
     )
     .unwrap();
 
-    register_script_handler(
-        json!({
-            "id": "pkg_install",
-            "path": "pkg.sh"
-        }),
-        scripts_dir,
-    )
-    .await
-    .unwrap();
+    let scan = scan_scripts(&[scripts_dir]).unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    let entry = &scan.entries[0];
+    assert_eq!(entry.description, "Index description");
+    assert_eq!(entry.timeout_seconds, Some(10));
+    assert_eq!(entry.display_name, "头部名");
+    assert_eq!(entry.parameters["properties"]["q"]["type"], "string");
+    assert_eq!(entry.groups, vec!["research"]);
+    assert_eq!(entry.argv, ArgvMode::Flags);
 
-    let raw = std::fs::read_to_string(scripts_dir.join("index.json")).unwrap();
-    let index: ScriptIndex = serde_json::from_str(&raw).unwrap();
-    assert_eq!(index.scripts.len(), 1);
-    assert_eq!(
-        index.scripts[0].description,
-        "Pacman/AUR pkg installation TUI"
+    let spec = entry_to_spec(entry, scripts_dir, scripts_dir).unwrap();
+    assert!(!spec.always_loaded, "有 schema 的脚本默认懒加载");
+    assert!(
+        matches!(spec.load_policy, LoadPolicy::Group),
+        "头部给了分组就走 group 目录"
     );
+    assert_eq!(spec.groups, vec!["research"]);
+}
+
+#[test]
+fn header_parameters_make_auto_detected_script_carry_a_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path();
+    std::fs::write(
+        scripts_dir.join("tool.sh"),
+        "#!/bin/sh\n# Description: Tool\n# Parameters:\n# {\"type\":\"object\",\n#  \"properties\":{\"n\":{\"type\":\"integer\"}}}\necho\n",
+    )
+    .unwrap();
+    let scan = scan_scripts(&[scripts_dir]).unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert_eq!(
+        scan.entries[0].parameters["properties"]["n"]["type"],
+        "integer"
+    );
+}
+
+#[test]
+fn pure_non_ascii_file_name_is_listed_as_unregistered() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path();
+    std::fs::write(
+        scripts_dir.join("查天气"),
+        "#!/bin/sh\n# Description: weather\necho\n",
+    )
+    .unwrap();
+    let scan = scan_scripts(&[scripts_dir]).unwrap();
+    assert!(scan.entries.is_empty());
+    assert_eq!(scan.unregistered.len(), 1);
+    assert_eq!(scan.unregistered[0].name, "查天气");
 }
 
 #[test]
@@ -202,7 +200,7 @@ fn scan_deduplicates_by_path() {
     let temp = tempfile::tempdir().unwrap();
     let scripts_dir = temp.path();
     let script = scripts_dir.join("dup.sh");
-    std::fs::write(&script, "#!/bin/bash\ndescription: Dup\n\necho dup").unwrap();
+    std::fs::write(&script, "#!/bin/bash\n# description: Dup\n\necho dup").unwrap();
     std::fs::write(
         scripts_dir.join("index.json"),
         r#"{"scripts":[{"id":"alias1","display_name":"A1","description":"alias","path":"dup.sh"}]}"#,
@@ -218,12 +216,12 @@ fn scan_user_dir_overrides_system_dir() {
     let user_temp = tempfile::tempdir().unwrap();
     std::fs::write(
         sys_temp.path().join("tool.sh"),
-        "#!/bin/bash\ndescription: System version\n\necho sys",
+        "#!/bin/bash\n# description: System version\n\necho sys",
     )
     .unwrap();
     std::fs::write(
         user_temp.path().join("tool.sh"),
-        "#!/bin/bash\ndescription: User version\n\necho user",
+        "#!/bin/bash\n# description: User version\n\necho user",
     )
     .unwrap();
     let scan = scan_scripts(&[sys_temp.path(), user_temp.path()]).unwrap();
@@ -247,8 +245,9 @@ fn scan_lists_scripts_without_descriptions_as_unregistered() {
     );
 }
 
+/// 09-05 起脚本一律默认懒加载;index 里显式 always_loaded:true 才进顶层。
 #[test]
-fn scan_drives_top_level_and_available_script_visibility() {
+fn scripts_default_to_lazy_and_index_always_loaded_forces_top_level() {
     let temp = tempfile::tempdir().unwrap();
     let scripts_dir = temp.path();
     std::fs::write(
@@ -257,30 +256,16 @@ fn scan_drives_top_level_and_available_script_visibility() {
     )
     .unwrap();
     std::fs::write(
-        scripts_dir.join("lazy.sh"),
-        "#!/bin/bash\n# Description: Lazy script\n\necho lazy",
+        scripts_dir.join("pinned.sh"),
+        "#!/bin/bash\n# Description: Pinned script\n\necho pinned",
     )
     .unwrap();
     std::fs::write(
         scripts_dir.join("index.json"),
         serde_json::to_string(&json!({
             "scripts": [
-                {
-                    "id": "generic_script",
-                    "display_name": "Generic",
-                    "description": "Generic script",
-                    "path": "generic.sh"
-                },
-                {
-                    "id": "lazy_script",
-                    "display_name": "Lazy",
-                    "description": "Lazy script",
-                    "path": "lazy.sh",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}}
-                    }
-                }
+                { "id": "generic_script", "path": "generic.sh" },
+                { "id": "pinned_script", "path": "pinned.sh", "always_loaded": true }
             ]
         }))
         .unwrap(),
@@ -300,8 +285,8 @@ fn scan_drives_top_level_and_available_script_visibility() {
         .iter()
         .map(|definition| definition.function.name.as_str())
         .collect::<BTreeSet<_>>();
-    assert!(names.contains("generic_script"));
-    assert!(!names.contains("lazy_script"));
+    assert!(!names.contains("generic_script"));
+    assert!(names.contains("pinned_script"));
     let load_tools = definitions
         .iter()
         .find(|definition| definition.function.name == "load_tools")
@@ -310,25 +295,7 @@ fn scan_drives_top_level_and_available_script_visibility() {
         .function
         .description
         .contains("<available_load_targets>"));
-    assert!(load_tools.function.description.contains("lazy_script"));
-}
-
-#[tokio::test]
-async fn register_rejects_reserved_tool_names_before_writing_index() {
-    let temp = tempfile::tempdir().unwrap();
-    let scripts_dir = temp.path();
-    std::fs::write(
-        scripts_dir.join("weather.sh"),
-        "#!/bin/bash\n# Description: Fake weather\n\necho fake",
-    )
-    .unwrap();
-
-    let error =
-        register_script_handler(json!({"id":"get_weather","path":"weather.sh"}), scripts_dir)
-            .await
-            .unwrap_err();
-    assert!(error.to_string().contains("reserved tool name"));
-    assert!(!scripts_dir.join("index.json").exists());
+    assert!(load_tools.function.description.contains("generic_script"));
 }
 
 #[test]
@@ -404,74 +371,6 @@ fn malformed_index_entries_do_not_hide_valid_scripts() {
     assert_eq!(scan.entries[0].id, "valid_script");
 }
 
-#[tokio::test]
-async fn lifecycle_mutations_replace_and_remove_all_same_id_entries() {
-    let temp = tempfile::tempdir().unwrap();
-    let scripts_dir = temp.path();
-    std::fs::write(
-        scripts_dir.join("old.sh"),
-        "#!/bin/bash\n# Description: Old\n\necho old",
-    )
-    .unwrap();
-    std::fs::write(
-        scripts_dir.join("new.sh"),
-        "#!/bin/bash\n# Description: New\n\necho new",
-    )
-    .unwrap();
-    std::fs::write(
-        scripts_dir.join("index.json"),
-        serde_json::to_string(&json!({
-            "scripts": [
-                {"id": "target_script", "path": 42},
-                {
-                    "id": "target_script",
-                    "display_name": "Old",
-                    "description": "Old",
-                    "path": "old.sh"
-                }
-            ]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    register_script_handler(json!({"id":"target_script","path":"new.sh"}), scripts_dir)
-        .await
-        .unwrap();
-
-    let index_path = scripts_dir.join("index.json");
-    let mut index = read_script_index_value(&index_path).unwrap();
-    let scripts = index_array_mut(&mut index, "scripts").unwrap();
-    assert_eq!(
-        scripts
-            .iter()
-            .filter(|entry| raw_entry_field(entry, "id") == Some("target_script"))
-            .count(),
-        1
-    );
-    assert_eq!(raw_entry_field(&scripts[0], "path"), Some("new.sh"));
-
-    scripts.insert(0, json!({"id": "target_script", "path": 42}));
-    write_script_index_value(&index_path, &index).unwrap();
-    unregister_script_handler(
-        json!({"id":"target_script","delete_file":false}),
-        scripts_dir,
-    )
-    .await
-    .unwrap();
-
-    let index = read_script_index_value(&index_path).unwrap();
-    let scripts = index.get("scripts").and_then(Value::as_array).unwrap();
-    assert!(!scripts
-        .iter()
-        .any(|entry| raw_entry_field(entry, "id") == Some("target_script")));
-    let disabled = index.get("disabled").and_then(Value::as_array).unwrap();
-    assert!(disabled.iter().any(|entry| {
-        raw_entry_field(entry, "id") == Some("target_script")
-            && raw_entry_field(entry, "path") == Some("new.sh")
-    }));
-}
-
 /// 四层扫描根:内置(system)与全局(data)各含「顶层 + personas/<人格>」。
 /// 内置脚本装在 `<system>/personas/default/`——默认人格解析到该目录,自定义
 /// 人格解析到不存在的 `<system>/personas/alter`,天然拿不到内置(隐式门,
@@ -513,4 +412,71 @@ fn script_scan_roots_resolve_persona_substructure_per_layer() {
     assert_eq!(roots[0], custom_roots[0]);
     assert_eq!(roots[2], custom_roots[2]);
     assert_ne!(roots[1], custom_roots[1]);
+}
+
+/// 用户机器实查(09-05):`gpustoggle.bak`(无描述头)与 index 里的 gpustoggle
+/// 同 stem,旧扫描把正主从 entries 里删掉、塞进未注册清单。
+#[test]
+fn backup_sibling_does_not_hide_the_indexed_script() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path();
+    std::fs::write(scripts_dir.join("gpustoggle"), "#!/bin/bash\necho real\n").unwrap();
+    std::fs::write(
+        scripts_dir.join("gpustoggle.bak"),
+        "#!/bin/bash\necho old\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scripts_dir.join("gpustoggle.orig"),
+        "#!/bin/bash\n# Description: stale copy\necho older\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scripts_dir.join("index.json"),
+        serde_json::to_string(&json!({
+            "scripts": [{
+                "id": "gpustoggle",
+                "description": "Toggle the GPU",
+                "path": "gpustoggle",
+                "groups": ["vfio"],
+                "load_policy": "summary"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let scan = scan_scripts(&[scripts_dir]).unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert_eq!(scan.entries[0].description, "Toggle the GPU");
+    assert!(scan.unregistered.is_empty(), "{:?}", scan.unregistered);
+    // index 自己写的 groups+summary 组合不被改成 group。
+    let spec = entry_to_spec(&scan.entries[0], scripts_dir, scripts_dir).unwrap();
+    assert!(matches!(spec.load_policy, LoadPolicy::Summary));
+}
+
+/// 同目录里一个同 stem 的别名文件有描述头时,同样不能顶掉 index 正主。
+#[test]
+fn same_stem_sibling_with_header_does_not_replace_indexed_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path();
+    std::fs::write(
+        scripts_dir.join("tool.py"),
+        "#!/usr/bin/env python3\nprint(1)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scripts_dir.join("tool.sh"),
+        "#!/bin/bash\n# Description: shell twin\necho\n",
+    )
+    .unwrap();
+    std::fs::write(
+        scripts_dir.join("index.json"),
+        r#"{"scripts":[{"id":"tool","description":"Python one","path":"tool.py"}]}"#,
+    )
+    .unwrap();
+    let scan = scan_scripts(&[scripts_dir]).unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert_eq!(scan.entries[0].description, "Python one");
+    assert!(scan.entries[0].path.ends_with("tool.py"));
 }

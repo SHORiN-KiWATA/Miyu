@@ -61,7 +61,11 @@ pub use registry::{
     empty_parameters, CommandOutputStream, GuardCtx, ToolFuture, ToolGuard, ToolPermission,
     ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec,
 };
-pub(crate) use scripts::rescan_scripts;
+pub(crate) use scripts::{
+    apply_script_refresh, prepare_script_refresh, scripts_dashboard_delete,
+    scripts_dashboard_disable, scripts_dashboard_enable, scripts_dashboard_overview,
+    scripts_dashboard_register, scripts_dashboard_source,
+};
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
 pub use skills::{register_authoring as register_skill_authoring, register_skills};
 
@@ -1187,32 +1191,45 @@ mod tier_schema_probe {
         assert!(!task.function.description.contains("cheap=["));
     }
 
-    /// The description suffix lists the concrete models per tier pool.
+    /// The description is constant bytes: configuring tier pools must not
+    /// change it (a config-derived suffix would re-key the prompt cache on
+    /// every pool edit), and the tier enum carries the four current names.
     #[test]
-    fn task_description_lists_configured_tier_models() {
-        let mut config = crate::config::AppConfig::default();
-        let provider_id = config.providers[0].id.clone();
-        config.providers[0].models.push("mini-a".to_string());
-        config.providers[0].models.push("mini-b".to_string());
-        config
-            .toggle_subagent_tier_model(crate::config::ModelTier::Cheap, &provider_id, "mini-a")
-            .unwrap();
-        config
-            .toggle_subagent_tier_model(crate::config::ModelTier::Balanced, &provider_id, "mini-a")
-            .unwrap();
-        config
-            .toggle_subagent_tier_model(crate::config::ModelTier::Balanced, &provider_id, "mini-b")
-            .unwrap();
+    fn task_description_is_constant_and_lists_the_four_tiers() {
         let paths = crate::paths::MiyuPaths::new().unwrap();
-        let registry = super::builtin_registry(&config, &paths);
-        let defs = registry.definitions();
-        let task = defs.iter().find(|d| d.function.name == "task").unwrap();
-        assert!(task.function.description.contains("cheap=[mini-a]"));
-        assert!(task
-            .function
-            .description
-            .contains("balanced=[mini-a, mini-b]"));
-        assert!(task.function.description.contains("strong=["));
+        let bare = crate::config::AppConfig::default();
+        let bare_task = super::builtin_registry(&bare, &paths)
+            .definitions()
+            .into_iter()
+            .find(|d| d.function.name == "task")
+            .unwrap();
+
+        let mut config = crate::config::AppConfig::default();
+        let provider_id = config.active_provider.clone();
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .unwrap();
+        provider.models.push("mini-a".to_string());
+        config
+            .toggle_tier_model(crate::config::ModelTier::Cheap, &provider_id, "mini-a")
+            .unwrap();
+        let task = super::builtin_registry(&config, &paths)
+            .definitions()
+            .into_iter()
+            .find(|d| d.function.name == "task")
+            .unwrap();
+        assert_eq!(task.function.description, bare_task.function.description);
+        assert!(!task.function.description.contains("cheap=["));
+        let schema = serde_json::to_string(&task.function.parameters).unwrap();
+        for tier in ["lite", "cheap", "standard", "flagship"] {
+            assert!(schema.contains(&format!("\"{tier}\"")), "{schema}");
+        }
+        assert!(
+            !schema.contains("balanced") && !schema.contains("strong"),
+            "{schema}"
+        );
     }
 
     /// 量尺：`cargo test --lib token_diet_baseline -- --ignored --nocapture`

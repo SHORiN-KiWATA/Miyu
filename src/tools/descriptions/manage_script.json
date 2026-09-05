@@ -1,7 +1,7 @@
 {
   "name": "manage_script",
   "display_name": "管理脚本",
-  "description": "Manage user scripts as tools. action=register registers or updates, action=unregister removes.",
+  "description": "Register, unregister or list user scripts as tools. register takes a script path anywhere on disk, copies it into the scripts directory and makes it a tool from the next round; the tool description, parameters, timeout and group are read from the script header (# Description:, # Parameters:, # Timeout:, # Group:) unless overridden here. unregister hides a script or deletes its file. list shows registered, unregistered and disabled scripts with their directories.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -9,63 +9,55 @@
         "type": "string",
         "enum": [
           "register",
-          "unregister"
+          "unregister",
+          "list"
         ],
-        "description": "register registers/updates, unregister removes."
+        "description": "register adds or updates (fields not given are kept), unregister hides or deletes, list shows everything."
       },
       "id": {
         "type": "string",
         "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
-        "description": "Unique tool identifier (ASCII, starts with a letter); this is the function name the AI calls."
-      },
-      "display_name": {
-        "type": "string",
-        "description": "Human-readable display name; may contain Chinese."
-      },
-      "description": {
-        "type": "string",
-        "description": "Optional description override. When omitted, it is read from the Description:/描述： line in the script header."
+        "description": "Tool name. Required for unregister. For register it defaults to the header `# Id:` line, else the file name with non-alphanumerics folded to `_`."
       },
       "path": {
         "type": "string",
-        "description": "register only: script file name or path within the scripts directory."
+        "description": "register: absolute path of the script anywhere on disk (copied into the scripts directory), or a file name already inside it. Omit to update an existing entry by id."
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "persona",
+          "global"
+        ],
+        "description": "register: where a copied script lands. persona (default) is visible only to the current persona; global to all."
+      },
+      "display_name": {
+        "type": "string",
+        "description": "Human-readable name; may contain Chinese. Defaults to the header `# Display name:` line."
+      },
+      "description": {
+        "type": "string",
+        "description": "Override for the header `# Description:` line. Required only when the header has none."
       },
       "parameters": {
         "type": "object",
-        "description": "JSON schema for the tool's parameters. When omitted, a generic schema with stdin is used."
+        "description": "JSON Schema override for the header `# Parameters:` block. Without either, the tool takes free-form arguments passed as JSON on stdin."
       },
       "timeout_seconds": {
         "type": "integer",
-        "description": "Optional timeout in seconds, max 300."
+        "description": "Override for the header `# Timeout:` line. Default 120, max 300."
       },
-      "always_loaded": {
+      "overwrite": {
         "type": "boolean",
-        "description": "Optional load-policy override."
-      },
-      "load_policy": {
-        "type": "string",
-        "enum": [
-          "summary",
-          "group",
-          "hidden"
-        ],
-        "description": "Hybrid catalog policy."
-      },
-      "groups": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        },
-        "description": "Optional Hybrid catalog groups."
+        "description": "register: replace a file of the same name already in the scripts directory."
       },
       "delete_file": {
         "type": "boolean",
-        "description": "unregister only: also delete the script file."
+        "description": "unregister: also delete the script file. Built-in scripts can only be hidden."
       }
     },
     "required": [
-      "action",
-      "id"
+      "action"
     ]
   },
   "permission": "writes",

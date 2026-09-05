@@ -14,3 +14,4 @@ mod failover;
 mod responses;
 mod shared;
 mod thinking;
+mod tier_pool;

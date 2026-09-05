@@ -7,8 +7,10 @@
 //! 数（`*_summary`、`*_label`）只是把配置压成菜单里一行看得懂的字。
 
 mod id_lists;
+mod model_assignment;
 mod routes;
 pub(in crate::config_tui) use id_lists::*;
+pub(in crate::config_tui) use model_assignment::*;
 pub(in crate::config_tui) use routes::*;
 
 use crate::config_tui::*;
@@ -247,13 +249,8 @@ pub(in crate::config_tui) fn edit_qq(
             ),
             format!(
                 "{}: {}",
-                t("Text model pool", "文本模型池"),
-                qq_pool_summary(qq.text_models.as_deref())
-            ),
-            format!(
-                "{}: {}",
-                t("Multimodal model pool", "多模态模型池"),
-                qq_pool_summary(qq.multimodal_models.as_deref())
+                t("Model assignment", "模型分配"),
+                qq_model_assignment_label(config)
             ),
             format!(
                 "{}: {}",
@@ -320,14 +317,6 @@ pub(in crate::config_tui) fn edit_qq(
                 "{}: {}",
                 t("Private whitelist", "私聊白名单"),
                 qq.private_chats.whitelist.len()
-            ),
-            format!(
-                "{}: {}",
-                t("Non-whitelist model pool", "非白名单模型池"),
-                route_pool_summary(
-                    qq.non_whitelist_text_models.as_deref(),
-                    PlatformModelPoolInheritance::Platform,
-                )
             ),
             format!(
                 "{}: {}",
@@ -410,9 +399,8 @@ pub(in crate::config_tui) fn edit_qq(
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter | KeyCode::Char(' ') => match selected {
                 0 => config.platforms.qq.enabled = !config.platforms.qq.enabled,
-                1 if matches!(key, KeyCode::Enter) => select_qq_model_pool(stdout, config, false)?,
-                2 if matches!(key, KeyCode::Enter) => select_qq_model_pool(stdout, config, true)?,
-                3 if matches!(key, KeyCode::Enter) => {
+                1 if matches!(key, KeyCode::Enter) => select_qq_model_assignment(stdout, config)?,
+                2 if matches!(key, KeyCode::Enter) => {
                     if let Some(value) = edit_u16_value(
                         stdout,
                         t("Reverse WebSocket port", "反向 WebSocket 端口"),
@@ -431,17 +419,17 @@ pub(in crate::config_tui) fn edit_qq(
                         }
                     }
                 }
-                4 if matches!(key, KeyCode::Enter) => edit_qq_token(stdout, config)?,
-                5 => {
+                3 if matches!(key, KeyCode::Enter) => edit_qq_token(stdout, config)?,
+                4 => {
                     config.platforms.qq.user_identification =
                         !config.platforms.qq.user_identification
                 }
-                6 => config.platforms.qq.show_group_name = !config.platforms.qq.show_group_name,
-                7 => {
+                5 => config.platforms.qq.show_group_name = !config.platforms.qq.show_group_name,
+                6 => {
                     config.platforms.qq.memory.write_enabled =
                         !config.platforms.qq.memory.write_enabled
                 }
-                8 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
+                7 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
                     stdout,
                     t(
                         " TERMINAL-ENABLED ADMINISTRATORS ",
@@ -450,28 +438,25 @@ pub(in crate::config_tui) fn edit_qq(
                     t("QQ id", "QQ 号"),
                     &mut config.platforms.qq.admin_users,
                 )?,
-                9 => {
+                8 => {
                     config.platforms.qq.allow_non_admin_host_tools =
                         !config.platforms.qq.allow_non_admin_host_tools
                 }
-                10 => {
+                9 => {
                     config.platforms.qq.group_intermediate_messages =
                         !config.platforms.qq.group_intermediate_messages
                 }
-                11 => {
+                10 => {
                     config.platforms.qq.private_intermediate_messages =
                         !config.platforms.qq.private_intermediate_messages
                 }
-                12 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
+                11 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
                     stdout,
                     t(" PRIVATE WHITELIST ", " 私聊白名单 "),
                     t("QQ id", "QQ 号"),
                     &mut config.platforms.qq.private_chats.whitelist,
                 )?,
-                13 if matches!(key, KeyCode::Enter) => {
-                    select_non_whitelist_model_pool(stdout, config)?
-                }
-                14 => {
+                12 => {
                     config
                         .platforms
                         .qq
@@ -482,58 +467,58 @@ pub(in crate::config_tui) fn edit_qq(
                         .private_chats
                         .friend_requests_require_private_whitelist
                 }
-                15 => {
+                13 => {
                     config.platforms.qq.private_chats.allow_non_whitelist =
                         !config.platforms.qq.private_chats.allow_non_whitelist
                 }
-                16 if matches!(key, KeyCode::Enter) => {
+                14 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
                         stdout,
                         &mut config.platforms.qq.private_chats.non_whitelist_rate_limit,
                     )?;
                 }
-                17 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
+                15 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
                     stdout,
                     t(" GROUP WHITELIST ", " 群聊白名单 "),
                     t("Group id", "群号"),
                     &mut config.platforms.qq.group_chats.whitelist,
                 )?,
-                18 if matches!(key, KeyCode::Enter) => edit_keyword_list(
+                16 if matches!(key, KeyCode::Enter) => edit_keyword_list(
                     stdout,
                     &mut config.platforms.qq.group_chats.trigger_keywords,
                 )?,
-                19 if matches!(key, KeyCode::Enter) => {
+                17 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
                         stdout,
                         &mut config.platforms.qq.group_chats.whitelist_rate_limit,
                     )?;
                 }
-                20 => {
+                18 => {
                     config.platforms.qq.group_chats.allow_non_whitelist =
                         !config.platforms.qq.group_chats.allow_non_whitelist
                 }
-                21 if matches!(key, KeyCode::Enter) => {
+                19 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
                         stdout,
                         &mut config.platforms.qq.group_chats.non_whitelist_rate_limit,
                     )?;
                 }
-                // 光标就停在开关这一行(22),"并行数量"排在它之后——关掉并行
+                // 光标就停在开关这一行(20),"并行数量"排在它之后——关掉并行
                 // 时那一项消失也不会把光标落到不存在的行上,无需再钳制。
-                22 => {
+                20 => {
                     config.platforms.qq.session_parallel = !config.platforms.qq.session_parallel;
                 }
-                23 if parallel && matches!(key, KeyCode::Enter) => {
+                21 if parallel && matches!(key, KeyCode::Enter) => {
                     edit_platform_session_limits(stdout, &mut config.platforms.qq.session_limits)?
                 }
                 // 尾部三项随"并行数量"是否出现整体顺延一位。
-                index if index == 24 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                index if index == 22 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
                     select_platform_model_routes(stdout, paths, config)?
                 }
-                index if index == 25 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                index if index == 23 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
                     select_platform_plugins(stdout, paths, config)?
                 }
-                index if index == 26 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                index if index == 24 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
                     edit_qq_advanced(stdout, config)?
                 }
                 _ => {}

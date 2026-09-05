@@ -46,7 +46,6 @@ pub fn register(
     paths: MiyuPaths,
     tools: ToolRegistry,
 ) {
-    let config_for_status = config.clone();
     let context = TaskContext {
         config,
         paths,
@@ -80,8 +79,8 @@ pub fn register(
                 },
                 "tier": {
                     "type": "string",
-                    "enum": ["cheap", "balanced", "strong"],
-                    "description": "Optional model tier, picked by task complexity: cheap for simple lookups/mechanical steps, balanced for typical multi-step work, strong for hard reasoning. Defaults to balanced; unconfigured tiers fall back to the main model."
+                    "enum": ["lite", "cheap", "standard", "flagship"],
+                    "description": "Optional model tier by task difficulty: lite for trivial lookups and formatting, cheap for simple tool-using work, standard for regular multi-step work (default), flagship for hard reasoning. Every tier has the full tool set; an unconfigured tier falls back to the main model."
                 }
             },
             "required": ["description", "prompt"],
@@ -92,58 +91,6 @@ pub fn register(
             async move { run_task(args, context, progress).await }
         },
     ).writes());
-    registry.amend_description("task", &tier_pool_status(&config_for_status));
-}
-
-/// Human-readable tier pool status appended to the task tool description,
-/// so the calling agent knows which tiers are configured and with which
-/// concrete models when choosing a tier.
-fn tier_pool_status(config: &AppConfig) -> String {
-    // 全部未配置=默认形态:一个字都不追加。三行"未配置(回退主模型池)"
-    // 对模型是零信息,还把动态文本焊进 tools 数组(字节稳定性隐患,
-    // 验收 08-16 dev 解剖)。配置了档位的用户才见状态。
-    let describe = |tier: ModelTier| {
-        let pool = config.subagent_tier_choices(tier);
-        if pool.is_empty() {
-            String::new()
-        } else {
-            pool.iter()
-                .map(|choice| choice.model.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-    };
-    let (cheap, balanced, strong) = (
-        describe(ModelTier::Cheap),
-        describe(ModelTier::Balanced),
-        describe(ModelTier::Strong),
-    );
-    if cheap.is_empty() && balanced.is_empty() && strong.is_empty() {
-        return String::new();
-    }
-    let fallback = "main pool";
-    let show = |pool: &str| -> String {
-        if pool.is_empty() {
-            fallback.to_string()
-        } else {
-            pool.to_string()
-        }
-    };
-    format!(
-        "{}cheap=[{}]; balanced=[{}]; strong=[{}]",
-        " Current tier pools: ",
-        show(&cheap),
-        show(&balanced),
-        show(&strong),
-    )
-}
-
-fn main_pool_choice(config: &AppConfig) -> Option<(String, String)> {
-    config
-        .active_provider_model_choices()
-        .into_iter()
-        .next()
-        .map(|choice| (choice.provider_id, choice.model))
 }
 
 #[derive(Clone)]
@@ -200,7 +147,7 @@ fn parse_task_params(args: &Value) -> Result<TaskParams> {
         .get("tier")
         .and_then(Value::as_str)
         .and_then(ModelTier::from_str)
-        .unwrap_or(ModelTier::Balanced);
+        .unwrap_or(ModelTier::Standard);
     Ok(TaskParams {
         description,
         prompt,
@@ -351,44 +298,15 @@ async fn run_task_core(
     // Tier routing: the tier's pool gets its own load-balanced client;
     // an unconfigured pool silently uses the main model pool, and a
     // configured-but-unusable pool falls back with a notice returned to
-    // the calling agent (not printed to the user).
-    let pool = context.config.subagent_tier_choices(tier);
-    let mut tier_notice: Option<String> = None;
-    let (client, model_choice) = if pool.is_empty() {
-        if !context.config.subagent_tiers.pool(tier).is_empty() {
-            tier_notice = Some(format!(
-                "tier '{}' pool has no usable model (models were removed from the text models); fell back to the main model pool",
-                tier.label()
-            ));
-        }
-        (
-            OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
-                .with_request_scope("subagent"),
-            main_pool_choice(&context.config),
-        )
-    } else {
-        match OpenAiCompatibleClient::from_choices(&context.config, &context.paths, &pool) {
-            Ok(client) => {
-                let first = &pool[0];
-                (
-                    client.with_request_scope("subagent"),
-                    Some((first.provider_id.clone(), first.model.clone())),
-                )
-            }
-            Err(err) => {
-                tier_notice = Some(format!(
-                    "tier '{}' pool is unavailable ({err}); fell back to the main model pool",
-                    tier.label()
-                ));
-                (
-                    OpenAiCompatibleClient::from_config(&context.config, &context.paths)?
-                        .with_request_scope("subagent"),
-                    main_pool_choice(&context.config),
-                )
-            }
-        }
-    };
-    let client = client.for_subagent_output(mode == ProgressMode::Full);
+    // the calling agent (not printed to the user). The fallback contract
+    // lives in `from_tier` so auxiliary roles share it byte for byte.
+    let routed = OpenAiCompatibleClient::from_tier(&context.config, &context.paths, tier)?;
+    let tier_notice = routed.notice;
+    let model_choice = routed.model_choice;
+    let client = routed
+        .client
+        .with_request_scope("subagent")
+        .for_subagent_output(mode == ProgressMode::Full);
     // 工具沿用主体目录:子代理的任务是主体布置的,分类只会让"承诺的工具"
     // 与"实际注册的工具"漂移(dev 下的旧 explore 就是这么坏掉的)。
     let tools = context.tools.clone();

@@ -164,14 +164,28 @@ impl ResumePlan {
         let resumable = if ephemeral {
             None
         } else {
-            session::find_resumable(
+            match session::find_resumable(
                 provider_id,
                 model,
                 miyu_session,
                 host_tools,
                 &chain,
                 conversation.len(),
-            )
+            ) {
+                Ok(hit) => Some(hit),
+                Err(miss) => {
+                    // 全量重放的原因留痕(09-04 案卷 B′):不写出来,每次重放都
+                    // 得靠猜。首轮 NoEntry 是正常的,其余都值得看一眼。
+                    tracing::info!(
+                        provider = provider_id,
+                        host_tools,
+                        messages = conversation.len(),
+                        reason = ?miss,
+                        "relay resume miss; replaying the full conversation in a fresh session"
+                    );
+                    None
+                }
+            }
         };
         Self {
             provider_id: provider_id.to_string(),

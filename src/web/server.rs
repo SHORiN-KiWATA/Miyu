@@ -381,6 +381,16 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         )
         .route("/api/dash/kb/default", get(dash_kb_default))
         .route("/api/dash/kb/default/update", post(dash_kb_default_update))
+        .route("/api/dash/scripts/personas", get(dash_scripts_personas))
+        .route("/api/dash/scripts/overview", get(dash_scripts_overview))
+        .route("/api/dash/scripts/source", get(dash_scripts_source))
+        .route("/api/dash/scripts/enable", post(dash_scripts_enable))
+        .route("/api/dash/scripts/disable", post(dash_scripts_disable))
+        .route(
+            "/api/dash/scripts/item",
+            axum::routing::delete(dash_scripts_delete),
+        )
+        .route("/api/dash/scripts/register", post(dash_scripts_register))
         .route("/api/dash/memes/libraries", get(dash_memes_libraries))
         .route(
             "/api/dash/memes/items",

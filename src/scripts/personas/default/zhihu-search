@@ -1,8 +1,65 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：知乎搜索
-# 描述：搜索知乎问答与专栏文章，返回标题、作者、赞同数、摘要与链接；可进一步取回答/文章全文。需一次性登录。
-# Description: Search Zhihu Q&A and articles. Returns title, author, upvotes, excerpt and URL; can fetch full answer/article text. Requires one-time login.
+# Description: Search Zhihu, the Chinese Q&A platform, or read a question. A keyword searches; a Zhihu URL or numeric question id fetches that question with its top answers.
+# Timeout: 300
+# Group: research
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "Keyword, or a Zhihu URL, or a bare numeric question id"
+#     },
+#     "limit": {
+#       "type": "integer",
+#       "description": "Search results (1-50, default 10); for a question, answers to fetch (1-20, default 5)"
+#     },
+#     "full": {
+#       "type": "boolean",
+#       "description": "Search: include bodies. Defaults to true when limit<=5. Set false to force summaries only"
+#     },
+#     "format": {
+#       "type": "string",
+#       "enum": [
+#         "md",
+#         "json"
+#       ],
+#       "description": "Output format, default md (compact and readable); json for field-by-field processing"
+#     },
+#     "type": {
+#       "type": "string",
+#       "enum": [
+#         "general",
+#         "answer",
+#         "article",
+#         "people",
+#         "video"
+#       ],
+#       "description": "Search scope, default general. Use people to find users"
+#     },
+#     "max_chars": {
+#       "type": "integer",
+#       "description": "Max characters per body. Default 8000 for a single item, 3000 for several"
+#     },
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "question",
+#         "answer",
+#         "article",
+#         "doctor"
+#       ],
+#       "description": "Usually omitted: the script infers it from query. Use only to force (e.g. search a link as a keyword) or for the doctor self-check"
+#     }
+#   },
+#   "required": [
+#     "query"
+#   ],
+#   "additionalProperties": false
+# }
 """
 zhihu-search — 知乎检索 CLI
 

@@ -483,8 +483,9 @@ fn admission_materializes_the_effective_text_model_pool() {
         }]
     };
     base.active_provider_models = Some(pool("global"));
-    base.platforms.qq.text_models = Some(pool("platform"));
-    base.platforms.qq.non_whitelist_text_models = Some(pool("non-whitelist"));
+    base.platforms.qq.text_models = crate::config::ModelPoolRef::models(pool("platform"));
+    base.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(pool("non-whitelist"));
     base.platforms.qq.admin_users.push(1);
     base.platforms.qq.private_chats.whitelist.push(2);
     base.platforms.qq.group_chats.whitelist.push(10);

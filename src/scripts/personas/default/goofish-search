@@ -1,8 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：闲鱼搜索
-# 描述：搜索闲鱼(Goofish)二手交易平台商品，免登录返回标题、价格、地区、商品链接。
-# Description: Search Goofish (Xianyu) second-hand marketplace without login. Returns title, price, area and item URL.
+# Description: Search Goofish (闲鱼) second-hand listings without login. Returns title, price in CNY, region and link. action=search (default) drives a real browser, takes 10-40 s and supports pages (30 items per page). monitor-init issues a monitoring ticket for a keyword (one browser run); monitor-query then answers in seconds over plain HTTP for repeated monitoring (init the same keyword first). Needs playwright and a Chromium-based browser; when missing it returns an error with a fix guide and an environment self-check. Relay the error text to the user, who will handle it.
+# Timeout: 300
+# Group: shopping
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "keyword": {
+#       "type": "string",
+#       "description": "Search keyword, e.g. 'RTX 4060', 'switch oled'"
+#     },
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "monitor-init",
+#         "monitor-query"
+#       ],
+#       "description": "Default search"
+#     },
+#     "pages": {
+#       "type": "integer",
+#       "description": "Pages to fetch (1-10, default 1, search only; each extra page adds about 10 s)"
+#     }
+#   },
+#   "required": [
+#     "keyword"
+#   ],
+#   "additionalProperties": false
+# }
 """
 goofish — 闲鱼(Goofish)免登录商品搜索 CLI
 无需登录、无需官方 API。基于真实 Chromium 浏览器执行页面 JS 绕过风控。

@@ -193,28 +193,35 @@ fn retain_configured_models(
             .flatten()
             .chain(route.multimodal_models.iter().flatten())
     });
-    let real_context_models = config
+    let real_context_models: Vec<crate::config::ActiveProviderModelConfig> = config
         .platforms
         .qq
         .plugins
         .get(crate::config::REAL_CONTEXT_PLUGIN_ID)
         .and_then(|instance| crate::config::RealContextPluginSettings::from_instance(instance).ok())
-        .and_then(|settings| settings.text_models)
+        .map(|settings| {
+            settings
+                .text_models
+                .explicit_entries()
+                .iter()
+                .chain(settings.affection_text_models.explicit_entries())
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     for choice in config
         .active_provider_models
         .iter()
         .flatten()
         .chain(config.active_multimodal_provider_models.iter().flatten())
-        .chain(config.platforms.qq.text_models.iter().flatten())
-        .chain(config.platforms.qq.multimodal_models.iter().flatten())
+        .chain(config.platforms.qq.text_models.explicit_entries())
+        .chain(config.platforms.qq.multimodal_models.explicit_entries())
         .chain(
             config
                 .platforms
                 .qq
                 .non_whitelist_text_models
-                .iter()
-                .flatten(),
+                .explicit_entries(),
         )
         .chain(conversation_models)
         .chain(real_context_models.iter())
@@ -427,12 +434,13 @@ mod tests {
             "non-whitelist-text".to_string(),
             "context-text".to_string(),
         ]);
-        config.platforms.qq.text_models = Some(vec![crate::config::ActiveProviderModelConfig {
-            provider_id: provider_id.clone(),
-            model: "platform-text".to_string(),
-        }]);
+        config.platforms.qq.text_models =
+            crate::config::ModelPoolRef::models(vec![crate::config::ActiveProviderModelConfig {
+                provider_id: provider_id.clone(),
+                model: "platform-text".to_string(),
+            }]);
         config.platforms.qq.non_whitelist_text_models =
-            Some(vec![crate::config::ActiveProviderModelConfig {
+            crate::config::ModelPoolRef::models(vec![crate::config::ActiveProviderModelConfig {
                 provider_id: provider_id.clone(),
                 model: "non-whitelist-text".to_string(),
             }]);
@@ -440,10 +448,12 @@ mod tests {
         crate::config::merge_real_context_settings(
             &mut real_context,
             &crate::config::RealContextPluginSettings {
-                text_models: Some(vec![crate::config::ActiveProviderModelConfig {
-                    provider_id: provider_id.clone(),
-                    model: "context-text".to_string(),
-                }]),
+                text_models: crate::config::ModelPoolRef::models(vec![
+                    crate::config::ActiveProviderModelConfig {
+                        provider_id: provider_id.clone(),
+                        model: "context-text".to_string(),
+                    },
+                ]),
                 ..Default::default()
             },
         );

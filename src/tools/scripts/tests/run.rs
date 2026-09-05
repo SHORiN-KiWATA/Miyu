@@ -1,101 +1,32 @@
-//! 执行、输出截断与注册。
+//! 执行、输出截断、环境变量与 argv 展开。
 
 use crate::tools::scripts::*;
 
+fn executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 #[test]
 fn explicit_schema_defaults_to_lazy_loading() {
-    let entry = ScriptEntry {
-        id: "search_game".to_string(),
-        display_name: "Search game".to_string(),
-        description: "Search game status".to_string(),
-        path: "search-game".to_string(),
-        parameters: json!({"type":"object","properties":{"query":{"type":"string"}}}),
-        timeout_seconds: None,
-        always_loaded: None,
-        load_policy: LoadPolicy::Summary,
-        groups: Vec::new(),
-    };
+    let mut entry = ScriptEntry::overlay("search_game".to_string(), "search-game".to_string());
+    entry.description = "Search game status".to_string();
+    entry.parameters = json!({"type":"object","properties":{"query":{"type":"string"}}});
     let spec = entry_to_spec(&entry, Path::new("."), Path::new(".")).unwrap();
     assert!(!spec.always_loaded);
     assert!(spec.is_script);
 }
 
-#[tokio::test]
-async fn lifecycle_mutations_preserve_malformed_sibling_entries() {
-    let temp = tempfile::tempdir().unwrap();
-    let scripts_dir = temp.path();
-    std::fs::write(
-        scripts_dir.join("existing.sh"),
-        "#!/bin/bash\n# Description: Existing\n\necho existing",
-    )
-    .unwrap();
-    std::fs::write(
-        scripts_dir.join("new.sh"),
-        "#!/bin/bash\n# Description: New\n\necho new",
-    )
-    .unwrap();
-    std::fs::write(
-        scripts_dir.join("index.json"),
-        serde_json::to_string(&json!({
-            "scripts": [
-                "broken entry",
-                {
-                    "id": "existing_script",
-                    "display_name": "Existing",
-                    "description": "Existing",
-                    "path": "existing.sh"
-                }
-            ]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    register_script_handler(json!({"id":"new_script","path":"new.sh"}), scripts_dir)
-        .await
-        .unwrap();
-    unregister_script_handler(
-        json!({"id":"existing_script","delete_file":false}),
-        scripts_dir,
-    )
-    .await
-    .unwrap();
-
-    let index = read_script_index_value(&scripts_dir.join("index.json")).unwrap();
-    let scripts = index.get("scripts").and_then(Value::as_array).unwrap();
-    assert!(scripts.iter().any(|entry| entry == "broken entry"));
-    assert!(scripts
-        .iter()
-        .any(|entry| raw_entry_field(entry, "id") == Some("new_script")));
-    assert!(!scripts
-        .iter()
-        .any(|entry| raw_entry_field(entry, "id") == Some("existing_script")));
-    let disabled = index.get("disabled").and_then(Value::as_array).unwrap();
-    assert!(disabled
-        .iter()
-        .any(|entry| raw_entry_field(entry, "id") == Some("existing_script")));
-}
-
-#[tokio::test]
-async fn unregister_keeps_file_disabled() {
-    let temp = tempfile::tempdir().unwrap();
-    let scripts_dir = temp.path();
-    std::fs::write(
-        scripts_dir.join("hello.sh"),
-        "#!/bin/bash\n# Description: Say hello\n\necho hello",
-    )
-    .unwrap();
-
-    unregister_script_handler(json!({"id":"hello","delete_file":false}), scripts_dir)
-        .await
-        .unwrap();
-
-    assert!(scripts_dir.join("hello.sh").is_file());
-    let index = read_script_index_for_scan(&scripts_dir.join("index.json")).unwrap();
-    assert_eq!(index.disabled.len(), 1);
-    let scan = scan_scripts(&[scripts_dir]).unwrap();
-    assert!(scan.entries.is_empty());
-    assert!(scan.unregistered.is_empty());
+#[test]
+fn generic_scripts_default_to_lazy_loading_too() {
+    let mut entry = ScriptEntry::overlay("plain".to_string(), "plain".to_string());
+    entry.description = "Plain".to_string();
+    let spec = entry_to_spec(&entry, Path::new("."), Path::new(".")).unwrap();
+    assert!(!spec.always_loaded);
+    assert_eq!(spec.parameters["properties"]["stdin"]["type"], "string");
 }
 
 #[cfg(unix)]
@@ -130,11 +61,7 @@ async fn a_script_run_points_the_cache_at_miyu() {
         "#!/bin/sh\nprintf '%s' \"$MIYU_SCRIPT_CACHE_DIR\"\n",
     )
     .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    executable(&script);
 
     let out = super::super::run_script(
         "echo-cache",
@@ -142,6 +69,7 @@ async fn a_script_run_points_the_cache_at_miyu() {
         &cache_dir,
         &serde_json::json!({}),
         30,
+        ArgvMode::Off,
     )
     .await
     .unwrap();
@@ -149,5 +77,88 @@ async fn a_script_run_points_the_cache_at_miyu() {
     assert!(
         out.contains(cache_dir.to_str().unwrap()),
         "脚本没拿到 Miyu 的缓存目录：{out}"
+    );
+}
+
+/// `MIYU_ARGS_JSON` 与 stdin 是同一份 JSON:脚本读环境变量就不用写读管道那段。
+#[tokio::test]
+async fn args_json_env_mirrors_stdin() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path().join("scripts");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+    let script = scripts_dir.join("echo-env");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s|' \"$MIYU_ARGS_JSON\"\ncat\n",
+    )
+    .unwrap();
+    executable(&script);
+
+    let out = super::super::run_script(
+        "echo-env",
+        &scripts_dir,
+        temp.path(),
+        &json!({"query": "x"}),
+        30,
+        ArgvMode::Off,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        parsed["stdout"].as_str().unwrap(),
+        r#"{"query":"x"}|{"query":"x"}"#
+    );
+}
+
+#[test]
+fn argv_flags_expansion_is_deterministic_and_skips_stdin() {
+    let flags = super::super::argv_flags(&json!({
+        "query": "hello world",
+        "limit": -5,
+        "json": true,
+        "dry": false,
+        "nothing": null,
+        "tags": ["a", "b"],
+        "stdin": "raw"
+    }));
+    assert_eq!(
+        flags,
+        vec![
+            "--json",
+            "--limit=-5",
+            "--query=hello world",
+            "--tags=[\"a\",\"b\"]",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn flags_mode_passes_arguments_on_argv() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path().join("scripts");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+    let script = scripts_dir.join("echo-argv");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done\n",
+    )
+    .unwrap();
+    executable(&script);
+
+    let out = super::super::run_script(
+        "echo-argv",
+        &scripts_dir,
+        temp.path(),
+        &json!({"query": "hello world", "limit": 5, "json": true, "dry": false}),
+        30,
+        ArgvMode::Flags,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        parsed["stdout"].as_str().unwrap(),
+        "--json\n--limit=5\n--query=hello world"
     );
 }

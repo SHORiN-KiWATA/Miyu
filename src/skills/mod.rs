@@ -34,6 +34,13 @@ const BUILTIN_SKILLS: &[(&str, &str, bool)] = &[
         include_str!("../skills/skill-creator.md"),
         true,
     ),
+    // 脚本接口契约(头部/stdin JSON/退出码)同样是"如何扩展自己"的元能力,
+    // 任何人格都得拿到,否则自定义人格写出的脚本注册不上(09-05)。
+    (
+        "script-creator",
+        include_str!("../skills/script-creator.md"),
+        true,
+    ),
     (
         "linux-input-method-diagnose",
         include_str!("../skills/personas/default/linux-input-method-diagnose.md"),
@@ -311,7 +318,7 @@ mod tests {
     }
 
     /// 内置技能默认属于 Miyu 出厂人格:默认人格看得见非平台级内置技能,
-    /// 自定义人格只剩平台级(skill-creator)。
+    /// 自定义人格只剩平台级(skill-creator、script-creator)。
     #[test]
     fn builtin_skills_are_persona_gated_except_platform_wide() {
         let temp = tempfile::tempdir().unwrap();
@@ -337,7 +344,7 @@ mod tests {
             .collect();
         assert_eq!(
             custom_names,
-            BTreeSet::from(["skill-creator".to_string()]),
+            BTreeSet::from(["skill-creator".to_string(), "script-creator".to_string()]),
             "自定义人格只应看到平台级内置技能"
         );
 

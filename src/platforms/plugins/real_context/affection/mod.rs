@@ -578,9 +578,15 @@ async fn run_update(job: AffectionUpdateJob) -> Result<()> {
     };
     let prompt = build_update_prompt(&job, &profile, level, &tags, &history);
     let mut config = job.config.clone();
-    if let Some(models) = job.settings.text_models.as_deref() {
-        config.active_provider_models = Some(models.to_vec());
-    }
+    // Affection inherits from the reply judge, which inherits from the
+    // conversation's effective text pool.
+    config.active_provider_models =
+        config.resolve_pool_ref(&job.settings.affection_text_models, false, || {
+            job.config
+                .resolve_pool_ref(&job.settings.text_models, false, || {
+                    job.config.active_provider_models.clone()
+                })
+        });
     let client = OpenAiCompatibleClient::from_config(&config, &job.paths)
         .context("initializing the affection update model pool")?
         .with_request_scope("qq-affection");

@@ -331,6 +331,7 @@ impl AppConfig {
                 bail!("provider {} base_url cannot be empty", provider.id);
             }
         }
+        self.model_tiers.validate_roles()?;
         if !(0.1..=1.0).contains(&self.context.trim_at_ratio) {
             bail!("context.trim_at_ratio must be between 0.1 and 1.0");
         }

@@ -71,6 +71,10 @@ pub(in crate::llm::openai_compatible) const BRIDGE_DUPLICATE_TOOLS: &[&str] =
     &["run_command", "web_search", "todowrite"];
 
 /// 中转环境事实(声明式;常量字节保证提示词哈希稳定)。
+/// codex 不截断 stdin:45 万字节探针(针在末尾)原样答出(09-04 案卷 11.1),
+/// 已覆盖 Miyu 的 pop 包络(约 40 万字节)。不给预算。
+const STDIN_BYTE_BUDGET: Option<usize> = None;
+
 const RELAY_ENVIRONMENT_NOTE: &str = "\n\n<relay-environment>\nThis session runs inside Miyu's relay: each turn is a fresh codex process that exits when the turn ends. Anything backgrounded through the built-in shell dies with the process.\n</relay-environment>";
 
 /// miyu 工具桥在场时的补充事实(codex 给 MCP 工具的名字是 `miyu__<name>`… 实际
@@ -399,7 +403,7 @@ fn render_prompt(
 ) -> Result<(String, Vec<PathBuf>)> {
     let mut parts: Vec<String> = Vec::new();
     let mut images: Vec<PathBuf> = Vec::new();
-    for block in payload::render_user_blocks(delta) {
+    for block in payload::render_user_blocks(delta, STDIN_BYTE_BUDGET) {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
