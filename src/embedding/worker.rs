@@ -59,6 +59,7 @@ pub(crate) fn embedding_worker_requested() -> bool {
 /// Entry point of the child process.
 pub(crate) async fn run_embedding_worker() -> Result<()> {
     apply_address_space_limit()?;
+    lower_scheduling_priority();
     let mut output = tokio::io::stdout();
     let mut input = tokio::io::stdin();
     let idle = std::env::var(IDLE_SECS_ENV)
@@ -140,6 +141,22 @@ where
         output.flush().await?;
     }
 }
+
+/// Index rebuilds keep one core busy for minutes; `nice 10` lets the daemon,
+/// a compile, or a game take the core first and costs nothing when the
+/// machine is idle. Best effort: a failure is not worth a log line.
+#[cfg(unix)]
+fn lower_scheduling_priority() {
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, WORKER_NICE);
+    }
+}
+
+#[cfg(not(unix))]
+fn lower_scheduling_priority() {}
+
+#[cfg(unix)]
+const WORKER_NICE: libc::c_int = 10;
 
 #[cfg(unix)]
 fn apply_address_space_limit() -> Result<()> {
