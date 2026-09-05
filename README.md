@@ -57,6 +57,7 @@ miyu config
 
   ```
   yay -S miyu
+  yay -S miyu-voice   # 可选:语音唤醒 + 本地语音识别前端
   ```
 
 - 从源码构建
@@ -64,7 +65,8 @@ miyu config
   ```
   git clone https://github.com/SHORiN-KiWATA/Miyu.git
   cd Miyu
-  cargo build --release
+  cargo build --release                    # 只出 miyu
+  cargo build --release --features voice   # 再出 miyu-voice(可选,链接 sherpa-onnx)
   ```
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
@@ -91,6 +93,14 @@ miyu config
   miyu fish-init
   ```
   初始化后可以直接在终端打字对话。
+
+- 语音唤醒(可选,需装 `miyu-voice`)
+
+  设置里开启「语音功能」后 daemon 会拉起独立的 `miyu-voice` 进程常开麦克风:
+  喊唤醒词(默认「未有未有」)→ 提示音 + 桌面通知「在听」→ 说指令 → 执行完
+  提示音 + 通知回复摘要。识别全在本机(SenseVoice,不联网);不开语音时零占用。
+  REPL 里 `/stt`、终端 `miyu stt`、WebUI 麦克风按钮可用同一套识别做听写。
+  详见 `docs/voice.md`。
 
 ## 重要配置调整
 

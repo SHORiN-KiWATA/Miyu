@@ -43,6 +43,8 @@ mod token_counter;
 mod token_estimate;
 mod tools;
 mod transfer;
+#[cfg(feature = "voice")]
+pub mod voice;
 mod web;
 
 use anyhow::Result;

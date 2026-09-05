@@ -4673,6 +4673,61 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   color: var(--text);
 }
 
+/* 语音输入:听写中按钮变红并呼吸;状态行显示「在听」和电平条。 */
+.mic-button.is-recording {
+  color: #fff;
+  background: var(--danger);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+/* 听写中悬浮在输入框上方的电平指示:只有麦克风图标和一条电平,没有文字。 */
+.voice-float {
+  position: absolute;
+  left: 50%;
+  top: -34px;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--app-bg) 82%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+
+.voice-float .icon-slot {
+  width: 16px;
+  height: 16px;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-level {
+  display: inline-block;
+  width: 96px;
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  overflow: hidden;
+}
+
+.voice-level b {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--danger);
+  transition: width 80ms linear;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+}
+
 .attachment-remove:hover {
   color: var(--danger);
 }

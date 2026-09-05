@@ -15,6 +15,7 @@ options=('!strip' '!debug')
 export LC_ALL=C.UTF-8
 depends=('chafa' 'gcc-libs' 'ripgrep' 'alsa-lib')
 optdepends=(
+  'miyu-voice: voice wake word + speech recognition front end'
   'git: update default Shorin Wiki knowledge base'
   'fish: fish shell integration support'
   'bash: bash shell integration support'

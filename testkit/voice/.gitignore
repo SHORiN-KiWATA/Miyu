@@ -1,0 +1,3 @@
+# measure.py 的隔离 MIYU_HOME 与运行日志;JSON 样本保留作对照。
+home/
+measure-*.log

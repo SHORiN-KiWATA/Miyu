@@ -14,6 +14,7 @@ mod real_context;
 mod scheduled_messages;
 mod settings;
 mod undo;
+mod voice;
 mod widgets;
 use antigravity_form::*;
 use claude_code_form::*;
@@ -28,6 +29,7 @@ use real_context::*;
 use scheduled_messages::*;
 use settings::*;
 use undo::*;
+use voice::*;
 use widgets::*;
 
 use crate::config::{
@@ -155,6 +157,15 @@ fn run_main_menu(
                 platforms_label(config)
             ),
             t("Global settings", "全局参数设置").to_string(),
+            format!(
+                "{} ({})",
+                t("Voice", "语音功能"),
+                if config.voice.enabled {
+                    t("on", "开")
+                } else {
+                    t("off", "关")
+                }
+            ),
             t("Save and exit", "保存并退出").to_string(),
         ];
         draw_menu(
@@ -201,7 +212,8 @@ fn run_main_menu(
                     6 => edit_custom_prompts(stdout, paths, config),
                     7 => select_platforms(stdout, paths, config),
                     8 => edit_settings(stdout, config),
-                    9 => match config.save(paths) {
+                    9 => edit_voice(stdout, config),
+                    10 => match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
                             return Ok(true);

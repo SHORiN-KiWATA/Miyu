@@ -50,6 +50,56 @@ pub(in crate::cli) fn read_live_repl_input(
                     live.show_background_report(&report)
                 })?;
             }
+            // 听写:识别出的句子填进编辑框(或按配置直接提交)。
+            for (event, auto_submit) in crate::cli::repl::dictation::poll() {
+                use crate::cli::repl::dictation::DictationEvent;
+                match event {
+                    DictationEvent::Utterance(text) if auto_submit => {
+                        live.editor.input = text;
+                        live.editor.cursor = live.editor.input.chars().count();
+                        if let Some(submission) = live.editor.submit() {
+                            let mode = live.mode();
+                            synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
+                                live.commit_submission_render(&submission)
+                            })?;
+                            live.commit_submission_finalize();
+                            raw.keep_cursor_hidden();
+                            return Ok(LiveReplOutcome::Submit(
+                                mode,
+                                submission.content,
+                                submission.images,
+                            ));
+                        }
+                    }
+                    DictationEvent::Utterance(text) => {
+                        if !live.editor.input.is_empty()
+                            && !live.editor.input.ends_with(char::is_whitespace)
+                        {
+                            live.editor.input.push(' ');
+                        }
+                        live.editor.input.push_str(&text);
+                        live.editor.cursor = live.editor.input.chars().count();
+                        synchronized_terminal_update(CursorAfterUpdate::Preserve, || {
+                            live.redraw()
+                        })?;
+                    }
+                    DictationEvent::Ended => {
+                        repl_note(
+                            live,
+                            &format!("\x1b[2m{}\x1b[0m\n", t("dictation ended", "听写结束")),
+                        )?;
+                    }
+                    DictationEvent::Error(message) => {
+                        repl_note(
+                            live,
+                            &format!(
+                                "\x1b[31m{}: {message}\x1b[0m\n",
+                                t("dictation failed", "听写失败")
+                            ),
+                        )?;
+                    }
+                }
+            }
             let typing = last_key_at.elapsed() < Duration::from_millis(350);
             if typing {
                 continue;
@@ -78,6 +128,26 @@ pub(in crate::cli) fn read_live_repl_input(
             }
             last_key_at = Instant::now();
             let event = event::read()?;
+            // 听写中 Esc = 停止听写,已听写的文字留在编辑框里(编辑框有内容时
+            // 打不出 /stt,所以停止不能靠命令)。
+            if crate::cli::repl::dictation::is_active()
+                && matches!(
+                    &event,
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Esc,
+                        kind,
+                        ..
+                    }) if *kind != KeyEventKind::Release
+                )
+            {
+                crate::cli::repl::dictation::stop();
+                repl_note(
+                    live,
+                    &format!("\x1b[2m{}\x1b[0m\n", t("dictation stopped", "听写已停止")),
+                )?;
+                synchronized_terminal_update(CursorAfterUpdate::Preserve, || live.redraw())?;
+                continue;
+            }
             // 上键开始翻历史之前，先把别的 REPL 刚落盘的输入补进来。历史只在
             // 启动时读一次，两个 REPL 同时开着时先开的那个原本永远看不到后开
             // 的那个敲了什么（见 `refresh_repl_input_history`）。
@@ -116,6 +186,8 @@ pub(in crate::cli) fn read_live_repl_input(
                     })?
                 }
                 LiveEditorAction::Submit(submission) => {
+                    // 回车发送即结束听写,不让麦克风继续往下一条消息里灌字。
+                    crate::cli::repl::dictation::stop();
                     // `/goal edit`（无参数）在提交前原地变身成可编辑的
                     // 「/goal edit <当前目标>」，不回显、不产生任何输出。
                     if submission.content.trim() == "/goal edit"

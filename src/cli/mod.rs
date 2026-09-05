@@ -38,6 +38,7 @@ mod pop_cmds;
 mod repl;
 mod select;
 mod shell_bridge;
+mod stt;
 
 // 日志读取与格式化已拆到 daemon_log。
 use alarm_worker::*;
@@ -49,6 +50,7 @@ use model_cmds::*;
 use pop_cmds::*;
 use select::*;
 use shell_bridge::*;
+use stt::*;
 #[cfg(test)]
 mod tests;
 
@@ -205,6 +207,11 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 session,
             )
             .await
+        }
+        Some(Command::Stt) => {
+            let session =
+                one_shot_session(&paths, session_arg.as_deref(), continue_session).await?;
+            run_stt_once(&paths, cli.stdout, mode, session).await
         }
         Some(Command::Init) => run_init(&paths, InitKind::Explicit),
         Some(Command::Paths) => {

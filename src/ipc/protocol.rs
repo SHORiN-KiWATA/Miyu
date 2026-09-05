@@ -255,6 +255,16 @@ pub enum Command {
         #[serde(default)]
         models: Vec<crate::config::ActiveProviderModelConfig>,
     },
+    /// `miyu-voice` 进程注册的持久信令连接。应答 Ack 后双向裸交换 Event
+    /// 帧(见 `voice::worker` 模块文档的信令表)。
+    VoiceAttach,
+    /// 客户端(REPL `/stt`、`miyu stt`)认领一条听写流:daemon 让语音前端
+    /// 开听写窗,识别文本以 Event 帧 `voice.dictation {text}` 流回,窗口
+    /// 结束发 `voice.dictation_ended`;连接断开即释放。
+    StartDictation,
+    /// 语音前端状态(二进制是否存在、是否在跑、设备名等)。应答
+    /// Event `voice.status`。
+    VoiceStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

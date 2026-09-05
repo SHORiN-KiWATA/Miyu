@@ -33,6 +33,7 @@ pub(crate) enum ReplSlashCommand {
     Undo,
     Pop,
     Compact,
+    Stt,
     Goal,
     Reset,
     ResetMemory,
@@ -181,6 +182,15 @@ pub(crate) const REPL_COMMAND_TABLE: &[ReplCommandSpec] = &[
         help_en: "compact current conversation context now",
         help_zh: "立即压缩当前会话上下文",
         web: true,
+    },
+    ReplCommandSpec {
+        name: "/stt",
+        command: ReplSlashCommand::Stt,
+        arg_hint: "",
+        help_en:
+            "dictate with the microphone: speech goes into the input box; Esc stops (needs voice enabled)",
+        help_zh: "用麦克风听写：说的话填进输入框(需开启语音功能);Esc 停止,回车发送",
+        web: false,
     },
     ReplCommandSpec {
         name: "/goal",

@@ -86,6 +86,8 @@ pub enum Command {
     #[command(name = "__daemon", hide = true)]
     DaemonWorker(WebArgs),
     Ask(MessageArgs),
+    /// 用麦克风说一句话,识别成文字后当作消息发送(需开启语音功能)
+    Stt,
     Init,
     Paths,
     Config(ConfigArgs),

@@ -92,6 +92,126 @@ pub struct AppConfig {
     pub subagent_tiers: SubagentTiersConfig,
     #[serde(default, skip_serializing_if = "PlatformsConfig::is_empty")]
     pub platforms: PlatformsConfig,
+    /// 语音前端(`miyu-voice` 进程):唤醒词、本地识别、听写、提示音。
+    #[serde(default)]
+    pub voice: VoiceConfig,
+}
+
+/// 语音功能。整套只在 `voice.enabled` 时由 daemon 拉起独立的 `miyu-voice`
+/// 进程,关着时 daemon 零占用;主程序不含任何识别模型代码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 中文唤醒词,任意汉字,内部转拼音送 KWS 模型,不用重训。
+    #[serde(default = "default_wake_keyword")]
+    pub wake_keyword: String,
+    /// 唤醒判定阈值(0~1,越低越灵敏;sherpa 默认 0.25)。
+    #[serde(default = "default_wake_threshold")]
+    pub wake_threshold: f32,
+    /// 唤醒词路径加分(越大越灵敏;sherpa 默认 1.0)。
+    #[serde(default = "default_wake_boost")]
+    pub wake_boost: f32,
+    /// 麦克风设备名(`miyu-voice devices` 可列),null = 系统默认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone: Option<String>,
+    /// "local"(SenseVoice,本地)| "cloud"(OpenAI 兼容 transcriptions)。
+    #[serde(default = "default_stt_engine")]
+    pub stt_engine: String,
+    /// 本地识别线程数。
+    #[serde(default = "default_stt_threads")]
+    pub stt_threads: usize,
+    /// 本地识别语言:auto | zh | en | ja | ko | yue。固定 zh 可避免噪声被
+    /// 认成日文碎片。
+    #[serde(default = "default_stt_language")]
+    pub stt_language: String,
+    /// 云端识别用的供应商 id(providers 里的)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stt_cloud_provider: Option<String>,
+    #[serde(default = "default_stt_cloud_model")]
+    pub stt_cloud_model: String,
+    /// 本地识别模型闲置多少秒后卸载(0 = 常驻)。
+    #[serde(default = "default_stt_unload_seconds")]
+    pub stt_unload_seconds: u64,
+    /// 识别出指令后的免唤醒追问窗口(秒),0 = 每句都要唤醒词。
+    #[serde(default = "default_follow_up_seconds")]
+    pub follow_up_seconds: u64,
+    /// 识别文本少于这么多有效字视为噪声丢弃。
+    #[serde(default = "default_min_utterance_chars")]
+    pub min_utterance_chars: usize,
+    /// 提示音总开关。
+    #[serde(default = "default_true")]
+    pub sounds: bool,
+    #[serde(default = "default_sound_volume")]
+    pub sound_volume: f32,
+    /// 回合完成通知里带的回复摘要字数。
+    #[serde(default = "default_notify_reply_chars")]
+    pub notify_reply_chars: usize,
+    /// REPL 听写:识别一句就直接提交(true)还是先填进编辑框等回车(false)。
+    #[serde(default)]
+    pub dictation_auto_submit: bool,
+}
+
+fn default_wake_keyword() -> String {
+    "未有未有".to_string()
+}
+fn default_wake_threshold() -> f32 {
+    0.25
+}
+fn default_wake_boost() -> f32 {
+    1.0
+}
+fn default_stt_engine() -> String {
+    "local".to_string()
+}
+fn default_stt_threads() -> usize {
+    2
+}
+fn default_stt_language() -> String {
+    // SenseVoice 自动判语种会把普通话片段判成日语吐假名,默认锁中文。
+    "zh".to_string()
+}
+fn default_stt_cloud_model() -> String {
+    "whisper-1".to_string()
+}
+fn default_stt_unload_seconds() -> u64 {
+    60
+}
+fn default_follow_up_seconds() -> u64 {
+    300
+}
+fn default_min_utterance_chars() -> usize {
+    2
+}
+fn default_sound_volume() -> f32 {
+    0.6
+}
+fn default_notify_reply_chars() -> usize {
+    120
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            wake_keyword: default_wake_keyword(),
+            wake_threshold: default_wake_threshold(),
+            wake_boost: default_wake_boost(),
+            microphone: None,
+            stt_engine: default_stt_engine(),
+            stt_threads: default_stt_threads(),
+            stt_language: default_stt_language(),
+            stt_cloud_provider: None,
+            stt_cloud_model: default_stt_cloud_model(),
+            stt_unload_seconds: default_stt_unload_seconds(),
+            follow_up_seconds: default_follow_up_seconds(),
+            min_utterance_chars: default_min_utterance_chars(),
+            sounds: true,
+            sound_volume: default_sound_volume(),
+            notify_reply_chars: default_notify_reply_chars(),
+            dictation_auto_submit: false,
+        }
+    }
 }
 
 /// Provider prompt-cache tuning (v7, DeepSeek 高命中策略实测产物). The
@@ -501,6 +621,7 @@ impl Default for AppConfig {
             system_prompt: None,
             subagent_tiers: SubagentTiersConfig::default(),
             platforms: PlatformsConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }

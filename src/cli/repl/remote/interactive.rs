@@ -191,6 +191,29 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             match command {
                 ReplSlashCommand::Exit => break,
                 ReplSlashCommand::Help => print_repl_help(),
+                ReplSlashCommand::Stt => {
+                    if crate::cli::repl::dictation::is_active() {
+                        crate::cli::repl::dictation::stop();
+                        repl_note(
+                            &mut live_repl,
+                            &format!("\x1b[2m{}\x1b[0m\n", t("dictation stopped", "听写已停止")),
+                        )?;
+                    } else if crate::cli::repl::dictation::start(
+                        paths,
+                        config.voice.dictation_auto_submit,
+                    ) {
+                        repl_note(
+                            &mut live_repl,
+                            &format!(
+                                "\x1b[2m{}\x1b[0m\n",
+                                t(
+                                    "listening… speak; Esc stops, Enter sends (10s of silence also ends it)",
+                                    "在听…请讲;Esc 停止,回车发送(静默 10 秒也会自动结束)"
+                                )
+                            ),
+                        )?;
+                    }
+                }
                 ReplSlashCommand::History => {
                     let state = StateStore::new(paths)?.pinned(&active_session_id);
                     run_history_with_state(

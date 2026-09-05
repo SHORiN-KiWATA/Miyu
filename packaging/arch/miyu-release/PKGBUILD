@@ -1,8 +1,13 @@
 # Maintainer: SHORiN <shorin@users.noreply.github.com>
 #
-# 发布资产构建器：从 v${pkgver} 标签源码构建预编译包
-# miyu-${pkgver}-${pkgrel}-x86_64.pkg.tar.zst，上传到 GitHub Release 作为资产。
-# AUR 的 `miyu` 包装包（packaging/arch/miyu）下载该资产并补上字体后重新打包。
+# 发布资产构建器：从 v${pkgver} 标签源码构建预编译包，上传到 GitHub Release
+# 作为资产。AUR 的包装包（packaging/arch/miyu、packaging/arch/miyu-voice）
+# 下载这些资产重新打包。
+#
+# 拆成两个包：
+#   miyu        主程序（不含任何语音识别代码）
+#   miyu-voice  语音前端 `miyu-voice`（唤醒词 + 本地识别，链接 sherpa-onnx
+#               静态库 ≈30MB），可选安装；daemon 在主程序同目录找到它才启用。
 #
 # 用法（在干净目录中）：
 #   PACKAGER='Miyu Release <noreply@example.com>' makepkg -Cf
@@ -10,7 +15,8 @@
 # assets/fonts 下并随资产打包；另含 MIT LICENSE、内置表情、系统脚本与
 # 默认知识库（本仓库 kb/ + Shorin Wiki）。
 
-pkgname=miyu
+pkgbase=miyu
+pkgname=('miyu' 'miyu-voice')
 pkgver=0.4.5
 pkgrel=1
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
@@ -19,21 +25,22 @@ url='https://github.com/SHORiN-KiWATA/Miyu'
 license=('MIT' 'OFL-1.1')
 options=('!lto' '!debug')
 export LC_ALL=C.UTF-8
-depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'ripgrep')
-makedepends=('cargo' 'git' 'pkgconf')
-optdepends=(
-  'git: update default Shorin Wiki knowledge base'
-  'fish: fish shell integration support'
-  'bash: bash shell integration support'
-  'zsh: zsh shell integration support'
-)
+makedepends=('cargo' 'git' 'pkgconf' 'alsa-lib')
+# sherpa-onnx 预编译静态库：由 sherpa-onnx-sys 的 build.rs 在编译期读取
+# （SHERPA_ONNX_ARCHIVE_DIR），放进 source 让 makepkg 负责下载与校验，
+# 构建阶段无需联网。版本号必须与 Cargo.lock 里的 sherpa-onnx-sys 一致。
+_sherpa_ver=1.13.7
+_sherpa_archive="sherpa-onnx-v${_sherpa_ver}-linux-x64-static-lib.tar.bz2"
 source=(
   "miyu::git+${url}.git#tag=v${pkgver}"
   'shorinwiki::git+https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git'
+  "${_sherpa_archive}::https://github.com/k2-fsa/sherpa-onnx/releases/download/v${_sherpa_ver}/${_sherpa_archive}"
 )
+noextract=("${_sherpa_archive}")
 sha256sums=(
   'SKIP'
   'SKIP'
+  'd1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6'
 )
 
 prepare() {
@@ -43,10 +50,18 @@ prepare() {
 
 build() {
   cd miyu
-  cargo build --release --locked
+  SHERPA_ONNX_ARCHIVE_DIR="${srcdir}" cargo build --release --locked --features voice
 }
 
-package() {
+package_miyu() {
+  depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'ripgrep')
+  optdepends=(
+    'miyu-voice: voice wake word + speech recognition front end'
+    'git: update default Shorin Wiki knowledge base'
+    'fish: fish shell integration support'
+    'bash: bash shell integration support'
+    'zsh: zsh shell integration support'
+  )
   cd miyu
   install -Dm755 "target/release/miyu" "${pkgdir}/usr/bin/miyu"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
@@ -106,4 +121,13 @@ EOF
   local sw_commit
   sw_commit="$(git -C "${srcdir}/shorinwiki" rev-parse HEAD 2>/dev/null || echo '')"
   printf '%s\n' "${sw_commit}" > "${pkgdir}/usr/share/miyu/default-kb/manifest/shorinwiki.commit"
+}
+
+package_miyu-voice() {
+  pkgdesc='Miyu 语音前端：唤醒词 + 本地语音识别(SenseVoice / sherpa-onnx)，可选组件'
+  depends=('miyu' 'alsa-lib' 'gcc-libs' 'glibc')
+  optdepends=('libnotify: desktop notifications when Miyu hears you')
+  cd miyu
+  install -Dm755 "target/release/miyu-voice" "${pkgdir}/usr/bin/miyu-voice"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

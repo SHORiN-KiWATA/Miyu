@@ -131,6 +131,15 @@ pub(in crate::web) async fn handle_ipc_connection(
         IpcCommand::FollowRun { run_id } => {
             follow_run(&state, &mut stream, run_id).await?;
         }
+        IpcCommand::VoiceAttach => {
+            voice_bridge::handle_voice_attach(&state, &mut stream).await?;
+        }
+        IpcCommand::StartDictation => {
+            voice_bridge::handle_start_dictation(&state, &mut stream).await?;
+        }
+        IpcCommand::VoiceStatus => {
+            voice_bridge::handle_voice_status(&state, &mut stream).await?;
+        }
         IpcCommand::StopSessionJobs { session_id } => {
             let stopped = tools::jobs::stop_session_jobs(&session_id).await;
             state
@@ -323,6 +332,8 @@ pub(in crate::web) async fn handle_ipc_connection(
             match receiver.await {
                 Ok(Ok(())) => {
                     qq_listener.commit();
+                    let next_voice = state.manager.lock().unwrap().config.voice.clone();
+                    voice_bridge::on_config_reload(&state, &current_config.voice, &next_voice);
                     match session_state(&state.manager, &state.state_store) {
                         Ok(session) => {
                             ipc::send(

@@ -16,6 +16,13 @@ path = "src/lib.rs"
 name = "miyu"
 path = "src/main.rs"
 
+# 语音前端进程:麦克风/唤醒词/本地识别/提示音全部住在这里,主程序 `miyu`
+# 不链接 sherpa-onnx(静态库 ≈30MB)。只有 `--features voice` 才会构建。
+[[bin]]
+name = "miyu-voice"
+path = "src/bin/voice.rs"
+required-features = ["voice"]
+
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
@@ -74,6 +81,16 @@ ratex-parser = "0.1.12"
 ratex-layout = "0.1.12"
 ratex-types = "0.1.12"
 ratex-render = { version = "0.1.12", features = ["embed-fonts"] }
+# 语音(voice feature,默认关):本地唤醒词 + VAD + SenseVoice 识别。
+# 只有 miyu-voice 二进制会启用;主程序永远不带。
+sherpa-onnx = { version = "1.13.7", optional = true }
+cpal = { version = "0.15", optional = true }
+pinyin = { version = "0.10", optional = true }
+bzip2 = { version = "0.4", optional = true }
+
+[features]
+default = []
+voice = ["dep:sherpa-onnx", "dep:cpal", "dep:pinyin", "dep:bzip2"]
 
 [build-dependencies]
 base64 = "0.22"
