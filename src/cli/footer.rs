@@ -303,30 +303,34 @@ pub(in crate::cli) fn repl_footer_left_parts(
     parts.join(" · ")
 }
 
-/// 声波律动帧:五柱波浪,正弦驱动高度,亮度分 dim/正常/亮 三档主题色。
+/// 声波律动帧:五柱波浪,正弦驱动高度,三档颜色全部取自终端 16 色盘里由
+/// matugen 绑定的语义色,不碰 bright 位——用户的 kitty 模板里 color12(94)
+/// 是写死的 `#a39ec4`,不随壁纸换色(09-05 用户实录:波峰颜色对不上)。
+/// 普通模式:峰=primary(34 加粗)、中=secondary(96)、谷=secondary_fixed_dim
+/// (36 加 dim);dev 模式整条走 tertiary(35)的加粗/正常/dim 三档。
 /// 每帧相位步进 0.24 rad,配合 80ms 的 footer tick 约每秒 3 rad,与演示稿
 /// 的流速一致。
 pub(in crate::cli) fn sound_wave_frame(frame: usize, dev: bool) -> String {
     const LEVELS: [char; 7] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇'];
-    let (mid, hi) = if dev { ("35", "95") } else { ("34", "94") };
+    let (hi, mid, low) = if dev {
+        ("\x1b[1m\x1b[35m", "\x1b[35m", "\x1b[2m\x1b[35m")
+    } else {
+        ("\x1b[1m\x1b[34m", "\x1b[96m", "\x1b[2m\x1b[36m")
+    };
     let t = frame as f32 * 0.24;
     let mut out = String::new();
     for i in 0..5 {
         let height = ((t - i as f32 * 0.9).sin() + 1.0) / 2.0;
         let glyph = LEVELS[((height * (LEVELS.len() - 1) as f32) as usize).min(LEVELS.len() - 1)];
-        if height > 0.72 {
-            out.push_str("[1m[");
-            out.push_str(hi);
+        out.push_str(if height > 0.72 {
+            hi
         } else if height > 0.35 {
-            out.push_str("[");
-            out.push_str(mid);
+            mid
         } else {
-            out.push_str("[2m[");
-            out.push_str(mid);
-        }
-        out.push('m');
+            low
+        });
         out.push(glyph);
-        out.push_str("[0m");
+        out.push_str("\x1b[0m");
     }
     out
 }
