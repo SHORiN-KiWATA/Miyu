@@ -357,11 +357,18 @@ fn relay_env(scopes: ToolScopes, miyu_session: Option<&str>) -> Vec<(String, Opt
     env
 }
 
+/// agy 对单条 user 输入的硬上限是 **192,000 字节**(09-04 案卷五次采样钉死:
+/// 上限是字节,不是字符也不是 token),超过就从尾部静默截断、照样返回 SUCCESS
+/// ——而活跃尾巴(本轮真实消息)排在载荷末尾,先死的永远是它。这里取九折,
+/// 余量留给 agy 自己追加的通知与 `<ADDITIONAL_METADATA>`。
+pub(in crate::llm::openai_compatible) const STDIN_BYTE_BUDGET: usize = 172_800;
+
 /// stdin 的单行载荷:agy 的 `{"event":"user","message":{"content":[…]}}`。
 /// 内容块复用 claude 线的翻译(历史转写 + 活跃尾巴),agy 只收 text 块,
-/// 图片块降级成占位文本。
+/// 图片块降级成占位文本。载荷按 [`STDIN_BYTE_BUDGET`] 收口:尾巴整条保留,
+/// 历史从最老的回合丢。
 fn render_stdin_line(delta: &[ChatMessage]) -> String {
-    let blocks: Vec<Value> = payload::render_user_blocks(delta)
+    let blocks: Vec<Value> = payload::render_user_blocks(delta, Some(STDIN_BYTE_BUDGET))
         .into_iter()
         .map(|block| {
             if block.get("type").and_then(Value::as_str) == Some("image") {

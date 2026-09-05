@@ -135,7 +135,7 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(ChatStreamChunk) -> Result<()>,
     {
-        let payload = payload::render_user_payload(plan.delta());
+        let payload = payload::render_user_payload(plan.delta(), STDIN_BYTE_BUDGET);
         let args = self.claude_code_args(
             runtime,
             model,
@@ -232,6 +232,10 @@ impl OpenAiCompatibleClient {
 }
 
 /// 中转环境事实(声明式,不写指令;常量字节保证前缀稳定)。
+/// claude 单条 stream-json user 输入有没有静默截断的上限**未实测**(09-04 案卷
+/// 3.4:各家上限不同、没有数据)。不给预算:量出来之前不改这条线的行为。
+const STDIN_BYTE_BUDGET: Option<usize> = None;
+
 const RELAY_ENVIRONMENT_NOTE: &str = "\n\n<relay-environment>\nThis session runs inside Miyu's relay: each turn is a fresh CLI process that exits when the turn ends. Work backgrounded through the built-in tools (Bash run_in_background, background Task) dies with the process, and its completion notifications never arrive.\n</relay-environment>";
 
 /// miyu 工具桥在场时的补充事实。

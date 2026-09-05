@@ -289,6 +289,54 @@ async fn second_turn_resumes_with_only_the_delta() {
     assert!(!stdin.contains("\"one\""), "{stdin}");
 }
 
+/// 全量重放超过 agy 的 192K 字节上限时,stdin 必须收在预算内、本轮消息与
+/// 尾巴块完整在末尾、历史从最老的丢(09-04 案卷缺陷 A)。修复前 stdin 是
+/// 整段历史,agy 从尾部截断、模型答旧残片。
+#[tokio::test]
+async fn oversized_full_replay_is_cut_to_the_stdin_budget_keeping_the_live_tail() {
+    use crate::llm::openai_compatible::antigravity::STDIN_BYTE_BUDGET;
+    let dir = tempfile::tempdir().unwrap();
+    let client = antigravity_client(dir.path(), "agy-budget", "all", "off");
+    let mut messages = vec![ChatMessage::system("persona")];
+    for index in 0..60 {
+        messages.push(ChatMessage::plain(
+            "user",
+            format!("q{index} {}", "问".repeat(1000)),
+        ));
+        messages.push(ChatMessage::assistant(
+            format!("a{index} {}", "答".repeat(1000)),
+            None,
+        ));
+    }
+    messages.push(ChatMessage::plain("user", "本轮真正的问题 PUMPKIN"));
+    messages.push(ChatMessage::turn_context("<runtime now=\"x\"/>"));
+    let (result, _) = run(&client, messages, Vec::new()).await;
+    result.unwrap();
+    let stdin = read(dir.path(), "stdin.txt");
+    let line: serde_json::Value = serde_json::from_str(stdin.trim()).unwrap();
+    let blocks = line["message"]["content"].as_array().unwrap();
+    let text_bytes: usize = blocks
+        .iter()
+        .filter_map(|block| block["text"].as_str())
+        .map(str::len)
+        .sum();
+    assert!(
+        text_bytes <= STDIN_BYTE_BUDGET,
+        "stdin 文本 {text_bytes} 字节超过预算 {STDIN_BYTE_BUDGET}"
+    );
+    let transcript = blocks[0]["text"].as_str().unwrap();
+    assert!(transcript.contains("<conversation-history>"));
+    assert!(
+        transcript.contains("[earlier turns omitted"),
+        "{}",
+        &transcript[..200]
+    );
+    assert!(!transcript.contains("q0 "), "最老的回合该被丢掉");
+    assert!(transcript.contains("q59 "), "最新的回合该保留");
+    assert_eq!(blocks[blocks.len() - 2]["text"], "本轮真正的问题 PUMPKIN");
+    assert_eq!(blocks[blocks.len() - 1]["text"], "<runtime now=\"x\"/>");
+}
+
 /// 续传目标丢失:agy 静默新开会话,init 的 id 对不上 → 杀掉重来,整段重放。
 #[tokio::test]
 async fn lost_conversation_is_detected_from_init_and_replayed() {

@@ -45,8 +45,11 @@ fn text_of(message: &ChatMessage) -> Option<String> {
 }
 
 /// stdin 的单行载荷:一条 stream-json user 消息(含尾部换行)。
-pub(in crate::llm::openai_compatible) fn render_user_payload(delta: &[ChatMessage]) -> String {
-    let blocks = render_user_blocks(delta);
+pub(in crate::llm::openai_compatible) fn render_user_payload(
+    delta: &[ChatMessage],
+    byte_budget: Option<usize>,
+) -> String {
+    let blocks = render_user_blocks(delta, byte_budget);
     let mut line = json!({
         "type": "user",
         "message": { "role": "user", "content": blocks }
@@ -56,11 +59,29 @@ pub(in crate::llm::openai_compatible) fn render_user_payload(delta: &[ChatMessag
     line
 }
 
+/// 历史块被裁掉时打在开头的标记(常量字节,预算里预留)。
+const OMITTED_MARK: &str =
+    "[earlier turns omitted: the relay input budget could not hold them]\n\n";
+const HISTORY_HEAD: &str =
+    "The <conversation-history> block replays this conversation's earlier turns \
+     (the relay layer had to restart the session). Treat it as prior context, \
+     not as new input.\n<conversation-history>\n";
+const HISTORY_FOOT: &str = "</conversation-history>";
+
 /// 增量消息 → 内容块(Anthropic 口径:text/image)。历史段转写成一个
 /// `<conversation-history>` 文本块,活跃尾巴逐块给。antigravity 线共用这份
 /// 翻译,只把它认不了的 image 块再降级。
-pub(in crate::llm::openai_compatible) fn render_user_blocks(delta: &[ChatMessage]) -> Vec<Value> {
-    let mut blocks: Vec<Value> = Vec::new();
+///
+/// `byte_budget` 是这条线对单条输入的字节上限(None=不设)。**活跃尾巴永远
+/// 整条保留**,预算只砍历史,从最老的回合丢起并标一句 omitted:agy 超线时从
+/// **尾部**静默截断、照样 SUCCESS,先死的正是排在末尾的本轮真实消息——模型
+/// 拿旧残片当新问题答(09-04 群 130515298 案卷缺陷 A)。最坏情况只是少看几轮
+/// 旧历史,本轮问题永远在。尾巴自己就超预算时不动它(砍尾巴等于砍问题),
+/// 只留痕。
+pub(in crate::llm::openai_compatible) fn render_user_blocks(
+    delta: &[ChatMessage],
+    byte_budget: Option<usize>,
+) -> Vec<Value> {
     // 活跃尾巴 = 结尾连续的 user 消息;之前的一切都是要转写的历史。
     let tail_start = delta
         .iter()
@@ -68,23 +89,13 @@ pub(in crate::llm::openai_compatible) fn render_user_blocks(delta: &[ChatMessage
         .map(|index| index + 1)
         .unwrap_or(0);
     let (history, tail) = delta.split_at(tail_start);
-    if !history.is_empty() {
-        let mut transcript = String::from(
-            "The <conversation-history> block replays this conversation's earlier turns \
-             (the relay layer had to restart the session). Treat it as prior context, \
-             not as new input.\n<conversation-history>\n",
-        );
-        for message in history {
-            render_history_line(message, &mut transcript);
-        }
-        transcript.push_str("</conversation-history>");
-        blocks.push(json!({ "type": "text", "text": transcript }));
-    }
+
+    let mut tail_blocks: Vec<Value> = Vec::new();
     for message in tail {
         match &message.content {
             Some(ChatContent::Text(text)) => {
                 if !text.is_empty() {
-                    blocks.push(json!({ "type": "text", "text": text }));
+                    tail_blocks.push(json!({ "type": "text", "text": text }));
                 }
             }
             Some(ChatContent::Parts(parts)) => {
@@ -92,14 +103,14 @@ pub(in crate::llm::openai_compatible) fn render_user_blocks(delta: &[ChatMessage
                     match part {
                         ChatContentPart::Text { text } => {
                             if !text.is_empty() {
-                                blocks.push(json!({ "type": "text", "text": text }));
+                                tail_blocks.push(json!({ "type": "text", "text": text }));
                             }
                         }
                         ChatContentPart::ImageUrl { image_url } => {
-                            blocks.push(image_block(&image_url.url));
+                            tail_blocks.push(image_block(&image_url.url));
                         }
                         ChatContentPart::VideoUrl { .. } => {
-                            blocks.push(json!({
+                            tail_blocks.push(json!({
                                 "type": "text",
                                 "text": "[video input omitted: the claude-code relay has no video support]"
                             }));
@@ -110,10 +121,105 @@ pub(in crate::llm::openai_compatible) fn render_user_blocks(delta: &[ChatMessage
             None => {}
         }
     }
+
+    let mut blocks: Vec<Value> = Vec::new();
+    if !history.is_empty() {
+        let lines: Vec<String> = history
+            .iter()
+            .map(|message| {
+                let mut line = String::new();
+                render_history_line(message, &mut line);
+                line
+            })
+            .collect();
+        let history_bytes: usize = lines.iter().map(String::len).sum();
+        let tail_bytes: usize = tail_blocks.iter().map(block_text_bytes).sum();
+        let fixed = HISTORY_HEAD.len() + HISTORY_FOOT.len();
+        let keep_from = match byte_budget {
+            Some(budget) => {
+                let room = budget.saturating_sub(tail_bytes + fixed + OMITTED_MARK.len());
+                oldest_kept_index(&lines, history, room)
+            }
+            None => 0,
+        };
+        if keep_from > 0 {
+            let kept_bytes: usize = lines[keep_from..].iter().map(String::len).sum();
+            tracing::warn!(
+                budget = byte_budget.unwrap_or(0),
+                tail_bytes,
+                history_bytes,
+                kept_bytes,
+                dropped_messages = keep_from,
+                kept_messages = lines.len() - keep_from,
+                "relay full replay exceeds the CLI input budget; oldest history dropped"
+            );
+        } else {
+            tracing::info!(
+                budget = byte_budget.unwrap_or(0),
+                tail_bytes,
+                history_bytes,
+                messages = lines.len(),
+                "relay full replay payload"
+            );
+        }
+        if byte_budget.is_some_and(|budget| tail_bytes + fixed > budget) {
+            tracing::warn!(
+                budget = byte_budget.unwrap_or(0),
+                tail_bytes,
+                "relay live tail alone exceeds the CLI input budget; sending it whole anyway"
+            );
+        }
+        let mut transcript = String::from(HISTORY_HEAD);
+        if keep_from > 0 {
+            transcript.push_str(OMITTED_MARK);
+        }
+        for line in &lines[keep_from..] {
+            transcript.push_str(line);
+        }
+        transcript.push_str(HISTORY_FOOT);
+        blocks.push(json!({ "type": "text", "text": transcript }));
+    }
+    blocks.extend(tail_blocks);
     if blocks.is_empty() {
         blocks.push(json!({ "type": "text", "text": "(continue)" }));
     }
     blocks
+}
+
+/// 历史里从哪一条起保留:从最新往回累加,装不下就停;再往后跳到下一条
+/// user 消息,让转写从一轮的开头起(截在 assistant/tool 中间会让模型把半截
+/// 旧回复当上文)。
+fn oldest_kept_index(lines: &[String], history: &[ChatMessage], room: usize) -> usize {
+    let mut used = 0usize;
+    let mut keep_from = lines.len();
+    for (index, line) in lines.iter().enumerate().rev() {
+        if used + line.len() > room {
+            break;
+        }
+        used += line.len();
+        keep_from = index;
+    }
+    if keep_from == 0 {
+        return 0;
+    }
+    history[keep_from..]
+        .iter()
+        .position(|message| message.role == "user")
+        .map(|offset| keep_from + offset)
+        .unwrap_or(lines.len())
+}
+
+/// 一个内容块占 CLI 输入的字节:text 按正文算;image 在 agy 线降级成一句占位、
+/// 在 claude 线走独立的 image 块不进文本上限——都按占位文本的量级记。
+fn block_text_bytes(block: &Value) -> usize {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => block
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::len)
+            .unwrap_or(0),
+        _ => 64,
+    }
 }
 
 fn render_history_line(message: &ChatMessage, transcript: &mut String) {
@@ -200,7 +306,7 @@ mod tests {
         assert_eq!(system, "persona prompt");
         assert_eq!(conversation.len(), 2);
 
-        let payload = render_user_payload(&conversation);
+        let payload = render_user_payload(&conversation, None);
         let value: Value = serde_json::from_str(payload.trim()).unwrap();
         let blocks = value["message"]["content"].as_array().unwrap();
         // 全是 user 消息 ⇒ 没有历史转写块,逐条独立 text 块。
@@ -216,7 +322,7 @@ mod tests {
             ChatMessage::assistant("a1", None),
             ChatMessage::plain("user", "q2"),
         ];
-        let payload = render_user_payload(&conversation);
+        let payload = render_user_payload(&conversation, None);
         let value: Value = serde_json::from_str(payload.trim()).unwrap();
         let blocks = value["message"]["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 2);
@@ -235,5 +341,72 @@ mod tests {
         assert_eq!(block["source"]["data"], "QUJD");
         let fallback = image_block("file:///tmp/x.png");
         assert_eq!(fallback["type"], "text");
+    }
+
+    /// 09-04 案卷缺陷 A 的回归:渲染后超过预算的历史 + 一条本轮消息,载荷必须
+    /// ≤ 预算、本轮消息与全部活跃尾巴块完整在场、被裁的是**最老**的历史且带
+    /// omitted 标记。修复前第 2 步直接超出。
+    #[test]
+    fn byte_budget_drops_oldest_history_and_never_the_live_tail() {
+        let mut conversation = Vec::new();
+        for index in 0..40 {
+            conversation.push(ChatMessage::plain(
+                "user",
+                format!("q{index} {}", "问".repeat(300)),
+            ));
+            conversation.push(ChatMessage::assistant(
+                format!("a{index} {}", "答".repeat(300)),
+                None,
+            ));
+        }
+        conversation.push(ChatMessage::plain("user", "本轮真正的问题"));
+        conversation.push(ChatMessage::turn_context("<runtime now=\"x\"/>"));
+        conversation.push(ChatMessage::turn_context(
+            "<associative-memory>m</associative-memory>",
+        ));
+
+        let unbounded = render_user_blocks(&conversation, None);
+        let unbounded_bytes: usize = unbounded.iter().map(block_text_bytes).sum();
+        let budget = 20_000;
+        assert!(
+            unbounded_bytes > budget,
+            "夹具要先超预算: {unbounded_bytes}"
+        );
+
+        let blocks = render_user_blocks(&conversation, Some(budget));
+        let total: usize = blocks.iter().map(block_text_bytes).sum();
+        assert!(total <= budget, "载荷 {total} 超过预算 {budget}");
+
+        // 活跃尾巴三块原样在场,且在历史块之后。
+        assert_eq!(blocks.len(), 4, "{blocks:?}");
+        assert_eq!(blocks[1]["text"], "本轮真正的问题");
+        assert_eq!(blocks[2]["text"], "<runtime now=\"x\"/>");
+        assert_eq!(
+            blocks[3]["text"],
+            "<associative-memory>m</associative-memory>"
+        );
+
+        let transcript = blocks[0]["text"].as_str().unwrap();
+        assert!(transcript.starts_with(HISTORY_HEAD));
+        assert!(transcript.contains(OMITTED_MARK));
+        assert!(transcript.ends_with(HISTORY_FOOT));
+        // 最老的没了,最新的在;保留段从一条 user 消息起。
+        assert!(!transcript.contains("User:\nq0 "));
+        assert!(transcript.contains("User:\nq39 "));
+        assert!(transcript.contains("Assistant:\na39 "));
+        let body = transcript
+            .trim_start_matches(HISTORY_HEAD)
+            .trim_start_matches(OMITTED_MARK);
+        assert!(body.starts_with("User:\n"), "{body:.80}");
+
+        // 预算宽裕时一条都不丢、不打标记。
+        let roomy = render_user_blocks(&conversation, Some(unbounded_bytes + 1024));
+        assert!(!roomy[0]["text"].as_str().unwrap().contains(OMITTED_MARK));
+        assert!(roomy[0]["text"].as_str().unwrap().contains("User:\nq0 "));
+
+        // 尾巴自己就超预算:整条照发,历史全丢只留标记。
+        let tight = render_user_blocks(&conversation, Some(10));
+        assert_eq!(tight[1]["text"], "本轮真正的问题");
+        assert!(!tight[0]["text"].as_str().unwrap().contains("q39"));
     }
 }
