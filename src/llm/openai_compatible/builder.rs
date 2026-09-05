@@ -165,6 +165,73 @@ impl OpenAiCompatibleClient {
         Ok(client)
     }
 
+    /// Builds the client for a subagent tier pool with the tier-routing
+    /// fallback contract shared by every tier consumer (the `task` tool and
+    /// the auxiliary roles under `model_tiers.roles`):
+    ///
+    /// * an unconfigured pool silently uses the main model pool;
+    /// * a configured pool whose models were all removed from the text
+    ///   models, or that cannot be built (disabled provider, missing key),
+    ///   falls back to the main pool and says so in `notice` — the caller
+    ///   decides whether that reaches the calling agent or only the log.
+    ///
+    /// `model_choice` is the representative endpoint for audit rows; pools
+    /// load-balance, so the endpoint that actually answers may differ.
+    pub fn from_tier(
+        config: &AppConfig,
+        paths: &MiyuPaths,
+        tier: crate::config::ModelTier,
+    ) -> Result<TierClient> {
+        let pool = config.tier_choices(tier);
+        if pool.is_empty() {
+            let notice = (!config.model_tiers.pool(tier).is_empty()).then(|| {
+                format!(
+                    "tier '{}' pool has no usable model (models were removed from the text models); fell back to the main model pool",
+                    tier.label()
+                )
+            });
+            return Ok(TierClient {
+                client: Self::from_config(config, paths)?,
+                model_choice: main_pool_choice(config),
+                notice,
+            });
+        }
+        match Self::from_choices(config, paths, &pool) {
+            Ok(client) => Ok(TierClient {
+                client,
+                model_choice: Some((pool[0].provider_id.clone(), pool[0].model.clone())),
+                notice: None,
+            }),
+            Err(err) => Ok(TierClient {
+                client: Self::from_config(config, paths)?,
+                model_choice: main_pool_choice(config),
+                notice: Some(format!(
+                    "tier '{}' pool is unavailable ({err}); fell back to the main model pool",
+                    tier.label()
+                )),
+            }),
+        }
+    }
+
+    /// Builds the client for an auxiliary role: the tier configured under
+    /// `model_tiers.roles`, or the main pool when the role is unrouted.
+    /// Fallback notices are logged here (there is no calling agent to tell)
+    /// so every role consumer gets the same warning without repeating it.
+    pub fn from_aux_role(
+        config: &AppConfig,
+        paths: &MiyuPaths,
+        role: crate::config::AuxRole,
+    ) -> Result<Self> {
+        let Some(tier) = config.model_tiers.role_tier(role) else {
+            return Self::from_config(config, paths);
+        };
+        let routed = Self::from_tier(config, paths, tier)?;
+        if let Some(notice) = &routed.notice {
+            tracing::warn!(role = role.key(), tier = tier.label(), "{notice}");
+        }
+        Ok(routed.client)
+    }
+
     pub fn new(provider: &ProviderConfig, config: &AppConfig, paths: &MiyuPaths) -> Result<Self> {
         if !provider.enabled {
             bail!(
@@ -437,4 +504,22 @@ pub(in crate::llm::openai_compatible) fn claude_code_runtime(
         );
     }
     Some(Arc::new(runtime))
+}
+
+/// A client resolved from a tier pool plus the fallback facts a caller may
+/// want to surface (see [`OpenAiCompatibleClient::from_tier`]).
+pub struct TierClient {
+    pub client: OpenAiCompatibleClient,
+    /// Representative `(provider_id, model)` for audit rows.
+    pub model_choice: Option<(String, String)>,
+    /// Set when the tier pool could not be used and the main pool answered.
+    pub notice: Option<String>,
+}
+
+fn main_pool_choice(config: &AppConfig) -> Option<(String, String)> {
+    config
+        .active_provider_model_choices()
+        .into_iter()
+        .next()
+        .map(|choice| (choice.provider_id, choice.model))
 }

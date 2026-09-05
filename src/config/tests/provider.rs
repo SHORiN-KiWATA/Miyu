@@ -343,74 +343,188 @@ fn subagent_tier_pools_toggle_filter_and_prune() {
     config.providers[0].models.push("mini-b".to_string());
 
     // Unconfigured pool resolves empty.
-    assert!(config.subagent_tier_choices(ModelTier::Cheap).is_empty());
+    assert!(config.tier_choices(ModelTier::Cheap).is_empty());
 
     // Toggle in/out mirrors the text-model picker semantics.
     assert!(config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-a")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-a")
         .unwrap());
     assert!(config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
         .unwrap());
-    assert!(config.is_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-a"));
-    let choices = config.subagent_tier_choices(ModelTier::Cheap);
+    assert!(config.is_tier_model(ModelTier::Cheap, &provider_id, "mini-a"));
+    let choices = config.tier_choices(ModelTier::Cheap);
     assert_eq!(
         choices.iter().map(|c| c.model.as_str()).collect::<Vec<_>>(),
         vec!["mini-a", "mini-b"]
     );
     assert!(!config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
         .unwrap());
-    assert_eq!(config.subagent_tier_choices(ModelTier::Cheap).len(), 1);
+    assert_eq!(config.tier_choices(ModelTier::Cheap).len(), 1);
 
     // Unknown provider is rejected.
     assert!(config
-        .toggle_subagent_tier_model(ModelTier::Strong, "no-such", "x")
+        .toggle_tier_model(ModelTier::Flagship, "no-such", "x")
         .is_err());
 
     // A model removed from the text models leaves the pool too.
     config
-        .toggle_subagent_tier_model(ModelTier::Balanced, &provider_id, "mini-a")
+        .toggle_tier_model(ModelTier::Standard, &provider_id, "mini-a")
         .unwrap();
     config
         .remove_active_provider_model(&provider_id, "mini-a")
         .unwrap();
-    assert!(config.subagent_tier_choices(ModelTier::Cheap).is_empty());
-    assert!(config.subagent_tiers.pool(ModelTier::Cheap).is_empty());
-    assert!(config.subagent_tiers.pool(ModelTier::Balanced).is_empty());
+    assert!(config.tier_choices(ModelTier::Cheap).is_empty());
+    assert!(config.model_tiers.pool(ModelTier::Cheap).is_empty());
+    assert!(config.model_tiers.pool(ModelTier::Standard).is_empty());
 
-    // prune_subagent_tiers drops entries that no longer resolve.
+    // prune_model_tiers drops entries that no longer resolve.
     config
-        .toggle_subagent_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
+        .toggle_tier_model(ModelTier::Cheap, &provider_id, "mini-b")
         .unwrap();
     config.providers[0].models.retain(|m| m != "mini-b");
-    assert!(config.subagent_tier_choices(ModelTier::Cheap).is_empty());
-    config.prune_subagent_tiers();
-    assert!(config.subagent_tiers.pool(ModelTier::Cheap).is_empty());
+    assert!(config.tier_choices(ModelTier::Cheap).is_empty());
+    config.prune_model_tiers();
+    assert!(config.model_tiers.pool(ModelTier::Cheap).is_empty());
 }
 
 #[test]
-fn subagent_tiers_roundtrip_and_default_omission() {
+fn model_tiers_roundtrip_and_default_omission() {
     let config = AppConfig::default();
     let json = serde_json::to_string(&config).unwrap();
     // Empty pools stay out of the serialized config.
-    assert!(!json.contains("subagent_tiers"));
+    assert!(!json.contains("model_tiers"));
 
     let parsed: AppConfig = serde_json::from_str(
         r#"{
             "active_provider": "opencode",
             "providers": [],
-            "subagent_tiers": {
+            "model_tiers": {
                 "cheap": [ { "provider_id": "p", "model": "m" } ]
             }
         }"#,
     )
     .unwrap();
-    assert_eq!(parsed.subagent_tiers.cheap.len(), 1);
-    assert_eq!(parsed.subagent_tiers.cheap[0].model, "m");
-    assert!(parsed.subagent_tiers.balanced.is_empty());
+    assert_eq!(parsed.model_tiers.cheap.len(), 1);
+    assert_eq!(parsed.model_tiers.cheap[0].model, "m");
+    assert!(parsed.model_tiers.standard.is_empty());
     // Choices filter out entries with unknown providers.
-    assert!(parsed.subagent_tier_choices(ModelTier::Cheap).is_empty());
+    assert!(parsed.tier_choices(ModelTier::Cheap).is_empty());
+}
+
+#[test]
+fn aux_roles_default_per_role_and_accept_global_and_old_aliases() {
+    use crate::config::AuxRole;
+    let parsed: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "model_tiers": {
+                "cheap": [ { "provider_id": "p", "model": "m" } ],
+                "roles": { "memory_organizer": "cheap", "deep_research": "strong", "session_title": "global" }
+            }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.model_tiers.role_tier(AuxRole::MemoryOrganizer),
+        Some(ModelTier::Cheap)
+    );
+    // Old tier name keeps working in role values.
+    assert_eq!(
+        parsed.model_tiers.role_tier(AuxRole::DeepResearch),
+        Some(ModelTier::Flagship)
+    );
+    // "global" pins the role to the global pool.
+    assert_eq!(parsed.model_tiers.role_tier(AuxRole::SessionTitle), None);
+    assert!(parsed.model_tiers.validate_roles().is_ok());
+    let json = serde_json::to_string(&parsed).unwrap();
+    let again: AppConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(again.model_tiers.roles, parsed.model_tiers.roles);
+
+    // Absent keys resolve to the built-in defaults and serialize nothing.
+    let mut config = AppConfig::default();
+    assert!(config.model_tiers.roles.is_empty());
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::SessionTitle),
+        Some(ModelTier::Lite)
+    );
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::MemoryOrganizer),
+        Some(ModelTier::Lite)
+    );
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::DeepResearch),
+        Some(ModelTier::Standard)
+    );
+    assert!(!serde_json::to_string(&config).unwrap().contains("roles"));
+    // set / reset round-trip through the explicit map.
+    config.model_tiers.set_role(AuxRole::SessionTitle, None);
+    assert!(config.model_tiers.role_is_explicit(AuxRole::SessionTitle));
+    assert_eq!(config.model_tiers.role_tier(AuxRole::SessionTitle), None);
+    config.model_tiers.reset_role(AuxRole::SessionTitle);
+    assert!(!config.model_tiers.role_is_explicit(AuxRole::SessionTitle));
+    assert_eq!(
+        config.model_tiers.role_tier(AuxRole::SessionTitle),
+        Some(ModelTier::Lite)
+    );
+}
+
+#[test]
+fn model_tiers_read_the_old_key_and_old_tier_names_and_save_new_ones() {
+    // A pre-09-05 config: `subagent_tiers` with `balanced` / `strong`.
+    let parsed: AppConfig = serde_json::from_str(
+        r#"{
+            "active_provider": "opencode",
+            "providers": [],
+            "subagent_tiers": {
+                "balanced": [ { "provider_id": "p", "model": "b" } ],
+                "strong":   [ { "provider_id": "p", "model": "s" } ]
+            }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(parsed.model_tiers.standard[0].model, "b");
+    assert_eq!(parsed.model_tiers.flagship[0].model, "s");
+    assert_eq!(ModelTier::from_str("balanced"), Some(ModelTier::Standard));
+    assert_eq!(ModelTier::from_str("strong"), Some(ModelTier::Flagship));
+    let json = serde_json::to_string(&parsed).unwrap();
+    assert!(json.contains("\"model_tiers\""), "{json}");
+    assert!(
+        json.contains("\"standard\"") && json.contains("\"flagship\""),
+        "{json}"
+    );
+    assert!(
+        !json.contains("subagent_tiers") && !json.contains("\"balanced\""),
+        "{json}"
+    );
+}
+
+#[test]
+fn subagent_tier_roles_reject_unknown_roles_and_tiers() {
+    // A typo must fail loudly at validation instead of silently routing the
+    // role to the main pool.
+    let mut config = AppConfig::default();
+    config
+        .model_tiers
+        .roles
+        .insert("memory_organizer".to_string(), "chep".to_string());
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("unknown tier 'chep'"), "{error}");
+    assert!(
+        error.contains("lite, cheap, standard, flagship, global"),
+        "{error}"
+    );
+
+    let mut config = AppConfig::default();
+    config
+        .model_tiers
+        .roles
+        .insert("compact".to_string(), "cheap".to_string());
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("unknown role 'compact'"), "{error}");
+    assert!(error.contains("memory_organizer"), "{error}");
 }
 
 #[test]
@@ -464,7 +578,7 @@ fn real_context_models_follow_provider_lifecycle() {
     let mut config = route_test_config();
     let old_id = config.providers[0].id.clone();
     let settings = RealContextPluginSettings {
-        text_models: Some(vec![ActiveProviderModelConfig {
+        text_models: crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
             provider_id: old_id.clone(),
             model: "text-only".to_string(),
         }]),
@@ -485,7 +599,10 @@ fn real_context_models_follow_provider_lifecycle() {
     config.rename_provider_references(&old_id, "renamed");
     let instance = &config.platforms.qq.plugins[REAL_CONTEXT_PLUGIN_ID];
     let reparsed = RealContextPluginSettings::from_instance(instance).unwrap();
-    assert_eq!(reparsed.text_models.unwrap()[0].provider_id, "renamed");
+    assert_eq!(
+        reparsed.text_models.explicit_models().unwrap()[0].provider_id,
+        "renamed"
+    );
     assert_eq!(instance.settings["future_option"], true);
 
     config.remove_active_model_references("renamed", "text-only");
@@ -493,7 +610,7 @@ fn real_context_models_follow_provider_lifecycle() {
         &config.platforms.qq.plugins[REAL_CONTEXT_PLUGIN_ID],
     )
     .unwrap();
-    assert!(reparsed.text_models.is_none());
+    assert!(reparsed.text_models.is_inherit());
 }
 
 #[test]
@@ -509,14 +626,15 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
         provider_id: old_id.clone(),
         model: "vision".to_string(),
     }]);
-    config.subagent_tiers.cheap.push(ActiveProviderModelConfig {
+    config.model_tiers.cheap.push(ActiveProviderModelConfig {
         provider_id: old_id.clone(),
         model: "text-only".to_string(),
     });
-    config.platforms.qq.non_whitelist_text_models = Some(vec![ActiveProviderModelConfig {
-        provider_id: old_id.clone(),
-        model: "text-only".to_string(),
-    }]);
+    config.platforms.qq.non_whitelist_text_models =
+        crate::config::ModelPoolRef::models(vec![ActiveProviderModelConfig {
+            provider_id: old_id.clone(),
+            model: "text-only".to_string(),
+        }]);
     config.platforms.qq.conversations.push(test_route(&config));
     config.plugins.vision.vision_provider_id = old_id.clone();
     config.plugins.vision.vision_model = "vision".to_string();
@@ -535,13 +653,13 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
         config.active_multimodal_provider_models.as_ref().unwrap()[0].provider_id,
         "renamed"
     );
-    assert_eq!(config.subagent_tiers.cheap[0].provider_id, "renamed");
+    assert_eq!(config.model_tiers.cheap[0].provider_id, "renamed");
     assert_eq!(
         config
             .platforms
             .qq
             .non_whitelist_text_models
-            .as_ref()
+            .explicit_models()
             .unwrap()[0]
             .provider_id,
         "renamed"
@@ -565,8 +683,8 @@ fn provider_reference_updates_cover_every_model_pool_and_plugin() {
     config.remove_provider_references("renamed");
     assert!(config.active_provider_models.is_none());
     assert!(config.active_multimodal_provider_models.is_none());
-    assert!(config.subagent_tiers.cheap.is_empty());
-    assert!(config.platforms.qq.non_whitelist_text_models.is_none());
+    assert!(config.model_tiers.cheap.is_empty());
+    assert!(config.platforms.qq.non_whitelist_text_models.is_inherit());
     assert_eq!(config.platforms.qq.conversations.len(), 1);
     assert!(config.platforms.qq.conversations[0].text_models.is_none());
     assert!(config.plugins.vision.vision_provider_id.is_empty());

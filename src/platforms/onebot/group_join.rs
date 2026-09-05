@@ -277,13 +277,11 @@ pub(in crate::platforms::onebot) async fn ai_review_group_join(
     request: GroupJoinRequest,
     state_store: StateStore,
 ) -> Result<(GroupJoinDecision, String)> {
-    if let Some(models) = settings.text_models.as_ref() {
-        config.active_provider_models = Some(models.clone());
-    } else {
-        // None inherits the QQ platform text model pool; when that pool is
-        // itself None, the client falls back to the global active models.
-        config.active_provider_models = config.platforms.qq.text_models.clone();
-    }
+    // Pool reference: `inherit` = the QQ default text pool (itself
+    // `inherit` = global); a tier or an explicit list otherwise.
+    config.active_provider_models = config.resolve_pool_ref(&settings.text_models, false, || {
+        config.qq_default_text_pool()
+    });
     let client = OpenAiCompatibleClient::from_config(&config, &paths)
         .context("initializing the group join approval model pool")?
         .with_request_timeouts(

@@ -50,24 +50,11 @@ impl AppConfig {
                 validate_platform_session_limits(field, limits)?;
             }
         }
-        validate_unique_existing_pool(
-            &self.providers,
-            "QQ text",
-            qq.text_models.as_deref().unwrap_or_default(),
-            false,
-        )?;
-        validate_unique_existing_pool(
-            &self.providers,
-            "QQ multimodal",
-            qq.multimodal_models.as_deref().unwrap_or_default(),
-            true,
-        )?;
-        validate_unique_existing_pool(
-            &self.providers,
-            "QQ non-whitelist text",
-            qq.non_whitelist_text_models.as_deref().unwrap_or_default(),
-            false,
-        )?;
+        qq.text_models.validate(&self.providers, "QQ text", false)?;
+        qq.multimodal_models
+            .validate(&self.providers, "QQ multimodal", true)?;
+        qq.non_whitelist_text_models
+            .validate(&self.providers, "QQ non-whitelist text", false)?;
         for (field, limit) in [
             (
                 "private_chats.non_whitelist_rate_limit",
@@ -138,25 +125,22 @@ impl AppConfig {
             }
             if plugin_id == REAL_CONTEXT_PLUGIN_ID {
                 let settings = RealContextPluginSettings::from_instance(instance)?;
-                if let Some(models) = settings.text_models.as_deref() {
-                    validate_unique_existing_pool(
-                        &self.providers,
-                        "real-context text",
-                        models,
-                        false,
-                    )?;
-                }
+                settings
+                    .text_models
+                    .validate(&self.providers, "real-context text", false)?;
+                settings.affection_text_models.validate(
+                    &self.providers,
+                    "real-context affection text",
+                    false,
+                )?;
             }
             if plugin_id == QQ_GROUP_JOIN_APPROVAL_PLUGIN_ID {
                 let settings = QqGroupJoinApprovalPluginSettings::from_instance(instance)?;
-                if let Some(models) = settings.text_models.as_deref() {
-                    validate_unique_existing_pool(
-                        &self.providers,
-                        "group-join-approval text",
-                        models,
-                        false,
-                    )?;
-                }
+                settings.text_models.validate(
+                    &self.providers,
+                    "group-join-approval text",
+                    false,
+                )?;
             }
         }
         Ok(())
@@ -251,50 +235,65 @@ impl AppConfig {
         self.platforms.model_route(kind, conversation_id)
     }
 
-    pub fn qq_text_model_pool<'a>(
-        &'a self,
+    /// QQ default text pool: the platform-wide reference, `inherit` = global.
+    pub fn qq_default_text_pool(&self) -> Option<Vec<ActiveProviderModelConfig>> {
+        self.resolve_pool_ref(&self.platforms.qq.text_models, false, || {
+            self.active_provider_models.clone()
+        })
+    }
+
+    /// QQ default multimodal pool, `inherit` = the global multimodal pool.
+    pub fn qq_default_multimodal_pool(&self) -> Option<Vec<ActiveProviderModelConfig>> {
+        self.resolve_pool_ref(&self.platforms.qq.multimodal_models, true, || {
+            self.active_multimodal_provider_models.clone()
+        })
+    }
+
+    /// Non-whitelist text pool, `inherit` = the QQ default text pool.
+    pub fn qq_non_whitelist_text_pool(&self) -> Option<Vec<ActiveProviderModelConfig>> {
+        self.resolve_pool_ref(&self.platforms.qq.non_whitelist_text_models, false, || {
+            self.qq_default_text_pool()
+        })
+    }
+
+    /// The effective text pool for one conversation: a per-conversation
+    /// route wins, then the non-whitelist pool when applicable, then the QQ
+    /// default text pool. `None` keeps the legacy "active provider's default
+    /// model" meaning.
+    pub fn qq_text_model_pool(
+        &self,
         kind: PlatformConversationKind,
         conversation_id: &str,
         use_non_whitelist_pool: bool,
-    ) -> Option<&'a [ActiveProviderModelConfig]> {
+    ) -> Option<Vec<ActiveProviderModelConfig>> {
         if let Some(route) = self.platform_model_route(kind, conversation_id) {
             if route.text_models.is_some() {
-                return route.text_models.as_deref();
+                return route.text_models.clone();
             }
             if route.text_models_inheritance == PlatformModelPoolInheritance::Global {
-                return self.active_provider_models.as_deref();
+                return self.active_provider_models.clone();
             }
         }
         if use_non_whitelist_pool {
-            if let Some(pool) = self.platforms.qq.non_whitelist_text_models.as_deref() {
-                return Some(pool);
-            }
+            return self.qq_non_whitelist_text_pool();
         }
-        self.platforms
-            .qq
-            .text_models
-            .as_deref()
-            .or(self.active_provider_models.as_deref())
+        self.qq_default_text_pool()
     }
 
     pub fn qq_multimodal_model_pool(
         &self,
         kind: PlatformConversationKind,
         conversation_id: &str,
-    ) -> Option<&[ActiveProviderModelConfig]> {
+    ) -> Option<Vec<ActiveProviderModelConfig>> {
         if let Some(route) = self.platform_model_route(kind, conversation_id) {
             if route.multimodal_models.is_some() {
-                return route.multimodal_models.as_deref();
+                return route.multimodal_models.clone();
             }
             if route.multimodal_models_inheritance == PlatformModelPoolInheritance::Global {
-                return self.active_multimodal_provider_models.as_deref();
+                return self.active_multimodal_provider_models.clone();
             }
         }
-        self.platforms
-            .qq
-            .multimodal_models
-            .as_deref()
-            .or(self.active_multimodal_provider_models.as_deref())
+        self.qq_default_multimodal_pool()
     }
 
     pub fn apply_qq_conversation_persona(

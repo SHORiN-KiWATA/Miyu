@@ -5,6 +5,7 @@ mod persona_paths;
 mod platform;
 mod platform_ops;
 mod platform_plugins;
+mod pool_ref;
 mod provider;
 mod provider_ops;
 mod tool_plugins;
@@ -12,6 +13,7 @@ pub(crate) use defaults::*;
 pub(crate) use paths::*;
 pub(crate) use platform::*;
 pub(crate) use platform_plugins::*;
+pub(crate) use pool_ref::*;
 pub(crate) use provider::*;
 pub(crate) use tool_plugins::*;
 
@@ -88,8 +90,13 @@ pub struct AppConfig {
     pub default_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "SubagentTiersConfig::is_empty")]
-    pub subagent_tiers: SubagentTiersConfig,
+    /// Tiered model pools. The pre-09-05 key `subagent_tiers` stays readable.
+    #[serde(
+        default,
+        alias = "subagent_tiers",
+        skip_serializing_if = "ModelTiersConfig::is_empty"
+    )]
+    pub model_tiers: ModelTiersConfig,
     #[serde(default, skip_serializing_if = "PlatformsConfig::is_empty")]
     pub platforms: PlatformsConfig,
 }
@@ -499,7 +506,7 @@ impl Default for AppConfig {
             system_prompt_file: Some("system-prompt.md".to_string()),
             default_mode: String::new(),
             system_prompt: None,
-            subagent_tiers: SubagentTiersConfig::default(),
+            model_tiers: ModelTiersConfig::default(),
             platforms: PlatformsConfig::default(),
         }
     }

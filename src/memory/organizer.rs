@@ -243,9 +243,15 @@ async fn process_job(job: &OrganizerJob) -> Result<bool> {
 }
 
 async fn organize_batch(job: &OrganizerJob, batch: &OrganizationBatch) -> Result<OrganizedOutput> {
-    let client = OpenAiCompatibleClient::from_config(&job.config, &job.paths)
-        .context("initializing memory organizer model pool")?
-        .with_request_scope("memory-organizer");
+    // 走 model_tiers.roles.memory_organizer 指定的档位池(未配置=主池):
+    // 整理日记是离线批处理,和主对话没有共享前缀,换模型不伤缓存。
+    let client = OpenAiCompatibleClient::from_aux_role(
+        &job.config,
+        &job.paths,
+        crate::config::AuxRole::MemoryOrganizer,
+    )
+    .context("initializing memory organizer model pool")?
+    .with_request_scope("memory-organizer");
     let system_prompt = "你负责将一批近期日记整理为值得长期保留的知识点和经历。\n\
 只依据提供的日记和已有记忆进行判断，不补充材料中没有的信息。\n\
 没有长期价值时可以不生成任何内容。\n\

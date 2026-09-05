@@ -281,12 +281,10 @@ pub(in crate::platforms::onebot) fn apply_admission_text_model_pool(
         Target::Group { .. } => PlatformConversationKind::Group,
     };
     let conversation_id = target.conversation_id().to_string();
-    let models = config
-        .qq_text_model_pool(
-            kind,
-            &conversation_id,
-            admission.use_non_whitelist_text_models,
-        )
-        .map(<[_]>::to_vec);
+    let models = config.qq_text_model_pool(
+        kind,
+        &conversation_id,
+        admission.use_non_whitelist_text_models,
+    );
     config.active_provider_models = models;
 }

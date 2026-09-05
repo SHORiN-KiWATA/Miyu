@@ -37,7 +37,11 @@ pub struct RealContextPluginSettings {
     pub active_reply_enable: bool,
     pub judge_include_persona: bool,
     pub judge_persona_prompt: String,
-    pub text_models: Option<Vec<ActiveProviderModelConfig>>,
+    /// Reply-judge pool reference; `inherit` = the conversation's effective
+    /// text pool. Ships as `lite`.
+    pub text_models: ModelPoolRef,
+    /// Affection-update pool reference; `inherit` = the reply-judge pool.
+    pub affection_text_models: ModelPoolRef,
     pub active_judge_probability: f64,
     pub reply_threshold: f64,
     pub judge_timeout_seconds: u64,
@@ -145,7 +149,8 @@ impl Default for RealContextPluginSettings {
             active_reply_enable: true,
             judge_include_persona: true,
             judge_persona_prompt: String::new(),
-            text_models: None,
+            text_models: ModelPoolRef::tier(ModelTier::Lite),
+            affection_text_models: ModelPoolRef::inherit(),
             active_judge_probability: 0.05,
             reply_threshold: 0.8,
             judge_timeout_seconds: 60,
@@ -247,7 +252,8 @@ impl RealContextPluginSettings {
 
     pub fn normalize(&mut self) {
         self.judge_persona_prompt = self.judge_persona_prompt.trim().to_string();
-        normalize_route_pool(&mut self.text_models);
+        self.text_models.normalize();
+        self.affection_text_models.normalize();
         normalize_unique_strings(&mut self.moderation_keywords);
         self.active_reply_reaction_emoji_ids.retain(|id| *id > 0);
         self.active_reply_reaction_emoji_ids.sort_unstable();
@@ -569,20 +575,11 @@ impl RealContextPluginSettings {
                 bail!("platform plugin real_context.{name} is invalid");
             }
         }
-        for (name, models) in [("text_models", &self.text_models)] {
-            let Some(models) = models else { continue };
-            if models.is_empty() {
-                bail!("platform plugin real_context.{name} must be omitted instead of empty");
-            }
-            let mut seen = HashSet::with_capacity(models.len());
-            if models.iter().any(|model| {
-                model.provider_id.trim().is_empty()
-                    || model.model.trim().is_empty()
-                    || !seen.insert((&model.provider_id, &model.model))
-            }) {
-                bail!("platform plugin real_context.{name} must contain unique, non-empty model references");
-            }
-        }
+        validate_pool_ref_shape(&self.text_models, "real_context.text_models")?;
+        validate_pool_ref_shape(
+            &self.affection_text_models,
+            "real_context.affection_text_models",
+        )?;
         let mut nicknames = HashSet::with_capacity(self.identity_mappings.len());
         if self.identity_mappings.len() > 10_000
             || self.identity_mappings.iter().any(|mapping| {

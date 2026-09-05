@@ -121,9 +121,8 @@ pub struct QqGroupJoinApprovalGroupConfig {
 /// Configuration contract for the built-in QQ group-join approval plugin.
 ///
 /// Like the real-context plugin, values stay flat in the generic
-/// platform-plugin map. `text_models` follows the same rule as
-/// `RealContextPluginSettings::text_models`: `None` inherits the QQ-wide
-/// text model pool, `Some` pins an explicit approval model pool.
+/// platform-plugin map. `text_models` is a pool reference: `inherit` = the
+/// QQ default text pool, `global`, a tier, or an explicit list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QqGroupJoinApprovalPluginSettings {
@@ -131,8 +130,10 @@ pub struct QqGroupJoinApprovalPluginSettings {
     pub timeout_seconds: u64,
     /// Extra attempts only after an unparsable JSON response.
     pub max_retries: usize,
-    /// None inherits the QQ platform text model pool.
-    pub text_models: Option<Vec<ActiveProviderModelConfig>>,
+    /// Pool reference; `inherit` = the QQ default text pool. Ships as
+    /// `lite` so approvals leave the flagship pool the moment a lite tier
+    /// exists.
+    pub text_models: ModelPoolRef,
     pub groups: Vec<QqGroupJoinApprovalGroupConfig>,
 }
 
@@ -141,7 +142,7 @@ impl Default for QqGroupJoinApprovalPluginSettings {
         Self {
             timeout_seconds: 60,
             max_retries: 1,
-            text_models: None,
+            text_models: ModelPoolRef::tier(ModelTier::Lite),
             groups: Vec::new(),
         }
     }
@@ -154,7 +155,7 @@ impl QqGroupJoinApprovalPluginSettings {
     }
 
     pub fn normalize(&mut self) {
-        normalize_route_pool(&mut self.text_models);
+        self.text_models.normalize();
         for group in &mut self.groups {
             group.approve_condition = group.approve_condition.trim().to_string();
         }
@@ -181,19 +182,7 @@ impl QqGroupJoinApprovalPluginSettings {
         if self.max_retries > 3 {
             bail!("platform plugin qq_group_join_approval.max_retries must be between 0 and 3");
         }
-        if let Some(models) = &self.text_models {
-            if models.is_empty() {
-                bail!("platform plugin qq_group_join_approval.text_models must be omitted instead of empty");
-            }
-            let mut seen = HashSet::with_capacity(models.len());
-            if models.iter().any(|model| {
-                model.provider_id.trim().is_empty()
-                    || model.model.trim().is_empty()
-                    || !seen.insert((&model.provider_id, &model.model))
-            }) {
-                bail!("platform plugin qq_group_join_approval.text_models must contain unique, non-empty model references");
-            }
-        }
+        validate_pool_ref_shape(&self.text_models, "qq_group_join_approval.text_models")?;
         let mut group_ids = HashSet::with_capacity(self.groups.len());
         if self.groups.len() > 10_000
             || self.groups.iter().any(|group| {

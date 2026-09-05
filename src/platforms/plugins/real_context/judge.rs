@@ -74,9 +74,11 @@ pub(super) async fn run(
     request: JudgeRequest<'_>,
 ) -> Result<JudgeResult> {
     let mut config = context.config.clone();
-    if let Some(models) = settings.text_models.as_deref() {
-        config.active_provider_models = Some(models.to_vec());
-    }
+    // `inherit` = the conversation's effective text pool, which admission
+    // already resolved into `active_provider_models`.
+    config.active_provider_models = config.resolve_pool_ref(&settings.text_models, false, || {
+        context.config.active_provider_models.clone()
+    });
     let timeout = if request.moderation_only {
         settings.moderation_timeout_seconds
     } else {
