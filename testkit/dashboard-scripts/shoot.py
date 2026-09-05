@@ -100,6 +100,30 @@ with sync_playwright() as p:
     page.fill("#dashScriptsRoot input.dash-search", "bangumi")
     time.sleep(0.5)
     shot(page, "09-search")
+    page.fill("#dashScriptsRoot input.dash-search", "")
+    page.click('#dashScriptsRoot .con-segmented button[data-value="all"]')
+
+    # 人格筛选:切到自定义人格 alter(隔离 home 里 personas/alter/ 放了一个脚本),
+    # 内置脚本按人格规则隐藏,只剩它自己那层。
+    personas = page.evaluate("fetch('/api/dash/scripts/personas').then(r => r.json())")
+    print("personas:", personas)
+    if "alter" in personas.get("personas", []):
+        page.select_option("#dashScriptsRoot select.dash-select", "alter")
+        # 页面 CSP 禁 eval,不能用 wait_for_function 传表达式,轮询读文本。
+        for _ in range(40):
+            if "alter" in (page.text_content("#dashScriptsRoot .con-head small") or ""):
+                break
+            time.sleep(0.25)
+        else:
+            raise AssertionError("切换人格后头部状态没有更新")
+        time.sleep(0.4)
+        shot(page, "10-persona-alter")
+        alter = page.evaluate("fetch('/api/dash/scripts/overview?persona=alter').then(r => r.json())")
+        print("alter counts:", json.dumps(alter["counts"], ensure_ascii=False), [s["id"] for s in alter["scripts"]])
+        assert alter["counts"]["builtin"] == 0, "自定义人格不该看到内置脚本"
+        assert "alter_tool" in [s["id"] for s in alter["scripts"]]
+        page.select_option("#dashScriptsRoot select.dash-select", personas["active"])
+        time.sleep(0.4)
 
     browser.close()
 

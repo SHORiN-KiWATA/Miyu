@@ -381,6 +381,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         )
         .route("/api/dash/kb/default", get(dash_kb_default))
         .route("/api/dash/kb/default/update", post(dash_kb_default_update))
+        .route("/api/dash/scripts/personas", get(dash_scripts_personas))
         .route("/api/dash/scripts/overview", get(dash_scripts_overview))
         .route("/api/dash/scripts/source", get(dash_scripts_source))
         .route("/api/dash/scripts/enable", post(dash_scripts_enable))

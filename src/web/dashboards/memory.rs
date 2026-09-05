@@ -98,32 +98,8 @@ fn default_limit() -> usize {
     50
 }
 
-/// 人格名进路径,只认平面名字。
-fn persona_scoped_config(
-    state: &DaemonState,
-    persona: &str,
-) -> std::result::Result<AppConfig, ApiError> {
-    let mut config = state.manager.lock().unwrap().config.clone();
-    let persona = persona.trim();
-    // 空名或与当前人格同一作用域:原样用当前配置(空名的作用域是 "default")。
-    if persona.is_empty()
-        || persona == crate::config::persona_scope_name(&config.prompt.active_persona)
-    {
-        return Ok(config);
-    }
-    if persona.len() > 64
-        || persona.contains(['/', '\\', '\0'])
-        || persona == "."
-        || persona == ".."
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid persona name",
-        ));
-    }
-    config.prompt.active_persona = persona.to_string();
-    Ok(config)
-}
+// 人格作用域配置的取法搬到 dashboards/mod.rs 与脚本面板共用(09-05)。
+use super::persona_scoped_config;
 
 fn memory_store(
     state: &DaemonState,

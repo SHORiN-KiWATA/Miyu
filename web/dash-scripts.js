@@ -10,7 +10,7 @@
   const D = window.MiyuDash;
   if (!D) return;
 
-  const state = { overview: null, filter: "all", q: "", loadSeq: 0 };
+  const state = { overview: null, filter: "all", q: "", loadSeq: 0, persona: D.recall("scripts.persona"), personas: [], active: "" };
   const ui = {};
 
   const LAYER_LABEL = { builtin: "内置", "builtin-persona": "内置", global: "全局", persona: "人格", unknown: "?" };
@@ -32,10 +32,14 @@
   function mount(root) {
     root.textContent = "";
     ui.stamp = D.el("small", { text: "" });
+    // 人格选择器:脚本四层里两层按人格分,切人格看到的就是那个人格上线时模型
+    // 真正拿到的工具集;写操作也落到所选人格的目录。
+    ui.persona = D.select([], state.persona, (value) => { state.persona = value; D.remember("scripts.persona", value); load(); }, "人格");
     const head = D.el("div.con-head", null,
       D.el("h2", { text: "脚本" }),
       D.iconButton("refresh-cw", "刷新", () => load()),
-      ui.stamp);
+      ui.stamp,
+      D.el("span.dash-scope", null, D.el("span.dash-scope-label", { text: "人格" }), ui.persona));
     ui.cards = D.el("div");
     ui.banner = D.el("div");
     ui.search = D.el("input.dash-search", { type: "search", placeholder: "按 id、名称或描述筛选…", oninput: () => {
@@ -53,18 +57,39 @@
     load();
   }
 
+  const personaQuery = () => `persona=${encodeURIComponent(state.persona)}`;
+  const withPersona = (body) => ({ ...body, persona: state.persona });
+
+  async function loadPersonas() {
+    try {
+      const payload = await D.api("/api/dash/scripts/personas");
+      state.personas = payload.personas || [];
+      state.active = payload.active || "";
+      if (!state.persona || !state.personas.includes(state.persona)) state.persona = state.active;
+      ui.persona.textContent = "";
+      for (const name of state.personas) {
+        ui.persona.append(D.el("option", { value: name, text: name === state.active ? `${name}(当前)` : name }));
+      }
+      ui.persona.value = state.persona;
+    } catch (error) {
+      ui.stamp.textContent = `人格列表加载失败:${error.message}`;
+    }
+  }
+
   async function load() {
     const seq = ++state.loadSeq;
     ui.stamp.textContent = "载入中…";
+    if (!state.personas.length) await loadPersonas();
     try {
-      const overview = await D.api("/api/dash/scripts/overview");
+      const overview = await D.api(`/api/dash/scripts/overview?${personaQuery()}`);
       if (seq !== state.loadSeq) return;
       state.overview = overview;
       renderCards();
       renderList();
       renderUnregistered();
       renderDisabled();
-      ui.stamp.textContent = `${overview.counts.registered} 个工具 · 人格 ${overview.persona}`;
+      const viewing = overview.persona === state.active ? "当前人格" : `人格 ${overview.persona}(非当前,内置脚本按该人格规则显示)`;
+      ui.stamp.textContent = `${overview.counts.registered} 个工具 · ${viewing}`;
     } catch (error) {
       ui.stamp.textContent = `加载失败:${error.message}`;
     }
@@ -180,7 +205,7 @@
   async function sourceBlock(query) {
     const holder = D.el("div", null, D.el("p.dash-empty", { text: "读取源码…" }));
     try {
-      const source = await D.api(`/api/dash/scripts/source?${new URLSearchParams(query)}`);
+      const source = await D.api(`/api/dash/scripts/source?${new URLSearchParams({ ...query, persona: state.persona })}`);
       holder.replaceChildren(codeBlock(source.lines.join("\n")));
       if (source.truncated) holder.append(D.el("p.dash-cell-muted", { text: `只显示前 ${source.shown} 行(文件 ${bytes(source.size_bytes)})` }));
     } catch (error) {
@@ -232,7 +257,7 @@
     const submit = D.el("button.dash-button.is-primary", { type: "button", text: "注册", onclick: async () => {
       if (!description.value.trim()) { D.toast("描述不能为空", "error"); return; }
       try {
-        const result = await D.api("/api/dash/scripts/register", { method: "POST", body: { path: item.path, description: description.value.trim(), id: idInput.value.trim() } });
+        const result = await D.api("/api/dash/scripts/register", { method: "POST", body: withPersona({ path: item.path, description: description.value.trim(), id: idInput.value.trim() }) });
         D.toast(`已注册 ${result.id}`);
         D.closeDrawer();
         await load();
@@ -245,10 +270,10 @@
 
   /* ── 动作 ─────────────────────────────────────────────── */
   async function disable(script) {
-    const ok = await D.confirmAction(`禁用 ${script.id}?它会从工具面上消失,文件保留;之后可在「已禁用」里一键启用。${script.builtin ? "\n\n内置脚本只对当前人格屏蔽。" : ""}`, "禁用");
+    const ok = await D.confirmAction(`禁用 ${script.id}?它会从工具面上消失,文件保留;之后可在「已禁用」里一键启用。${script.builtin ? `\n\n内置脚本只对所选人格(${state.persona})屏蔽。` : ""}`, "禁用");
     if (!ok) return;
     try {
-      await D.api("/api/dash/scripts/disable", { method: "POST", body: { id: script.id } });
+      await D.api("/api/dash/scripts/disable", { method: "POST", body: withPersona({ id: script.id }) });
       D.toast(`已禁用 ${script.id}`);
       D.closeDrawer();
       await load();
@@ -259,7 +284,7 @@
 
   async function enable(id) {
     try {
-      const result = await D.api("/api/dash/scripts/enable", { method: "POST", body: { id } });
+      const result = await D.api("/api/dash/scripts/enable", { method: "POST", body: withPersona({ id }) });
       D.toast(result.enabled ? `已启用 ${id}` : `${id} 本来就没被禁用`);
       await load();
     } catch (error) {
@@ -271,7 +296,7 @@
     const ok = await D.confirmAction(`删除 ${script.file_name}?文件从磁盘删除,不可撤销。`);
     if (!ok) return;
     try {
-      await D.api(`/api/dash/scripts/item?id=${encodeURIComponent(script.id)}`, { method: "DELETE" });
+      await D.api(`/api/dash/scripts/item?id=${encodeURIComponent(script.id)}&${personaQuery()}`, { method: "DELETE" });
       D.toast(`已删除 ${script.id}`);
       D.closeDrawer();
       await load();

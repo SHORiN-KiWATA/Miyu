@@ -7,6 +7,8 @@
 H=/tmp/miyu-dash-scripts
 mkdir -p "$H/run" "$H/data/scripts"
 printf '#!/bin/sh\necho quiet\n' > "$H/data/scripts/quiet.sh"   # 故意缺描述头，供「未注册→注册」流程
+mkdir -p "$H/data/scripts/personas/alter"                        # 自定义人格层，供「人格筛选」步骤
+printf '#!/bin/sh\n# Description: Alter-only helper.\necho alter\n' > "$H/data/scripts/personas/alter/alter_tool.sh"
 # 2. 起 daemon（换一个不与线上 8300 冲突的端口；系统脚本目录指向仓库内置脚本）
 MIYU_HOME=$H XDG_RUNTIME_DIR=$H/run MIYU_SYSTEM_SCRIPTS_DIR=$PWD/src/scripts \
   target/debug/miyu __daemon --port 18402 &
