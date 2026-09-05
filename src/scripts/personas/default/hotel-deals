@@ -1,8 +1,90 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：酒店比价
-# 描述：查某地最便宜的酒店并跨平台比价，只要传地点+入住日+退房日。另可扫未来 N 天看哪天入住最划算，或回看底价涨跌。Google 源零依赖，Booking 源需要 playwright。
-# Description: Find the cheapest hotels in an area with cross-platform price comparison. Takes just three parameters: location, check-in and check-out date. Can also sweep upcoming dates to find the cheapest check-in day, or track how the floor price moves. Google source needs no dependencies.
+# Description: Compare hotel prices for a location and dates. A search needs three arguments: location (required), checkin and checkout. It returns the cheapest offers with nightly price, total, rating and cross-platform price gaps. action=sweep scans the next N days and tells you the cheapest check-in date and the weekend premium. Dates accept '+7' (7 days ahead), '10-15' and '2026-10-15'. nights defaults to 1 so every price in the table is per night and search and sweep results compare directly. The Google source has zero dependencies and always works; the Booking source needs playwright and gets rate-limited, and on failure the script degrades to Google only. Two kinds of trend: sweep answers 'which check-in date is cheapest' (one run), trend answers 'are prices rising or falling' (needs a few days of history and says so when there is none). Important: CJK location names drift. Google runs on the English site and only fuzzy-matches Chinese place names; a test for '苏州金鸡湖' returned a cheapest hotel at Kunshan South station, 30 km away, with no error and normal-looking output. Whenever the location is CJK text the output carries a warning: do not report the lowest price as-is. Rerun with an English place name such as 'Jinji Lake Suzhou', or run both and take the intersection. Likewise check sources_failed before concluding: with one source missing the table looks fine but the minimum may be too high. Output defaults to Markdown with warnings and failed sources in a closing 'Notes' section. format=json returns an object {query, sources_ok, sources_failed, warnings, returned, total, offers[]}: offers live under the offers key, not at the top level.
+# Timeout: 300
+# Group: research
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "location": {
+#       "type": "string",
+#       "description": "Place name such as 'Tokyo', 'Jinji Lake Suzhou', '东京'. Required except for action=places/doctor. Prefer English names: CJK names drift, see the tool description"
+#     },
+#     "checkin": {
+#       "type": "string",
+#       "description": "Check-in date: '+7' (7 days ahead), '10-15', '2026-10-15'. search defaults to 7 days ahead; for action=sweep the first day to scan, default tomorrow"
+#     },
+#     "checkout": {
+#       "type": "string",
+#       "description": "Check-out date, same formats. Default the day after check-in. action=search only"
+#     },
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "sweep",
+#         "trend",
+#         "places",
+#         "doctor"
+#       ],
+#       "description": "search=lowest price for given dates (default); sweep=scan the next N days for the cheapest check-in; trend=price history; places=locations in the history db; doctor=environment self-check"
+#     },
+#     "nights": {
+#       "type": "integer",
+#       "description": "Nights to stay, default 1 (keeps nightly prices comparable)"
+#     },
+#     "days": {
+#       "type": "integer",
+#       "description": "action=sweep: how many days to scan, default 30"
+#     },
+#     "adults": {
+#       "type": "integer",
+#       "description": "Guests, default 2"
+#     },
+#     "rooms": {
+#       "type": "integer",
+#       "description": "Rooms, default 1"
+#     },
+#     "currency": {
+#       "type": "string",
+#       "description": "Currency, default CNY"
+#     },
+#     "region": {
+#       "type": "string",
+#       "description": "Google region code, default jp. Change for places outside Japan, e.g. kr/th/us"
+#     },
+#     "sources": {
+#       "type": "array",
+#       "items": {
+#         "type": "string",
+#         "enum": [
+#           "google",
+#           "booking"
+#         ]
+#       },
+#       "description": "Data sources, default both; pass ['google'] for speed (no browser, zero dependencies)"
+#     },
+#     "top": {
+#       "type": "integer",
+#       "description": "Rows to show, default 20"
+#     },
+#     "format": {
+#       "type": "string",
+#       "enum": [
+#         "md",
+#         "json"
+#       ],
+#       "description": "Output format, default md (compact and readable); json for field-by-field processing"
+#     },
+#     "no_record": {
+#       "type": "boolean",
+#       "description": "Do not write this result into the price history. Pass true for a one-off lookup; leave unset so trend has data later"
+#     }
+#   },
+#   "additionalProperties": false
+# }
 """
 hotel-deals — 酒店比价 CLI
 

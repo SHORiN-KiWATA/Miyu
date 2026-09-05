@@ -1,8 +1,117 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # 显示名称：机票比价
-# 描述：查两地之间的机票价格。给出发地、目的地和日期就出结果，返回按价格排的航班列表（含航司、起降时间、总时长、中转机场与中转时长）。不确定哪天走划算就用 action=sweep 扫一个日期窗口，直接告诉你哪天走哪天回最便宜、比最贵省多少。零依赖，一次查询一秒左右。
-# Description: Look up flight prices between two places. Give origin, destination and dates to get a price-sorted list of itineraries with airline, times, duration and layovers. Use action=sweep to scan a date window and find the cheapest departure/return combination. No dependencies.
+# Description: Compare one-way flight prices between two places. Round trips: swap origin and dest and search again; two one-way fares roughly equal a round-trip fare. Returns flights sorted by price with airline, flight number, times, duration and stops. Prices are the lowest 'from' fare across fare classes. The output ends with 'lowest per airline' and 'lowest per cabin' to help you filter. origin and dest must come from the user, never guess them: if the user only says 'go to Tokyo', ask where they depart from. When the user has no fixed date use action=sweep over a window instead of guessing one day. Zero dependencies; search takes about 2 s, sweep about 3 s.
+# Timeout: 300
+# Group: research
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "sweep",
+#         "trend",
+#         "airports"
+#       ],
+#       "description": "search=given date (default); sweep=scan a date window for the cheapest plan; trend=route price history (without origin/dest lists all routes in the history db); airports=look up IATA codes for a place name"
+#     },
+#     "origin": {
+#       "type": "string",
+#       "description": "Departure city or airport: Chinese, English or IATA code, e.g. '上海', 'PVG'. A city name queries all its airports (Shanghai = PVG+SHA). Required except for action=airports and 'trend listing all routes'"
+#     },
+#     "dest": {
+#       "type": "string",
+#       "description": "Destination city or airport, same forms as origin, e.g. '东京', 'NRT' (Tokyo = NRT+HND)"
+#     },
+#     "depart": {
+#       "type": "string",
+#       "description": "Departure date: '+30' (30 days ahead), '10-01', '2026-10-01'. search defaults to 14 days ahead; for trend it restricts the history to that date"
+#     },
+#     "window": {
+#       "type": "string",
+#       "description": "sweep date window such as '09-29..10-08', meaning 'I can travel in this span'; the return must also fall inside it. Default two weeks starting 14 days ahead"
+#     },
+#     "days": {
+#       "type": "string",
+#       "description": "sweep trip length such as '5' or '5-7'. When given the return leg is scanned too and combinations are ranked; otherwise only outbound"
+#     },
+#     "query": {
+#       "type": "string",
+#       "description": "action=airports: place name or IATA code to look up"
+#     },
+#     "seat": {
+#       "type": [
+#         "string",
+#         "array"
+#       ],
+#       "items": {
+#         "type": "string",
+#         "enum": [
+#           "economy",
+#           "premium",
+#           "business",
+#           "first",
+#           "all"
+#         ]
+#       },
+#       "description": "Cabin, default economy; pass an array to compare several, or 'all'"
+#     },
+#     "adults": {
+#       "type": "integer",
+#       "description": "Adults, default 1"
+#     },
+#     "children": {
+#       "type": "integer",
+#       "description": "Children aged 2-11, default 0"
+#     },
+#     "max_stops": {
+#       "type": "integer",
+#       "description": "Maximum stops, 0=direct only. Direct flights usually cost more; do not add this unless the user asks, the output already lists the cheapest direct flight"
+#     },
+#     "airline": {
+#       "type": "array",
+#       "items": {
+#         "type": "string"
+#       },
+#       "description": "Only these airlines, Chinese or English names ('南航', 'ANA'). Leave unset first and look at 'lowest per airline' in the output"
+#     },
+#     "depart_time": {
+#       "type": "string",
+#       "description": "Only departures in this window, e.g. '08:00-18:00'. Same-price same-airline flights often come in dozens; filtering by time beats paging"
+#     },
+#     "sort": {
+#       "type": "string",
+#       "enum": [
+#         "price",
+#         "duration",
+#         "depart",
+#         "arrive",
+#         "stops"
+#       ],
+#       "description": "Sort order, default price; duration for the fastest"
+#     },
+#     "top": {
+#       "type": "integer",
+#       "description": "search: rows to show (default 15); sweep: plans to list (default 8)"
+#     },
+#     "currency": {
+#       "type": "string",
+#       "description": "Currency, default CNY"
+#     },
+#     "format": {
+#       "type": "string",
+#       "enum": [
+#         "md",
+#         "json"
+#       ],
+#       "description": "Default md; json for field-by-field processing"
+#     }
+#   },
+#   "additionalProperties": false
+# }
 """
 flight-deals — 机票比价 CLI
 

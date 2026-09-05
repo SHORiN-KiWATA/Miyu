@@ -1,5 +1,11 @@
+mod header;
 mod index;
+mod manage;
+mod refresh;
+pub(crate) use header::*;
 pub(crate) use index::*;
+pub(crate) use manage::*;
+pub(crate) use refresh::*;
 
 use super::registry::UnregisteredScript;
 use super::{ToolRegistry, ToolSpec};
@@ -16,25 +22,22 @@ use tokio::process::Command;
 
 const SCRIPT_TIMEOUT_SECS: u64 = 120;
 const MAX_SCRIPT_OUTPUT_CHARS: usize = 20_000;
+/// `MIYU_ARGS_JSON` 的上限。Linux 单个环境变量 128KB 封顶,留一半余量;超了
+/// 只走 stdin——stdin 那份永远在,环境变量只是让脚本少写一段读管道的代码。
+const MAX_ARGS_ENV_BYTES: usize = 64 * 1024;
 
 pub fn register(registry: &mut ToolRegistry, config: &crate::config::AppConfig, paths: &MiyuPaths) {
     // 内置脚本装在 <system>/personas/default/ 下,自定义人格天然扫不到——
     // 别人换上自定义人格拿到纯净状态(09-01)。覆盖链与四层细节见
-    // script_scan_roots。
-    let roots = script_scan_roots(config, paths);
-    let dirs: Vec<&Path> = roots.iter().map(std::path::PathBuf::as_path).collect();
-    match scan_scripts(&dirs) {
-        Ok(scan) => {
-            let specs = script_specs(&scan.entries, &paths.scripts_dir, &paths.cache_dir);
-            if let Err(error) = registry.replace_script_tools(specs, scan.unregistered) {
-                tracing::warn!(error = %error, "failed to register Miyu script tools");
-            }
-        }
+    // script_scan_roots。启动这一次也走指纹路径,后续回合只在目录变了才重扫。
+    match prepare_script_refresh(None, config, paths) {
+        Ok(Some(snapshot)) => apply_script_refresh(registry, paths, snapshot),
+        Ok(None) => {}
         Err(error) => {
             tracing::warn!(error = %error, "failed to scan Miyu script directories during tool registration");
         }
     }
-    register_script_tools(registry, paths.scripts_dir.clone());
+    register_script_tools(registry, config.clone(), paths.clone());
 }
 
 async fn run_script(
@@ -43,6 +46,7 @@ async fn run_script(
     cache_dir: &Path,
     args: &Value,
     timeout_secs: u64,
+    argv: ArgvMode,
 ) -> Result<String> {
     let script_path = resolve_script_path(path_str, scripts_dir);
 
@@ -50,22 +54,26 @@ async fn run_script(
         bail!("script not found: {}", script_path.display());
     }
 
-    let stdin_input = if let Some(text) = args.get("stdin").and_then(Value::as_str) {
-        if !text.is_empty() {
-            text.to_string()
-        } else {
-            serde_json::to_string(args).unwrap_or_default()
-        }
-    } else {
-        serde_json::to_string(args).unwrap_or_default()
+    let args_json = serde_json::to_string(args).unwrap_or_default();
+    let stdin_input = match args.get("stdin").and_then(Value::as_str) {
+        Some(text) if !text.is_empty() => text.to_string(),
+        _ => args_json.clone(),
     };
 
     let mut command = Command::new(&script_path);
+    // argv=flags:参数同时展成 --key=value(header.rs 的 ArgvMode),脚本用
+    // argparse/getopt 即可;stdin 那份照发,两路内容一致。
+    if argv == ArgvMode::Flags {
+        command.args(argv_flags(args));
+    }
     // 脚本的中间产物(登录 profile、会话快照、查询票据、二维码图)统一收进
     // Miyu 自己的缓存目录,`miyu wipe` 清 ~/.miyu 时一并带走,不在用户的
     // ~/.cache 下散落一堆。脚本单独拿到终端跑时这个变量不存在,退回 XDG
     // 默认——两种用法各自有各自的登录态,互不覆盖。
     command.env("MIYU_SCRIPT_CACHE_DIR", cache_dir);
+    if args_json.len() <= MAX_ARGS_ENV_BYTES {
+        command.env("MIYU_ARGS_JSON", &args_json);
+    }
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -114,6 +122,32 @@ async fn run_script(
         "stdout": stdout,
         "stderr": stderr,
     }))?)
+}
+
+/// `{"query":"x","limit":5,"json":true,"dry":false}` → `--query=x --limit=5 --json`。
+/// 键按字典序,输出确定;`=` 连写让负数和以 `-` 开头的值也能被 argparse 收下;
+/// true 只给旗标,false/null 省略;数组与对象给紧凑 JSON 字符串。`stdin` 是
+/// 泛化 schema 的透传口,不算参数。
+pub(crate) fn argv_flags(args: &Value) -> Vec<String> {
+    let Some(object) = args.as_object() else {
+        return Vec::new();
+    };
+    let mut keys: Vec<&String> = object.keys().collect();
+    keys.sort();
+    let mut flags = Vec::new();
+    for key in keys {
+        if key == "stdin" {
+            continue;
+        }
+        match &object[key] {
+            Value::Null | Value::Bool(false) => {}
+            Value::Bool(true) => flags.push(format!("--{key}")),
+            Value::String(text) => flags.push(format!("--{key}={text}")),
+            Value::Number(number) => flags.push(format!("--{key}={number}")),
+            other => flags.push(format!("--{key}={other}")),
+        }
+    }
+    flags
 }
 
 /// Drains a child stream, keeping at most 8MB in memory.
@@ -165,7 +199,7 @@ fn clip_output(value: &str) -> String {
     }
 }
 
-fn make_executable(path: &Path) -> Result<()> {
+pub(crate) fn make_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -174,261 +208,6 @@ fn make_executable(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, perms)?;
     }
     Ok(())
-}
-
-/// 注册与注销合并成 `manage_script`(08-17):同一份脚本索引的两种写操作。
-fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf) {
-    registry.register(ToolSpec::new(
-        "manage_script",
-        "Manage user scripts as tools. action=register adds or updates one (the script must already exist in the scripts directory; this updates index.json, sets the executable bit, and the script becomes callable in later tool rounds). action=unregister removes it from the index, optionally deleting the file.",
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["register", "unregister"],
-                    "description": "register adds or updates, unregister removes."
-                },
-                "id": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
-                    "description": "Unique tool identifier (ASCII, starts with a letter). This is the function name the AI calls."
-                },
-                "display_name": {
-                    "type": "string",
-                    "description": "Human-readable display name, may contain Chinese characters."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Optional tool description override. If omitted, Miyu reads the script header lines `Description:`/`description:` or `描述：` and sends only one localized description to the AI."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "register only: script file name or path within the user scripts directory."
-                },
-                "parameters": {
-                    "type": "object",
-                    "description": "JSON schema for tool parameters. If omitted, a generic schema with stdin is used."
-                },
-                "timeout_seconds": {
-                    "type": "integer",
-                    "description": "Optional timeout in seconds, max 300."
-                },
-                "always_loaded": {
-                    "type": "boolean",
-                    "description": "Optional loading override. By default scripts with a custom schema are loaded on demand, while scripts using generic stdin are always visible."
-                },
-                "load_policy": {
-                    "type": "string",
-                    "enum": ["summary", "group", "hidden"],
-                    "description": "Hybrid catalog policy. summary shows this script as a single load target, group exposes it through group:<name>, hidden keeps it out of the catalog."
-                },
-                "groups": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional hybrid catalog groups, e.g. gaming or systeminfo."
-                },
-                "delete_file": {
-                    "type": "boolean",
-                    "description": "unregister only: also delete the script file from disk. Only affects files within the scripts directory."
-                }
-            },
-            "required": ["action", "id"],
-            "additionalProperties": false
-        }),
-        move |args| {
-            let scripts_dir = scripts_dir.clone();
-            async move {
-                match args.get("action").and_then(Value::as_str).unwrap_or_default() {
-                    "register" => register_script_handler(args, &scripts_dir).await,
-                    "unregister" => unregister_script_handler(args, &scripts_dir).await,
-                    other => bail!("unknown action: {other}; expected register or unregister"),
-                }
-            }
-        },
-    ).writes());
-}
-
-async fn register_script_handler(args: Value, scripts_dir: &Path) -> Result<String> {
-    let id = args
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if id.is_empty() {
-        bail!("id is required");
-    }
-    if !is_valid_registered_script_id(&id) {
-        bail!(
-            "id must start with an ASCII letter and contain only ASCII alphanumeric and underscore"
-        );
-    }
-    if is_reserved_script_id(&id) {
-        bail!("script id conflicts with a reserved tool name: {id}");
-    }
-    let display_name = args
-        .get("display_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let description_override = args
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if path.is_empty() {
-        bail!("path is required");
-    }
-    let unresolved_path = resolve_script_path(&path, scripts_dir);
-    if !unresolved_path.is_file() {
-        bail!("script file not found: {}", unresolved_path.display());
-    }
-    let script_path = ensure_path_within_root(&unresolved_path, scripts_dir)?;
-    make_executable(&script_path)?;
-
-    let description = if description_override.is_empty() {
-        description_from_script(&script_path).unwrap_or_default()
-    } else {
-        description_override
-    };
-    if description.is_empty() {
-        bail!("description is required when the script header has no Description/描述 metadata");
-    }
-
-    let parameters = args.get("parameters").cloned().unwrap_or(Value::Null);
-    let timeout_seconds = args
-        .get("timeout_seconds")
-        .and_then(Value::as_u64)
-        .map(|v| v.min(300));
-    let always_loaded = args.get("always_loaded").and_then(Value::as_bool);
-    let load_policy = args
-        .get("load_policy")
-        .and_then(Value::as_str)
-        .map(parse_load_policy)
-        .transpose()?
-        .unwrap_or_default();
-    let groups = super::string_list(args.get("groups"));
-    let stored_path = relative_script_path(&script_path, scripts_dir);
-
-    let entry = ScriptEntry {
-        id: id.clone(),
-        display_name: if display_name.is_empty() {
-            id.clone()
-        } else {
-            display_name
-        },
-        description,
-        path: stored_path.clone(),
-        parameters,
-        timeout_seconds,
-        always_loaded,
-        load_policy,
-        groups,
-    };
-
-    let index_path = scripts_dir.join("index.json");
-    let mut index = read_script_index_value(&index_path)?;
-    {
-        let scripts = index_array_mut(&mut index, "scripts")?;
-        let entry = serde_json::to_value(&entry)?;
-        scripts.retain(|script| raw_entry_field(script, "id") != Some(id.as_str()));
-        scripts.push(entry);
-    }
-    let script_key = canonicalize_key(&script_path);
-    index_array_mut(&mut index, "disabled")?.retain(|disabled| {
-        raw_entry_field(disabled, "id") != Some(id.as_str())
-            && raw_entry_field(disabled, "path")
-                .map(|path| canonicalize_key(&resolve_script_path(path, scripts_dir)) != script_key)
-                .unwrap_or(true)
-    });
-
-    write_script_index_value(&index_path, &index)?;
-
-    Ok(format!(
-        "Script '{id}' registered successfully. It will be available as a tool in the next tool call round. The script path is: {}",
-        script_path.display()
-    ))
-}
-
-async fn unregister_script_handler(args: Value, scripts_dir: &Path) -> Result<String> {
-    let id = args
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if id.is_empty() {
-        bail!("id is required");
-    }
-    let delete_file = args
-        .get("delete_file")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    let index_path = scripts_dir.join("index.json");
-    let mut index = read_script_index_value(&index_path)?;
-
-    let indexed_path = index
-        .get("scripts")
-        .and_then(Value::as_array)
-        .and_then(|scripts| {
-            scripts
-                .iter()
-                .filter(|script| raw_entry_field(script, "id") == Some(id.as_str()))
-                .find_map(|script| raw_entry_field(script, "path"))
-        })
-        .map(str::to_string);
-    let path = if let Some(path) = indexed_path {
-        path
-    } else {
-        find_auto_detected_path(scripts_dir, &id)?
-            .ok_or_else(|| anyhow::anyhow!("script id '{id}' not found"))?
-    };
-
-    index_array_mut(&mut index, "scripts")?
-        .retain(|script| raw_entry_field(script, "id") != Some(id.as_str()));
-
-    let mut deleted_file = false;
-    let unresolved_path = resolve_script_path(&path, scripts_dir);
-    if delete_file {
-        if unresolved_path.is_file() {
-            let script_path = ensure_path_within_root(&unresolved_path, scripts_dir)?;
-            std::fs::remove_file(&script_path)?;
-            deleted_file = true;
-        }
-        index_array_mut(&mut index, "disabled")?.retain(|disabled| {
-            raw_entry_field(disabled, "id") != Some(id.as_str())
-                && raw_entry_field(disabled, "path") != Some(path.as_str())
-        });
-    } else {
-        let disabled = index_array_mut(&mut index, "disabled")?;
-        disabled.retain(|entry| {
-            raw_entry_field(entry, "id") != Some(id.as_str())
-                && raw_entry_field(entry, "path") != Some(path.as_str())
-        });
-        disabled.push(json!({"id": id, "path": path}));
-    }
-
-    write_script_index_value(&index_path, &index)?;
-
-    Ok(format!(
-        "Script '{}' unregistered successfully{}.",
-        id,
-        if deleted_file {
-            " and file deleted"
-        } else {
-            " and file disabled"
-        }
-    ))
 }
 
 #[cfg(test)]

@@ -1,4 +1,9 @@
-//! 脚本索引的扫描、解析与落盘。
+//! 脚本索引的扫描与落盘。
+//!
+//! 真相源顺序(09-05):`index.json` 条目里显式写了的字段 > 脚本头部
+//! (header.rs)> 默认值。index 退为覆盖层——描述/参数/超时/分组都能写在脚本
+//! 开头的注释里,一个文件就是一个完整的工具;index 只放手写覆盖和 disabled
+//! 名单。内置 8 条 index 条目原样保留,它们仍然压在头部之上,行为零变化。
 //!
 //! 脚本 ID 会变成工具名，所以 `is_valid_registered_script_id` 与
 //! `is_reserved_script_id` 挡的是「注册出一个和内建工具重名的工具」。
@@ -19,6 +24,7 @@ pub(crate) struct ScriptIndex {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct DisabledScript {
     pub(crate) id: String,
+    #[serde(default)]
     pub(crate) path: String,
 }
 
@@ -27,6 +33,7 @@ pub(crate) struct ScriptEntry {
     pub(crate) id: String,
     #[serde(default)]
     pub(crate) display_name: String,
+    #[serde(default)]
     pub(crate) description: String,
     #[serde(default)]
     pub(crate) path: String,
@@ -40,30 +47,32 @@ pub(crate) struct ScriptEntry {
     pub(crate) load_policy: LoadPolicy,
     #[serde(default)]
     pub(crate) groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "ArgvMode::is_off")]
+    pub(crate) argv: ArgvMode,
+}
+
+impl ScriptEntry {
+    /// 只有 id 与路径的空条目:其余字段留空,扫描时由脚本头部补齐。
+    pub(crate) fn overlay(id: String, path: String) -> Self {
+        Self {
+            id,
+            display_name: String::new(),
+            description: String::new(),
+            path,
+            parameters: Value::Null,
+            timeout_seconds: None,
+            always_loaded: None,
+            load_policy: LoadPolicy::Summary,
+            groups: Vec::new(),
+            argv: ArgvMode::Off,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ScriptScanResult {
     pub(crate) entries: Vec<ScriptEntry>,
     pub(crate) unregistered: Vec<UnregisteredScript>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ScriptDescriptions {
-    pub(crate) zh: Option<String>,
-    pub(crate) en: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ScriptMetadata {
-    pub(crate) descriptions: ScriptDescriptions,
-    pub(crate) display_names: ScriptDisplayNames,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ScriptDisplayNames {
-    pub(crate) zh: Option<String>,
-    pub(crate) en: Option<String>,
 }
 
 /// 扫描根,覆盖链低→高。每个物理层(内置 system、全局 data)都是
@@ -86,26 +95,6 @@ pub(crate) fn script_scan_roots(
     ]
 }
 
-pub fn rescan_scripts(
-    registry: &mut ToolRegistry,
-    config: &crate::config::AppConfig,
-    paths: &MiyuPaths,
-) {
-    let roots = script_scan_roots(config, paths);
-    let dirs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-    let scan = match scan_scripts(&dirs) {
-        Ok(scan) => scan,
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to rescan Miyu script directories");
-            return;
-        }
-    };
-    let specs = script_specs(&scan.entries, &paths.scripts_dir, &paths.cache_dir);
-    if let Err(error) = registry.replace_script_tools(specs, scan.unregistered) {
-        tracing::warn!(error = %error, "failed to replace Miyu script tools");
-    }
-}
-
 pub(crate) fn script_specs(
     entries: &[ScriptEntry],
     scripts_dir: &Path,
@@ -115,6 +104,42 @@ pub(crate) fn script_specs(
         .iter()
         .filter_map(|entry| entry_to_spec(entry, scripts_dir, cache_dir).ok())
         .collect()
+}
+
+/// index 条目没写的字段从脚本头部补:显示名、描述、参数 schema、超时、分组、
+/// argv 模式。index 写了的一律不动——它是覆盖层。
+pub(crate) fn merge_header_defaults(entry: &mut ScriptEntry, metadata: &ScriptMetadata) {
+    if entry.display_name.trim().is_empty() {
+        if let Some(display_name) = select_script_display_name(&metadata.display_names) {
+            entry.display_name = display_name;
+        }
+    }
+    if entry.description.trim().is_empty() {
+        if let Some(description) = select_script_description(&metadata.descriptions) {
+            entry.description = description;
+        }
+    }
+    if entry.parameters.is_null() {
+        if let Some(parameters) = &metadata.parameters {
+            entry.parameters = parameters.clone();
+        }
+    }
+    if entry.timeout_seconds.is_none() {
+        entry.timeout_seconds = metadata.timeout_seconds;
+    }
+    // 头部给了分组就顺带走 group 目录;index 里自己写的 groups+load_policy
+    // 组合原样保留(用户现有条目有 groups 配 summary 的,不替它改语义)。
+    if entry.groups.is_empty() && !metadata.groups.is_empty() {
+        entry.groups = metadata.groups.clone();
+        if matches!(entry.load_policy, LoadPolicy::Summary) {
+            entry.load_policy = LoadPolicy::Group;
+        }
+    }
+    if entry.argv.is_off() {
+        if let Some(argv) = metadata.argv {
+            entry.argv = argv;
+        }
+    }
 }
 
 pub(crate) fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
@@ -132,6 +157,10 @@ pub(crate) fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
 
         let mut disabled_ids = BTreeSet::new();
         let mut disabled_paths = BTreeSet::new();
+        // 本层 index 已登记的 id:同目录里同名 stem 的其它文件(gpustoggle.bak
+        // 之类)不得再以自动检测的身份把它顶掉或拖进未注册清单——用户机器上
+        // 一个没有描述头的 .bak 就把正主从工具面上抹掉了(09-05 实查)。
+        let mut indexed_ids = BTreeSet::new();
         for disabled in &index.disabled {
             if !disabled.id.trim().is_empty() {
                 disabled_ids.insert(disabled.id.clone());
@@ -168,10 +197,9 @@ pub(crate) fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
             seen_paths.insert(canon);
 
             let mut entry = indexed_entry;
+            indexed_ids.insert(entry.id.clone());
             entry.path = path.to_string_lossy().to_string();
-            if entry.description.trim().is_empty() {
-                entry.description = description_from_script(&path).unwrap_or_default();
-            }
+            merge_header_defaults(&mut entry, &metadata_from_script(&path));
             if entry.description.trim().is_empty() {
                 entries.remove(&entry.id);
                 unregistered.insert(
@@ -194,46 +222,59 @@ pub(crate) fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
                 continue;
             }
             let fname = file_entry.file_name().to_string_lossy().to_string();
-            if fname == "index.json" || fname.starts_with('.') {
+            if fname == "index.json" || fname.starts_with('.') || is_backup_file_name(&fname) {
                 continue;
             }
             let Some(detected) = inspect_script(&path) else {
                 continue;
             };
-            if is_reserved_script_id(&detected.id) {
+            if detected
+                .id
+                .as_deref()
+                .is_some_and(|id| indexed_ids.contains(id))
+            {
                 continue;
             }
             let canon = canonicalize_key(&path);
-            if disabled_ids.contains(&detected.id)
+            let path_string = path.to_string_lossy().to_string();
+            // 文件名折不出合法工具名(纯中文文件名):列进未注册清单,模型能
+            // 看见它、用 manage_script 给个 id 注册。
+            let Some(id) = detected.id.clone() else {
+                if disabled_paths.contains(&canon) || !seen_paths.insert(canon) {
+                    continue;
+                }
+                unregistered.insert(
+                    detected.stem.clone(),
+                    UnregisteredScript {
+                        name: detected.stem,
+                        path: path_string,
+                    },
+                );
+                continue;
+            };
+            if is_reserved_script_id(&id) {
+                continue;
+            }
+            if disabled_ids.contains(&id)
                 || disabled_paths.contains(&canon)
                 || !seen_paths.insert(canon)
             {
                 continue;
             }
 
-            if let Some(description) = detected.description {
-                let entry = ScriptEntry {
-                    id: detected.id.clone(),
-                    display_name: detected.display_name,
-                    description,
-                    path: path.to_string_lossy().to_string(),
-                    parameters: Value::Null,
-                    timeout_seconds: None,
-                    always_loaded: Some(true),
-                    load_policy: LoadPolicy::Summary,
-                    groups: Vec::new(),
-                };
-                unregistered.remove(&detected.id);
-                entries.insert(detected.id, entry);
-            } else {
-                entries.remove(&detected.id);
+            let entry = entry_from_detected(&detected, id.clone(), path_string.clone());
+            if entry.description.trim().is_empty() {
+                entries.remove(&id);
                 unregistered.insert(
-                    detected.id.clone(),
+                    id.clone(),
                     UnregisteredScript {
-                        name: detected.id,
-                        path: path.to_string_lossy().to_string(),
+                        name: id,
+                        path: path_string,
                     },
                 );
+            } else {
+                unregistered.remove(&id);
+                entries.insert(id, entry);
             }
         }
     }
@@ -242,6 +283,14 @@ pub(crate) fn scan_scripts(dirs: &[&Path]) -> Result<ScriptScanResult> {
         entries: entries.into_values().collect(),
         unregistered: unregistered.into_values().collect(),
     })
+}
+
+/// 编辑器/手工备份副本不算脚本:`foo.bak` 的 stem 仍是 `foo`,会撞正主的 id。
+pub(crate) fn is_backup_file_name(name: &str) -> bool {
+    name.ends_with('~')
+        || [".bak", ".orig", ".tmp", ".swp", ".old", ".rej"]
+            .iter()
+            .any(|suffix| name.to_ascii_lowercase().ends_with(suffix))
 }
 
 pub(crate) fn canonicalize_key(path: &Path) -> PathBuf {
@@ -322,153 +371,59 @@ pub(crate) fn is_valid_registered_script_id(id: &str) -> bool {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DetectedScript {
-    pub(crate) id: String,
+    /// 工具名:头部 `Id:`(合法时)> 文件名 stem 归一化;折不出来为 None。
+    pub(crate) id: Option<String>,
+    pub(crate) stem: String,
     pub(crate) display_name: String,
-    pub(crate) description: Option<String>,
+    pub(crate) metadata: ScriptMetadata,
 }
 
 pub(crate) fn inspect_script(path: &Path) -> Option<DetectedScript> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let first_line = raw.lines().next()?;
-    if !first_line.starts_with("#!") {
+    let raw = read_header(path)?;
+    if !raw.starts_with("#!") {
         return None;
     }
-    let id = path
-        .file_stem()
-        .and_then(|n| n.to_str())
-        .unwrap_or("script")
-        .to_string();
+    let stem = path.file_stem()?.to_str()?.to_string();
     let metadata = extract_metadata(&raw);
-    let display_name =
-        select_script_display_name(&metadata.display_names).unwrap_or_else(|| id.clone());
-    let description = select_script_description(&metadata.descriptions);
+    let id = metadata
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| is_valid_registered_script_id(id))
+        .map(str::to_string)
+        .or_else(|| normalize_script_id(&stem));
+    let display_name = select_script_display_name(&metadata.display_names)
+        .unwrap_or_else(|| id.clone().unwrap_or_else(|| stem.clone()));
     Some(DetectedScript {
         id,
+        stem,
         display_name,
-        description,
+        metadata,
     })
+}
+
+pub(crate) fn entry_from_detected(
+    detected: &DetectedScript,
+    id: String,
+    path: String,
+) -> ScriptEntry {
+    let mut entry = ScriptEntry::overlay(id, path);
+    entry.display_name = detected.display_name.clone();
+    merge_header_defaults(&mut entry, &detected.metadata);
+    entry
 }
 
 #[cfg(test)]
 pub(crate) fn auto_detect_script(path: &Path) -> Option<ScriptEntry> {
     let detected = inspect_script(path)?;
-    let description = detected.description?;
-    Some(ScriptEntry {
-        id: detected.id,
-        display_name: detected.display_name,
-        description,
-        path: path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string(),
-        parameters: Value::Null,
-        timeout_seconds: None,
-        always_loaded: Some(true),
-        load_policy: LoadPolicy::Summary,
-        groups: Vec::new(),
-    })
-}
-
-pub(crate) fn extract_description(raw: &str) -> Option<String> {
-    select_script_description(&extract_metadata(raw).descriptions)
-}
-
-pub(crate) fn description_from_script(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| extract_description(&raw))
-}
-
-pub(crate) fn select_script_description(descriptions: &ScriptDescriptions) -> Option<String> {
-    // 模型面恒英文:英文描述优先;用户脚本只写了中文时原样保留(用户内容)。
-    let preferred = descriptions.en.as_ref().or(descriptions.zh.as_ref())?;
-    Some(preferred.clone())
-}
-
-pub(crate) fn select_script_display_name(display_names: &ScriptDisplayNames) -> Option<String> {
-    let preferred = if is_zh() {
-        display_names.zh.as_ref().or(display_names.en.as_ref())
-    } else {
-        display_names.en.as_ref().or(display_names.zh.as_ref())
-    }?;
-    Some(preferred.clone())
-}
-
-pub(crate) fn extract_metadata(raw: &str) -> ScriptMetadata {
-    let mut metadata = ScriptMetadata::default();
-    for line in raw.lines().skip(1) {
-        let trimmed = line.trim_start_matches('#').trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some((key, desc)) = split_description_line(trimmed) {
-            match key {
-                DescriptionKey::Chinese => metadata.descriptions.zh = Some(desc.to_string()),
-                DescriptionKey::English => metadata.descriptions.en = Some(desc.to_string()),
-            }
-            continue;
-        }
-        if let Some((key, display_name)) = split_display_name_line(trimmed) {
-            match key {
-                DisplayNameKey::Chinese => {
-                    metadata.display_names.zh = Some(display_name.to_string())
-                }
-                DisplayNameKey::English => {
-                    metadata.display_names.en = Some(display_name.to_string())
-                }
-            }
-            continue;
-        }
-        if !trimmed.starts_with("#!") {
-            break;
-        }
-    }
-    metadata
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum DescriptionKey {
-    Chinese,
-    English,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum DisplayNameKey {
-    Chinese,
-    English,
-}
-
-pub(crate) fn split_description_line(line: &str) -> Option<(DescriptionKey, &str)> {
-    let (raw_key, raw_value) = line.split_once(':').or_else(|| line.split_once('：'))?;
-    let key = raw_key.trim();
-    let value = raw_value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if key == "描述" || key == "功能介绍" {
-        return Some((DescriptionKey::Chinese, value));
-    }
-    if key.eq_ignore_ascii_case("description") {
-        return Some((DescriptionKey::English, value));
-    }
-    None
-}
-
-pub(crate) fn split_display_name_line(line: &str) -> Option<(DisplayNameKey, &str)> {
-    let (raw_key, raw_value) = line.split_once(':').or_else(|| line.split_once('：'))?;
-    let key = raw_key.trim();
-    let value = raw_value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if key == "显示名称" || key == "工具名称" {
-        return Some((DisplayNameKey::Chinese, value));
-    }
-    if key.eq_ignore_ascii_case("display_name") || key.eq_ignore_ascii_case("display name") {
-        return Some((DisplayNameKey::English, value));
-    }
-    None
+    let id = detected.id.clone()?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let entry = entry_from_detected(&detected, id, file_name);
+    (!entry.description.is_empty()).then_some(entry)
 }
 
 pub(crate) fn entry_to_spec(
@@ -489,9 +444,12 @@ pub(crate) fn entry_to_spec(
         bail!("registered script is missing a description: {id}");
     }
     let description = entry.description.clone();
-    let always_loaded = entry
-        .always_loaded
-        .unwrap_or_else(|| entry.parameters.is_null());
+    // 默认懒加载(09-05)。此前「没写参数就常驻」:自动检测出来的脚本全都带着
+    // 泛化 schema 永久占 tools 数组;stub 模式下常驻工具发的还是完整定义
+    // (registry::stub_definitions),白花字节。index 里显式 always_loaded:true
+    // 仍然放行。
+    let always_loaded = entry.always_loaded.unwrap_or(false);
+    let load_policy = entry.load_policy;
     let parameters = if entry.parameters.is_null() {
         json!({
             "type": "object",
@@ -510,6 +468,7 @@ pub(crate) fn entry_to_spec(
         .timeout_seconds
         .unwrap_or(SCRIPT_TIMEOUT_SECS)
         .min(300);
+    let argv = entry.argv;
     let path_str = entry.path.clone();
     let scripts_dir = scripts_dir.to_path_buf();
     let cache_dir = cache_dir.to_path_buf();
@@ -518,24 +477,15 @@ pub(crate) fn entry_to_spec(
         let path_str = path_str.clone();
         let scripts_dir = scripts_dir.clone();
         let cache_dir = cache_dir.clone();
-        async move { run_script(&path_str, &scripts_dir, &cache_dir, &args, timeout).await }
+        async move { run_script(&path_str, &scripts_dir, &cache_dir, &args, timeout, argv).await }
     })
     .writes()
     .with_display_name(display_name)
     .with_always_loaded(always_loaded)
-    .with_load_policy(entry.load_policy)
+    .with_load_policy(load_policy)
     .with_groups(entry.groups.clone())
     .script();
     Ok(spec)
-}
-
-pub(crate) fn parse_load_policy(value: &str) -> Result<LoadPolicy> {
-    match value.trim() {
-        "" | "summary" | "lazy" => Ok(LoadPolicy::Summary),
-        "group" => Ok(LoadPolicy::Group),
-        "hidden" => Ok(LoadPolicy::Hidden),
-        other => bail!("invalid load_policy: {other}"),
-    }
 }
 
 pub(crate) fn read_script_index_value(index_path: &Path) -> Result<Value> {
@@ -594,6 +544,10 @@ pub(crate) fn raw_entry_field<'a>(entry: &'a Value, field: &str) -> Option<&'a s
 }
 
 pub(crate) fn write_script_index_value(index_path: &Path, index: &Value) -> Result<()> {
+    if let Some(parent) = index_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     let file_name = index_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -621,7 +575,7 @@ pub(crate) fn find_auto_detected_path(scripts_dir: &Path, id: &str) -> Result<Op
         let Some(detected) = inspect_script(&path) else {
             continue;
         };
-        if detected.id == id {
+        if detected.id.as_deref() == Some(id) {
             return Ok(Some(relative_script_path(&path, scripts_dir)));
         }
     }

@@ -61,7 +61,7 @@ pub use registry::{
     empty_parameters, CommandOutputStream, GuardCtx, ToolFuture, ToolGuard, ToolPermission,
     ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec,
 };
-pub(crate) use scripts::rescan_scripts;
+pub(crate) use scripts::{apply_script_refresh, prepare_script_refresh};
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
 pub use skills::{register_authoring as register_skill_authoring, register_skills};
 

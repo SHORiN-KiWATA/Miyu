@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # 显示名称：查询进程占用
-# 描述：查询进程的CPU和内存占用，还能列出最高资源占用排名。
 # description: Rank all processes, or list CPU/memory usage for one app.
 
 set -euo pipefail

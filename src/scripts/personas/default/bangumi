@@ -1,7 +1,56 @@
 #!/usr/bin/env python3
 # 显示名称：番组日历
-# 描述：查 Bangumi（bgm.tv）：今天/某天/整周的新番放送表，按名字搜动画/书/游戏/音乐/三次元条目，看条目详情（评分、排名、标签、简介、已播到第几集、下一集何时播）和剧集列表。零依赖，走公开 API。
-# Description: Query Bangumi (bgm.tv): today's / a weekday's / the whole week's airing calendar, search subjects by name, show subject details (score, rank, tags, summary, aired progress, next episode) and episode lists. Zero dependencies, public API only.
+# Description: Query the Bangumi (bgm.tv) anime calendar and subjects. Airing calendar for today, a weekday or the whole week; search anime, books, games, music and real-world subjects by name; subject details (score, rank, tags, summary, aired progress, next episode) and episode lists. Use when the user asks what airs today, how far a show has aired, or a title's rating.
+# Timeout: 60
+# Group: research
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "calendar",
+#         "search",
+#         "subject",
+#         "episodes"
+#       ],
+#       "description": "calendar=airing calendar (default); search=find subjects; subject=details including aired progress; episodes=episode list"
+#     },
+#     "query": {
+#       "type": "string",
+#       "description": "Keyword or subject id for search/subject/episodes; a name match takes the first hit and lists other candidates"
+#     },
+#     "weekday": {
+#       "type": "string",
+#       "description": "calendar: which day: 一~日, mon~sun, 今天 (default), 明天, week (whole week)"
+#     },
+#     "type": {
+#       "type": "string",
+#       "enum": [
+#         "anime",
+#         "book",
+#         "game",
+#         "music",
+#         "real"
+#       ],
+#       "description": "Subject type, default anime"
+#     },
+#     "top": {
+#       "type": "integer",
+#       "description": "Max items; calendar defaults to all, search to 8"
+#     },
+#     "format": {
+#       "type": "string",
+#       "enum": [
+#         "md",
+#         "json"
+#       ],
+#       "description": "Default md; json for field-by-field processing"
+#     }
+#   },
+#   "additionalProperties": false
+# }
 """
 用法（命令行）：
     bangumi                          今天播什么

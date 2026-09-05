@@ -73,12 +73,34 @@ impl Agent {
             let tool_limit_reached =
                 (self.max_tool_rounds > 0 && tool_round >= self.max_tool_rounds) || repeat_fused;
 
-            if self.config.skills.enabled {
-                if self.mode == AgentMode::Normal {
-                    let mut registry = self.tools.lock().unwrap();
-                    tools::rescan_scripts(&mut registry, &self.config, &self.paths);
-                    tools::register_script_display_names(&registry);
+            // 脚本目录刷新独立于 skills.enabled(09-05):此前套在 skills 开关里,
+            // 关掉技能就没人再热加载脚本了。指纹没变一次锁都不拿。
+            if self.mode == AgentMode::Normal {
+                let current_fingerprint = self.tools.lock().unwrap().script_catalog_fingerprint();
+                let config = self.config.clone();
+                let paths = self.paths.clone();
+                let refresh = tokio::task::spawn_blocking(move || {
+                    tools::prepare_script_refresh(current_fingerprint, &config, &paths)
+                        .map(|snapshot| (snapshot, paths))
+                })
+                .await;
+                match refresh {
+                    Ok(Ok((Some(snapshot), paths))) => {
+                        let mut registry = self.tools.lock().unwrap();
+                        tools::apply_script_refresh(&mut registry, &paths, snapshot);
+                        tools::register_script_display_names(&registry);
+                    }
+                    Ok(Ok((None, _))) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(error = %error, "failed to refresh Miyu script tools")
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "Miyu script refresh worker stopped")
+                    }
                 }
+            }
+
+            if self.config.skills.enabled {
                 let current_fingerprint = {
                     let registry = self.tools.lock().unwrap();
                     registry
