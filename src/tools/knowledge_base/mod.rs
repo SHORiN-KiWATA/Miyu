@@ -1,9 +1,8 @@
-mod search;
-mod store;
-pub(crate) use search::embed_text;
 mod dashboard;
 mod files;
 mod index;
+mod search;
+mod store;
 #[cfg(test)]
 use index::keyword_search_blocking;
 pub(in crate::tools) use store::reject_non_kb_upload;
@@ -12,18 +11,17 @@ use search::*;
 use store::*;
 
 use super::{ToolRegistry, ToolSpec};
-use crate::config::{AppConfig, KnowledgeBasePluginConfig, ProviderConfig};
+use crate::config::{AppConfig, KnowledgeBasePluginConfig};
 use crate::paths::MiyuPaths;
 use anyhow::{bail, Context, Result};
 use chrono::Local;
-use reqwest::Client;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 // 08-21 Edit/Read 统一(用户裁定):upload/edit/remove/read 四个 CRUD 工具退场,

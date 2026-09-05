@@ -260,14 +260,18 @@ pub(in crate::config_tui) fn model_is_embedding(provider: &ProviderConfig, model
 }
 
 pub(in crate::config_tui) fn embedding_model_label(config: &AppConfig) -> String {
-    if config.embedding.is_configured() {
-        format!(
+    let embedding = &config.embedding;
+    if !embedding.enabled {
+        return t("disabled", "已关闭").to_string();
+    }
+    match embedding.resolved_backend() {
+        crate::config::EmbeddingBackend::Remote if embedding.remote_is_configured() => format!(
             "{}/{}",
-            config.embedding.provider_id.trim(),
-            config.embedding.model.trim()
-        )
-    } else {
-        t("not set", "未设置").to_string()
+            embedding.provider_id.trim(),
+            embedding.model.trim()
+        ),
+        crate::config::EmbeddingBackend::Remote => t("remote: not set", "远程：未设置").to_string(),
+        _ => format!("{} {}", t("local:", "本地："), embedding.local_model.trim()),
     }
 }
 
@@ -378,13 +382,40 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
     stdout: &mut io::Stdout,
     config: &mut AppConfig,
 ) -> Result<()> {
+    let backend_label = match config.embedding.backend {
+        crate::config::EmbeddingBackend::Auto => "auto",
+        crate::config::EmbeddingBackend::Local => "local",
+        crate::config::EmbeddingBackend::Remote => "remote",
+    };
     let mut fields = vec![
         Field::new(
-            t("Request timeout (seconds)", "请求超时（秒）"),
+            t(
+                "Semantic search enabled (true/false)",
+                "启用语义检索（true/false）",
+            ),
+            config.embedding.enabled.to_string(),
+        ),
+        Field::new(
+            t("Backend (auto/local/remote)", "后端（auto/local/remote）"),
+            backend_label.to_string(),
+        ),
+        Field::new(
+            t("Local model id or directory", "本地模型 id 或目录"),
+            config.embedding.local_model.clone(),
+        ),
+        Field::new(
+            t(
+                "Local worker idle unload (seconds)",
+                "本地 worker 空闲卸载（秒）",
+            ),
+            config.embedding.idle_unload_seconds.to_string(),
+        ),
+        Field::new(
+            t("Remote request timeout (seconds)", "远程请求超时（秒）"),
             config.embedding.timeout_seconds.to_string(),
         ),
         Field::new(
-            t("Similarity floor (0-1)", "相似度下限（0-1）"),
+            t("Remote similarity floor (0-1)", "远程相似度下限（0-1）"),
             config.embedding.min_score.to_string(),
         ),
     ];
@@ -395,12 +426,30 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
     )? {
         return Ok(());
     }
-    let timeout: u64 = fields[0]
+    let enabled = parse_bool_field(&fields[0].value)?;
+    let backend = match fields[1].value.trim().to_ascii_lowercase().as_str() {
+        "auto" | "" => crate::config::EmbeddingBackend::Auto,
+        "local" => crate::config::EmbeddingBackend::Local,
+        "remote" => crate::config::EmbeddingBackend::Remote,
+        _ => {
+            return Err(anyhow::anyhow!(t(
+                "Backend must be auto, local or remote.",
+                "后端只能是 auto、local 或 remote。"
+            )))
+        }
+    };
+    let local_model = fields[2].value.trim().to_string();
+    let idle: u64 = fields[3]
+        .value
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!(t("Invalid idle timeout.", "空闲卸载数值无效。")))?;
+    let timeout: u64 = fields[4]
         .value
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!(t("Invalid timeout.", "超时数值无效。")))?;
-    let score: f32 = fields[1]
+    let score: f32 = fields[5]
         .value
         .trim()
         .parse()
@@ -417,6 +466,22 @@ pub(in crate::config_tui) fn edit_embedding_advanced(
             "相似度下限必须在 0 与 1 之间。"
         )));
     }
+    if idle == 0 {
+        return Err(anyhow::anyhow!(t(
+            "Idle unload must be positive.",
+            "空闲卸载必须大于 0。"
+        )));
+    }
+    if local_model.is_empty() {
+        return Err(anyhow::anyhow!(t(
+            "Local model must not be empty.",
+            "本地模型不能为空。"
+        )));
+    }
+    config.embedding.enabled = enabled;
+    config.embedding.backend = backend;
+    config.embedding.local_model = local_model;
+    config.embedding.idle_unload_seconds = idle;
     config.embedding.timeout_seconds = timeout;
     config.embedding.min_score = score;
     Ok(())

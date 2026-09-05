@@ -137,7 +137,7 @@ impl AppConfig {
         // where it was first needed. It now also backs memory recall, and a
         // knowledge-base setting silently steering group-chat search is a trap
         // for whoever reads this next.
-        if !self.embedding.is_configured() {
+        if !self.embedding.remote_is_configured() {
             let kb = &self.plugins.knowledge_base;
             if !kb.embedding_provider_id.trim().is_empty() && !kb.embedding_model.trim().is_empty()
             {

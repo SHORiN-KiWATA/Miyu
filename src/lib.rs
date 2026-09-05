@@ -15,6 +15,7 @@ mod config_tui;
 mod daemon;
 mod default_kb;
 mod default_models;
+mod embedding;
 mod host_info;
 mod i18n;
 mod ipc;
@@ -55,6 +56,9 @@ pub async fn run() -> Result<()> {
     paths::prime_miyu_executable();
     if platforms::plugins::renderer_worker_requested() {
         return platforms::plugins::run_renderer_worker().await;
+    }
+    if embedding::embedding_worker_requested() {
+        return embedding::run_embedding_worker().await;
     }
     let paths = paths::MiyuPaths::new()?;
     let language = config::AppConfig::display_language_hint(&paths);

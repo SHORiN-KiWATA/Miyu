@@ -233,7 +233,16 @@ pub(crate) fn init_data_db(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_facts_access_updated
              ON facts(visibility, owner_principal, updated_at DESC);
          CREATE INDEX IF NOT EXISTS idx_episodes_access_updated
-             ON episodes(visibility, owner_principal, updated_at DESC);",
+             ON episodes(visibility, owner_principal, updated_at DESC);
+         CREATE TABLE IF NOT EXISTS memory_embeddings (
+            kind TEXT NOT NULL,
+            id INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (kind, id)
+         );",
     )?;
     Ok(())
 }
@@ -277,6 +286,8 @@ pub(crate) fn init_state_db(conn: &Connection) -> Result<()> {
         END;",
     )?;
     add_column_if_missing(conn, "evicted_turns", "source_id", "TEXT")?;
+    // 09-05: vectors as f32 BLOBs; legacy JSON rows are simply re-embedded.
+    add_column_if_missing(conn, "evicted_embeddings", "embedding", "BLOB")?;
     add_column_if_missing(
         conn,
         "evicted_turns",

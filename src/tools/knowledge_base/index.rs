@@ -15,9 +15,9 @@ impl KnowledgeBase {
             }
             return Ok(0);
         }
-        let Some((provider, model)) = self.embedding_provider()? else {
+        let Some(embedder) = self.embedder() else {
             if !quiet {
-                println!("embedding provider/model is not configured; skipped");
+                println!("embedding model is not configured or not installed; skipped");
             }
             return Ok(0);
         };
@@ -42,9 +42,7 @@ impl KnowledgeBase {
             }
         };
         drop(lock);
-        let result = self
-            .reindex_embeddings_inner(&provider, &model, quiet)
-            .await;
+        let result = self.reindex_embeddings_inner(&embedder, quiet).await;
         let _ = std::fs::remove_file(lock_path);
         result
     }
@@ -172,31 +170,39 @@ impl KnowledgeBase {
         &self,
         query: &str,
     ) -> Result<Vec<SearchResult>> {
-        let Some((provider, model)) = self.embedding_provider()? else {
+        let Some(embedder) = self.embedder() else {
             return Ok(Vec::new());
         };
-        let query_embedding = embed_text(&self.config, &provider, &model, query).await?;
+        let query_embedding = embedder.embed_query(query).await?;
         let semantic = self.semantic_conn()?;
+        // Only vectors from the current model are comparable; rows left by a
+        // previous model wait for the reindex.
         let mut stmt = semantic.prepare(
-            "SELECT file_name, start_char, end_char, text, embedding_json FROM semantic_chunks",
+            "SELECT file_name, start_char, end_char, text, embedding, embedding_json
+             FROM semantic_chunks WHERE model = ?1",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![embedder.model_id()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, usize>(1)?,
                 row.get::<_, usize>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
         let mut results = Vec::new();
         for row in rows {
-            let (file_name, _start, _end, text, embedding_json) = row?;
-            let Ok(embedding) = serde_json::from_str::<Vec<f32>>(&embedding_json) else {
-                continue;
+            let (file_name, _start, _end, text, blob, embedding_json) = row?;
+            let embedding = match blob.as_deref().and_then(crate::embedding::vector_from_blob) {
+                Some(vector) => vector,
+                None => match serde_json::from_str::<Vec<f32>>(&embedding_json) {
+                    Ok(vector) => vector,
+                    Err(_) => continue,
+                },
             };
             let score = cosine(&query_embedding, &embedding);
-            if score < self.config.embedding.min_score {
+            if score < embedder.min_score() {
                 continue;
             }
             results.push(SearchResult::new(
@@ -215,17 +221,29 @@ impl KnowledgeBase {
         Ok(results)
     }
 
+    /// Files whose chunks already carry vectors from this model and content
+    /// hash are skipped, so a reindex after a model switch or a few edits only
+    /// pays for what changed. Chunks are embedded one file at a time; a
+    /// failure skips that file and keeps going.
     pub(in crate::tools::knowledge_base) async fn reindex_embeddings_inner(
         &self,
-        provider: &ProviderConfig,
-        model: &str,
+        embedder: &crate::embedding::Embedder,
         quiet: bool,
     ) -> Result<usize> {
         let files = self.list()?;
         let semantic = self.semantic_conn()?;
         init_semantic_db(&semantic)?;
+        let model = embedder.model_id().to_string();
         let mut indexed = 0usize;
         for record in files {
+            let current: i64 = semantic.query_row(
+                "SELECT COUNT(*) FROM semantic_chunks WHERE file_name=?1 AND content_sha256=?2 AND model=?3 AND embedding IS NOT NULL",
+                params![record.name, record.content_sha256, model],
+                |row| row.get(0),
+            )?;
+            if current > 0 {
+                continue;
+            }
             let content = match std::fs::read_to_string(&record.path) {
                 Ok(content) => content,
                 Err(_) => continue,
@@ -235,30 +253,34 @@ impl KnowledgeBase {
                 self.config.plugins.knowledge_base.semantic_chunk_chars,
                 self.config.plugins.knowledge_base.semantic_chunk_overlap,
             );
+            let texts: Vec<String> = chunks.iter().map(|chunk| chunk.text.clone()).collect();
+            let vectors = match embedder.embed(&texts).await {
+                Ok(vectors) => vectors,
+                Err(err) => {
+                    if !quiet {
+                        eprintln!("embedding failed for {}: {err:#}", record.name);
+                    }
+                    continue;
+                }
+            };
             semantic.execute(
                 "DELETE FROM semantic_chunks WHERE file_name=?1",
                 params![record.name],
             )?;
-            for chunk in chunks {
-                let embedding = match embed_text(&self.config, provider, model, &chunk.text).await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        if !quiet {
-                            eprintln!(
-                                "embedding failed for {} chunk {}: {err}",
-                                record.name, chunk.index
-                            );
-                        }
-                        continue;
-                    }
-                };
+            for (chunk, vector) in chunks.iter().zip(vectors) {
                 semantic.execute(
-                    "INSERT INTO semantic_chunks (provider_id, model, file_name, content_sha256, chunk_index, start_char, end_char, text, embedding_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    params![provider.id, model, record.name, record.content_sha256, chunk.index as i64, chunk.start as i64, chunk.end as i64, chunk.text, serde_json::to_string(&embedding)?, now_secs()],
+                    "INSERT INTO semantic_chunks (provider_id, model, file_name, content_sha256, chunk_index, start_char, end_char, text, embedding_json, embedding, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '', ?9, ?10)",
+                    params![embedder.describe(), model, record.name, record.content_sha256, chunk.index as i64, chunk.start as i64, chunk.end as i64, chunk.text, crate::embedding::vector_to_blob(&vector), now_secs()],
                 )?;
                 indexed += 1;
             }
         }
+        // Vectors from other models are dead weight once the current model
+        // has covered the library; the reindex is the natural sweep point.
+        semantic.execute(
+            "DELETE FROM semantic_chunks WHERE model != ?1",
+            params![model],
+        )?;
         if !quiet {
             println!("indexed semantic chunks: {indexed}");
         }
@@ -266,24 +288,7 @@ impl KnowledgeBase {
     }
 
     pub(in crate::tools) fn spawn_embedding_reindex(&self) -> Result<()> {
-        if !self.config.plugins.knowledge_base.embedding_enabled {
-            return Ok(());
-        }
-        if self
-            .config
-            .plugins
-            .knowledge_base
-            .embedding_provider_id
-            .trim()
-            .is_empty()
-            || self
-                .config
-                .plugins
-                .knowledge_base
-                .embedding_model
-                .trim()
-                .is_empty()
-        {
+        if !self.config.plugins.knowledge_base.embedding_enabled || self.embedder().is_none() {
             return Ok(());
         }
         let exe = crate::paths::miyu_executable()?;
@@ -296,20 +301,13 @@ impl KnowledgeBase {
         Ok(())
     }
 
-    pub(in crate::tools::knowledge_base) fn embedding_provider(
-        &self,
-    ) -> Result<Option<(ProviderConfig, String)>> {
-        let embedding = &self.config.embedding;
-        if !embedding.is_configured() {
-            return Ok(None);
+    /// The knowledge base has its own switch on top of the global one: a
+    /// large library makes the semantic pass expensive to (re)build.
+    pub(in crate::tools::knowledge_base) fn embedder(&self) -> Option<crate::embedding::Embedder> {
+        if !self.config.plugins.knowledge_base.embedding_enabled {
+            return None;
         }
-        let mut provider = self
-            .config
-            .provider(Some(embedding.provider_id.trim()))?
-            .clone();
-        let model = embedding.model.trim().to_string();
-        provider.default_model = model.clone();
-        Ok(Some((provider, model)))
+        crate::embedding::Embedder::from_config(&self.config)
     }
 
     pub(in crate::tools::knowledge_base) fn meta_conn(&self) -> Result<Connection> {

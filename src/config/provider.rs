@@ -270,29 +270,59 @@ pub fn resolve_provider_model_argument<'a>(
     }
 }
 
+/// Which backend produces vectors. `Auto` (the default, and what every config
+/// written before 2026-09 reads as) keeps a configured remote model and falls
+/// back to the bundled local model otherwise, so upgrading never silently
+/// swaps a user's remote bge-m3 for the local small model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingBackend {
+    #[default]
+    Auto,
+    Local,
+    Remote,
+}
+
 /// Which model turns text into vectors, and the settings that belong to that
 /// model rather than to any one feature — a similarity floor means different
-/// things on different models. Deliberately has no on/off switch: configuring a
-/// model only makes it available, and each feature decides whether to use it.
+/// things on different models. Semantic retrieval is an assist on top of
+/// keyword search everywhere it is used: `enabled: false`, a missing runtime
+/// or a dead endpoint all degrade to keyword-only, never to an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
+    /// Master switch for the semantic assist across knowledge base, memory
+    /// association, memes and evicted-context search.
+    pub enabled: bool,
+    pub backend: EmbeddingBackend,
+    /// Local model id (a directory under the model search chain) or a path to
+    /// a model directory. Only used by the local backend.
+    pub local_model: String,
     /// Id of an existing provider; the model is named separately, so a provider
     /// serving both chat and embedding models is still configured once.
+    /// Only used by the remote backend.
     pub provider_id: String,
     pub model: String,
     pub timeout_seconds: u64,
-    /// Cosine similarity below this is not a hit.
+    /// Cosine similarity below this is not a hit (remote backend; local models
+    /// carry their own floor in `manifest.json`).
     pub min_score: f32,
+    /// The local inference worker exits after this much idle time so an idle
+    /// daemon holds no model in memory.
+    pub idle_unload_seconds: u64,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
+            backend: EmbeddingBackend::Auto,
+            local_model: DEFAULT_LOCAL_EMBEDDING_MODEL.to_string(),
             provider_id: String::new(),
             model: String::new(),
             timeout_seconds: 60,
             min_score: 0.35,
+            idle_unload_seconds: 600,
         }
     }
 }
@@ -300,15 +330,39 @@ impl Default for EmbeddingConfig {
 /// Marks a model as producing vectors rather than chat.
 pub const EMBEDDING_MODALITY: &str = "embedding";
 
+/// The model shipped under `assets/models/`.
+pub const DEFAULT_LOCAL_EMBEDDING_MODEL: &str = "bge-small-zh-v1.5-int8";
+
 impl EmbeddingConfig {
     pub(crate) fn is_default(&self) -> bool {
         *self == Self::default()
     }
 
-    /// A model is configured; whether any feature uses it is that feature's
-    /// business.
-    pub fn is_configured(&self) -> bool {
+    /// A remote provider/model pair is named. Says nothing about reachability.
+    pub fn remote_is_configured(&self) -> bool {
         !self.provider_id.trim().is_empty() && !self.model.trim().is_empty()
+    }
+
+    /// `Auto` resolved: remote when a remote model is named, local otherwise.
+    pub fn resolved_backend(&self) -> EmbeddingBackend {
+        match self.backend {
+            EmbeddingBackend::Auto if self.remote_is_configured() => EmbeddingBackend::Remote,
+            EmbeddingBackend::Auto => EmbeddingBackend::Local,
+            explicit => explicit,
+        }
+    }
+
+    /// Something is configured for the semantic pass. Whether it actually
+    /// works (runtime library present, endpoint reachable) is only known at
+    /// call time; `Embedder::from_config` is the runtime-side check.
+    pub fn is_configured(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.resolved_backend() {
+            EmbeddingBackend::Remote => self.remote_is_configured(),
+            _ => !self.local_model.trim().is_empty(),
+        }
     }
 }
 

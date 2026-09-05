@@ -15,3 +15,8 @@
 # Python 脚本跑过就会生成，不进仓库
 __pycache__/
 *.pyc
+
+# testkit/embedding 一次性产物
+testkit/embedding/home/
+testkit/embedding/out-*.txt
+testkit/embedding/kbsrc/

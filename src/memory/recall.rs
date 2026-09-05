@@ -131,12 +131,34 @@ impl MemoryStore {
         // 一条连接贯穿本回合的两次检索与全部 reinforce,替代此前最多 10 次
         // Connection::open + PRAGMA 重设。
         let conn = self.data_conn()?;
-        let facts = self.search_facts(&conn, query, self.config.association_facts, false)?;
+        let (facts, episodes) = self.association_candidates(&conn, query, exclude)?;
+        self.finish_association(&conn, facts, episodes)
+    }
+
+    /// Keyword candidates for one turn, with the self-echo exclusion applied.
+    /// Split from [`Self::association`] so the semantic pass can fuse its own
+    /// candidates in before reinforcement happens.
+    pub(crate) fn association_candidates(
+        &self,
+        conn: &Connection,
+        query: &str,
+        exclude: Option<&AssociationExclusion>,
+    ) -> Result<(Vec<MemoryHit>, Vec<MemoryHit>)> {
+        let facts = self.search_facts(conn, query, self.config.association_facts, false)?;
         let mut episodes =
-            self.search_episodes(&conn, query, self.config.association_episodes, false)?;
-        // 自回声过滤(缓存调研 08-16):当前会话可见范围内刚写下的日记/
-        // 事实,原对话就在眼前,复述一遍纯属冗余;被 compact 折走后
-        // (时间早于最老可见轮)重新够格召回。显式 recall 工具不受此限。
+            self.search_episodes(conn, query, self.config.association_episodes, false)?;
+        self.apply_self_echo_exclusion(&mut episodes, exclude);
+        Ok((facts, episodes))
+    }
+
+    /// 自回声过滤(缓存调研 08-16):当前会话可见范围内刚写下的日记/
+    /// 事实,原对话就在眼前,复述一遍纯属冗余;被 compact 折走后
+    /// (时间早于最老可见轮)重新够格召回。显式 recall 工具不受此限。
+    pub(crate) fn apply_self_echo_exclusion(
+        &self,
+        episodes: &mut Vec<MemoryHit>,
+        exclude: Option<&AssociationExclusion>,
+    ) {
         if let Some(exclude) = exclude {
             // facts 无 origin 列(origin_session_id 恒空串),天然不命中;
             // 实际的自回声源=上一轮自动日记(episodes)。
@@ -144,6 +166,16 @@ impl MemoryStore {
                 !(hit.origin_session_id == exclude.session_id && hit.timestamp >= exclude.since)
             });
         }
+    }
+
+    /// Retention filtering, reinforcement and packaging of the final
+    /// candidate lists. Shared by the keyword-only and the fused paths.
+    pub(crate) fn finish_association(
+        &self,
+        conn: &Connection,
+        facts: Vec<MemoryHit>,
+        mut episodes: Vec<MemoryHit>,
+    ) -> Result<Option<AssociationContext>> {
         let matched_short_ids = episodes
             .iter()
             .filter(|hit| hit.retention.as_deref() == Some(SHORT_TERM))
@@ -158,7 +190,7 @@ impl MemoryStore {
         });
         let mut organization_due = false;
         for hit in facts.iter().chain(episodes.iter()) {
-            organization_due |= self.reinforce(&conn, hit)?;
+            organization_due |= self.reinforce(conn, hit)?;
         }
         if facts.is_empty() && episodes.is_empty() {
             return Ok(None);
@@ -350,45 +382,18 @@ impl MemoryStore {
         };
         let mut hits = Vec::new();
         while let Some(row) = rows.next()? {
-            let id = row.get::<_, i64>(0)?;
-            let content = row.get::<_, String>(1)?;
-            let source = row.get::<_, String>(2)?;
-            let status = row.get::<_, String>(3)?;
-            let timestamp = row.get::<_, String>(4)?;
-            let strength = row.get::<_, f64>(5)?;
-            let importance = row.get::<_, i64>(6)?;
-            let retention = row.get::<_, Option<String>>(7)?;
-            let source_episode_ids = row.get::<_, String>(8)?;
-            let visibility = row.get::<_, String>(9)?;
-            let owner_principal = row.get::<_, String>(10)?;
-            let owner_display_name = row.get::<_, String>(11)?;
-            let subjects = row.get::<_, String>(12)?;
-            let origin_session_id = row.get::<_, String>(13)?;
+            let (mut hit, status, strength, importance) = map_hit_row(row, kind)?;
             if !include_forgotten && status == "forgotten" {
                 continue;
             }
-            let lexical_score = score_text(&content, &normalized_query, &tokens);
+            let lexical_score = score_text(&hit.content, &normalized_query, &tokens);
             if lexical_score <= 0.0 {
                 continue;
             }
-            let score = lexical_score
+            hit.score = lexical_score
                 + strength.clamp(0.0, 1.0) as f32 * 5.0
                 + importance.clamp(1, 5) as f32;
-            hits.push(MemoryHit {
-                id,
-                origin_session_id,
-                kind,
-                content,
-                score,
-                timestamp,
-                source,
-                retention,
-                visibility,
-                owner_principal,
-                owner_display_name,
-                subjects,
-                source_episode_ids: serde_json::from_str(&source_episode_ids).unwrap_or_default(),
-            });
+            hits.push(hit);
         }
         hits.sort_by(|a, b| {
             b.score
@@ -399,7 +404,129 @@ impl MemoryStore {
         Ok(hits)
     }
 
+    /// Rows for specific ids in the same shape as [`Self::search_table`],
+    /// honouring the same status and access filters; `score` is left at 0 for
+    /// the caller to assign. Order follows `ids`.
+    pub(crate) fn hits_by_ids(
+        &self,
+        conn: &Connection,
+        kind: MemoryKind,
+        ids: &[i64],
+    ) -> Result<Vec<MemoryHit>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let table = match kind {
+            MemoryKind::Fact => "facts",
+            MemoryKind::Diary => "episodes",
+        };
+        let status_filter = if kind == MemoryKind::Fact {
+            "status!='forgotten' AND truth_status!='rejected'"
+        } else {
+            "status!='forgotten'"
+        };
+        let access_filter = if self.access.principal_key().is_some() {
+            " AND (visibility='public' OR (visibility='principal' AND owner_principal=?1))"
+        } else {
+            ""
+        };
+        let placeholders = ids
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                format!(
+                    "?{}",
+                    index
+                        + if self.access.principal_key().is_some() {
+                            2
+                        } else {
+                            1
+                        }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, content, source, status, created_at, strength,
+                     COALESCE(importance, 3), {}, COALESCE(source_episode_ids, '[]'),
+                     visibility, owner_principal, owner_display_name, subjects,
+                     {}
+             FROM {table} WHERE {status_filter}{access_filter} AND id IN ({placeholders})",
+            if kind == MemoryKind::Diary {
+                "retention"
+            } else {
+                "NULL"
+            },
+            if kind == MemoryKind::Diary {
+                "COALESCE(origin_session_id, '')"
+            } else {
+                "''"
+            },
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(ids.len() + 1);
+        if let Some(principal) = self.access.principal_key() {
+            params.push(principal.to_string().into());
+        }
+        params.extend(ids.iter().map(|id| rusqlite::types::Value::from(*id)));
+        let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+        let mut by_id = std::collections::HashMap::new();
+        while let Some(row) = rows.next()? {
+            let (hit, _, _, _) = map_hit_row(row, kind)?;
+            by_id.insert(hit.id, hit);
+        }
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    }
+
     pub(crate) fn reinforce(&self, conn: &Connection, hit: &MemoryHit) -> Result<bool> {
+        self.reinforce_inner(conn, hit)
+    }
+}
+
+/// The fixed 14-column row shape shared by every hit query; returns the hit
+/// (score 0) plus the columns that only the lexical scorer needs.
+pub(crate) fn map_hit_row(
+    row: &rusqlite::Row<'_>,
+    kind: MemoryKind,
+) -> rusqlite::Result<(MemoryHit, String, f64, i64)> {
+    let id = row.get::<_, i64>(0)?;
+    let content = row.get::<_, String>(1)?;
+    let source = row.get::<_, String>(2)?;
+    let status = row.get::<_, String>(3)?;
+    let timestamp = row.get::<_, String>(4)?;
+    let strength = row.get::<_, f64>(5)?;
+    let importance = row.get::<_, i64>(6)?;
+    let retention = row.get::<_, Option<String>>(7)?;
+    let source_episode_ids = row.get::<_, String>(8)?;
+    let visibility = row.get::<_, String>(9)?;
+    let owner_principal = row.get::<_, String>(10)?;
+    let owner_display_name = row.get::<_, String>(11)?;
+    let subjects = row.get::<_, String>(12)?;
+    let origin_session_id = row.get::<_, String>(13)?;
+    Ok((
+        MemoryHit {
+            id,
+            origin_session_id,
+            kind,
+            content,
+            score: 0.0,
+            timestamp,
+            source,
+            retention,
+            visibility,
+            owner_principal,
+            owner_display_name,
+            subjects,
+            source_episode_ids: serde_json::from_str(&source_episode_ids).unwrap_or_default(),
+        },
+        status,
+        strength,
+        importance,
+    ))
+}
+
+impl MemoryStore {
+    fn reinforce_inner(&self, conn: &Connection, hit: &MemoryHit) -> Result<bool> {
         let timestamp = now();
         if hit.kind == MemoryKind::Fact {
             conn.execute(

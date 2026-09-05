@@ -17,6 +17,7 @@ mod evicted;
 mod recall;
 mod schema;
 mod search;
+mod semantic;
 mod validate;
 mod write;
 pub(crate) use association::*;

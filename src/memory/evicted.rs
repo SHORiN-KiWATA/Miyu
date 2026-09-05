@@ -143,12 +143,9 @@ impl MemoryStore {
         start: Option<&str>,
         end: Option<&str>,
     ) -> Result<Vec<Value>> {
-        let embedding = &self.app_config.embedding;
-        let mut provider = self
-            .config_provider(embedding.provider_id.trim())
-            .context("embedding provider is not configured")?;
-        let model = embedding.model.trim().to_string();
-        provider.default_model = model.clone();
+        let embedder = crate::embedding::Embedder::from_config(&self.app_config)
+            .context("embedding model is not configured")?;
+        let model = embedder.model_id().to_string();
 
         let corpus = self.semantic_corpus(start, end)?;
         let missing: Vec<(i64, String)> = {
@@ -160,7 +157,7 @@ impl MemoryStore {
                 }
                 let known: Option<String> = conn
                     .query_row(
-                        "SELECT model FROM evicted_embeddings WHERE id = ?1",
+                        "SELECT model FROM evicted_embeddings WHERE id = ?1 AND embedding IS NOT NULL",
                         params![id],
                         |row| row.get(0),
                     )
@@ -171,48 +168,45 @@ impl MemoryStore {
             }
             pending
         };
-        for (id, content) in missing {
-            let Ok(vector) = crate::tools::knowledge_base::embed_text(
-                &self.app_config,
-                &provider,
-                &model,
-                &content,
-            )
-            .await
-            else {
-                break;
-            };
-            let conn = self.state_conn()?;
-            conn.execute(
-                "INSERT INTO evicted_embeddings (id, model, embedding_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (id) DO UPDATE SET
-                    model = excluded.model,
-                    embedding_json = excluded.embedding_json,
-                    created_at = excluded.created_at",
-                params![id, model, serde_json::to_string(&vector)?, now()],
-            )?;
+        if !missing.is_empty() {
+            let texts: Vec<String> = missing.iter().map(|(_, content)| content.clone()).collect();
+            if let Ok(vectors) = embedder.embed(&texts).await {
+                let conn = self.state_conn()?;
+                for ((id, _), vector) in missing.iter().zip(vectors) {
+                    conn.execute(
+                        "INSERT INTO evicted_embeddings (id, model, embedding_json, embedding, created_at)
+                         VALUES (?1, ?2, '', ?3, ?4)
+                         ON CONFLICT (id) DO UPDATE SET
+                            model = excluded.model,
+                            embedding_json = excluded.embedding_json,
+                            embedding = excluded.embedding,
+                            created_at = excluded.created_at",
+                        params![id, model, crate::embedding::vector_to_blob(&vector), now()],
+                    )?;
+                }
+            }
         }
 
-        let query_vector =
-            crate::tools::knowledge_base::embed_text(&self.app_config, &provider, &model, query)
-                .await?;
+        let query_vector = embedder.embed_query(query).await?;
         let conn = self.state_conn()?;
         let mut hits = Vec::new();
         for (id, content) in &corpus {
-            let stored: Option<String> = conn
+            let stored: Option<Vec<u8>> = conn
                 .query_row(
-                    "SELECT embedding_json FROM evicted_embeddings WHERE id = ?1 AND model = ?2",
+                    "SELECT embedding FROM evicted_embeddings WHERE id = ?1 AND model = ?2",
                     params![id, model],
                     |row| row.get(0),
                 )
-                .ok();
-            let Some(stored) = stored else { continue };
-            let Ok(vector) = serde_json::from_str::<Vec<f32>>(&stored) else {
+                .ok()
+                .flatten();
+            let Some(vector) = stored
+                .as_deref()
+                .and_then(crate::embedding::vector_from_blob)
+            else {
                 continue;
             };
             let score = cosine_similarity(&query_vector, &vector);
-            if score < self.app_config.embedding.min_score {
+            if score < embedder.min_score() {
                 continue;
             }
             hits.push(json!({
