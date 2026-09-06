@@ -43,6 +43,13 @@ if [ -f "$dir/fail.txt" ]; then
   echo "{\"event\":\"result\",\"result\":{\"conversation_id\":\"$sid\",\"status\":\"ERROR\",\"response\":\"\",\"error\":\"Quota exceeded for this model\",\"num_turns\":1,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":0}}}"
   exit 0
 fi
+if [ -f "$dir/policy.txt" ]; then
+  echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":0,\"state\":\"DONE\",\"step_type\":\"user_input\"}}"
+  echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"agent_response\",\"text_delta\":\"The prompt could not be submitted. The prompt contains sensitive words that violate Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/generative-ai/use-policy).\"}}"
+  echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"agent_response\",\"text_delta\":\" Try rephrasing the prompt.\",\"usage\":{\"input_tokens\":5,\"output_tokens\":0,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":5}}}"
+  echo "{\"event\":\"result\",\"result\":{\"conversation_id\":\"$sid\",\"status\":\"SUCCESS\",\"response\":\"The prompt could not be submitted. Try rephrasing the prompt.\",\"num_turns\":1,\"usage\":{\"input_tokens\":5,\"output_tokens\":0,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":5}}}"
+  exit 0
+fi
 if [ -f "$dir/empty.txt" ]; then
   echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":0,\"state\":\"DONE\",\"step_type\":\"user_input\"}}"
   echo "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"$sid\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"error_message\",\"text_delta\":\"failed to resolve components\"}}"
@@ -384,6 +391,44 @@ async fn quota_failure_is_classified_as_rate_limit() {
         .expect("quota error should classify as an HTTP-style failure");
     assert_eq!(failure.kind, HttpFailureKind::RateLimit);
     assert_eq!(failure.status, 429);
+}
+
+/// Google 策略拦截:agy 把「The prompt could not be submitted…」当普通正文流出,
+/// result 还是 SUCCESS。必须一个 Content 分片都不发(否则原样漏到 QQ),并按
+/// ContentPolicy 判错——不冷却、可切别的端点、不重打同一端点。
+#[tokio::test]
+async fn google_policy_block_is_suppressed_and_classified() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("policy.txt"), "").unwrap();
+    let client = antigravity_client(dir.path(), "agy-policy", "all", "off");
+    let mut chunks = Vec::new();
+    let error = client
+        .chat_antigravity_stream(
+            vec![ChatMessage::plain("user", "hi")],
+            Vec::new(),
+            "req-test",
+            &mut |chunk| {
+                chunks.push(chunk);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        !chunks
+            .iter()
+            .any(|chunk| chunk.kind == ChatStreamKind::Content && !chunk.text.is_empty()),
+        "拦截文案不该作为正文流出: {chunks:?}"
+    );
+    let failure = error
+        .downcast_ref::<HttpStatusFailure>()
+        .expect("policy block should classify as an HTTP-style failure");
+    assert_eq!(failure.kind, HttpFailureKind::ContentPolicy);
+    assert!(cooldown_for_error(&error).is_none(), "内容裁定不该让端点冷却");
+    assert!(endpoint_failover_allowed(&error), "应允许切到池里下一个端点");
+    assert!(!same_endpoint_retry_allowed(&error), "同端点重打必然再撞");
+    let text = format!("{error:#}");
+    assert!(text.contains("content policy") || text.contains("内容策略"), "{text}");
 }
 
 /// 静默失败:SUCCESS + 空正文 + 零用量 → 报错并带 error_message 步的正文。

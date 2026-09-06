@@ -13,7 +13,7 @@
 
 use super::{AntigravityRuntime, ResumeTargetLost, MCP_SERVER_NAME};
 use crate::llm::openai_compatible::cli_relay::{
-    hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
+    compact_line, hidden_remote_tool, process::RelayProcess, shape_remote_output, RelayOutcome,
 };
 use crate::llm::openai_compatible::*;
 
@@ -40,6 +40,12 @@ fn classify_agy_failure(text: &str) -> Option<HttpStatusFailure> {
         "authentication",
         "login required",
     ];
+    if google_policy_block(text) {
+        return Some(HttpStatusFailure {
+            status: 400,
+            kind: HttpFailureKind::ContentPolicy,
+        });
+    }
     if RATE_LIMIT.iter().any(|needle| lower.contains(needle)) {
         return Some(HttpStatusFailure {
             status: 429,
@@ -55,8 +61,18 @@ fn classify_agy_failure(text: &str) -> Option<HttpStatusFailure> {
     None
 }
 
+/// Google 侧的提示词安全拦截。agy 不把它当错误,而是当成一段普通回复正文
+/// (agent_response 的 text_delta,result 也是 SUCCESS)流出来,不拦就会原样
+/// 发到 QQ(09-04/09-06 用户实录各数条)。只认这两句的固定措辞。
+pub(super) fn google_policy_block(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("the prompt could not be submitted") || lower.contains("prohibited use policy")
+}
+
 #[derive(Default)]
 struct StreamState {
+    /// 正文一开头就是 Google 的策略拦截文案:整段不当正文发,收尾判错。
+    policy_block: Option<String>,
     content: String,
     content_emitted: usize,
     /// 当前正文步的 step_index:换步时补空行。
@@ -187,6 +203,35 @@ where
         Some(Value::Null) | None => String::new(),
         Some(other) => other.to_string(),
     };
+    // 策略拦截文案可能出现在正文步、result.response 或 error 字段里;不论
+    // status 怎么写,一律按 ContentPolicy 判错,绝不当回复发出去。
+    let policy_text = state
+        .policy_block
+        .clone()
+        .or_else(|| google_policy_block(&response).then(|| response.clone()))
+        .or_else(|| google_policy_block(&error_field).then(|| error_field.clone()));
+    if let Some(text) = policy_text {
+        tracing::warn!(
+            request_id,
+            "{}",
+            t(
+                "agy: Google content policy blocked the prompt; reply suppressed",
+                "agy:Google 内容策略拦下了这条提示词,已拦截回复"
+            )
+        );
+        return Err(anyhow::anyhow!(
+            "{}: {}",
+            t(
+                "Google content policy blocked this prompt",
+                "Google 内容策略拦下了这条提示词"
+            ),
+            compact_line(&text, 200)
+        )
+        .context(HttpStatusFailure {
+            status: 400,
+            kind: HttpFailureKind::ContentPolicy,
+        }));
+    }
     if status != "SUCCESS" {
         let detail = [
             error_field.as_str(),
@@ -270,13 +315,20 @@ where
                 state.response_step = Some(index);
             }
             if let Some(text) = step.get("text_delta").and_then(Value::as_str) {
-                push_buffered_chunk(
-                    &mut state.content,
-                    &mut state.content_emitted,
-                    ChatStreamKind::Content,
-                    text.to_string(),
-                    on_chunk,
-                )?;
+                if let Some(blocked) = state.policy_block.as_mut() {
+                    // 已判定为拦截文案:后续增量只攒着进报错,不发正文。
+                    blocked.push_str(text);
+                } else if state.content.is_empty() && google_policy_block(text) {
+                    state.policy_block = Some(text.to_string());
+                } else {
+                    push_buffered_chunk(
+                        &mut state.content,
+                        &mut state.content_emitted,
+                        ChatStreamKind::Content,
+                        text.to_string(),
+                        on_chunk,
+                    )?;
+                }
             }
             if step_state == "DONE" {
                 if let Some(usage) = step.get("usage").and_then(usage_from_agy) {

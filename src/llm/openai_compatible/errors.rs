@@ -89,6 +89,10 @@ pub(in crate::llm::openai_compatible) enum HttpFailureKind {
     EndpointUnavailable,
     EndpointIncompatible,
     InvalidRequest,
+    /// 供应商的内容策略拦下了这条提示词(Google「Prohibited Use policy」
+    /// 那种):是对这条内容的裁定,不是端点故障——不冷却、可切别的端点、
+    /// 同端点重打必然再撞。
+    ContentPolicy,
 }
 
 impl std::fmt::Display for HttpFailureKind {
@@ -100,6 +104,7 @@ impl std::fmt::Display for HttpFailureKind {
             Self::EndpointUnavailable => "endpoint_unavailable",
             Self::EndpointIncompatible => "endpoint_incompatible",
             Self::InvalidRequest => "invalid_request",
+            Self::ContentPolicy => "content_policy",
         })
     }
 }
