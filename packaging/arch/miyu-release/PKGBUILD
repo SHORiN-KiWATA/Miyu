@@ -18,7 +18,7 @@
 pkgbase=miyu
 pkgname=('miyu' 'miyu-voice')
 pkgver=0.5.0
-pkgrel=1
+pkgrel=2
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
 arch=('x86_64')
 url='https://github.com/SHORiN-KiWATA/Miyu'
@@ -43,7 +43,8 @@ optdepends=(
 _sherpa_ver=1.13.7
 _sherpa_archive="sherpa-onnx-v${_sherpa_ver}-linux-x64-static-lib.tar.bz2"
 source=(
-  "miyu::git+${url}.git#tag=v${pkgver}"
+  # 0.5.0-2:补丁资产从 v0.5.0 之后的 main 提交构建(claude-code 准备提示 + agy 策略文案拦截),标签不动
+  "miyu::git+${url}.git#commit=3bfcabe79fe5d8ad690bac4e26b7e917c778dc64"
   'shorinwiki::git+https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git'
   "${_sherpa_archive}::https://github.com/k2-fsa/sherpa-onnx/releases/download/v${_sherpa_ver}/${_sherpa_archive}"
 )
