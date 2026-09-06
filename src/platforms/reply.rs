@@ -155,6 +155,26 @@ fn strip_leak_spans(text: &str) -> Option<String> {
     changed.then_some(output)
 }
 
+/// 看起来是空的:只有空白或不可见字符(零宽空格/零宽连接符/BOM/软连字…)。
+/// 模型"什么都不想说"时常吐一个 U+200B,`trim()` 不认它,发出去就是一条空气泡
+/// (09-06 QQ 群里被人调侃「叛逆了」)。只用来判空,不用来改写正文——U+200D 在
+/// emoji 序列里是有意义的。
+pub(crate) fn visibly_blank(text: &str) -> bool {
+    text.chars().all(|ch| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                '\u{200B}'..='\u{200F}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{FEFF}'
+                    | '\u{00AD}'
+                    | '\u{180E}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+            )
+    })
+}
+
 pub(crate) fn message_is_parenthetical_only(message: &OutboundMessage) -> bool {
     let OutboundBody::Segments(segments) = &message.body else {
         return false;
@@ -323,7 +343,7 @@ pub(crate) async fn flush_intermediate_reply(
     }
     let visible = cut_suppressed_ranges(text, &suppression.round_ranges(text.len()));
     let visible = visible.trim();
-    if visible.is_empty() {
+    if visibly_blank(visible) {
         return;
     }
     match context

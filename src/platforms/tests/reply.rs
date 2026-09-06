@@ -106,9 +106,15 @@ async fn intermediate_flush_sends_round_text_once() {
 async fn intermediate_flush_skips_empty_and_cuts_direct_send_ranges() {
     let (_temp, context, adapter) = test_turn_context(false);
 
-    // Nothing to say: no message goes out.
+    // Nothing to say: no message goes out. A lone zero-width space (what the
+    // model emits when it has nothing to add after a voice message) counts
+    // as nothing too — 09-06 it went out as an empty QQ bubble.
     flush_intermediate_reply(&context, "   ", &ReplySuppression::default()).await;
+    flush_intermediate_reply(&context, "\u{200B}", &ReplySuppression::default()).await;
     assert!(adapter.messages.lock().unwrap().is_empty());
+    assert!(visibly_blank("\u{200B}\u{FEFF} \n"));
+    assert!(!visibly_blank("👨\u{200D}👩"));
+    assert!(!visibly_blank("好"));
 
     // The model continuation after a confirmed direct tool send is
     // suppressed, so only the part before the send is flushed.

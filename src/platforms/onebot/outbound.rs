@@ -280,7 +280,8 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
                 &reply_text,
                 image_count,
             );
-            if !reply_text.trim().is_empty() {
+            // 零宽空格之类的"看起来是空"也算空,别发空气泡。
+            if !crate::platforms::visibly_blank(&reply_text) {
                 segments.insert(0, OutboundSegment::Markdown(reply_text));
             }
             if segments.is_empty() {

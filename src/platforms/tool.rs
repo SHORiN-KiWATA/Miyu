@@ -130,6 +130,12 @@ fn register_voice_message(registry: &mut ToolRegistry, context: Arc<PlatformTurn
                         .await;
                     let _ = std::fs::remove_file(&path);
                     let receipt = outcome?;
+                    // 语音已经发出去,回合末尾的正文不再单独发一条(09-06 用户:
+                    // 「发了语音就没必要再发文字」)。与 send_message_to_user 的
+                    // 直发抑制同一条路:tool.finished 时截掉此后的正文。
+                    context
+                        .pending_final_reply_suppression
+                        .store(true, std::sync::atomic::Ordering::Release);
                     Ok(json!({
                         "ok": true,
                         "message_ids": receipt.message_ids,

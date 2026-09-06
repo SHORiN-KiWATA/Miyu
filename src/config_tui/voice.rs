@@ -514,8 +514,8 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
         // MiMo 没有数值语速/音量,全靠这一句自然语言。
         Field::new(
             t(
-                "Prompt (Enter to type: pace/tone/role, e.g. 语速稍快,像在跟朋友聊天; voice description for voicedesign)",
-                "提示词(回车输入:语速/语气/角色,如「语速稍快,像在跟朋友聊天」;voicedesign 模型下写音色描述,必填)",
+                "Prompt (pace/tone/role in plain words; voicedesign: voice description)",
+                "提示词(语速/语气/角色一句话,如「语速稍快,像跟朋友聊天」;voicedesign 填音色描述)",
             ),
             cfg.prompt.clone(),
         ),
