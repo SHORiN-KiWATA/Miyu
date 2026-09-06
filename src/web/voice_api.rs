@@ -61,22 +61,31 @@ pub(in crate::web) async fn voice_devices(
     }
 }
 
-/// `GET /api/voice/tts/voices`:按已保存的 MiniMax 播报配置拉音色列表。
+#[derive(serde::Deserialize)]
+pub(in crate::web) struct TtsVoicesQuery {
+    /// 供应商 id(minimax / mimo);缺省 = 已保存配置里生效的那个。
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+/// `GET /api/voice/tts/voices?provider=`:按已保存的播报配置拉音色列表
+/// (MiniMax 走 `get_voice` 接口,MiMo 是文档里的预置表)。
 pub(in crate::web) async fn voice_tts_voices(
     State(state): State<DaemonState>,
     headers: HeaderMap,
+    Query(query): Query<TtsVoicesQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
-    let cfg = state
-        .manager
-        .lock()
-        .unwrap()
-        .config
-        .voice
-        .tts
-        .minimax
-        .clone();
-    match voice_tts::list_minimax_voices(&cfg).await {
+    let tts = state.manager.lock().unwrap().config.voice.tts.clone();
+    let provider = query
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .or(tts.provider())
+        .unwrap_or("minimax")
+        .to_string();
+    match voice_tts::list_voices(&tts, &provider).await {
         Ok(voices) => Ok(Json(json!({ "voices": voices, "error": null }))),
         Err(error) => Ok(Json(json!({ "voices": [], "error": format!("{error:#}") }))),
     }

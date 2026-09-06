@@ -141,7 +141,8 @@ pub struct VoiceConfig {
     /// 本地识别模型闲置多少秒后卸载(0 = 常驻)。
     #[serde(default = "default_stt_unload_seconds")]
     pub stt_unload_seconds: u64,
-    /// 识别出指令后的免唤醒追问窗口(秒),0 = 每句都要唤醒词。
+    /// 免唤醒追问窗口(秒):从她回复完(播报播完)起算,这段时间内说话不用
+    /// 再喊唤醒词;每次回复都重新起算。0 = 每句都要唤醒词。
     #[serde(default = "default_follow_up_seconds")]
     pub follow_up_seconds: u64,
     /// 识别文本少于这么多有效字视为噪声丢弃。
@@ -171,7 +172,7 @@ pub struct VoiceTtsConfig {
     /// 任一开启都会拉起 miyu-voice(唤醒关闭时它只管播放,不开麦克风)。
     #[serde(default)]
     pub enabled: bool,
-    /// 播报供应商:minimax;None / 空 = 默认 MiniMax。
+    /// 播报供应商:`minimax` | `mimo`(小米 MiMo);None / 空 = 默认 MiniMax。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<String>,
     /// 播报文本上限(字),超出截断。
@@ -182,7 +183,75 @@ pub struct VoiceTtsConfig {
     pub preview_text: String,
     #[serde(default)]
     pub minimax: MiniMaxTtsConfig,
+    #[serde(default)]
+    pub mimo: MimoTtsConfig,
 }
+
+/// 小米 MiMo 语音合成(`mimo-v2.5-tts` 系列,OpenAI 兼容的 `chat/completions`:
+/// 待合成文本放 assistant 消息,风格描述放 user 消息,音频以 base64 回来)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MimoTtsConfig {
+    /// API key(platform.xiaomimimo.com),支持 `$env:VAR` 引用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// `https://api.xiaomimimo.com/v1`。
+    #[serde(default = "default_mimo_base_url")]
+    pub base_url: String,
+    /// `mimo-v2.5-tts`(预置音色)| `mimo-v2.5-tts-voicedesign`(按描述造音色)|
+    /// `mimo-v2.5-tts-voiceclone`(按样本克隆)。
+    #[serde(default = "default_mimo_model")]
+    pub model: String,
+    /// 预置音色:mimo_default / 冰糖 / 茉莉 / 苏打 / 白桦 / Mia / Chloe / Milo / Dean。
+    /// voicedesign / voiceclone 模型不用它。
+    #[serde(default = "default_mimo_voice")]
+    pub voice: String,
+    /// 风格标签(写在文本开头的 `(温柔)` 那种):空 = 不加。多个用空格隔开,
+    /// 如 `温柔 慵懒`。
+    #[serde(default)]
+    pub style: String,
+    /// 自然语言指令(user 消息):语气/角色/语速描述;voicedesign 模型下是
+    /// 音色描述(必填)。空 = 不发 user 消息。
+    #[serde(default)]
+    pub instruction: String,
+    /// voiceclone 模型的参考音频路径(wav / mp3,base64 后 ≤ 10MB)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_audio: Option<String>,
+}
+
+fn default_mimo_base_url() -> String {
+    "https://api.xiaomimimo.com/v1".to_string()
+}
+fn default_mimo_model() -> String {
+    "mimo-v2.5-tts".to_string()
+}
+fn default_mimo_voice() -> String {
+    "mimo_default".to_string()
+}
+
+impl Default for MimoTtsConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            base_url: default_mimo_base_url(),
+            model: default_mimo_model(),
+            voice: default_mimo_voice(),
+            style: String::new(),
+            instruction: String::new(),
+            sample_audio: None,
+        }
+    }
+}
+
+impl MimoTtsConfig {
+    pub fn has_key(&self) -> bool {
+        self.api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+    }
+}
+
+/// 播报供应商 id 与显示名(TUI/WebUI 列表顺序)。
+pub const TTS_PROVIDERS: &[(&str, &str)] = &[("minimax", "MiniMax"), ("mimo", "Xiaomi MiMo")];
 
 /// MiniMax `t2a_v2` 播报配置。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -245,6 +314,7 @@ impl Default for VoiceTtsConfig {
             max_chars: default_tts_max_chars(),
             preview_text: default_tts_preview_text(),
             minimax: MiniMaxTtsConfig::default(),
+            mimo: MimoTtsConfig::default(),
         }
     }
 }
@@ -269,7 +339,10 @@ impl VoiceTtsConfig {
     /// 播报可用:开关开着,且激活的供应商配好了(`active` 缺省当 MiniMax,
     /// 填了 key 就算配好——装上、填 key、开开关三步即可,不用再点"激活")。
     pub fn is_active(&self) -> bool {
-        self.enabled && self.provider() == Some("minimax") && self.minimax.has_key()
+        self.enabled
+            && self
+                .provider()
+                .is_some_and(|provider| self.provider_has_key(provider))
     }
 
     /// 生效的供应商名:`active` 为空或空串时默认 MiniMax。
@@ -277,6 +350,15 @@ impl VoiceTtsConfig {
         match self.active.as_deref().map(str::trim) {
             None | Some("") => Some("minimax"),
             Some(other) => Some(other),
+        }
+    }
+
+    /// 某个供应商是否填了 key(未知供应商名 = 没有)。
+    pub fn provider_has_key(&self, provider: &str) -> bool {
+        match provider {
+            "minimax" => self.minimax.has_key(),
+            "mimo" => self.mimo.has_key(),
+            _ => false,
         }
     }
 }
@@ -352,7 +434,7 @@ fn default_stt_unload_seconds() -> u64 {
     60
 }
 fn default_follow_up_seconds() -> u64 {
-    300
+    30
 }
 fn default_min_utterance_chars() -> usize {
     2

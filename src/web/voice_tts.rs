@@ -2,11 +2,13 @@
 //!
 //! 三层:模型按 `<voice-protocol>`(见 `agent::prompt::VOICE_PROTOCOL`)在回复
 //! 末尾给 `<speak>` 口语版 → 没给就把正文清洗一遍(去代码块/行内代码/链接/
-//! 路径/Markdown 记号)兜底 → 截到 `max_chars`。合成走 MiniMax `t2a_v2`
-//! (播报供应商自己的 base_url + key,返回 wav);播放在 miyu-voice 里。
+//! 路径/Markdown 记号)兜底 → 截到 `max_chars`。合成按 `tts.active` 分派:
+//! MiniMax `t2a_v2`(返回 hex 编码的 wav)或小米 MiMo `chat/completions`
+//! (`mimo-v2.5-tts` 系列,返回 base64 的 wav);播放在 miyu-voice 里。
 
-use crate::config::{MiniMaxTtsConfig, VoiceTtsConfig};
+use crate::config::{MimoTtsConfig, MiniMaxTtsConfig, VoiceTtsConfig};
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 const SPEAK_OPEN: &str = "<speak>";
@@ -138,6 +140,228 @@ pub(crate) fn spoken_text(reply: &str, tts: &VoiceTtsConfig) -> String {
     }
     clip_spoken(text, tts.max_chars.max(20))
 }
+
+/// 按 `tts.active` 分派合成:文本 → wav 字节。
+pub(crate) async fn synthesize(tts: &VoiceTtsConfig, text: &str) -> Result<Vec<u8>> {
+    match tts.provider() {
+        Some("mimo") => synthesize_mimo(&tts.mimo, text).await,
+        Some("minimax") | None => synthesize_minimax(&tts.minimax, text).await,
+        Some(other) => anyhow::bail!("未知的播报供应商 {other}"),
+    }
+}
+
+/// 某供应商的音色列表 `[{ "value", "label" }]`(设置页下拉 / TUI 浏览)。
+pub(crate) async fn list_voices(tts: &VoiceTtsConfig, provider: &str) -> Result<Vec<Value>> {
+    match provider {
+        "mimo" => Ok(list_mimo_voices()),
+        "minimax" => list_minimax_voices(&tts.minimax).await,
+        other => anyhow::bail!("未知的播报供应商 {other}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 小米 MiMo
+// ---------------------------------------------------------------------------
+
+/// MiMo 预置音色(文档 2026-09):(id, 显示名)。id 本身就是中文名。
+pub(crate) const MIMO_VOICES: &[(&str, &str)] = &[
+    ("mimo_default", "MiMo 默认"),
+    ("冰糖", "冰糖 · 中文女声"),
+    ("茉莉", "茉莉 · 中文女声"),
+    ("苏打", "苏打 · 中文男声"),
+    ("白桦", "白桦 · 中文男声"),
+    ("Mia", "Mia · 英文女声"),
+    ("Chloe", "Chloe · 英文女声"),
+    ("Milo", "Milo · 英文男声"),
+    ("Dean", "Dean · 英文男声"),
+];
+
+/// MiMo 模型:预置音色 / 按描述造音色 / 按样本克隆。
+pub(crate) const MIMO_MODELS: &[&str] = &[
+    "mimo-v2.5-tts",
+    "mimo-v2.5-tts-voicedesign",
+    "mimo-v2.5-tts-voiceclone",
+];
+
+pub(crate) fn list_mimo_voices() -> Vec<Value> {
+    MIMO_VOICES
+        .iter()
+        .map(|(id, label)| json!({ "value": id, "label": label }))
+        .collect()
+}
+
+fn mimo_base(cfg: &MimoTtsConfig) -> String {
+    let base = cfg.base_url.trim().trim_end_matches('/');
+    let base = if base.is_empty() {
+        "https://api.xiaomimimo.com/v1"
+    } else {
+        base
+    };
+    if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    }
+}
+
+/// MiMo 的 key(支持 `$env:VAR` 引用)。
+pub(crate) fn mimo_api_key(cfg: &MimoTtsConfig) -> Result<String> {
+    let raw = cfg
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .context("MiMo 播报没有配置 api_key")?;
+    let mut keys = Vec::new();
+    crate::config::append_resolved_api_keys(&mut keys, raw)?;
+    keys.into_iter()
+        .map(|key| key.value)
+        .find(|key| !key.trim().is_empty())
+        .context("MiMo 播报的 api_key 解析为空")
+}
+
+/// 参考音频 → `data:audio/wav;base64,…`(voiceclone 模型的 `voice` 字段)。
+fn mimo_clone_voice(cfg: &MimoTtsConfig) -> Result<String> {
+    let path = cfg
+        .sample_audio
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .context("MiMo voiceclone 模型需要参考音频(sample_audio)")?;
+    let path = match path.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .map(|home| std::path::PathBuf::from(home).join(rest))
+            .unwrap_or_else(|| std::path::PathBuf::from(path)),
+        None => std::path::PathBuf::from(path),
+    };
+    let bytes = std::fs::read(&path).with_context(|| format!("读取参考音频 {}", path.display()))?;
+    let mime = match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        other => anyhow::bail!("参考音频只支持 wav / mp3,不是 {other:?}"),
+    };
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    anyhow::ensure!(
+        encoded.len() <= 10 * 1024 * 1024,
+        "参考音频 base64 后超过 10MB"
+    );
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+/// 组 `chat/completions` 请求体:待合成文本在 assistant 消息(风格标签作前缀),
+/// 指令/音色描述在 user 消息;`audio.voice` 按模型:预置 id 或克隆样本 data URI。
+pub(crate) fn mimo_request_body(cfg: &MimoTtsConfig, text: &str) -> Result<Value> {
+    let model = cfg.model.trim();
+    let model = if model.is_empty() {
+        "mimo-v2.5-tts"
+    } else {
+        model
+    };
+    let instruction = cfg.instruction.trim();
+    let mut messages = Vec::new();
+    if model.ends_with("voicedesign") {
+        anyhow::ensure!(
+            !instruction.is_empty(),
+            "MiMo voicedesign 模型需要一句音色描述(instruction)"
+        );
+    }
+    if !instruction.is_empty() {
+        messages.push(json!({ "role": "user", "content": instruction }));
+    }
+    let style = cfg.style.trim();
+    let content = if style.is_empty() {
+        text.to_string()
+    } else {
+        format!("({style}){text}")
+    };
+    messages.push(json!({ "role": "assistant", "content": content }));
+    let mut audio = json!({ "format": "wav" });
+    if model.ends_with("voiceclone") {
+        audio["voice"] = Value::String(mimo_clone_voice(cfg)?);
+    } else if !model.ends_with("voicedesign") {
+        let voice = cfg.voice.trim();
+        audio["voice"] = Value::String(
+            if voice.is_empty() {
+                "mimo_default"
+            } else {
+                voice
+            }
+            .to_string(),
+        );
+    }
+    Ok(json!({
+        "model": model,
+        "messages": messages,
+        "audio": audio,
+        "stream": false,
+    }))
+}
+
+/// 从 `chat/completions` 应答里取音频:`choices[0].message.audio.data`(base64 wav)。
+/// 错误按 OpenAI 风格 `error.message` 报。
+pub(crate) fn mimo_extract_audio(status: u16, payload: &Value) -> Result<Vec<u8>> {
+    let error = payload
+        .pointer("/error/message")
+        .or_else(|| payload.pointer("/error"))
+        .or_else(|| payload.pointer("/message"))
+        .and_then(|value| match value {
+            Value::String(text) => Some(text.clone()),
+            other if !other.is_null() => Some(other.to_string()),
+            _ => None,
+        });
+    if !(200..300).contains(&status) {
+        anyhow::bail!(
+            "MiMo 合成失败(HTTP {status}):{}",
+            error.unwrap_or_else(|| "unknown".to_string())
+        );
+    }
+    let encoded = payload
+        .pointer("/choices/0/message/audio/data")
+        .and_then(Value::as_str)
+        .or_else(|| payload.pointer("/data").and_then(Value::as_str))
+        .with_context(|| match error {
+            Some(message) => format!("MiMo 合成失败:{message}"),
+            None => "MiMo 应答没有 choices[0].message.audio.data".to_string(),
+        })?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .context("MiMo 音频 base64 解码")?;
+    anyhow::ensure!(bytes.len() > 44, "MiMo 返回的音频为空");
+    Ok(bytes)
+}
+
+/// MiMo `chat/completions`:文本 → wav 字节(24kHz 单声道)。
+pub(crate) async fn synthesize_mimo(cfg: &MimoTtsConfig, text: &str) -> Result<Vec<u8>> {
+    let key = mimo_api_key(cfg)?;
+    let body = mimo_request_body(cfg, text)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .build()?;
+    // 文档里 curl 例子用 `api-key` 头,SDK 例子走 Bearer;两个都带。
+    let response = client
+        .post(format!("{}/chat/completions", mimo_base(cfg)))
+        .header("Authorization", format!("Bearer {key}"))
+        .header("api-key", &key)
+        .json(&body)
+        .send()
+        .await
+        .context("请求 MiMo chat/completions")?;
+    let status = response.status().as_u16();
+    let raw = response.text().await.context("读取 MiMo 应答")?;
+    let payload: Value = serde_json::from_str(&raw).unwrap_or_else(
+        |_| json!({ "error": { "message": crate::web::voice_bridge::clip(raw.trim(), 200) } }),
+    );
+    mimo_extract_audio(status, &payload)
+}
+
+// ---------------------------------------------------------------------------
+// MiniMax
+// ---------------------------------------------------------------------------
 
 fn minimax_base(cfg: &MiniMaxTtsConfig) -> String {
     let base = cfg.base_url.trim().trim_end_matches('/');
@@ -294,6 +518,211 @@ pub(crate) async fn list_minimax_voices(tts: &MiniMaxTtsConfig) -> Result<Vec<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mimo_cfg() -> MimoTtsConfig {
+        MimoTtsConfig {
+            api_key: Some("sk-test".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// 44 字节 WAV 头 + 若干采样,够 `mimo_extract_audio` 的"非空"判定。
+    fn fake_wav() -> Vec<u8> {
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        wav.extend(std::iter::repeat_n(0u8, 24));
+        wav.extend(b"data\0\0\0\0");
+        wav.extend(std::iter::repeat_n(7u8, 480));
+        wav
+    }
+
+    #[test]
+    fn mimo_request_body_follows_docs() {
+        // 预置音色:文本在 assistant,风格标签作前缀,指令在 user。
+        let mut cfg = mimo_cfg();
+        cfg.voice = "冰糖".to_string();
+        cfg.style = "温柔 慵懒".to_string();
+        cfg.instruction = "语速稍快".to_string();
+        let body = mimo_request_body(&cfg, "今天也是充满希望的一天").unwrap();
+        assert_eq!(body["model"], "mimo-v2.5-tts");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["audio"]["format"], "wav");
+        assert_eq!(body["audio"]["voice"], "冰糖");
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "语速稍快");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"], "(温柔 慵懒)今天也是充满希望的一天");
+
+        // 无指令无标签:只有 assistant 一条,文本原样。
+        let body = mimo_request_body(&mimo_cfg(), "你好").unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["content"], "你好");
+        assert_eq!(body["audio"]["voice"], "mimo_default");
+
+        // voicedesign:必须有描述,且不带 voice。
+        let mut cfg = mimo_cfg();
+        cfg.model = "mimo-v2.5-tts-voicedesign".to_string();
+        assert!(mimo_request_body(&cfg, "你好").is_err());
+        cfg.instruction = "二十岁女声,清亮".to_string();
+        let body = mimo_request_body(&cfg, "你好").unwrap();
+        assert!(body["audio"].get("voice").is_none());
+        assert_eq!(body["messages"][0]["content"], "二十岁女声,清亮");
+
+        // voiceclone:参考音频变 data URI。
+        let dir = std::env::temp_dir().join(format!("miyu-mimo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sample = dir.join("ref.wav");
+        std::fs::write(&sample, fake_wav()).unwrap();
+        let mut cfg = mimo_cfg();
+        cfg.model = "mimo-v2.5-tts-voiceclone".to_string();
+        assert!(mimo_request_body(&cfg, "你好").is_err(), "no sample yet");
+        cfg.sample_audio = Some(sample.display().to_string());
+        let body = mimo_request_body(&cfg, "你好").unwrap();
+        let voice = body["audio"]["voice"].as_str().unwrap();
+        assert!(voice.starts_with("data:audio/wav;base64,"), "{voice}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mimo_extract_audio_reads_choices_and_errors() {
+        let wav = fake_wav();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let payload = json!({
+            "choices": [{ "message": { "audio": { "data": encoded, "format": "wav" } } }]
+        });
+        assert_eq!(mimo_extract_audio(200, &payload).unwrap(), wav);
+
+        let error = mimo_extract_audio(
+            401,
+            &json!({ "error": { "message": "invalid api key", "type": "auth" } }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("401"), "{error}");
+        assert!(error.to_string().contains("invalid api key"), "{error}");
+
+        // 200 但没音频(比如文本模型回了文字):报缺字段。
+        let error = mimo_extract_audio(
+            200,
+            &json!({ "choices": [{ "message": { "content": "hi" } }] }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("audio.data"), "{error}");
+    }
+
+    /// 起一个本机假 MiMo 服务,走真实 HTTP 链路:校验路径、鉴权头、请求体,
+    /// 回文档格式的应答,确认 `synthesize_mimo` 拿到 wav 字节。
+    #[tokio::test]
+    async fn synthesize_mimo_end_to_end_against_mock_server() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let wav = fake_wav();
+        let reply_wav = wav.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let (head, body_start) = loop {
+                let read = stream.read(&mut chunk).unwrap();
+                buffer.extend_from_slice(&chunk[..read]);
+                if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break (String::from_utf8_lossy(&buffer[..pos]).to_string(), pos + 4);
+                }
+            };
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap())
+                })
+                .unwrap();
+            while buffer.len() < body_start + length {
+                let read = stream.read(&mut chunk).unwrap();
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            let body: Value =
+                serde_json::from_slice(&buffer[body_start..body_start + length]).unwrap();
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&reply_wav);
+            let response = json!({
+                "id": "chatcmpl-x",
+                "choices": [{ "index": 0, "message": { "role": "assistant", "audio": { "data": encoded, "format": "wav", "voice": "mimo_default" } } }]
+            })
+            .to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                )
+                .as_bytes(),
+            );
+            (head, body)
+        });
+        let mut cfg = mimo_cfg();
+        cfg.base_url = format!("http://127.0.0.1:{port}/v1");
+        cfg.voice = "茉莉".to_string();
+        let audio = synthesize_mimo(&cfg, "测试一句").await.unwrap();
+        assert_eq!(audio, wav);
+        let (head, body) = server.join().unwrap();
+        assert!(head.starts_with("POST /v1/chat/completions "), "{head}");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-test"),
+            "{head}"
+        );
+        assert!(
+            head.to_ascii_lowercase().contains("api-key: sk-test"),
+            "{head}"
+        );
+        assert_eq!(body["model"], "mimo-v2.5-tts");
+        assert_eq!(body["audio"]["voice"], "茉莉");
+        assert_eq!(body["messages"][0]["content"], "测试一句");
+    }
+
+    /// 真实 MiMo 接口(要 `MIMO_API_KEY`):合成一句写到 `MIYU_MIMO_OUT`(缺省
+    /// 当前目录 mimo-test.wav),人工听。
+    #[tokio::test]
+    #[ignore = "需要 MIMO_API_KEY"]
+    async fn synthesize_mimo_real_api() {
+        let Ok(key) = std::env::var("MIMO_API_KEY") else {
+            eprintln!("跳过:MIMO_API_KEY 未设置");
+            return;
+        };
+        let mut cfg = MimoTtsConfig {
+            api_key: Some(key),
+            ..Default::default()
+        };
+        if let Ok(voice) = std::env::var("MIYU_MIMO_VOICE") {
+            cfg.voice = voice;
+        }
+        let started = std::time::Instant::now();
+        let audio = synthesize_mimo(&cfg, "今天也是充满希望的一天")
+            .await
+            .unwrap();
+        let out = std::env::var("MIYU_MIMO_OUT").unwrap_or_else(|_| "mimo-test.wav".to_string());
+        std::fs::write(&out, &audio).unwrap();
+        eprintln!(
+            "MiMo 合成 {} 字节,耗时 {:?},写到 {out}",
+            audio.len(),
+            started.elapsed()
+        );
+        assert!(audio.starts_with(b"RIFF"), "not a wav");
+    }
+
+    #[test]
+    fn synthesize_dispatches_on_provider() {
+        use futures_util::FutureExt as _;
+        let mut tts = VoiceTtsConfig::default();
+        tts.active = Some("mimo".to_string());
+        assert!(matches!(
+            list_voices(&tts, "mimo").now_or_never().map(|r| r.unwrap().len()),
+            Some(n) if n == MIMO_VOICES.len()
+        ));
+        tts.active = Some("nope".to_string());
+        assert!(synthesize(&tts, "x").now_or_never().unwrap().is_err());
+    }
 
     #[test]
     fn extracts_and_strips_speak_block() {

@@ -580,8 +580,15 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
             *active = None;
         }
     }
-    send_signal("voice.hold", json!({ "on": false }));
-    let (reply, how) = outcome?;
+    // hold 要压到合成完才放:追问窗口从"她回复完"起算,合成那一到三秒不该
+    // 吃掉窗口;播报期间前端不喂帧,窗口同样不走,所以实际起算点是播完。
+    let (reply, how) = match outcome {
+        Ok(pair) => pair,
+        Err(error) => {
+            send_signal("voice.hold", json!({ "on": false }));
+            return Err(error);
+        }
+    };
     match how {
         "completed" => {
             // 通知正文与播报用同一份口语版:有 <speak> 用 <speak>,没有就清洗正文。
@@ -600,6 +607,7 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
             } else {
                 None
             };
+            send_signal("voice.hold", json!({ "on": false }));
             notify(state, t("Miyu", "未有"), &summary);
             match synthesized {
                 Some(path) => send_signal(
@@ -609,8 +617,9 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
                 None => send_signal("voice.cue", json!({ "name": "done" })),
             }
         }
-        "cancelled" => {}
+        "cancelled" => send_signal("voice.hold", json!({ "on": false })),
         _ => {
+            send_signal("voice.hold", json!({ "on": false }));
             notify(
                 state,
                 t("Miyu voice", "未有语音"),
@@ -624,7 +633,7 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
     Ok(())
 }
 
-/// 按当前 TTS 配置把文本变成语音交给前端播:daemon 调 MiniMax 合成 wav 落到
+/// 按当前 TTS 配置把文本变成语音交给前端播:daemon 调播报供应商合成 wav 落到
 /// cache,再 `voice.play` 让前端播。
 pub(crate) async fn speak(state: &DaemonState, text: &str) -> Result<()> {
     speak_with(state, text, None).await
@@ -644,7 +653,7 @@ pub(crate) async fn speak_with(
         return Ok(());
     }
     if !tts.is_active() {
-        anyhow::bail!("回复播报未激活(语音功能 → 配置播报供应商 → Tab 激活)");
+        anyhow::bail!("回复播报未激活(语音功能 → 文本转语音开关 + 播报供应商填 key)");
     }
     let path = synthesize_to_cache(state, &tts, text).await?;
     send_signal(
@@ -660,7 +669,7 @@ async fn synthesize_to_cache(
     tts: &crate::config::VoiceTtsConfig,
     text: &str,
 ) -> Result<PathBuf> {
-    let wav = crate::web::voice_tts::synthesize_minimax(&tts.minimax, text).await?;
+    let wav = crate::web::voice_tts::synthesize(tts, text).await?;
     let dir = state.paths.cache_dir.join("voice");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.wav", crate::runtime::random_id("tts", 12)));

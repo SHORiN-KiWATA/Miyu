@@ -13,13 +13,14 @@ pub(in crate::config_tui) fn draw_menu(
     status: &str,
 ) -> Result<()> {
     let (cols, rows) = terminal::size()?;
+    // 按显示宽度定框宽:按字符数算,中文行会被框截成「…」(09-06 音色列表)。
     let content_w = options
         .iter()
-        .map(|option| option.chars().count())
+        .map(|option| display_width(option))
         .max()
         .unwrap_or(20)
-        .max(title.chars().count())
-        .max(menu_help(status).chars().count())
+        .max(display_width(title))
+        .max(display_width(menu_help(status)))
         + 6;
     let width = (content_w as u16).min(cols.saturating_sub(4)).max(56);
     let height = (options.len() as u16 + 5)

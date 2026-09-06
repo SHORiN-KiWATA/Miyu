@@ -59,8 +59,9 @@ pub enum Control {
     Hold(bool),
     /// 立即关闭会话/听写窗口。
     CloseWindow,
-    /// 不用唤醒词,直接进入等待指令状态(快捷键呼叫)。行为与唤醒命中
-    /// 后无指令一致:吐 [`VoiceEvent::Wake`],等下一句当指令。听写中忽略。
+    /// 快捷键呼叫(开关):空闲时不用唤醒词直接进入等待指令状态,行为与
+    /// 唤醒命中后无指令一致(吐 [`VoiceEvent::Wake`],等下一句当指令);
+    /// 已在等指令或追问窗口内则关窗(吐 [`VoiceEvent::WindowClosed`])。听写中忽略。
     Listen,
     /// 进入听写:免唤醒短窗,识别结果以 [`VoiceEvent::Dictation`] 吐出。
     /// `external` 为 true 时音频不来自麦克风,而是宿主经 [`Control::Audio`]

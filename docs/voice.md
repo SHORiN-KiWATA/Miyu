@@ -87,7 +87,8 @@ AUR 包装包 `packaging/arch/miyu-voice`。
   开听写窗时预加载。
 - **过滤**:语音段 < 0.5s 不进 STT;识别文本有效字(字母数字/汉字)< `min_utterance_chars`
   (默认 2)当噪声丢弃,不打扰也不关窗。
-- 窗口计时冻结:回合运行期间(`voice.hold`)静默不消耗追问窗口。
+- 窗口计时冻结:回合运行到合成结束(`voice.hold`)、播报期间(不喂帧)静默都不
+  消耗追问窗口,窗口从播完起算。
 - 打断:窗口内持续 0.3s 人声 → `speech_start` → daemon 取消进行中的回合。
 
 ## 五、交互
@@ -104,13 +105,29 @@ AUR 包装包 `packaging/arch/miyu-voice`。
 `state/voice-session-id`),不进 WebUI 列表;用 `miyu voice history [--limit n]`
 回看、`miyu voice reset` 清空(下次唤醒重建)、`miyu voice status` 看前端状态。
 
-**回复播报(TTS)**:播报供应商独立于 LLM 的 providers 配置(免得混),目前预置
-MiniMax:`voice.tts.minimax` 里填自己的 api_key(账号级,对话与语音共用一把,
-支持 `$env:VAR`)、国内/国际站地址、模型、音色、语速/音量/音调/情绪/语种增强。
-**生效条件 = `voice.tts.enabled` 开 + key 非空**;`voice.tts.active` 缺省就当
-MiniMax,不用再单独"激活"(装上 miyu-voice、填 key、开开关三步即可)。合成走
-`t2a_v2` 返回 wav,由 daemon 交给 miyu-voice 播放;播报期间麦克风帧丢弃(没有
-回声消除,半双工),`miyu listen` 会先掐掉播报再收听。
+**回复播报(TTS)**:播报供应商独立于 LLM 的 providers 配置(免得混),预置两家,
+`voice.tts.active` 选一个(缺省 MiniMax):
+
+- **MiniMax**:`voice.tts.minimax` 里填自己的 api_key(账号级,对话与语音共用一把,
+  支持 `$env:VAR`)、国内/国际站地址、模型、音色、语速/音量/音调/情绪/语种增强。
+  合成走 `t2a_v2` 返回 wav。
+- **小米 MiMo**(`voice.tts.mimo`,09-06):platform.xiaomimimo.com 的 key(TTS
+  系列限时免费),接口是 OpenAI 兼容的 `chat/completions`——待合成文本放
+  assistant 消息,风格指令放 user 消息,音频以 base64 wav 回来(24kHz 单声道)。
+  三个模型:`mimo-v2.5-tts` 用预置音色(`voice`:mimo_default / 冰糖 / 茉莉 /
+  苏打 / 白桦 / Mia / Chloe / Milo / Dean),`mimo-v2.5-tts-voicedesign` 按
+  `instruction` 里的一句描述造音色(必填,`voice` 不用),`mimo-v2.5-tts-voiceclone`
+  按 `sample_audio`(本机 wav/mp3,base64 后 ≤ 10MB)克隆。`style` 是加在文本开头
+  的风格标签(`(温柔 慵懒)…`,情绪/语气/方言/角色都行),`instruction` 是自然语言
+  的语气/角色/语速描述。没有语速/音量/音调数值参数,全靠这两个字段。鉴权头
+  `Authorization: Bearer` 与 `api-key` 都带(文档两种写法都有)。流式接口官方
+  目前是"兼容模式"(推理完一次性回),所以走非流式。
+
+**生效条件 = `voice.tts.enabled` 开 + 当前供应商的 key 非空**;不用再单独"激活"
+(装上 miyu-voice、填 key、开开关三步即可)。TUI 里在某家填了 key 而当前那家没
+key,会自动切过去;两家都有 key 时在「播报供应商」列表按 Tab 切换。合成好的 wav
+由 daemon 交给 miyu-voice 播放;播报期间麦克风帧丢弃(没有回声消除,半双工),
+`miyu listen` 会先掐掉播报再收听。
 
 **通知与声音同步(09-05)**:此前「在听」通知为了不和「收到」连弹被压了 1.2s,
 而提示音是即刻响的;回合完成时又是先弹通知再去合成(一到三秒)再播。现在:
@@ -126,14 +143,20 @@ Linux 上一串语音通知走 `notify-send -p/-r` 替换同一个气泡(「在�
 `miyu listen`),`voice.tts.enabled` = **文本转语音**(回复播报、`speak` 工具)。
 任一开启都会拉起 miyu-voice;唤醒关闭时它不开麦克风、不下载识别模型,只管播放。
 
-TUI「语音功能」菜单:语音唤醒开关 → 文本转语音开关 → 「配置播报供应商」(Enter 进
-MiniMax:连接与模型 / **选择音色** / 播报参数(语速、音量、音调、情绪、试听语句)/ 试听)→ 「识别与唤醒设置」。
-选择音色的列表来自 `get_voice`(名字 + 描述,含克隆音色),`/` 搜索、`t` 按标签
+TUI「语音功能」菜单:语音唤醒开关 → 文本转语音开关 → 「配置播报供应商」(列表里
+`[*]` 是当前生效的,Enter 配置,Tab 设为当前;MiniMax:连接与模型 / **选择音色** /
+播报参数(语速、音量、音调、情绪、试听语句)/ 试听;Xiaomi MiMo:连接、模型与音色 /
+风格与指令 / 试听)→ 「识别与唤醒设置」。
+MiniMax 选择音色的列表来自 `get_voice`(名字 + 描述,含克隆音色),`/` 进入过滤输入
+(**边打边筛**,Esc 清空、Enter 保留过滤回到列表)、`t` 按标签
 筛选(**多选**:Tab/空格勾 `[*]`,Enter 应用;语种之间取"或",女声/男声、克隆各成
-一组,组间取"且",什么都不勾 = 全部)、`p` 试听当前行、`Enter` 选用;默认只勾「中文」。试听走 daemon(IPC `VoiceSpeak` 可携带
+一组,组间取"且",什么都不勾 = 全部)、`p` 试听当前行、`Enter` 选用;默认只勾「中文」。
+列表行按终端宽度排:名字/描述优先,音色 id 放得下才带(`/` 搜索仍能匹配 id)。试听走 daemon(IPC `VoiceSpeak` 可携带
 整份未保存的 tts 配置),默认句子「今天也是充满希望的一天」,可在播报参数里改。音调是半音偏移:
 0 原声,正数更高更细,负数更低更沉,±12 一个八度。
-`miyu voice say "文本"` / WebUI `POST /api/voice/tts/preview` 同样可试听。
+`miyu voice say "文本"` / WebUI `POST /api/voice/tts/preview` 同样可试听;WebUI 设置页
+按「播报供应商」下拉只显示当前那家的字段,MiniMax 音色列表走
+`GET /api/voice/tts/voices?provider=minimax`。
 
 **模型主动说话**:`speak` 工具(文本转语音激活时注册,只在本地会话的 normal
 模式;QQ 会话通常是远程的,平台回合统一摘掉;dev 模式不给——提示词极简、没有
@@ -160,13 +183,17 @@ NapCat 那边把 wav 转 silk。合成文本先过一遍清洗(去代码/链接/
 的都是这份。**要语音唤醒开着**(识别模型跟它加载)且前端已接上;没开、没装、
 取不到文件、转写失败一律静默退化成 `[语音消息]` 占位,不弹通知不报错。
 
-**快捷键呼叫**:`miyu listen` 让前端直接进入等待指令状态(提示音 + 「在听」
-通知,8 秒内说指令),效果与喊唤醒词一样。绑到合成器快捷键上,例如 niri:
-`Mod+Space { spawn "miyu" "listen"; }`。成功时不输出;语音未启用或前端未就绪
-时报错退出。
+**快捷键呼叫**:`miyu listen` 是个**开关**:她没在听时让前端直接进入等待指令
+状态(提示音 + 「在听」通知,8 秒内说指令),效果与喊唤醒词一样;已经在听(等
+指令或追问窗口内,包括她正在回复/播报)时再按一次就关窗、掐掉回合和播报
+(09-06)。绑到合成器快捷键上,例如 niri:`Mod+Space { spawn "miyu" "listen"; }`。
+成功时不输出;语音未启用或前端未就绪时报错退出;听写进行中不接管。
 
 对话中说「没事了 / 就这样 / 去忙吧」→ 模型调 `end_voice_chat` 工具(仅
-`voice.enabled` 时注册)→ 关窗。免唤醒追问窗口 `follow_up_seconds` 默认 300。
+`voice.enabled` 时注册)→ 关窗。免唤醒追问窗口 `follow_up_seconds` 默认 **30**
+(09-06 从 300 改小),**从她回复完起算**:回合运行、合成、播报期间计时都冻结
+(`voice.hold` 压到合成结束才放,播报期间前端不喂帧),播完才开始数;每次回复都
+重新起算。旧配置里存了 300 的要自己改。
 文字照常落「语音会话」lane(独立 user lane,id 记在 `state/voice-session-id`),
 WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模型视野之外。
 
@@ -199,13 +226,13 @@ WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模�
   "stt_threads": 2,
   "stt_language": "zh",               // auto | zh | en | ja | ko | yue;auto 会把普通话判成日语
   "stt_unload_seconds": 60,           // 0 = 常驻
-  "follow_up_seconds": 300,
+  "follow_up_seconds": 30,              // 从回复播完起算,每次回复重新起算
   "min_utterance_chars": 2,
   "sounds": true, "sound_volume": 0.6,
   "notify_reply_chars": 120,
   "dictation_auto_submit": false,
   "tts": {
-    "active": "minimax",              // 缺省即 minimax;生效 = enabled + api_key 非空
+    "active": "minimax",              // minimax | mimo;缺省即 minimax;生效 = enabled + 当前那家 api_key 非空
     "max_chars": 300,
     "minimax": {
       "api_key": "…",                 // 支持 "$env:MINIMAX_API_KEY"
@@ -213,6 +240,15 @@ WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模�
       "model": "speech-2.6-turbo",
       "voice_id": "Chinese_sweet_girl_nv1",        // get_voice 列表里的 voice_id
       "speed": 1.0, "vol": 1.0, "pitch": 0, "emotion": "", "language_boost": "auto"
+    },
+    "mimo": {
+      "api_key": "…",                 // 支持 "$env:MIMO_API_KEY"
+      "base_url": "https://api.xiaomimimo.com/v1",
+      "model": "mimo-v2.5-tts",       // | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone
+      "voice": "mimo_default",        // 冰糖 / 茉莉 / 苏打 / 白桦 / Mia / Chloe / Milo / Dean
+      "style": "",                    // 文本开头的风格标签,如 "温柔 慵懒"
+      "instruction": "",              // user 消息:语气/角色/语速;voicedesign 下是音色描述
+      "sample_audio": null            // voiceclone 的参考音频路径(wav/mp3)
     }
   }
 }

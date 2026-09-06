@@ -118,6 +118,40 @@ fn sense_voice_transcribes_chinese() {
     );
 }
 
+/// `miyu listen` 是开关:空闲时进入等待指令(Wake),已在听时关窗(WindowClosed),
+/// 再按又进入等待指令;听写窗口内忽略。
+#[test]
+#[ignore = "需要本地语音模型"]
+fn listen_control_toggles_window() {
+    use super::Control;
+    let Some(dir) = models_dir() else {
+        eprintln!("跳过:语音模型未就位");
+        return;
+    };
+    let mut pipeline = Pipeline::new(&config(&dir, "周望军")).expect("pipeline");
+    let silence = vec![0.0f32; 1600];
+    let first = pipeline.control(Control::Listen);
+    assert!(
+        matches!(first.as_slice(), [VoiceEvent::Wake]),
+        "idle → listen should wake: {first:?}"
+    );
+    let second = pipeline.control(Control::Listen);
+    assert!(
+        matches!(second.as_slice(), [VoiceEvent::WindowClosed]),
+        "listening → listen should close: {second:?}"
+    );
+    // 关掉后静默不再产生超时事件(已回到 Idle)。
+    for _ in 0..100 {
+        let events = pipeline.feed(&silence);
+        assert!(events.is_empty(), "idle silence produced {events:?}");
+    }
+    let third = pipeline.control(Control::Listen);
+    assert!(matches!(third.as_slice(), [VoiceEvent::Wake]), "{third:?}");
+    // 听写中忽略。
+    let _ = pipeline.control(Control::StartDictation { external: false });
+    assert!(pipeline.control(Control::Listen).is_empty());
+}
+
 #[test]
 #[ignore = "需要本地语音模型"]
 fn follow_up_window_skips_wake_word_then_expires() {

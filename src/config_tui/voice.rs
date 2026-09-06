@@ -1,5 +1,5 @@
 //! 语音功能菜单:总开关 → 播报供应商(MiniMax:连接/模型、音色浏览、参数、
-//! 试听)→ 识别与唤醒设置。
+//! 试听;小米 MiMo:连接/模型/音色、风格与指令、试听)→ 识别与唤醒设置。
 //!
 //! 唤醒词能否编码成 KWS 音节这件事在 `miyu-voice` 进程里做(本进程不链接
 //! 语音栈),这里只做形式校验(非空、含中文)。麦克风列表同样问
@@ -9,9 +9,32 @@
 //! (运行时套运行时会 panic,整个 TUI 崩出):网络请求与 IPC 统统丢到独立
 //! 线程里,那个线程自己起一个 current_thread 运行时。
 
-use crate::config::{MiniMaxTtsConfig, VoiceTtsConfig};
+use crate::config::{MiniMaxTtsConfig, VoiceTtsConfig, TTS_PROVIDERS};
 use crate::config_tui::*;
+use crate::web::voice_tts::{MIMO_MODELS, MIMO_VOICES};
 use anyhow::Context as _;
+
+/// MiMo 常用风格标签(文档 2026-09,可手填其它)。
+const MIMO_STYLES: &[&str] = &[
+    "",
+    "温柔",
+    "开心",
+    "活泼",
+    "俏皮",
+    "慵懒",
+    "平静",
+    "严肃",
+    "深情",
+    "撒娇",
+    "悲伤",
+    "兴奋",
+    "夹子音",
+    "御姐音",
+    "东北话",
+    "四川话",
+    "粤语",
+    "台湾腔",
+];
 
 /// MiniMax 可选模型(t2a_v2 文档,2026-09)。
 const MINIMAX_TTS_MODELS: &[&str] = &[
@@ -114,8 +137,13 @@ fn fetch_minimax_voice_list(cfg: &MiniMaxTtsConfig) -> Result<Vec<(String, Strin
         .collect())
 }
 
-/// 经 daemon 试听:把(可能尚未保存的)tts 配置整份带过去。
-fn preview_tts(paths: &MiyuPaths, tts: &VoiceTtsConfig, text: Option<&str>) -> Result<()> {
+/// 经 daemon 试听:把(可能尚未保存的)tts 配置整份带过去,按 `provider` 合成。
+fn preview_tts(
+    paths: &MiyuPaths,
+    tts: &VoiceTtsConfig,
+    provider: &str,
+    text: Option<&str>,
+) -> Result<()> {
     let text = text
         .map(str::to_string)
         .unwrap_or_else(|| tts.preview_text.trim().to_string());
@@ -125,9 +153,9 @@ fn preview_tts(paths: &MiyuPaths, tts: &VoiceTtsConfig, text: Option<&str>) -> R
         text
     };
     let mut tts = tts.clone();
-    // 试听不要求先打开开关或激活。
+    // 试听不要求先打开开关或把它设为当前供应商。
     tts.enabled = true;
-    tts.active = Some("minimax".to_string());
+    tts.active = Some(provider.to_string());
     let socket = paths.ipc_socket();
     block_on_thread(move || async move {
         let mut stream = crate::ipc::connect(&socket).await.context(t(
@@ -158,16 +186,51 @@ fn on_off(value: bool) -> &'static str {
     }
 }
 
-fn tts_label(tts: &VoiceTtsConfig) -> String {
-    if minimax_has_key(tts) {
-        format!("MiniMax · {} · {}", tts.minimax.model, tts.minimax.voice_id)
-    } else {
-        t("MiniMax · api key not set", "MiniMax · 未填 key").to_string()
+fn provider_display_name(provider: &str) -> &'static str {
+    TTS_PROVIDERS
+        .iter()
+        .find(|(id, _)| *id == provider)
+        .map(|(_, name)| *name)
+        .unwrap_or("?")
+}
+
+/// 某供应商的一行摘要:模型 · 音色,没填 key 就说没填。
+fn provider_summary(tts: &VoiceTtsConfig, provider: &str) -> String {
+    if !tts.provider_has_key(provider) {
+        return t("no api key yet", "未填 key").to_string();
+    }
+    match provider {
+        "mimo" => {
+            let cfg = &tts.mimo;
+            let voice = if cfg.model.ends_with("voicedesign") {
+                t("designed voice", "描述音色").to_string()
+            } else if cfg.model.ends_with("voiceclone") {
+                t("cloned voice", "克隆音色").to_string()
+            } else {
+                cfg.voice.clone()
+            };
+            format!("{} · {voice}", cfg.model)
+        }
+        _ => format!("{} · {}", tts.minimax.model, tts.minimax.voice_id),
     }
 }
 
-fn minimax_has_key(tts: &VoiceTtsConfig) -> bool {
-    tts.minimax.has_key()
+fn tts_label(tts: &VoiceTtsConfig) -> String {
+    let provider = tts.provider().unwrap_or("minimax");
+    format!(
+        "{} · {}",
+        provider_display_name(provider),
+        provider_summary(tts, provider)
+    )
+}
+
+/// 编辑完某供应商的连接后:当前生效的供应商没 key 而这个有,就顺手切过来
+/// (填了 key 就该响,不用再找"设为当前")。
+fn adopt_provider_if_current_unusable(tts: &mut VoiceTtsConfig, provider: &str) {
+    let current = tts.provider().unwrap_or("minimax");
+    if current != provider && !tts.provider_has_key(current) && tts.provider_has_key(provider) {
+        tts.active = Some(provider.to_string());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +303,7 @@ pub(in crate::config_tui) fn edit_voice(
 // 播报供应商
 // ---------------------------------------------------------------------------
 
-/// 预置的播报供应商列表(目前只有 MiniMax,缺省即它):[Enter] 配置。
+/// 预置的播报供应商列表:`[*]` 是当前生效的那个;[Enter] 配置,[Tab] 设为当前。
 fn edit_tts_providers(
     stdout: &mut io::Stdout,
     paths: &MiyuPaths,
@@ -249,26 +312,38 @@ fn edit_tts_providers(
     let mut selected = 0usize;
     loop {
         let tts = &config.voice.tts;
-        let marker = if minimax_has_key(tts) { "[*] " } else { "[ ] " };
-        let key_state = if minimax_has_key(tts) {
-            format!("{} · {}", tts.minimax.model, tts.minimax.voice_id)
-        } else {
-            t("no api key yet", "未填 key").to_string()
-        };
-        let options = [format!("{marker}MiniMax  ({key_state})")];
+        let current = tts.provider().unwrap_or("minimax");
+        let options: Vec<String> = TTS_PROVIDERS
+            .iter()
+            .map(|(id, name)| {
+                let marker = if *id == current { "[*] " } else { "[ ] " };
+                format!("{marker}{name}  ({})", provider_summary(tts, id))
+            })
+            .collect();
         draw_menu(
             stdout,
             t(" TTS PROVIDERS ", " 播报供应商 "),
             &options,
             selected,
-            t("[Enter]configure [q]back", "[Enter]配置 [q]返回"),
+            t(
+                "[Enter]configure [Tab]set current [q]back",
+                "[Enter]配置 [Tab]设为当前 [q]返回",
+            ),
         )?;
+        let provider = TTS_PROVIDERS[selected.min(TTS_PROVIDERS.len() - 1)].0;
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
-            KeyCode::Enter | KeyCode::Tab => {
-                if let Err(error) = edit_minimax(stdout, paths, config) {
+            KeyCode::Tab | KeyCode::Char(' ') => {
+                config.voice.tts.active = Some(provider.to_string());
+            }
+            KeyCode::Enter => {
+                let outcome = match provider {
+                    "mimo" => edit_mimo(stdout, paths, config),
+                    _ => edit_minimax(stdout, paths, config),
+                };
+                if let Err(error) = outcome {
                     show_tui_error(stdout, &error)?;
                 }
             }
@@ -276,6 +351,179 @@ fn edit_tts_providers(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 小米 MiMo
+// ---------------------------------------------------------------------------
+
+/// MiMo 配置菜单:连接与模型 / 风格与指令 / 试听。
+fn edit_mimo(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
+    let mut selected = 0usize;
+    loop {
+        let cfg = &config.voice.tts.mimo;
+        let voice = if cfg.model.ends_with("voicedesign") {
+            t("by description", "按描述").to_string()
+        } else if cfg.model.ends_with("voiceclone") {
+            cfg.sample_audio
+                .clone()
+                .filter(|path| !path.trim().is_empty())
+                .unwrap_or_else(|| t("(no sample audio)", "(未填参考音频)").to_string())
+        } else {
+            cfg.voice.clone()
+        };
+        let options = [
+            format!(
+                "{} ({} · {voice})",
+                t("Connection, model and voice", "连接、模型与音色"),
+                cfg.model
+            ),
+            format!(
+                "{} ({}{})",
+                t("Style and instruction", "风格与指令"),
+                if cfg.style.trim().is_empty() {
+                    t("no style tag", "无标签").to_string()
+                } else {
+                    format!("({})", cfg.style.trim())
+                },
+                if cfg.instruction.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " · {}",
+                        crate::web::voice_bridge::clip(cfg.instruction.trim(), 24)
+                    )
+                }
+            ),
+            t("Preview", "试听").to_string(),
+        ];
+        draw_menu(
+            stdout,
+            " Xiaomi MiMo ",
+            &options,
+            selected,
+            t("[Enter]open [q]back", "[Enter]进入 [q]返回"),
+        )?;
+        match read_key()? {
+            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Enter => {
+                let outcome = match selected {
+                    0 => edit_mimo_connection(stdout, config),
+                    1 => edit_mimo_style(stdout, config),
+                    _ => preview_tts(paths, &config.voice.tts, "mimo", None),
+                };
+                if let Err(error) = outcome {
+                    show_tui_error(stdout, &error)?;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn edit_mimo_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+    let cfg = config.voice.tts.mimo.clone();
+    // 音色下拉显示「冰糖 · 中文女声」,写回的是 id。
+    let voice_labels: Vec<String> = MIMO_VOICES
+        .iter()
+        .map(|(_, label)| label.to_string())
+        .collect();
+    let current_voice_label = MIMO_VOICES
+        .iter()
+        .find(|(id, _)| *id == cfg.voice.trim())
+        .map(|(_, label)| label.to_string())
+        .unwrap_or_else(|| cfg.voice.clone());
+    let mut fields = vec![
+        Field::new(
+            t("API key", "API key"),
+            cfg.api_key.clone().unwrap_or_default(),
+        )
+        .sensitive(),
+        Field::new(t("Base URL", "接口地址"), cfg.base_url.clone()),
+        Field::new(t("Model", "模型"), cfg.model.clone()).choices(MIMO_MODELS),
+        Field::new(
+            t(
+                "Voice (mimo-v2.5-tts only)",
+                "音色(只对 mimo-v2.5-tts 生效)",
+            ),
+            current_voice_label,
+        )
+        .choices_owned(voice_labels),
+        Field::new(
+            t(
+                "Sample audio for voiceclone (wav/mp3 path)",
+                "voiceclone 参考音频(wav/mp3 路径)",
+            ),
+            cfg.sample_audio.clone().unwrap_or_default(),
+        ),
+        Field::new(
+            t("Max spoken chars", "播报字数上限"),
+            config.voice.tts.max_chars.to_string(),
+        ),
+    ];
+    run_form_without_buttons(
+        stdout,
+        t(" MiMo CONNECTION ", " MiMo 连接、模型与音色 "),
+        &mut fields,
+    )?;
+    let tts = &mut config.voice.tts;
+    tts.mimo.api_key = Some(fields[0].value.trim().to_string()).filter(|k| !k.is_empty());
+    tts.mimo.base_url = fields[1].value.trim().to_string();
+    tts.mimo.model = fields[2].value.trim().to_string();
+    let picked = fields[3].value.trim().to_string();
+    tts.mimo.voice = MIMO_VOICES
+        .iter()
+        .find(|(_, label)| *label == picked)
+        .map(|(id, _)| id.to_string())
+        .unwrap_or(picked);
+    tts.mimo.sample_audio = Some(fields[4].value.trim().to_string()).filter(|p| !p.is_empty());
+    tts.max_chars = fields[5].value.trim().parse::<usize>()?.max(20);
+    adopt_provider_if_current_unusable(tts, "mimo");
+    Ok(())
+}
+
+fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
+    let cfg = config.voice.tts.mimo.clone();
+    let mut style_field = Field::new(
+        t(
+            "Style tag (prefix, e.g. 温柔 / 开心 / 东北话; several separated by spaces)",
+            "风格标签(加在文本开头,如 温柔 / 开心 / 东北话;多个用空格隔开)",
+        ),
+        cfg.style.clone(),
+    )
+    .choices(MIMO_STYLES);
+    style_field.empty_choice_label = t("(none)", "(不加)");
+    let mut fields = vec![
+        style_field,
+        Field::new(
+            t(
+                "Instruction (tone/role/pace; voice description for voicedesign)",
+                "指令(语气/角色/语速;voicedesign 模型下写音色描述,必填)",
+            ),
+            cfg.instruction.clone(),
+        ),
+        Field::new(
+            t("Preview sentence", "试听语句"),
+            config.voice.tts.preview_text.clone(),
+        ),
+    ];
+    run_form_without_buttons(stdout, t(" MiMo STYLE ", " MiMo 风格与指令 "), &mut fields)?;
+    let tts = &mut config.voice.tts;
+    tts.mimo.style = fields[0].value.trim().to_string();
+    tts.mimo.instruction = fields[1].value.trim().to_string();
+    let preview = fields[2].value.trim().to_string();
+    tts.preview_text = if preview.is_empty() {
+        "今天也是充满希望的一天".to_string()
+    } else {
+        preview
+    };
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// MiniMax
+// ---------------------------------------------------------------------------
 
 /// MiniMax 配置菜单。
 fn edit_minimax(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
@@ -332,7 +580,7 @@ fn edit_minimax(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConf
                     0 => edit_minimax_connection(stdout, config),
                     1 => browse_minimax_voices(stdout, paths, config),
                     2 => edit_minimax_params(stdout, config),
-                    _ => preview_tts(paths, &config.voice.tts, None),
+                    _ => preview_tts(paths, &config.voice.tts, "minimax", None),
                 };
                 if let Err(error) = outcome {
                     show_tui_error(stdout, &error)?;
@@ -371,6 +619,7 @@ fn edit_minimax_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> R
     tts.minimax.model = fields[2].value.trim().to_string();
     tts.minimax.language_boost = fields[3].value.trim().to_string();
     tts.max_chars = fields[4].value.trim().parse::<usize>()?.max(20);
+    adopt_provider_if_current_unusable(tts, "minimax");
     Ok(())
 }
 
@@ -557,6 +806,8 @@ fn browse_minimax_voices(
         })
         .collect();
     let mut search = String::new();
+    // `/` 进入过滤输入:每敲一个字列表立刻变,Esc 清空退出,Enter 保留过滤退出。
+    let mut searching = false;
     let mut picked: Vec<&'static str> = vec!["中文"];
     let mut selected = 0usize;
     loop {
@@ -570,6 +821,13 @@ fn browse_minimax_voices(
                         || label.to_lowercase().contains(&needle))
             })
             .collect();
+        // 行宽按终端显示宽度控制:名字/描述优先,id 放得下才带;否则右边被
+        // 框截成「…」什么都看不见(09-06 用户反馈)。
+        let row_width = terminal::size()
+            .map(|(cols, _)| cols as usize)
+            .unwrap_or(80)
+            .saturating_sub(10)
+            .max(40);
         let mut options: Vec<String> = shown
             .iter()
             .map(|(id, label, tags)| {
@@ -583,10 +841,16 @@ fn browse_minimax_voices(
                     .find(|tag| **tag == "女声" || **tag == "男声")
                     .map(|tag| format!("[{}]", &tag[..3]))
                     .unwrap_or_default();
-                if label.starts_with(id.as_str()) {
-                    format!("{marker}{gender}{label}")
+                let head = format!("{marker}{gender}");
+                let body = truncate(label, row_width.saturating_sub(display_width(&head)));
+                let row = format!("{head}{body}");
+                let suffix = format!("  ({id})");
+                if label.starts_with(id.as_str())
+                    || display_width(&row) + display_width(&suffix) > row_width
+                {
+                    row
                 } else {
-                    format!("{marker}{gender}{label}  ({id})")
+                    format!("{row}{suffix}")
                 }
             })
             .collect();
@@ -602,7 +866,9 @@ fn browse_minimax_voices(
         let title = format!(
             " MiniMax {} · {tag_summary}{} ({}/{}) ",
             t("VOICES", "音色"),
-            if search.is_empty() {
+            if searching {
+                format!(" · /{search}_")
+            } else if search.is_empty() {
                 String::new()
             } else {
                 format!(" · /{search}")
@@ -615,26 +881,44 @@ fn browse_minimax_voices(
             &title,
             &options,
             selected,
-            t(
-                "[Enter]pick [p]preview [/]search [t]tags [q]back",
-                "[Enter]选用 [p]试听 [/]搜索 [t]标签(多选) [q]返回",
-            ),
+            if searching {
+                t(
+                    "type to filter · [Esc]clear [Enter]done",
+                    "输入即过滤 · [Esc]清空 [Enter]完成",
+                )
+            } else {
+                t(
+                    "[Enter]pick [p]preview [/]search [t]tags [q]back",
+                    "[Enter]选用 [p]试听 [/]搜索 [t]标签(多选) [q]返回",
+                )
+            },
         )?;
+        if searching {
+            match read_key()? {
+                KeyCode::Esc => {
+                    search.clear();
+                    searching = false;
+                }
+                KeyCode::Enter => searching = false,
+                KeyCode::Backspace => {
+                    search.pop();
+                }
+                KeyCode::Up => selected = selected.saturating_sub(1),
+                KeyCode::Down => selected = (selected + 1).min(options.len() - 1),
+                KeyCode::Char(ch) => {
+                    search.push(ch);
+                    selected = 0;
+                }
+                _ => {}
+            }
+            continue;
+        }
         match read_key()? {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Char('/') => {
-                search = edit_single_line(
-                    stdout,
-                    t(" SEARCH ", " 搜索 "),
-                    t(
-                        "keyword (id / name / description)",
-                        "关键字(id / 名字 / 描述)",
-                    ),
-                    &search,
-                )?
-                .unwrap_or_default();
+                searching = true;
                 selected = 0;
             }
             KeyCode::Char('t') => {
@@ -691,7 +975,7 @@ fn browse_minimax_voices(
             KeyCode::Char('p') if !shown.is_empty() => {
                 let mut tts = config.voice.tts.clone();
                 tts.minimax.voice_id = shown[selected].0.clone();
-                if let Err(error) = preview_tts(paths, &tts, None) {
+                if let Err(error) = preview_tts(paths, &tts, "minimax", None) {
                     show_tui_error(stdout, &error)?;
                 }
             }

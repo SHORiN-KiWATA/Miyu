@@ -225,11 +225,13 @@ impl Pipeline {
                 Vec::new()
             }
             Control::CloseWindow => self.close_window(),
+            // 快捷键呼叫是开关:已经在听(等指令 / 追问窗口内)就关掉,否则进入等待指令。
             Control::Listen => match self.phase {
                 Phase::Window {
                     dictation: true, ..
                 } => Vec::new(),
-                _ => {
+                Phase::Window { .. } | Phase::Awaiting { .. } => self.close_window(),
+                Phase::Idle => {
                     self.phase = Phase::Awaiting { silent: 0 };
                     self.speech_run = 0;
                     self.speech_start_emitted = false;

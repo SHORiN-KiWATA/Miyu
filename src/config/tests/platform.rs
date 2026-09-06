@@ -1190,3 +1190,27 @@ fn tts_is_active_defaults_provider_to_minimax() {
     tts.active = Some("other".to_string());
     assert!(!tts.is_active());
 }
+
+/// 切到 MiMo:看的是 MiMo 自己的 key,MiniMax 的 key 不算数;旧配置没有
+/// `mimo` 节也能读,缺省值齐全。
+#[test]
+fn tts_mimo_provider_uses_its_own_key() {
+    let mut tts = VoiceTtsConfig {
+        enabled: true,
+        active: Some("mimo".to_string()),
+        ..Default::default()
+    };
+    tts.minimax.api_key = Some("sk-minimax".to_string());
+    assert!(!tts.is_active(), "MiniMax key must not activate MiMo");
+    tts.mimo.api_key = Some("sk-mimo".to_string());
+    assert!(tts.is_active());
+    assert!(tts.provider_has_key("mimo"));
+    assert!(!tts.provider_has_key("nope"));
+
+    let parsed: VoiceTtsConfig =
+        serde_json::from_str(r#"{"enabled":true,"minimax":{"api_key":"k"}}"#).unwrap();
+    assert_eq!(parsed.mimo.base_url, "https://api.xiaomimimo.com/v1");
+    assert_eq!(parsed.mimo.model, "mimo-v2.5-tts");
+    assert_eq!(parsed.mimo.voice, "mimo_default");
+    assert!(parsed.is_active(), "legacy config keeps MiniMax as default");
+}
