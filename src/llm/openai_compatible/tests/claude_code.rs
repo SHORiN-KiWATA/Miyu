@@ -30,6 +30,10 @@ echo '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
 echo '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}'
 echo '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello from fake"}}}'
 echo '{"type":"stream_event","event":{"type":"content_block_stop","index":1}}'
+echo '{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp__miyu__use_meme","input":{}}}}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"show\""}}}'
+echo '{"type":"stream_event","event":{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_q","name":"mcp__miyu__ask_question","input":{}}}}'
+echo '{"type":"stream_event","event":{"type":"content_block_stop","index":2}}'
 echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__miyu__use_meme","input":{"action":"show","id":"m1"}}]}}'
 echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"meme sent ok"}]}]}}'
 echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":5}}}'
@@ -104,6 +108,26 @@ async fn first_turn_spawns_fresh_session_with_full_flags() {
     assert!(chunks
         .iter()
         .any(|chunk| chunk.kind == ChatStreamKind::Reasoning && chunk.text.contains("pondering")));
+    // 工具块开始(入参还在流)→ RemoteToolPreparing,先于完整帧翻出的 started;
+    // 名字剥前缀,首个不算批量;桥问答(ask_question)不发——它有自己的
+    // question.* 事件,发了「准备问题」会黏住。
+    let preparing: Vec<serde_json::Value> = chunks
+        .iter()
+        .filter(|chunk| chunk.kind == ChatStreamKind::RemoteToolPreparing)
+        .map(|chunk| serde_json::from_str(&chunk.text).unwrap())
+        .collect();
+    assert_eq!(preparing.len(), 1, "{preparing:?}");
+    assert_eq!(preparing[0]["name"], "use_meme");
+    assert_eq!(preparing[0]["batch"], false);
+    let preparing_at = chunks
+        .iter()
+        .position(|chunk| chunk.kind == ChatStreamKind::RemoteToolPreparing)
+        .unwrap();
+    let started_at = chunks
+        .iter()
+        .position(|chunk| chunk.kind == ChatStreamKind::RemoteToolStarted)
+        .unwrap();
+    assert!(preparing_at < started_at, "准备提示必须先于卡片");
     // claude 侧工具活动翻成标准卡片事件:started 带剥前缀的名字与入参,
     // finished 带 ok 与结果文本。
     let started = chunks

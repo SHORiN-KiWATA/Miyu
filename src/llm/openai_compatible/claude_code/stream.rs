@@ -94,6 +94,9 @@ where
     .await?;
 
     let mut state = AnthropicStreamState::default();
+    // 当前 assistant 消息里已开始的 tool_use 块数:第 2 个起算批量(与本地
+    // 回合 `tool_calls_seen` 同一语义),message_start 归零。
+    let mut tool_blocks_in_message = 0usize;
     // claude 侧工具调用 id → 名称,tool_result 帧只带 id,收口事件靠它配名。
     // 被隐藏的(桥问答)另记一份 id,收口时跳过;其余认不出名字的仍按 "tool"
     // 发收口——少一张卡片总比丢掉错误文本好。
@@ -133,7 +136,12 @@ where
             Some("stream_event") => {
                 if let Some(event) = value.get("event") {
                     match serde_json::from_value::<AnthropicStreamEvent>(event.clone()) {
-                        Ok(event) => handle_claude_stream_event(event, &mut state, on_chunk)?,
+                        Ok(event) => handle_claude_stream_event(
+                            event,
+                            &mut state,
+                            &mut tool_blocks_in_message,
+                            on_chunk,
+                        )?,
                         Err(error) => tracing::debug!(
                             request_id,
                             %error,
@@ -242,6 +250,12 @@ where
     Ok(RelayOutcome { result, session_id })
 }
 
+/// MCP 前缀剥掉:Miyu 工具按本名显示(readable_tool_name / preparing_phase
+/// 才认识),claude 原生工具保持原名。
+fn remote_tool_name(raw_name: &str) -> &str {
+    raw_name.strip_prefix("mcp__miyu__").unwrap_or(raw_name)
+}
+
 fn emit_remote_tool_started<F>(
     frame: &Value,
     remote_tools: &mut HashMap<String, String>,
@@ -263,10 +277,7 @@ where
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let raw_name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
-        // MCP 前缀剥掉:Miyu 工具按本名显示(readable_tool_name 才认识),
-        // claude 原生工具保持原名。
-        let name = raw_name.strip_prefix("mcp__miyu__").unwrap_or(raw_name);
+        let name = remote_tool_name(block.get("name").and_then(Value::as_str).unwrap_or("tool"));
         if hidden_remote_tool(name) {
             hidden_tools.insert(id);
             continue;
@@ -337,11 +348,13 @@ where
 }
 
 /// stream_event 内层事件 → 内容/思考缓冲。与 [`handle_anthropic_sse_data`]
-/// 的差异:tool_use 只在思考通道展示一行,不进工具累加器;跨消息(message_
+/// 的差异:tool_use 不进工具累加器,块开始只发一个 RemoteToolPreparing(名字
+/// 已知、入参还在流的那段窗口),卡片本身等完整 assistant 帧;跨消息(message_
 /// start 再来一次)时 content 用空行接续。
 fn handle_claude_stream_event<F>(
     event: AnthropicStreamEvent,
     state: &mut AnthropicStreamState,
+    tool_blocks_in_message: &mut usize,
     on_chunk: &mut F,
 ) -> Result<()>
 where
@@ -379,6 +392,7 @@ where
     };
     match event.kind.as_str() {
         "message_start" => {
+            *tool_blocks_in_message = 0;
             if let Some(usage) = event.message.and_then(|message| message.usage) {
                 merge_anthropic_usage(&mut state.usage, usage);
             }
@@ -420,8 +434,26 @@ where
                             )?;
                         }
                     }
-                    // tool_use 的展示交给完整 assistant 帧翻译出的
-                    // tool.started 卡片,这里不再往思考通道塞行。
+                    // tool_use 的卡片交给完整 assistant 帧翻译出的 tool.started;
+                    // 这里只发准备提示——块开始到帧到齐之间是 input_json_delta
+                    // 在流(真机实测 Bash 一条命令 0.65s,大 patch 就是数秒),
+                    // 没提示就是死屏。桥问答不发:它有自己的 question.* 事件,
+                    // 「准备问题」黏住的坑见 hidden_remote_tool。
+                    "tool_use" => {
+                        close_reasoning_part(state, on_chunk)?;
+                        *tool_blocks_in_message += 1;
+                        let name = remote_tool_name(block.name.as_deref().unwrap_or("tool"));
+                        if !hidden_remote_tool(name) {
+                            on_chunk(ChatStreamChunk {
+                                kind: ChatStreamKind::RemoteToolPreparing,
+                                text: json!({
+                                    "name": name,
+                                    "batch": *tool_blocks_in_message > 1,
+                                })
+                                .to_string(),
+                            })?;
+                        }
+                    }
                     _ => {}
                 }
             }

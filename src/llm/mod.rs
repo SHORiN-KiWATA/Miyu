@@ -413,6 +413,11 @@ pub enum ChatStreamKind {
     ReasoningPartStart,
     ReasoningPartEnd,
     ToolCall,
+    /// 中转侧工具名已解码、入参还在流:text 是 `{name,batch}` JSON,回合层
+    /// 翻成 ToolPreparing(「准备编辑/准备执行」)。只有 claude-code 线有这个
+    /// 窗口(`content_block_start(tool_use)` 先到,`input_json_delta` 跟在后面);
+    /// codex 的 item.started / agy 的工具步 ACTIVE 到达时入参已齐,发不出来。
+    RemoteToolPreparing,
     /// 中转(claude-code)侧闭环执行的工具调用開始:text 是
     /// `{id,name,input}` JSON,回合层翻成标准 tool.started 卡片。
     RemoteToolStarted,

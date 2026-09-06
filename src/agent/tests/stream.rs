@@ -58,6 +58,50 @@ fn tool_call_stream_announces_preparation_for_slow_argument_tools() {
     assert_eq!(streamed, names);
 }
 
+/// 中转侧(claude-code)的准备分片:判据与本地 ToolCall 分片同一张表,批量
+/// 标志由流侧按消息边界算好直接透传;不认识又非批量的名字不发提示。
+#[test]
+fn remote_tool_preparing_chunk_announces_preparation_like_a_local_tool_call() {
+    let mut filter = ReasoningTitleFilter::default();
+    let mut prepared = Vec::new();
+    let mut forwarded = 0usize;
+    let mut on_event = |event| {
+        match event {
+            AgentEvent::ToolPreparing { name, batch } => prepared.push((name, batch)),
+            AgentEvent::Chunk(_) => forwarded += 1,
+            _ => {}
+        }
+        Ok(())
+    };
+    for (name, batch) in [
+        ("Bash", false),
+        ("Edit", false),
+        ("use_meme", false),
+        ("Read", false),
+        ("Read", true),
+    ] {
+        emit_filtered_chunk(
+            ChatStreamChunk {
+                kind: ChatStreamKind::RemoteToolPreparing,
+                text: serde_json::json!({ "name": name, "batch": batch }).to_string(),
+            },
+            &mut filter,
+            &mut on_event,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        prepared,
+        [
+            ("Bash".to_string(), false),
+            ("Edit".to_string(), false),
+            ("Read".to_string(), true),
+        ]
+    );
+    // 准备分片只翻事件,不作为流分片往下传(journal/渲染不收)。
+    assert_eq!(forwarded, 0);
+}
+
 /// 上一个用例每次调用都新起一个计数器，测的是「单个工具够不够慢」。
 /// 这里共用一个计数器，模拟同一条 assistant 消息里连着来的多个调用。
 #[test]

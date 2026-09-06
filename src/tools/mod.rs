@@ -201,6 +201,13 @@ pub fn preparing_phase(name: &str) -> Option<&'static str> {
         | "edit_file"
         | "edit_string" => t("Preparing edit", "准备编辑"),
         "run_command" => t("Preparing command", "准备执行"),
+        // claude 原生工具(claude-code 中转,原名不剥):同一张表,否则中转
+        // 线的 RemoteToolPreparing 只剩批量兜底。
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => t("Preparing edit", "准备编辑"),
+        "Bash" => t("Preparing command", "准备执行"),
+        "Task" | "Agent" => t("Preparing task", "准备任务"),
+        "TodoWrite" => t("Preparing list", "准备清单"),
+        "AskUserQuestion" => t("Preparing question", "准备问题"),
         // 批量删的参数是一整串路径,条数一多就是几百字节,正好落在
         // 「工具名已解码、参数还在流」的那个窗口里。
         "trash_path" => t("Preparing delete", "准备删除"),
@@ -966,6 +973,37 @@ mod tests {
         );
         // Arguments arrive in one chunk: a hint would only flicker.
         for name in ["read_file", "grep", "list_directory"] {
+            assert_eq!(preparing_phase(name), None, "{name}");
+        }
+    }
+
+    /// claude-code 中转线的原生工具名(不剥前缀)也要有提示词,否则那条线
+    /// 只剩批量兜底的「准备工具」。
+    #[test]
+    fn preparing_phase_covers_claude_native_tools() {
+        for name in ["Edit", "Write", "MultiEdit", "NotebookEdit"] {
+            assert_eq!(
+                preparing_phase(name),
+                Some(crate::i18n::text("Preparing edit", "准备编辑")),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            preparing_phase("Bash"),
+            Some(crate::i18n::text("Preparing command", "准备执行"))
+        );
+        for name in ["Task", "Agent"] {
+            assert_eq!(
+                preparing_phase(name),
+                Some(crate::i18n::text("Preparing task", "准备任务")),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            preparing_phase("TodoWrite"),
+            Some(crate::i18n::text("Preparing list", "准备清单"))
+        );
+        for name in ["Read", "Glob", "Grep", "WebFetch"] {
             assert_eq!(preparing_phase(name), None, "{name}");
         }
     }

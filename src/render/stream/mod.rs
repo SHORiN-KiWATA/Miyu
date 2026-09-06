@@ -312,7 +312,9 @@ impl StreamRenderer {
         let stdout = &mut self.output;
         match mode {
             // 中转侧工具卡片不改变流式排版模式。
-            ChatStreamKind::RemoteToolStarted | ChatStreamKind::RemoteToolFinished => {}
+            ChatStreamKind::RemoteToolPreparing
+            | ChatStreamKind::RemoteToolStarted
+            | ChatStreamKind::RemoteToolFinished => {}
             ChatStreamKind::Reasoning => {
                 if self.mode.is_some() {
                     writeln!(stdout)?;

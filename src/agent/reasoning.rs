@@ -197,6 +197,24 @@ where
             }
             on_event(AgentEvent::Chunk(chunk))?;
         }
+        // 中转侧「工具名已解码、入参还在流」:与本地 ToolCall 分片同一判据
+        // (工具自己有提示词,或批量兜底),批量标志由流侧按消息边界算好。
+        ChatStreamKind::RemoteToolPreparing => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&chunk.text) {
+                let name = value
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let batch = value
+                    .get("batch")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if !name.is_empty() && (batch || crate::tools::preparing_phase(&name).is_some()) {
+                    on_event(AgentEvent::ToolPreparing { name, batch })?;
+                }
+            }
+        }
         // 中转侧闭环执行的工具活动:翻成标准卡片事件。执行不在 Miyu 的
         // 回合循环里,started/finished 都由流侧给,不产生本地执行。
         ChatStreamKind::RemoteToolStarted => {

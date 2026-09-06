@@ -361,6 +361,7 @@ impl TurnJournalSink {
             | ChatStreamKind::ReasoningPartStart
             | ChatStreamKind::ReasoningPartEnd
             // 中转侧工具活动在事件层已成卡片,journal 的流缓冲不收。
+            | ChatStreamKind::RemoteToolPreparing
             | ChatStreamKind::RemoteToolStarted
             | ChatStreamKind::RemoteToolFinished => return Ok(()),
         };
