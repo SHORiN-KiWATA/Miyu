@@ -5,19 +5,21 @@
 - `arch/miyu-git/` — AUR VCS 包（从最新 main 源码构建），AUR `miyu-git` 的真相源
 - `arch/miyu-release/` — 发布资产构建器：从 `v<版本>` 标签构建预编译
   `miyu-<版本>-<rel>-x86_64.pkg.tar.zst`，上传到 GitHub Release
-- `arch/miyu/` — AUR 二进制包装包（下载上述 Release 资产 + Noto 字体），
-  AUR `miyu` 的真相源
+- `arch/miyu/` — AUR 二进制包装包（下载上述 Release 资产），AUR `miyu` 的真相源
+- `arch/miyu-voice/` — AUR 二进制包装包（下载 `miyu-release` 拆出的 `miyu-voice` 资产），
+  AUR `miyu-voice` 的真相源；依赖 `miyu`
 
 ## 发布流程（Arch）
 
 1. `Cargo.toml` 升版本 → 提交 `release: vX.Y.Z` → 打标签 `vX.Y.Z` → push（含标签）
 2. 在干净目录用 `arch/miyu-release/PKGBUILD` 构建：
    `PACKAGER='Miyu Release <noreply@example.com>' makepkg -Cf`
-3. `gh release create vX.Y.Z <产物>.pkg.tar.zst --title "Miyu X.Y.Z"`
-4. 更新 `arch/miyu/PKGBUILD` 的 `pkgver` 与资产 sha256，
+3. `gh release create vX.Y.Z miyu-X.Y.Z-1-x86_64.pkg.tar.zst miyu-voice-X.Y.Z-1-x86_64.pkg.tar.zst --title "Miyu X.Y.Z"`
+   （两个资产都要传，AUR `miyu-voice` 靠第二个）
+4. 更新 `arch/miyu/PKGBUILD`、`arch/miyu-voice/PKGBUILD` 的 `pkgver` 与资产 sha256，
    `arch/miyu-git/PKGBUILD` 刷新 `pkgver` 快照
-5. 复制两份 PKGBUILD 到 AUR 检出目录，`makepkg -Cf` 本地实测，
-   `makepkg --printsrcinfo > .SRCINFO`，提交 `upd: X.Y.Z` 并 push
+5. 复制三份 PKGBUILD 到 AUR 检出目录（`~/Documents/aur/miyu`、`miyu-voice`、`miyu-git`），
+   `makepkg -Cf` 本地实测，`makepkg --printsrcinfo > .SRCINFO`，提交 `upd: X.Y.Z` 并 push
 
 ## 系统资产约定
 

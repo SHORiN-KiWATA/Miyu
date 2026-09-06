@@ -57,8 +57,15 @@ miyu config
 
   ```
   yay -S miyu
-  yay -S miyu-voice   # 可选:语音唤醒 + 本地语音识别前端
   ```
+
+  语音唤醒和本地语音识别是可选组件，单独打成 `miyu-voice` 包（依赖 `miyu`，大约 30MB，不装不影响其他功能）：
+
+  ```
+  yay -S miyu-voice
+  ```
+
+  装好后运行 `miyu config`，在「全局设置」里开启「语音功能」，daemon 会自动拉起 `miyu-voice` 进程。
 
 - 从源码构建
 
@@ -68,6 +75,8 @@ miyu config
   cargo build --release                    # 只出 miyu
   cargo build --release --features voice   # 再出 miyu-voice(可选,链接 sherpa-onnx)
   ```
+
+  源码构建时把 `target/release/miyu`（以及可选的 `miyu-voice`）放到同一个 `PATH` 目录里即可，daemon 在主程序同目录寻找 `miyu-voice`。
 
 安装完成后可以运行 `miyu init` 初始化配置和状态文件；也可以直接运行 `miyu daemon start`，首次启动会自动初始化。查看完整帮助信息可以运行 `miyu -h`。
 
