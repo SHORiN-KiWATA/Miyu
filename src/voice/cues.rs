@@ -18,6 +18,8 @@ pub enum Cue {
     Done,
     /// 出错:低音小二度。
     Error,
+    /// 不听了(快捷键再按一次关闭):wake 的镜像,下行两音。
+    Off,
 }
 
 impl Cue {
@@ -27,6 +29,7 @@ impl Cue {
             "heard" => Some(Self::Heard),
             "done" => Some(Self::Done),
             "error" => Some(Self::Error),
+            "off" => Some(Self::Off),
             _ => None,
         }
     }
@@ -38,6 +41,7 @@ fn bytes(cue: Cue) -> &'static [u8] {
         Cue::Heard => include_bytes!("../../assets/voice/heard.wav"),
         Cue::Done => include_bytes!("../../assets/voice/done.wav"),
         Cue::Error => include_bytes!("../../assets/voice/error.wav"),
+        Cue::Off => include_bytes!("../../assets/voice/off.wav"),
     }
 }
 

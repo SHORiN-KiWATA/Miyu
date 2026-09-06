@@ -511,10 +511,20 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
             cfg.style.clone(),
         )
         .multi_choices(MIMO_STYLES),
+        // MiMo 没有数值语速,档位会拼成「语速稍快」进指令。
         Field::new(
             t(
-                "Instruction (Enter to type: tone/role/pace; voice description for voicedesign)",
-                "指令(回车输入:语气/角色/语速;voicedesign 模型下写音色描述,必填)",
+                "Speed (MiMo has no numeric speed; this becomes an instruction)",
+                "语速(MiMo 没有数值语速,档位会拼成「语速稍快」放进指令)",
+            ),
+            cfg.speed.clone(),
+        )
+        .choices(&["很慢", "稍慢", "稍快", "很快"])
+        .empty_choice_label(t("normal", "常速")),
+        Field::new(
+            t(
+                "Instruction (Enter to type: tone/role; voice description for voicedesign)",
+                "指令(回车输入:语气/角色;voicedesign 模型下写音色描述,必填)",
             ),
             cfg.instruction.clone(),
         ),
@@ -526,8 +536,9 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
     run_form_without_buttons(stdout, t(" MiMo STYLE ", " MiMo 风格与指令 "), &mut fields)?;
     let tts = &mut config.voice.tts;
     tts.mimo.style = fields[0].value.trim().to_string();
-    tts.mimo.instruction = fields[1].value.trim().to_string();
-    let preview = fields[2].value.trim().to_string();
+    tts.mimo.speed = fields[1].value.trim().to_string();
+    tts.mimo.instruction = fields[2].value.trim().to_string();
+    let preview = fields[3].value.trim().to_string();
     tts.preview_text = if preview.is_empty() {
         "今天也是充满希望的一天".to_string()
     } else {

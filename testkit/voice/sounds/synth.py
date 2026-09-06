@@ -1,4 +1,4 @@
-"""提示音合成:木琴音色 × 四个事件(wake/heard/done/error),输出到
+"""提示音合成:木琴音色 × 五个事件(wake/heard/done/error/off),输出到
 `assets/voice/`。24kHz 单声道 16-bit,峰值 -6dBFS,尾部软衰减,总长 ≤ 450ms。
 (候选阶段还有 glass / softpad 两套,09-05 耳选定稿 marimba 后删除。)"""
 import numpy as np, wave, os, sys
@@ -44,6 +44,8 @@ CUES = {
     "done":  lambda fam: seq([(E6, 0.08), (C6, 0.08), (G5, 0.16)], fam, 0.02),
     # 出错:低音小二度,短
     "error": lambda fam: seq([(D5, 0.12), (C5 * 1.0595, 0.16)], fam, 0.0),
+    # 不听了(快捷键再按一次关闭):wake 的镜像,下行两音
+    "off":   lambda fam: seq([(C6, 0.09), (G5, 0.16)], fam, 0.02),
 }
 
 def write(path, x):

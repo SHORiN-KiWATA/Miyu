@@ -7,7 +7,7 @@
 ## 一、一句话
 
 装上可选组件 `miyu-voice`,设置里开「语音功能」,daemon 会拉起一个独立进程
-常开麦克风:喊「未有未有」→ 提示音 + 通知「未有在听」→ 说指令 → 通知「未有
+常开麦克风:喊「未有未有」→ 提示音 + 通知「Miyu 在听」→ 说指令 → 通知「Miyu
 收到:…」→ 她在「语音会话」里执行 → 完成后提示音 + 通知回复摘要。终端 REPL
 `/stt`、`miyu stt`、WebUI 麦克风按钮三个入口共用同一套识别做**听写**。
 
@@ -95,9 +95,10 @@ AUR 包装包 `packaging/arch/miyu-voice`。
 
 | 事件 | 提示音 | 桌面通知 |
 |---|---|---|
-| 唤醒词命中 | wake(上行两音) | 「未有在听 / 请讲」(与提示音同一瞬间) |
-| 识别出指令 | heard(单点) | 「未有收到 / <指令>」 |
-| 回合完成 | done(下行三音) | 「未有 / <回复前 N 字>」(N=`notify_reply_chars`) |
+| 唤醒词命中 | wake(上行两音) | 「Miyu 在听 / 请讲」(与提示音同一瞬间) |
+| 识别出指令 | heard(单点) | 「Miyu 收到 / <指令>」 |
+| 回合完成 | done(下行三音) | 「Miyu / <回复前 N 字>」(N=`notify_reply_chars`) |
+| `miyu listen` 再按一次关闭 | off(下行两音,wake 的镜像) | 「Miyu / 不听了」 |
 | 回合失败 | error(低音) | 「语音会话出错 / …」 |
 | 窗口关闭/超时 | 无 | 无 |
 
@@ -120,7 +121,9 @@ AUR 包装包 `packaging/arch/miyu-voice`。
   按 `sample_audio`(本机 wav/mp3,base64 后 ≤ 10MB)克隆。`style` 是加在文本开头
   的风格标签(`(温柔 慵懒)…`,情绪/语气/方言/角色都行;TUI 里是回车进多选菜单
   Tab 勾选,配置里逗号分隔,发请求时转成空格),`instruction` 是自然语言
-  的语气/角色/语速描述(TUI 里回车直接输入)。没有语速/音量/音调数值参数,全靠这两个字段。鉴权头
+  的语气/角色描述(TUI 里回车直接输入)。**没有语速/音量/音调数值参数**(官方文档
+  `audio` 只有 format / voice),语速只认自然语言,所以 `speed` 是档位(很慢/稍慢/
+  稍快/很快),发请求时拼成「语速稍快。<指令>」放进 user 消息。鉴权头
   `Authorization: Bearer` 与 `api-key` 都带(文档两种写法都有)。流式接口官方
   目前是"兼容模式"(推理完一次性回),所以走非流式。
 
@@ -200,7 +203,7 @@ NapCat 那边把 wav 转 silk。合成文本先过一遍清洗(去代码/链接/
 文字照常落「语音会话」lane(独立 user lane,id 记在 `state/voice-session-id`),
 WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模型视野之外。
 
-提示音四个(`assets/voice/{wake,heard,done,error}.wav`,木琴音色,24kHz mono,
+提示音五个(`assets/voice/{wake,heard,done,error,off}.wav`,木琴音色,24kHz mono,
 `testkit/voice/sounds/synth.py` 生成,内嵌进 miyu-voice),`voice.sounds` 开关、
 `voice.sound_volume` 音量,`miyu-voice cue done` 试听。
 
@@ -249,8 +252,9 @@ WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模�
       "base_url": "https://api.xiaomimimo.com/v1",
       "model": "mimo-v2.5-tts",       // | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone
       "voice": "mimo_default",        // 冰糖 / 茉莉 / 苏打 / 白桦 / Mia / Chloe / Milo / Dean
-      "style": "",                    // 文本开头的风格标签,如 "温柔 慵懒"
-      "instruction": "",              // user 消息:语气/角色/语速;voicedesign 下是音色描述
+      "style": "",                    // 文本开头的风格标签,如 "温柔,慵懒"
+      "speed": "",                    // 很慢 | 稍慢 | 稍快 | 很快;空=常速。MiMo 没数值语速,拼成「语速稍快」进指令
+      "instruction": "",              // user 消息:语气/角色;voicedesign 下是音色描述
       "sample_audio": null            // voiceclone 的参考音频路径(wav/mp3)
     }
   }

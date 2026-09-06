@@ -863,6 +863,18 @@
           showWhen: { key: "voice.tts.active", value: "mimo" },
         },
         {
+          path: "voice.tts.mimo.speed",
+          label: "MiMo 语速",
+          hint: "MiMo 没有数值语速,只认自然语言;这里的档位会拼成「语速稍快」放进指令",
+          kind: "select",
+          choices: [
+            { value: "", label: "常速" },
+            "很慢", "稍慢", "稍快", "很快",
+          ],
+          default: "",
+          showWhen: { key: "voice.tts.active", value: "mimo" },
+        },
+        {
           path: "voice.tts.mimo.instruction",
           label: "MiMo 指令",
           hint: "自然语言描述语气、角色、语速;voicedesign 模型下这里写音色描述(必填)",

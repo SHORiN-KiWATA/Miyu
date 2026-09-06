@@ -82,7 +82,7 @@ fn ensure_models_with_notice(dir: &std::path::Path) -> Result<()> {
         return Ok(());
     }
     crate::notify::notify(
-        t("Miyu voice", "未有语音"),
+        t("Miyu voice", "Miyu 语音"),
         &format!(
             "{} ({})",
             t("downloading speech models…", "正在下载语音模型…"),
@@ -91,7 +91,7 @@ fn ensure_models_with_notice(dir: &std::path::Path) -> Result<()> {
     );
     models::ensure_models(dir, &mut |stage| tracing::info!("{stage}"))?;
     crate::notify::notify(
-        t("Miyu voice", "未有语音"),
+        t("Miyu voice", "Miyu 语音"),
         t("speech models ready", "语音模型已就位"),
     );
     Ok(())
@@ -190,7 +190,10 @@ pub fn run_worker() -> Result<()> {
                 VoiceEvent::SpeechStart => send("voice.speech_start", json!({})),
                 VoiceEvent::ListeningTimeout => send("voice.timeout", json!({})),
                 VoiceEvent::WindowClosed => send("voice.window_closed", json!({})),
-                VoiceEvent::ListenOff => send("voice.window_closed", json!({ "reason": "listen" })),
+                VoiceEvent::ListenOff => {
+                    cue(Cue::Off);
+                    send("voice.window_closed", json!({ "reason": "listen" }))
+                }
                 VoiceEvent::Transcribed { request_id, text } => send(
                     "voice.transcribed",
                     json!({ "request_id": request_id, "text": text }),
@@ -443,7 +446,13 @@ pub fn run_test(keyword: Option<String>, device: Option<String>, timings: bool) 
             VoiceEvent::ListeningTimeout => {
                 println!("… {}", t("timed out, back to wake word", "超时,回到待唤醒"))
             }
-            VoiceEvent::WindowClosed | VoiceEvent::ListenOff => println!(
+            VoiceEvent::ListenOff => {
+                if voice_config.sounds {
+                    player.play(Cue::Off, voice_config.sound_volume);
+                }
+                println!("… {}", t("stopped listening", "不听了"))
+            }
+            VoiceEvent::WindowClosed => println!(
                 "… {}",
                 t(
                     "window closed, wake word required again",

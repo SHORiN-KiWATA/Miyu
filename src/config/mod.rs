@@ -213,6 +213,10 @@ pub struct MimoTtsConfig {
     /// 音色描述(必填)。空 = 不发 user 消息。
     #[serde(default)]
     pub instruction: String,
+    /// 语速:MiMo 没有数值参数,只认自然语言,这里是档位(很慢 / 稍慢 / 稍快 /
+    /// 很快),发请求时拼成「语速稍快」放进指令;空 = 常速(不提)。
+    #[serde(default)]
+    pub speed: String,
     /// voiceclone 模型的参考音频路径(wav / mp3,base64 后 ≤ 10MB)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_audio: Option<String>,
@@ -237,6 +241,7 @@ impl Default for MimoTtsConfig {
             voice: default_mimo_voice(),
             style: String::new(),
             instruction: String::new(),
+            speed: String::new(),
             sample_audio: None,
         }
     }

@@ -306,7 +306,7 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
                 // 「收到」会替换掉这条(notify-send -r),不会连弹两条。
                 notify(
                     state,
-                    t("Miyu is listening", "未有在听"),
+                    t("Miyu is listening", "Miyu 在听"),
                     t("speak now", "请讲"),
                 );
             } else {
@@ -318,7 +318,7 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
                     if WAKE_NOTICE_GEN.load(Ordering::Relaxed) == generation {
                         notify(
                             &state,
-                            t("Miyu is listening", "未有在听"),
+                            t("Miyu is listening", "Miyu 在听"),
                             t("speak now", "请讲"),
                         );
                     }
@@ -335,7 +335,7 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
             }
             WAKE_NOTICE_GEN.fetch_add(1, Ordering::Relaxed);
             cancel_active_run(state);
-            notify(state, t("Miyu heard", "未有收到"), &clip(&text, 80));
+            notify(state, t("Miyu heard", "Miyu 收到"), &clip(&text, 80));
             let state = state.clone();
             tokio::spawn(async move {
                 if let Err(error) = run_voice_turn(&state, text).await {
@@ -367,7 +367,7 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
                 WAKE_NOTICE_GEN.fetch_add(1, Ordering::Relaxed);
                 cancel_active_run(state);
                 send_signal("voice.stop_speaking", json!({}));
-                notify(state, t("Miyu", "未有"), t("stopped listening", "不听了"));
+                notify(state, "Miyu", t("stopped listening", "不听了"));
             }
         }
         "voice.transcribed" => {
@@ -635,7 +635,7 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
                 tracing::debug!("合成期间窗口已关,丢弃播报");
                 return Ok(());
             }
-            notify(state, t("Miyu", "未有"), &summary);
+            notify(state, "Miyu", &summary);
             match synthesized {
                 Some(path) => send_signal(
                     "voice.play",
@@ -649,7 +649,7 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
             send_signal("voice.hold", json!({ "on": false }));
             notify(
                 state,
-                t("Miyu voice", "未有语音"),
+                t("Miyu voice", "Miyu 语音"),
                 t(
                     "connection to the daemon dropped mid-turn",
                     "回合中途与 daemon 断开",
