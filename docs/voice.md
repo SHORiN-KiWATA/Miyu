@@ -117,13 +117,13 @@ AUR 包装包 `packaging/arch/miyu-voice`。
   assistant 消息,风格指令放 user 消息,音频以 base64 wav 回来(24kHz 单声道)。
   三个模型:`mimo-v2.5-tts` 用预置音色(`voice`:mimo_default / 冰糖 / 茉莉 /
   苏打 / 白桦 / Mia / Chloe / Milo / Dean),`mimo-v2.5-tts-voicedesign` 按
-  `instruction` 里的一句描述造音色(必填,`voice` 不用),`mimo-v2.5-tts-voiceclone`
+  `prompt` 里的一句描述造音色(必填,`voice` 不用),`mimo-v2.5-tts-voiceclone`
   按 `sample_audio`(本机 wav/mp3,base64 后 ≤ 10MB)克隆。`style` 是加在文本开头
   的风格标签(`(温柔 慵懒)…`,情绪/语气/方言/角色都行;TUI 里是回车进多选菜单
-  Tab 勾选,配置里逗号分隔,发请求时转成空格),`instruction` 是自然语言
-  的语气/角色描述(TUI 里回车直接输入)。**没有语速/音量/音调数值参数**(官方文档
-  `audio` 只有 format / voice),语速只认自然语言,所以 `speed` 是档位(很慢/稍慢/
-  稍快/很快),发请求时拼成「语速稍快。<指令>」放进 user 消息。鉴权头
+  Tab 勾选,配置里逗号分隔,发请求时转成空格),`prompt` 是一句自然语言的
+  提示词(TUI 里回车直接输入)。**没有语速/音量/音调数值参数**(官方文档 `audio`
+  只有 format / voice),语速、语气、角色都写在提示词里,如「语速稍快,像在跟朋友
+  聊天」,原样作为 user 消息发出。鉴权头
   `Authorization: Bearer` 与 `api-key` 都带(文档两种写法都有)。流式接口官方
   目前是"兼容模式"(推理完一次性回),所以走非流式。
 
@@ -253,8 +253,7 @@ WebUI 能翻实录;进上下文的只有识别文本,通知/提示音都在模�
       "model": "mimo-v2.5-tts",       // | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone
       "voice": "mimo_default",        // 冰糖 / 茉莉 / 苏打 / 白桦 / Mia / Chloe / Milo / Dean
       "style": "",                    // 文本开头的风格标签,如 "温柔,慵懒"
-      "speed": "",                    // 很慢 | 稍慢 | 稍快 | 很快;空=常速。MiMo 没数值语速,拼成「语速稍快」进指令
-      "instruction": "",              // user 消息:语气/角色;voicedesign 下是音色描述
+      "prompt": "",                   // user 消息:语速/语气/角色一句话,如「语速稍快,像在跟朋友聊天」;voicedesign 下是音色描述
       "sample_audio": null            // voiceclone 的参考音频路径(wav/mp3)
     }
   }

@@ -327,6 +327,15 @@ pub(in crate::config_tui) fn run_form_without_buttons(
                 )?;
                 cursors[selected] = fields[selected].value.chars().count();
             }
+            // 短字符串列表(唤醒词):无按钮表单此前漏了这一臂,回车落到普通文本编辑。
+            KeyCode::Enter if !editing && fields[selected].string_list => {
+                edit_string_list(stdout, fields[selected].label, &mut fields[selected].value)?;
+                cursors[selected] = fields[selected].value.chars().count();
+            }
+            KeyCode::Enter if !editing && fields[selected].dialog_list => {
+                edit_dialog_list(stdout, &mut fields[selected].value)?;
+                cursors[selected] = fields[selected].value.chars().count();
+            }
             KeyCode::Enter if !editing && fields[selected].textarea => {
                 edit_textarea(stdout, &mut fields[selected].value)?;
                 cursors[selected] = fields[selected].value.chars().count();

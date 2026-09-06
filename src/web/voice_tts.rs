@@ -253,25 +253,6 @@ fn mimo_clone_voice(cfg: &MimoTtsConfig) -> Result<String> {
     Ok(format!("data:{mime};base64,{encoded}"))
 }
 
-/// 语速档位 + 指令拼成 user 消息:「语速稍快。<指令>」。MiMo 没有数值语速,
-/// 只认这种说法。
-pub(crate) fn mimo_instruction(cfg: &MimoTtsConfig) -> String {
-    let speed = cfg.speed.trim();
-    let instruction = cfg.instruction.trim();
-    let speed = if speed.is_empty() || speed == "常速" {
-        String::new()
-    } else if speed.starts_with("语速") {
-        speed.to_string()
-    } else {
-        format!("语速{speed}")
-    };
-    match (speed.is_empty(), instruction.is_empty()) {
-        (true, _) => instruction.to_string(),
-        (false, true) => speed,
-        (false, false) => format!("{speed}。{instruction}"),
-    }
-}
-
 /// 组 `chat/completions` 请求体:待合成文本在 assistant 消息(风格标签作前缀),
 /// 指令/音色描述在 user 消息;`audio.voice` 按模型:预置 id 或克隆样本 data URI。
 pub(crate) fn mimo_request_body(cfg: &MimoTtsConfig, text: &str) -> Result<Value> {
@@ -282,15 +263,15 @@ pub(crate) fn mimo_request_body(cfg: &MimoTtsConfig, text: &str) -> Result<Value
         model
     };
     let mut messages = Vec::new();
+    let prompt = cfg.prompt.trim();
     if model.ends_with("voicedesign") {
         anyhow::ensure!(
-            !cfg.instruction.trim().is_empty(),
-            "MiMo voicedesign 模型需要一句音色描述(instruction)"
+            !prompt.is_empty(),
+            "MiMo voicedesign 模型需要在提示词里写一句音色描述"
         );
     }
-    let instruction = mimo_instruction(cfg);
-    if !instruction.is_empty() {
-        messages.push(json!({ "role": "user", "content": instruction }));
+    if !prompt.is_empty() {
+        messages.push(json!({ "role": "user", "content": prompt }));
     }
     // 标签之间 MiMo 要空格;配置里(TUI 多选)存的是逗号分隔,顿号/中文逗号也认。
     let style = cfg
@@ -567,8 +548,7 @@ mod tests {
         let mut cfg = mimo_cfg();
         cfg.voice = "冰糖".to_string();
         cfg.style = "温柔,慵懒".to_string();
-        cfg.instruction = "像在跟朋友聊天".to_string();
-        cfg.speed = "稍快".to_string();
+        cfg.prompt = "语速稍快,像在跟朋友聊天".to_string();
         let body = mimo_request_body(&cfg, "今天也是充满希望的一天").unwrap();
         assert_eq!(body["model"], "mimo-v2.5-tts");
         assert_eq!(body["stream"], false);
@@ -577,12 +557,10 @@ mod tests {
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "user");
-        assert_eq!(messages[0]["content"], "语速稍快。像在跟朋友聊天");
-        // 只有语速档位也发 user 消息;常速/空不发。
-        cfg.instruction.clear();
-        assert_eq!(mimo_instruction(&cfg), "语速稍快");
-        cfg.speed = "常速".to_string();
-        assert_eq!(mimo_instruction(&cfg), "");
+        assert_eq!(messages[0]["content"], "语速稍快,像在跟朋友聊天");
+        // 旧键名 instruction 照样读进 prompt。
+        let legacy: MimoTtsConfig = serde_json::from_str(r#"{"instruction":"温柔一点"}"#).unwrap();
+        assert_eq!(legacy.prompt, "温柔一点");
         assert_eq!(messages[1]["role"], "assistant");
         assert_eq!(messages[1]["content"], "(温柔 慵懒)今天也是充满希望的一天");
 
@@ -597,7 +575,7 @@ mod tests {
         let mut cfg = mimo_cfg();
         cfg.model = "mimo-v2.5-tts-voicedesign".to_string();
         assert!(mimo_request_body(&cfg, "你好").is_err());
-        cfg.instruction = "二十岁女声,清亮".to_string();
+        cfg.prompt = "二十岁女声,清亮".to_string();
         let body = mimo_request_body(&cfg, "你好").unwrap();
         assert!(body["audio"].get("voice").is_none());
         assert_eq!(body["messages"][0]["content"], "二十岁女声,清亮");

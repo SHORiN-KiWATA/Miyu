@@ -395,18 +395,18 @@ fn edit_mimo(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig)
             ),
             format!(
                 "{} ({}{})",
-                t("Style and instruction", "风格与指令"),
+                t("Style and prompt", "风格与提示词"),
                 if cfg.style.trim().is_empty() {
                     t("no style tag", "无标签").to_string()
                 } else {
                     format!("({})", cfg.style.trim())
                 },
-                if cfg.instruction.trim().is_empty() {
+                if cfg.prompt.trim().is_empty() {
                     String::new()
                 } else {
                     format!(
                         " · {}",
-                        crate::web::voice_bridge::clip(cfg.instruction.trim(), 24)
+                        crate::web::voice_bridge::clip(cfg.prompt.trim(), 24)
                     )
                 }
             ),
@@ -511,34 +511,28 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
             cfg.style.clone(),
         )
         .multi_choices(MIMO_STYLES),
-        // MiMo 没有数值语速,档位会拼成「语速稍快」进指令。
+        // MiMo 没有数值语速/音量,全靠这一句自然语言。
         Field::new(
             t(
-                "Speed (MiMo has no numeric speed; this becomes an instruction)",
-                "语速(MiMo 没有数值语速,档位会拼成「语速稍快」放进指令)",
+                "Prompt (Enter to type: pace/tone/role, e.g. 语速稍快,像在跟朋友聊天; voice description for voicedesign)",
+                "提示词(回车输入:语速/语气/角色,如「语速稍快,像在跟朋友聊天」;voicedesign 模型下写音色描述,必填)",
             ),
-            cfg.speed.clone(),
-        )
-        .choices(&["很慢", "稍慢", "稍快", "很快"])
-        .empty_choice_label(t("normal", "常速")),
-        Field::new(
-            t(
-                "Instruction (Enter to type: tone/role; voice description for voicedesign)",
-                "指令(回车输入:语气/角色;voicedesign 模型下写音色描述,必填)",
-            ),
-            cfg.instruction.clone(),
+            cfg.prompt.clone(),
         ),
         Field::new(
             t("Preview sentence", "试听语句"),
             config.voice.tts.preview_text.clone(),
         ),
     ];
-    run_form_without_buttons(stdout, t(" MiMo STYLE ", " MiMo 风格与指令 "), &mut fields)?;
+    run_form_without_buttons(
+        stdout,
+        t(" MiMo STYLE ", " MiMo 风格与提示词 "),
+        &mut fields,
+    )?;
     let tts = &mut config.voice.tts;
     tts.mimo.style = fields[0].value.trim().to_string();
-    tts.mimo.speed = fields[1].value.trim().to_string();
-    tts.mimo.instruction = fields[2].value.trim().to_string();
-    let preview = fields[3].value.trim().to_string();
+    tts.mimo.prompt = fields[1].value.trim().to_string();
+    let preview = fields[2].value.trim().to_string();
     tts.preview_text = if preview.is_empty() {
         "今天也是充满希望的一天".to_string()
     } else {
