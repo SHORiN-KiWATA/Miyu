@@ -30,7 +30,7 @@ source=(
   "${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.release.pkg.tar.zst::${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}-${_release_pkgrel}-${CARCH}.pkg.tar.zst"
 )
 sha256sums=(
-  '4c4894190c72c23cf13265424d622bc7094b496174da61cae0456aa31f7ac975'
+  '6ff9ea2aefe3780a4d6896ca95d93edd77bb691009bec1c43428e5e236ac58fd'
 )
 
 package() {
