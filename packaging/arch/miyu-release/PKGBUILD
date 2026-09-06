@@ -17,7 +17,7 @@
 
 pkgbase=miyu
 pkgname=('miyu' 'miyu-voice')
-pkgver=0.4.7
+pkgver=0.5.0
 pkgrel=1
 pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
 arch=('x86_64')
@@ -32,6 +32,10 @@ optdepends=(
   'fish: fish shell integration support'
   'bash: bash shell integration support'
   'zsh: zsh shell integration support'
+  'python-playwright: 网页检索脚本(小红书/知乎/闲鱼/酒店比价)'
+  'xorg-server-xvfb: 网页检索脚本后台运行所需的虚拟显示'
+  'chromium: 网页检索脚本的浏览器(或改装 google-chrome)'
+  'python-qrcode: 扫码登录时在终端里画二维码'
 )
 # sherpa-onnx 预编译静态库：由 sherpa-onnx-sys 的 build.rs 在编译期读取
 # （SHERPA_ONNX_ARCHIVE_DIR），放进 source 让 makepkg 负责下载与校验，
@@ -61,7 +65,7 @@ build() {
 }
 
 package_miyu() {
-  depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'ripgrep')
+  depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'ripgrep')
   optdepends=(
     'miyu-voice: voice wake word + speech recognition front end'
     'git: update default Shorin Wiki knowledge base'
