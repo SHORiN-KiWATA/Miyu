@@ -67,7 +67,15 @@ pub(in crate::web) async fn voice_tts_voices(
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
-    let cfg = state.manager.lock().unwrap().config.voice.tts.minimax.clone();
+    let cfg = state
+        .manager
+        .lock()
+        .unwrap()
+        .config
+        .voice
+        .tts
+        .minimax
+        .clone();
     match voice_tts::list_minimax_voices(&cfg).await {
         Ok(voices) => Ok(Json(json!({ "voices": voices, "error": null }))),
         Err(error) => Ok(Json(json!({ "voices": [], "error": format!("{error:#}") }))),
@@ -88,7 +96,15 @@ pub(in crate::web) async fn voice_tts_preview(
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_mutation(&headers, &state)?;
     let text = if request.text.trim().is_empty() {
-        let preview = state.manager.lock().unwrap().config.voice.tts.preview_text.clone();
+        let preview = state
+            .manager
+            .lock()
+            .unwrap()
+            .config
+            .voice
+            .tts
+            .preview_text
+            .clone();
         if preview.trim().is_empty() {
             "今天也是充满希望的一天".to_string()
         } else {
@@ -133,7 +149,11 @@ async fn stream_dictation(state: DaemonState, mut socket: WebSocket) {
             return;
         }
     };
-    if socket.send(ws_json(json!({ "type": "ready" }))).await.is_err() {
+    if socket
+        .send(ws_json(json!({ "type": "ready" })))
+        .await
+        .is_err()
+    {
         voice_bridge::release_dictation();
         return;
     }

@@ -159,8 +159,16 @@ fn run_main_menu(
                 "{} ({}: {} · TTS: {})",
                 t("Voice", "语音功能"),
                 t("wake", "唤醒"),
-                if config.voice.enabled { t("on", "开") } else { t("off", "关") },
-                if config.voice.tts.enabled { t("on", "开") } else { t("off", "关") },
+                if config.voice.enabled {
+                    t("on", "开")
+                } else {
+                    t("off", "关")
+                },
+                if config.voice.tts.enabled {
+                    t("on", "开")
+                } else {
+                    t("off", "关")
+                },
             ),
             t("Save and exit", "保存并退出").to_string(),
         ];

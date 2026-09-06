@@ -32,6 +32,7 @@ mod memory;
 mod moegirl;
 mod package_advisor;
 mod patch_preview;
+pub(crate) mod platform_outreach;
 mod protondb_query;
 mod registry;
 mod scripts;
@@ -39,7 +40,6 @@ mod skills;
 mod subagent_runner;
 mod task;
 mod todowrite;
-pub(crate) mod platform_outreach;
 pub(crate) mod voice_chat;
 pub(crate) mod voice_speak;
 pub(crate) use todowrite::{clear_session_todos, session_todos};
@@ -654,6 +654,15 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
+    }
+    // 写代码时「跑完把结果发我手机」是真需求(09-05 用户拍板):dev 也给
+    // send_qq_message,条件与 normal 一致(终端外发开着、QQ 连着)。speak
+    // 不给——dev 提示词极简、没有语音协议,编码回合里开口念代码只是噪音。
+    if config.platforms.terminal_outreach
+        && config.platforms.qq.enabled
+        && platform_outreach::qq_connected()
+    {
+        platform_outreach::register(&mut registry, config);
     }
     // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
     // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录

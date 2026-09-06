@@ -291,6 +291,11 @@ impl KnowledgeBase {
         if !self.config.plugins.knowledge_base.embedding_enabled || self.embedder().is_none() {
             return Ok(());
         }
+        // 测试里不起后台重建:测试二进制"再执行自己"会变成 fork 炸弹(见
+        // `paths::miyu_executable` 的说明,那里也有一道闸)。
+        if cfg!(test) {
+            return Ok(());
+        }
         let exe = crate::paths::miyu_executable()?;
         Command::new(exe)
             .args(["kb", "embed", "reindex", "--quiet"])

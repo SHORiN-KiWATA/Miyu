@@ -208,7 +208,9 @@ pub(crate) fn outbound_text_for_history(message: &OutboundMessage) -> String {
                 OutboundSegment::ImageBytes { .. }
                 | OutboundSegment::ImagePath { .. }
                 | OutboundSegment::FilePath { .. } => {}
-                OutboundSegment::AudioPath { .. } => parts.push("[语音]".to_string()),
+                OutboundSegment::AudioPath { transcript, .. } => {
+                    parts.push(crate::platform_types::voice_history_text(transcript))
+                }
             }
         }
     }

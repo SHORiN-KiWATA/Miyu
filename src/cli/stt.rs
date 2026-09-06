@@ -58,7 +58,10 @@ pub(in crate::cli) async fn run_voice_command(
             let mut stream = connect_daemon(paths).await?;
             ipc::send(&mut stream, &IpcRequest::new(IpcCommand::VoiceReset)).await?;
             expect_ack(&mut stream, "VoiceReset").await?;
-            eprintln!("\x1b[2m{}\x1b[0m", t("voice session cleared", "语音会话已清空"));
+            eprintln!(
+                "\x1b[2m{}\x1b[0m",
+                t("voice session cleared", "语音会话已清空")
+            );
             Ok(())
         }
         VoiceCommand::Status => {
@@ -76,7 +79,10 @@ pub(in crate::cli) async fn run_voice_command(
         VoiceCommand::History { limit } => {
             let marker = paths.state_dir.join("voice-session-id");
             let Ok(session_id) = std::fs::read_to_string(&marker) else {
-                eprintln!("\x1b[2m{}\x1b[0m", t("no voice session yet", "还没有语音会话"));
+                eprintln!(
+                    "\x1b[2m{}\x1b[0m",
+                    t("no voice session yet", "还没有语音会话")
+                );
                 return Ok(());
             };
             let session_id = session_id.trim().to_string();
@@ -89,7 +95,11 @@ pub(in crate::cli) async fn run_voice_command(
                     .strip_prefix("<voice_input>")
                     .and_then(|rest| rest.strip_suffix("</voice_input>"))
                     .unwrap_or(raw);
-                println!("\x1b[1m{} user\x1b[0m\n{}\n", turn.user_timestamp, user.trim());
+                println!(
+                    "\x1b[1m{} user\x1b[0m\n{}\n",
+                    turn.user_timestamp,
+                    user.trim()
+                );
                 let assistant =
                     crate::agent::prompt_strip_tagged(turn.assistant_content.clone(), "speak");
                 println!(

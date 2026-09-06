@@ -26,6 +26,7 @@ mod outbound;
 pub(crate) mod proactive;
 mod send;
 mod turn;
+mod voice_inbound;
 use adapter::*;
 use admission::*;
 use builtin_commands::*;

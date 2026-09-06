@@ -59,7 +59,9 @@ pub(crate) fn sanitize_for_speech(text: &str) -> String {
             continue;
         }
         let mut cleaned = trimmed
-            .trim_start_matches(|ch: char| ch == '#' || ch == '>' || ch == '-' || ch == '*' || ch == '+')
+            .trim_start_matches(|ch: char| {
+                ch == '#' || ch == '>' || ch == '-' || ch == '*' || ch == '+'
+            })
             .trim()
             .to_string();
         // 有序列表 "1. "
@@ -84,7 +86,10 @@ fn replace_tokens(line: &str) -> String {
     line.split_whitespace()
         .map(|word| {
             let bare = word.trim_matches(|ch: char| ",。,;;:()()[]【】\"'<>".contains(ch));
-            if bare.starts_with("http://") || bare.starts_with("https://") || bare.starts_with("www.") {
+            if bare.starts_with("http://")
+                || bare.starts_with("https://")
+                || bare.starts_with("www.")
+            {
                 "链接".to_string()
             } else if looks_like_path(bare) {
                 "路径".to_string()
@@ -274,7 +279,10 @@ pub(crate) async fn list_minimax_voices(tts: &MiniMaxTtsConfig) -> Result<Vec<Va
                 let label = if description.is_empty() || description == name {
                     format!("{prefix}{name}")
                 } else {
-                    format!("{prefix}{name} — {}", crate::web::voice_bridge::clip(&description, 40))
+                    format!(
+                        "{prefix}{name} — {}",
+                        crate::web::voice_bridge::clip(&description, 40)
+                    )
                 };
                 out.push(json!({ "value": id, "label": label }));
             }
@@ -289,8 +297,12 @@ mod tests {
 
     #[test]
     fn extracts_and_strips_speak_block() {
-        let reply = "详细步骤见下。\n\n```sh\nls /tmp\n```\n<speak>我已经把文件列出来了,一共三个。</speak>";
-        assert_eq!(extract_speak(reply).as_deref(), Some("我已经把文件列出来了,一共三个。"));
+        let reply =
+            "详细步骤见下。\n\n```sh\nls /tmp\n```\n<speak>我已经把文件列出来了,一共三个。</speak>";
+        assert_eq!(
+            extract_speak(reply).as_deref(),
+            Some("我已经把文件列出来了,一共三个。")
+        );
         assert_eq!(strip_speak(reply), "详细步骤见下。\n\n```sh\nls /tmp\n```");
         assert_eq!(extract_speak("没有块"), None);
     }
@@ -298,14 +310,24 @@ mod tests {
     #[test]
     fn sanitizes_markdown_for_speech() {
         let text = "# 结果\n\n- 已保存到 `/home/u/a.txt`\n- 参考 https://example.com/x\n\n```\ncode\n```\n| a | b |\n**完成**了";
-        assert_eq!(sanitize_for_speech(text), "结果 已保存到 路径 参考 链接 完成了");
+        assert_eq!(
+            sanitize_for_speech(text),
+            "结果 已保存到 路径 参考 链接 完成了"
+        );
     }
 
     #[test]
     fn spoken_text_prefers_speak_and_clips() {
-        let tts = VoiceTtsConfig { max_chars: 20, ..Default::default() };
-        let reply = format!("{}<speak>第一句话。第二句话很长很长很长很长很长很长很长很长很长很长。</speak>", "x".repeat(50));
+        let tts = VoiceTtsConfig {
+            max_chars: 20,
+            ..Default::default()
+        };
+        let reply = format!(
+            "{}<speak>第一句话。第二句话很长很长很长很长很长很长很长很长很长很长。</speak>",
+            "x".repeat(50)
+        );
         assert_eq!(spoken_text(&reply, &tts), "第一句话。");
-        assert_eq!(spoken_text("", &tts), "办好了");
+        // 兜底词跟随 UI 语言(测试环境 LANG 不定)。
+        assert!(matches!(spoken_text("", &tts).as_str(), "办好了" | "done"));
     }
 }

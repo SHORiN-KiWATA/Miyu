@@ -171,7 +171,7 @@ pub struct VoiceTtsConfig {
     /// 任一开启都会拉起 miyu-voice(唤醒关闭时它只管播放,不开麦克风)。
     #[serde(default)]
     pub enabled: bool,
-    /// 激活的播报供应商:minimax;None = 没选。
+    /// 播报供应商:minimax;None / 空 = 默认 MiniMax。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<String>,
     /// 播报文本上限(字),超出截断。
@@ -266,14 +266,34 @@ impl Default for MiniMaxTtsConfig {
 }
 
 impl VoiceTtsConfig {
-    /// 播报可用:开关开着且选了供应商。
+    /// 播报可用:开关开着,且激活的供应商配好了(`active` 缺省当 MiniMax,
+    /// 填了 key 就算配好——装上、填 key、开开关三步即可,不用再点"激活")。
     pub fn is_active(&self) -> bool {
-        self.enabled && matches!(self.active.as_deref(), Some("minimax"))
+        self.enabled && self.provider() == Some("minimax") && self.minimax.has_key()
+    }
+
+    /// 生效的供应商名:`active` 为空或空串时默认 MiniMax。
+    pub fn provider(&self) -> Option<&str> {
+        match self.active.as_deref().map(str::trim) {
+            None | Some("") => Some("minimax"),
+            Some(other) => Some(other),
+        }
+    }
+}
+
+impl MiniMaxTtsConfig {
+    pub fn has_key(&self) -> bool {
+        self.api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
     }
 }
 
 fn default_wake_keywords() -> Vec<String> {
-    vec!["未有未有".to_string()]
+    ["未有未有", "密友密友", "miyumiyu", "みゆみゆ"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 /// 把 "未有未有, 小未" 这样的文本拆成唤醒词列表(逗号/顿号/分号/换行分隔,去重)。
@@ -288,7 +308,9 @@ pub fn split_wake_keywords(text: &str) -> Vec<String> {
     out
 }
 
-fn deserialize_wake_keywords<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+fn deserialize_wake_keywords<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum OneOrMany {

@@ -707,7 +707,7 @@
           hint: "播报供应商独立配置,不共用 LLM 供应商",
           kind: "select",
           choices: [
-            { value: "", label: "未选择" },
+            { value: "", label: "默认(MiniMax)" },
             { value: "minimax", label: "MiniMax" },
           ],
           default: "",
@@ -2192,6 +2192,19 @@
           kind: "session-limits",
           optional: true,
           default: null,
+        },
+        {
+          key: "probability_reply",
+          label: "概率主动回复",
+          hint: "只管主动回复判断里的概率抽样;@、关键词、引用、接话、覆盖顶替和群管审核不受影响",
+          kind: "select",
+          choices: [
+            { value: "", label: "继承插件设置" },
+            { value: "on", label: "开" },
+            { value: "off", label: "关(不做概率抽样)" },
+          ],
+          default: "",
+          nullable: true,
         },
       ],
     },

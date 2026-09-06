@@ -69,8 +69,10 @@ cfg["voice"] = {"enabled": True, "wake_keyword": "周望军", "follow_up_seconds
 (HOME / "config" / "config.jsonc").write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
 
 mods = subprocess.run(["pactl", "list", "short", "modules"], capture_output=True, text=True).stdout
+loaded_modules = []  # 本脚本加载的 null sink,结束时卸掉(留着会污染用户的 PipeWire 图)
 if SINK not in mods:
-    subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={SINK}", "channel_map=front-left,front-right"], check=True, capture_output=True)
+    r = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={SINK}", "channel_map=front-left,front-right"], check=True, capture_output=True, text=True)
+    loaded_modules.append(r.stdout.strip())
 
 env = dict(os.environ)
 for k in ("XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "MIYU_DIRECT"): env.pop(k, None)
@@ -296,6 +298,8 @@ finally:
     leftover = subprocess.run(["pgrep", "-f", f"{VOICE}$"], capture_output=True, text=True).stdout.split()
     results["voice_worker_exited_with_daemon"] = not leftover
     for pid in leftover: subprocess.run(["kill", pid])
+    for module in loaded_modules:
+        subprocess.run(["pactl", "unload-module", module], capture_output=True)
     print("\n== 结果")
     for key, value in results.items(): print(f"  {key:32} {value}")
     print(f"  日志: {WORK}/daemon.log, {HOME}/state/logs/voice-worker.log")

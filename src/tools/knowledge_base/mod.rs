@@ -243,7 +243,10 @@ mod tests {
     fn edit_lines_replaces_inclusive_range() {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
+        // 内置本地 embedding 成为默认后,不关掉这一项编辑就会排语义重建;
+        // 这条测的是行编辑本身。
+        config.plugins.knowledge_base.embedding_enabled = false;
         let kb = KnowledgeBase::new(config, paths).unwrap();
         let source = temp.path().join("note.md");
         std::fs::write(&source, "one\ntwo\nthree\n").unwrap();

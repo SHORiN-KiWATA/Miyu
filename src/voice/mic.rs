@@ -215,8 +215,7 @@ fn open_stream(
     let channels = config.channels() as usize;
     let description = format!(
         "{} ({source_rate}Hz {channels}ch {:?})",
-        pipewire_target
-            .unwrap_or_else(|| device.name().unwrap_or_else(|_| "unknown".to_string())),
+        pipewire_target.unwrap_or_else(|| device.name().unwrap_or_else(|_| "unknown".to_string())),
         config.sample_format()
     );
     let stream_config: cpal::StreamConfig = config.clone().into();

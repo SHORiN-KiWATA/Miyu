@@ -100,7 +100,7 @@ impl OneBotAdapter {
                     push_message_frame(&mut frames, &mut current, &mut current_image_digests);
                     files.push((path, name));
                 }
-                OutboundSegment::AudioPath { path } => {
+                OutboundSegment::AudioPath { path, .. } => {
                     // QQ 语音消息不能和文字/图片混在一条里:前后各切一帧。
                     push_message_frame(&mut frames, &mut current, &mut current_image_digests);
                     let bytes = read_file_capped(&path, MAX_OUTBOUND_IMAGE_BYTES).await?;
@@ -118,7 +118,9 @@ impl OneBotAdapter {
         let target_frame = if matches!(self.target, Target::Group { .. })
             && response_target.is_some_and(ResponseTarget::is_effective)
         {
-            frames.iter().position(|frame| !frame_is_voice(&frame.segments))
+            frames
+                .iter()
+                .position(|frame| !frame_is_voice(&frame.segments))
         } else {
             None
         };

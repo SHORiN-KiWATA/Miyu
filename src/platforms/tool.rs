@@ -122,7 +122,10 @@ fn register_voice_message(registry: &mut ToolRegistry, context: Arc<PlatformTurn
                     let outcome = context
                         .send(OutboundMessage::segments(
                             OutboundOrigin::Tool,
-                            vec![OutboundSegment::AudioPath { path: path.clone() }],
+                            vec![OutboundSegment::AudioPath {
+                                path: path.clone(),
+                                transcript: text.clone(),
+                            }],
                         ))
                         .await;
                     let _ = std::fs::remove_file(&path);

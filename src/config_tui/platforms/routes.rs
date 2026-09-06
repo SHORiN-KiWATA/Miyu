@@ -69,8 +69,13 @@ pub(in crate::config_tui) fn platform_model_route_label(route: &PlatformModelRou
         t("set", "已设置")
     };
     let persona = platform_persona_summary(&route.persona);
+    let probability = match route.probability_reply {
+        Some(false) => format!(" · {}", t("random reply:off", "概率主动回复:关")),
+        Some(true) => format!(" · {}", t("random reply:on", "概率主动回复:开")),
+        None => String::new(),
+    };
     format!(
-        "{kind} {} · {}:{persona} · {}:{text} {}:{multimodal} · {}:{prompt}",
+        "{kind} {} · {}:{persona} · {}:{text} {}:{multimodal} · {}:{prompt}{probability}",
         route.conversation.id,
         t("persona", "人格"),
         t("text", "文本"),
@@ -99,6 +104,7 @@ pub(in crate::config_tui) fn edit_platform_model_route(
             multimodal_models: None,
             extra_prompt: String::new(),
             session_limits: None,
+            probability_reply: None,
         });
     let mut selected = 0usize;
     loop {
@@ -148,6 +154,11 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                     .session_limits
                     .map(session_limits_label)
                     .unwrap_or_else(|| t("inherit", "继承").to_string())
+            ),
+            format!(
+                "{}: {}",
+                t("Random active replies", "概率主动回复"),
+                probability_reply_label(route.probability_reply)
             ),
         ];
         draw_menu(
@@ -235,10 +246,41 @@ pub(in crate::config_tui) fn edit_platform_model_route(
                         route.session_limits = None;
                     }
                 }
+                7 => {
+                    let choices = [
+                        probability_reply_label(None).to_string(),
+                        probability_reply_label(Some(true)).to_string(),
+                        probability_reply_label(Some(false)).to_string(),
+                    ];
+                    let current = probability_reply_label(route.probability_reply);
+                    let picked = select_choice(
+                        stdout,
+                        t(" RANDOM ACTIVE REPLIES ", " 概率主动回复 "),
+                        current,
+                        &choices,
+                        "",
+                        true,
+                    )?;
+                    route.probability_reply = if picked == choices[1] {
+                        Some(true)
+                    } else if picked == choices[2] {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                }
                 _ => {}
             },
             _ => {}
         }
+    }
+}
+
+fn probability_reply_label(value: Option<bool>) -> &'static str {
+    match value {
+        None => t("inherit plugin setting", "继承插件设置"),
+        Some(true) => t("on", "开"),
+        Some(false) => t("off (no random sampling)", "关(不做概率抽样)"),
     }
 }
 

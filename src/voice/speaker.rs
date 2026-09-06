@@ -38,19 +38,44 @@ impl Speaker {
     }
 }
 
+/// 输出流按需打开,连续 30s 没播放才关(每次重新打开设备要几十到上百毫秒,
+/// 会让播报比通知晚一拍;关掉是为了不说话时不挂着音频设备)。
+const OUTPUT_IDLE: Duration = Duration::from_secs(30);
+
 fn run(rx: mpsc::Receiver<SpeakerCommand>, on_state: Box<dyn Fn(bool) + Send>) {
-    while let Ok(command) = rx.recv() {
+    let mut output: Option<(rodio::OutputStream, rodio::OutputStreamHandle)> = None;
+    loop {
+        let command = if output.is_some() {
+            match rx.recv_timeout(OUTPUT_IDLE) {
+                Ok(command) => command,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    output = None;
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match rx.recv() {
+                Ok(command) => command,
+                Err(_) => return,
+            }
+        };
         let SpeakerCommand::PlayWav(wav) = command else {
             continue;
         };
-        let (stream, handle) = match rodio::OutputStream::try_default() {
-            Ok(pair) => pair,
-            Err(error) => {
-                tracing::warn!("打开音频输出失败,播报跳过: {error}");
-                continue;
+        if output.is_none() {
+            match rodio::OutputStream::try_default() {
+                Ok(pair) => output = Some(pair),
+                Err(error) => {
+                    tracing::warn!("打开音频输出失败,播报跳过: {error}");
+                    continue;
+                }
             }
+        }
+        let Some((_, handle)) = output.as_ref() else {
+            continue;
         };
-        let Ok(sink) = rodio::Sink::try_new(&handle) else {
+        let Ok(sink) = rodio::Sink::try_new(handle) else {
             continue;
         };
         let Ok(source) = rodio::Decoder::new(Cursor::new(wav)) else {
@@ -61,7 +86,6 @@ fn run(rx: mpsc::Receiver<SpeakerCommand>, on_state: Box<dyn Fn(bool) + Send>) {
         sink.append(source);
         wait_for_sink(&rx, &sink);
         on_state(false);
-        drop(stream);
     }
 }
 

@@ -761,7 +761,7 @@ fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
         ("check_os_info", "System information", "查看系统信息"),
         ("get_weather", "Weather", "天气查询"),
         ("get_exchange_rate", "Exchange rates", "汇率查询"),
-        ("vision_analyze", "Analyze image", "视觉分析"),
+        ("vision_analyze", "Visual analysis", "视觉分析"),
         ("use_meme", "Meme", "表情包"),
         ("manage_meme", "Manage memes", "管理表情包"),
         ("task", "Subagent", "子代理"),

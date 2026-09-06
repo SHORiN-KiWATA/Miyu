@@ -36,5 +36,6 @@ pub(super) fn test_route(config: &AppConfig) -> PlatformModelRoute {
         }]),
         extra_prompt: "Reply naturally in this group.".to_string(),
         session_limits: None,
+        probability_reply: None,
     }
 }

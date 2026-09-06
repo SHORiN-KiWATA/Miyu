@@ -18,9 +18,17 @@ use sherpa_onnx::{
     KeywordSpotter, KeywordSpotterConfig, OnlineTransducerModelConfig, SileroVadModelConfig,
     VadModelConfig, VoiceActivityDetector,
 };
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 pub const SAMPLE_RATE: u32 = 16_000;
+/// 语音段前补回的原始音频长度。VAD 判定"开始说话"总比真实起音晚一点,
+/// 能量门又会把起音前的弱帧整个跳过,m/n/b 这类弱起音的唤醒词(密友密友)
+/// 头一个音节常被切掉,裸模型能命中而管线不命中(09-05 实测)。这里从
+/// 原始环形缓冲把段前这一截补回来再送 KWS/STT。
+const PRE_ROLL: Duration = Duration::from_millis(500);
+/// 原始环形缓冲容量:PRE_ROLL + VAD 最长语音段(20s)+ 裕量。
+const RAW_RING: Duration = Duration::from_secs(23);
 /// 唤醒后等待指令的静默超时。
 const AWAIT_TIMEOUT: Duration = Duration::from_secs(8);
 /// 听写窗口:静默 10 秒自动结束("问一句就走"的形态,不适用唤醒对话的
@@ -110,15 +118,27 @@ pub struct Pipeline {
     /// 窗口内连续人声采样数,用于起势(SpeechStart)判定。
     speech_run: usize,
     speech_start_emitted: bool,
+    /// 原始音频环形缓冲(含被能量门跳过的帧),补段前起音用。
+    raw_ring: VecDeque<f32>,
+    /// 环形缓冲第一个采样在原始流里的下标。
+    raw_ring_base: usize,
+    /// 已喂入的原始采样总数 / 已进 VAD 的采样总数。
+    raw_total: usize,
+    admitted_total: usize,
+    /// VAD 流下标 → 原始流下标的分段映射:每次能量门跳帧后重新进 VAD
+    /// 时记一条 (admitted_offset, raw_offset)。
+    admitted_map: VecDeque<(usize, usize)>,
+    last_frame_dropped: bool,
 }
 
 impl Pipeline {
     pub fn new(config: &VoiceRuntimeConfig) -> Result<Self> {
-        let stt: Box<dyn SttEngine> = match &config.stt {
-            SttChoice::Local { threads, language } => Box::new(
-                super::stt::LocalSenseVoice::new(&config.models_dir, *threads, language)?,
-            ),
-        };
+        let stt: Box<dyn SttEngine> =
+            match &config.stt {
+                SttChoice::Local { threads, language } => Box::new(
+                    super::stt::LocalSenseVoice::new(&config.models_dir, *threads, language)?,
+                ),
+            };
         Self::with_stt(config, stt)
     }
 
@@ -144,12 +164,22 @@ impl Pipeline {
             VoiceActivityDetector::create(&vad_config, 60.0).context("加载 Silero VAD 模型失败")?;
 
         let kws_paths = models::kws_paths(&config.models_dir);
-        let keyword_lines = config
-            .wake_keywords
-            .iter()
-            .map(|keyword| keywords::encode_keyword(keyword, &kws_paths.tokens))
-            .collect::<Result<Vec<_>>>()?;
-        anyhow::ensure!(!keyword_lines.is_empty(), "至少要有一个唤醒词");
+        // 编不出来的唤醒词只记日志跳过(用户配置里混进一个不支持的写法不该
+        // 让整个语音前端起不来);全部编不出来才报错。
+        let mut keyword_lines: Vec<String> = Vec::new();
+        let mut first_error: Option<anyhow::Error> = None;
+        for keyword in &config.wake_keywords {
+            match keywords::encode_keyword(keyword, &kws_paths.tokens) {
+                Ok(lines) => keyword_lines.extend(lines),
+                Err(error) => {
+                    tracing::warn!("唤醒词「{keyword}」无法编码,跳过: {error:#}");
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        if keyword_lines.is_empty() {
+            return Err(first_error.unwrap_or_else(|| anyhow::anyhow!("至少要有一个唤醒词")));
+        }
         let keyword_line = keyword_lines.join("\n");
         let mut kws_config = KeywordSpotterConfig::default();
         kws_config.model_config.transducer = OnlineTransducerModelConfig {
@@ -178,6 +208,12 @@ impl Pipeline {
             hold: false,
             speech_run: 0,
             speech_start_emitted: false,
+            raw_ring: VecDeque::with_capacity(samples(RAW_RING)),
+            raw_ring_base: 0,
+            raw_total: 0,
+            admitted_total: 0,
+            admitted_map: VecDeque::from([(0usize, 0usize)]),
+            last_frame_dropped: false,
         })
     }
 
@@ -263,6 +299,7 @@ impl Pipeline {
         let mut events = Vec::new();
         let vad_busy = self.vad.detected() || !self.vad.is_empty();
         let admitted = self.gate.admit(frame, vad_busy);
+        self.record_raw(frame, admitted);
         if admitted {
             self.vad.accept_waveform(frame);
         }
@@ -320,24 +357,78 @@ impl Pipeline {
         self.vad.flush();
         self.drain_segments(&mut events);
         // flush 后内部窗口游标可能残留半窗数据,直接续喂会让 C 层
-        // circular-buffer 报 Invalid n;喂流前复位一次。
+        // circular-buffer 报 Invalid n;喂流前复位一次。VAD 流下标随之归零,
+        // 映射表同步重建。
         self.vad.reset();
+        self.admitted_total = 0;
+        self.admitted_map.clear();
+        self.admitted_map.push_back((0, self.raw_total));
+        self.last_frame_dropped = false;
         events
+    }
+
+    /// 原始帧进环形缓冲;能量门跳帧后第一帧重新进 VAD 时记一条映射。
+    fn record_raw(&mut self, frame: &[f32], admitted: bool) {
+        self.raw_ring.extend(frame.iter().copied());
+        let capacity = samples(RAW_RING);
+        if self.raw_ring.len() > capacity {
+            let drop = self.raw_ring.len() - capacity;
+            self.raw_ring.drain(..drop);
+            self.raw_ring_base += drop;
+        }
+        if admitted {
+            if self.last_frame_dropped {
+                self.admitted_map
+                    .push_back((self.admitted_total, self.raw_total));
+            }
+            self.admitted_total += frame.len();
+        }
+        self.last_frame_dropped = !admitted;
+        self.raw_total += frame.len();
+        // 映射只需覆盖环形缓冲还留着的范围。
+        while self.admitted_map.len() > 1 && self.admitted_map[1].1 <= self.raw_ring_base {
+            self.admitted_map.pop_front();
+        }
+    }
+
+    /// VAD 段(流下标 start、长度 len)→ 带前置起音的原始音频,以及补回的
+    /// 前置长度。环形缓冲里已没有对应数据时退回 VAD 段本身。
+    fn padded_segment(&self, start: usize, segment: &[f32]) -> (Vec<f32>, usize) {
+        let mapped = self
+            .admitted_map
+            .iter()
+            .rev()
+            .find(|(admitted, _)| *admitted <= start)
+            .map(|(admitted, raw)| raw + (start - admitted));
+        let Some(raw_start) = mapped else {
+            return (segment.to_vec(), 0);
+        };
+        let raw_end = raw_start + segment.len();
+        if raw_start < self.raw_ring_base || raw_end > self.raw_ring_base + self.raw_ring.len() {
+            return (segment.to_vec(), 0);
+        }
+        let pre = samples(PRE_ROLL).min(raw_start - self.raw_ring_base);
+        let from = raw_start - pre - self.raw_ring_base;
+        let to = raw_end - self.raw_ring_base;
+        (self.raw_ring.range(from..to).copied().collect(), pre)
     }
 
     fn drain_segments(&mut self, events: &mut Vec<VoiceEvent>) {
         while !self.vad.is_empty() {
-            let segment = match self.vad.front() {
-                Some(segment) => segment.samples().to_vec(),
+            let (start, segment) = match self.vad.front() {
+                Some(segment) => (segment.start().max(0) as usize, segment.samples().to_vec()),
                 None => break,
             };
             self.vad.pop();
-            self.handle_segment(&segment, events);
+            let (padded, pre) = self.padded_segment(start, &segment);
+            self.handle_segment(&padded, pre, events);
         }
     }
 
-    fn handle_segment(&mut self, samples: &[f32], events: &mut Vec<VoiceEvent>) {
-        let seconds = samples.len() as f32 / SAMPLE_RATE as f32;
+    /// `samples` 含 `pre` 个前置起音采样;长度判定按 VAD 段本身算。
+    fn handle_segment(&mut self, samples: &[f32], pre: usize, events: &mut Vec<VoiceEvent>) {
+        let seconds = (samples.len() - pre) as f32 / SAMPLE_RATE as f32;
+        let segment_len = samples.len() - pre;
         match self.phase {
             Phase::Idle => {
                 let Some(keyword_end) = self.keyword_hit(samples, events) else {
@@ -371,7 +462,7 @@ impl Pipeline {
                 }
             }
             Phase::Awaiting { .. } => {
-                if samples.len() < super::pipeline::samples(MIN_SEGMENT) {
+                if segment_len < super::pipeline::samples(MIN_SEGMENT) {
                     // 太短(咳嗽/敲击):继续等,不消耗唤醒。
                     return;
                 }
@@ -386,7 +477,7 @@ impl Pipeline {
             }
             // 会话/听写窗口:免唤醒词,整段直接转写。噪声不打扰也不关窗。
             Phase::Window { dictation, .. } => {
-                if samples.len() < super::pipeline::samples(MIN_SEGMENT) {
+                if segment_len < super::pipeline::samples(MIN_SEGMENT) {
                     return;
                 }
                 match self.transcribe_timed(samples, events) {

@@ -461,6 +461,7 @@ fn web_persona_rename_updates_qq_routes_and_deletion_is_rejected() {
             multimodal_models: None,
             extra_prompt: String::new(),
             session_limits: None,
+            probability_reply: None,
         });
     let renamed: PromptDocuments = serde_json::from_value(json!({
         "personas": [{
@@ -497,6 +498,7 @@ fn web_persona_renames_use_the_original_reference_snapshot() {
         multimodal_models: None,
         extra_prompt: String::new(),
         session_limits: None,
+        probability_reply: None,
     };
     let mut config = AppConfig::default();
     config.platforms.qq.conversations = vec![route("1", "A.md"), route("2", "B.md")];

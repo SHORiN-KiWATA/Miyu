@@ -123,7 +123,10 @@ async fn send(arguments: Value) -> Result<String> {
             &target.to_string(),
             crate::platform_types::OutboundMessage::segments(
                 crate::platform_types::OutboundOrigin::Tool,
-                vec![crate::platform_types::OutboundSegment::AudioPath { path: path.clone() }],
+                vec![crate::platform_types::OutboundSegment::AudioPath {
+                    path: path.clone(),
+                    transcript: text.clone(),
+                }],
             ),
         )
         .await;

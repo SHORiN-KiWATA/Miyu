@@ -313,6 +313,7 @@ fn session_limits_resolve_from_conversation_then_kind_then_qq() {
             running: 4,
             queued: 7,
         }),
+        probability_reply: None,
     });
     assert_eq!(
         qq.session_limits(PlatformConversationKind::Group, "42"),
@@ -375,6 +376,7 @@ fn qq_text_model_pool_resolution_preserves_conversation_priority() {
         multimodal_models: None,
         extra_prompt: String::new(),
         session_limits: None,
+        probability_reply: None,
     });
 
     {
@@ -1129,4 +1131,62 @@ fn deleting_a_model_clears_it_from_every_explicit_slot_but_not_from_references()
         Some(ModelTier::Lite)
     );
     assert!(config.validate().is_ok());
+}
+
+/// 会话专属配置的「概率主动回复」:未覆盖 = 允许;Some(false) 只对那一个会话
+/// 生效;序列化时缺省不落盘、覆盖值原样往返。
+#[test]
+fn probability_reply_override_is_per_conversation_and_round_trips() {
+    let mut config = AppConfig::default();
+    assert!(config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Group, "42"));
+    let mut route = PlatformModelRoute {
+        conversation: PlatformConversationConfig {
+            kind: PlatformConversationKind::Group,
+            id: "42".to_string(),
+        },
+        persona: PlatformPersonaOverride::Inherit,
+        text_models_inheritance: PlatformModelPoolInheritance::Platform,
+        text_models: None,
+        multimodal_models_inheritance: PlatformModelPoolInheritance::Platform,
+        multimodal_models: None,
+        extra_prompt: String::new(),
+        session_limits: None,
+        probability_reply: Some(false),
+    };
+    config.platforms.upsert_model_route(route.clone());
+    assert!(!config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Group, "42"));
+    assert!(config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Group, "43"));
+    assert!(config
+        .platforms
+        .probability_reply_allowed(PlatformConversationKind::Private, "42"));
+    let json = serde_json::to_string(&route).unwrap();
+    assert!(json.contains("\"probability_reply\":false"), "{json}");
+    let parsed: PlatformModelRoute = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.probability_reply, Some(false));
+    route.probability_reply = None;
+    let json = serde_json::to_string(&route).unwrap();
+    assert!(!json.contains("probability_reply"), "{json}");
+}
+
+/// 播报生效条件:开关 + key;`active` 缺省当 MiniMax,不再要求单独"激活"。
+#[test]
+fn tts_is_active_defaults_provider_to_minimax() {
+    let mut tts = VoiceTtsConfig::default();
+    assert!(!tts.is_active());
+    tts.enabled = true;
+    assert!(!tts.is_active(), "no key yet");
+    tts.minimax.api_key = Some("sk-test".to_string());
+    assert!(tts.is_active(), "enabled + key, active unset");
+    tts.active = Some(String::new());
+    assert!(tts.is_active(), "empty active means default");
+    tts.active = Some("minimax".to_string());
+    assert!(tts.is_active());
+    tts.active = Some("other".to_string());
+    assert!(!tts.is_active());
 }

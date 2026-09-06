@@ -477,7 +477,9 @@ pub(in crate::config_tui) fn edit_string_list(
             }
             KeyCode::Enter if !items.is_empty() => {
                 let current = items[selected].clone();
-                if let Some(item) = edit_single_line(stdout, t(" EDIT ", " 编辑 "), title, &current)? {
+                if let Some(item) =
+                    edit_single_line(stdout, t(" EDIT ", " 编辑 "), title, &current)?
+                {
                     items[selected] = item;
                 }
             }

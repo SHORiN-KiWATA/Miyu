@@ -225,6 +225,9 @@ pub(in crate::platforms::onebot) async fn handle_message_with_activity(
             ),
         }
     }
+    // 语音消息:能转写就把文字接进正文(模型、判官、历史库都看这份),识别
+    // 不可用时静默留占位,不报错不弹通知。
+    voice_inbound::attach_voice_transcripts(&state, &conn, &mut parsed).await;
     let parsed_command = commands::parse(&app_config.platforms, parsed.text.trim());
     let mut inbound_event = message_event_at(
         target,

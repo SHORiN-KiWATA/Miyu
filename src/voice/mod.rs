@@ -66,7 +66,9 @@ pub enum Control {
     /// `external` 为 true 时音频不来自麦克风,而是宿主经 [`Control::Audio`]
     /// 推入(浏览器麦克风走 WebSocket 到 daemon 再转到这里);期间本机
     /// 麦克风的帧一律丢弃。
-    StartDictation { external: bool },
+    StartDictation {
+        external: bool,
+    },
     /// 退出听写(回到待唤醒)。外部音频听写会先冲掉 VAD 里的半句。
     StopDictation,
     /// 一段外部 16kHz 单声道音频,只在外部听写期间被消费。

@@ -59,6 +59,10 @@ const WAKE_NOTICE_DELAY_MS: u64 = 1200;
 /// 浏览器录音转写的在途请求。
 static TRANSCRIBES: Mutex<Option<HashMap<String, oneshot::Sender<Result<String, String>>>>> =
     Mutex::new(None);
+/// 桌面通知的专用线程入口:一串语音通知按序发,Linux 上用 notify-send 的
+/// 替换 id 让「在听」「收到」回复三条共用一个气泡(09-05:此前「在听」为了
+/// 不和「收到」连弹被压了 1.2s,提示音却是即刻响的,用户听到音效看不到通知)。
+static NOTIFY_QUEUE: Mutex<Option<std::sync::mpsc::Sender<(String, String)>>> = Mutex::new(None);
 
 /// 找 `miyu-voice`:先看主程序同目录,再扫 PATH。
 pub(crate) fn locate_binary() -> Option<PathBuf> {
@@ -293,19 +297,30 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
         "voice.wake" => {
             // 唤醒时若上一轮还在回复,先打断。
             cancel_active_run(state);
-            // 提示音已在前端即刻响了;通知延迟一点,同口气带指令时只弹「收到」。
             let generation = WAKE_NOTICE_GEN.fetch_add(1, Ordering::Relaxed) + 1;
-            let state = state.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(WAKE_NOTICE_DELAY_MS)).await;
-                if WAKE_NOTICE_GEN.load(Ordering::Relaxed) == generation {
-                    notify(
-                        &state,
-                        t("Miyu is listening", "未有在听"),
-                        t("speak now", "请讲"),
-                    );
-                }
-            });
+            if cfg!(target_os = "linux") {
+                // 提示音在前端即刻响,通知也即刻弹,和音效同步;同口气带指令时
+                // 「收到」会替换掉这条(notify-send -r),不会连弹两条。
+                notify(
+                    state,
+                    t("Miyu is listening", "未有在听"),
+                    t("speak now", "请讲"),
+                );
+            } else {
+                // 没有替换能力的平台:延迟一点,同口气带指令时只弹「收到」。
+                let state = state.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(WAKE_NOTICE_DELAY_MS))
+                        .await;
+                    if WAKE_NOTICE_GEN.load(Ordering::Relaxed) == generation {
+                        notify(
+                            &state,
+                            t("Miyu is listening", "未有在听"),
+                            t("speak now", "请讲"),
+                        );
+                    }
+                });
+            }
         }
         "voice.speech_start" => {
             cancel_active_run(state);
@@ -377,7 +392,31 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
 
 fn notify(state: &DaemonState, title: &str, body: &str) {
     let enabled = state.manager.lock().unwrap().config.notifications.enabled;
-    if enabled {
+    if !enabled {
+        return;
+    }
+    if !cfg!(target_os = "linux") {
+        crate::notify::notify(title, body);
+        return;
+    }
+    let sender = NOTIFY_QUEUE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+            std::thread::Builder::new()
+                .name("miyu-voice-notify".into())
+                .spawn(move || {
+                    let mut last: Option<u32> = None;
+                    for (title, body) in rx {
+                        last = crate::notify::notify_replacing(&title, &body, last);
+                    }
+                })
+                .ok();
+            tx
+        })
+        .clone();
+    if sender.send((title.to_string(), body.to_string())).is_err() {
         crate::notify::notify(title, body);
     }
 }
@@ -547,12 +586,27 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
         "completed" => {
             // 通知正文与播报用同一份口语版:有 <speak> 用 <speak>,没有就清洗正文。
             let spoken = crate::web::voice_tts::spoken_text(&reply, &tts);
-            notify(state, t("Miyu", "未有"), &clip(&spoken, reply_chars));
-            if !tts.is_active() {
-                send_signal("voice.cue", json!({ "name": "done" }));
-            } else if let Err(error) = speak(state, &spoken).await {
-                tracing::warn!("播报失败: {error:#}");
-                send_signal("voice.cue", json!({ "name": "done" }));
+            let summary = clip(&spoken, reply_chars);
+            // 先合成再通知:合成要一到三秒,通知若先弹,用户看到文字却要等
+            // 好几秒才听到声音(09-05)。合成好了通知与播放同一瞬间发出。
+            let synthesized = if tts.is_active() && !spoken.trim().is_empty() {
+                match synthesize_to_cache(state, &tts, spoken.trim()).await {
+                    Ok(path) => Some(path),
+                    Err(error) => {
+                        tracing::warn!("播报失败: {error:#}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            notify(state, t("Miyu", "未有"), &summary);
+            match synthesized {
+                Some(path) => send_signal(
+                    "voice.play",
+                    json!({ "wav_path": path.display().to_string() }),
+                ),
+                None => send_signal("voice.cue", json!({ "name": "done" })),
             }
         }
         "cancelled" => {}
@@ -583,7 +637,8 @@ pub(crate) async fn speak_with(
     text: &str,
     override_tts: Option<crate::config::VoiceTtsConfig>,
 ) -> Result<()> {
-    let tts = override_tts.unwrap_or_else(|| state.manager.lock().unwrap().config.voice.tts.clone());
+    let tts =
+        override_tts.unwrap_or_else(|| state.manager.lock().unwrap().config.voice.tts.clone());
     let text = text.trim();
     if text.is_empty() {
         return Ok(());
@@ -592,7 +647,10 @@ pub(crate) async fn speak_with(
         anyhow::bail!("回复播报未激活(语音功能 → 配置播报供应商 → Tab 激活)");
     }
     let path = synthesize_to_cache(state, &tts, text).await?;
-    send_signal("voice.play", json!({ "wav_path": path.display().to_string() }));
+    send_signal(
+        "voice.play",
+        json!({ "wav_path": path.display().to_string() }),
+    );
     Ok(())
 }
 
@@ -608,6 +666,13 @@ async fn synthesize_to_cache(
     let path = dir.join(format!("{}.wav", crate::runtime::random_id("tts", 12)));
     std::fs::write(&path, wav)?;
     Ok(path)
+}
+
+/// 语音识别当下能不能用:语音唤醒开着(识别模型随它加载)且前端已接上。
+/// 入站 QQ 语音转写用它决定"转"还是"静默留占位",不会去等前端拉起。
+pub(crate) fn stt_available(state: &DaemonState) -> bool {
+    let enabled = state.manager.lock().unwrap().config.voice.enabled;
+    enabled && ATTACH.lock().unwrap().is_some()
 }
 
 /// 播报是否可用(daemon 内、开关开着、供应商激活)。平台工具注册用。
@@ -629,7 +694,11 @@ pub(crate) async fn synthesize_for_platform(text: &str) -> Result<PathBuf> {
     let text = text.trim();
     anyhow::ensure!(!text.is_empty(), "text is empty");
     let spoken = crate::web::voice_tts::sanitize_for_speech(text);
-    let spoken = if spoken.trim().is_empty() { text.to_string() } else { spoken };
+    let spoken = if spoken.trim().is_empty() {
+        text.to_string()
+    } else {
+        spoken
+    };
     synthesize_to_cache(state, &tts, &spoken).await
 }
 
@@ -816,7 +885,11 @@ pub(crate) async fn handle_voice_listen(
     stream: &mut tokio::net::UnixStream,
 ) -> Result<()> {
     if !state.manager.lock().unwrap().config.voice.enabled {
-        crate::ipc::send(stream, &crate::ipc::Frame::error("语音唤醒未开启(设置 → 语音功能)")).await?;
+        crate::ipc::send(
+            stream,
+            &crate::ipc::Frame::error("语音唤醒未开启(设置 → 语音功能)"),
+        )
+        .await?;
         return Ok(());
     }
     if let Err(message) = wait_attached(state, 20_000).await {

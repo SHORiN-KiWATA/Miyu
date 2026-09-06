@@ -203,6 +203,16 @@ impl RealContextPlugin {
                 )
             });
         let probabilistic = !pure_image || !settings.skip_pure_image_active_judge;
+        // 会话专属配置可以单独关掉概率抽样(09-05):只砍这一条触发,别的
+        // 触发(直呼、接话、覆盖顶替、群管审核)不受影响。
+        let probabilistic = probabilistic
+            && context.config.platforms.probability_reply_allowed(
+                match context.conversation.kind {
+                    ConversationKind::Group => crate::config::PlatformConversationKind::Group,
+                    ConversationKind::Private => crate::config::PlatformConversationKind::Private,
+                },
+                &context.conversation.conversation_id,
+            );
         let probabilistic = probabilistic
             && rand::random::<f64>() < settings.active_judge_probability.clamp(0.0, 1.0);
         // When a direct platform trigger is intentionally not being taken over,

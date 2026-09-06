@@ -570,7 +570,9 @@ fn the_embedding_model_moves_out_from_under_the_knowledge_base() {
 
     // Configuring a model only makes it available; there is no switch.
     assert!(config.embedding.is_configured());
-    assert!(!AppConfig::default().embedding.is_configured());
+    // 内置本地 embedding 让缺省配置本身就"已配置";这里只证明迁移把 omlx
+    // 这条搬了过来,而不是缺省值碰巧相同。
+    assert_ne!(AppConfig::default().embedding.provider_id, "omlx");
 }
 
 #[test]

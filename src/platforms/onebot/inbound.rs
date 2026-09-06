@@ -616,6 +616,8 @@ pub(in crate::platforms::onebot) fn parse_cq_string(raw: &str, self_id: i64) -> 
                     id: parameters
                         .get("id")
                         .or_else(|| parameters.get("file_id"))
+                        // 语音段只有 `file`(NapCat 的 get_record 就认它)。
+                        .or_else(|| (kind == "record").then(|| parameters.get("file")).flatten())
                         .map(|value| decode_cq_text(value))
                         .and_then(bounded_onebot_id),
                     name: parameters
@@ -835,6 +837,11 @@ pub(in crate::platforms::onebot) fn parse_message(
                         .get("id")
                         .and_then(value_id_string)
                         .or_else(|| data.get("file_id").and_then(value_id_string))
+                        .or_else(|| {
+                            (kind == "record")
+                                .then(|| data.get("file").and_then(value_id_string))
+                                .flatten()
+                        })
                         .and_then(bounded_onebot_id),
                     name: data
                         .get("name")

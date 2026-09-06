@@ -2400,6 +2400,8 @@ window.MiyuSettings = (() => {
     if (Array.isArray(route.multimodal_models) && route.multimodal_models.length) chips.push(chip(`多模态 ${route.multimodal_models.length}`, "is-accent"));
     if (route.extra_prompt) chips.push(chip("额外提示词", "is-soft"));
     if (route.session_limits) chips.push(chip(`并行 ${route.session_limits.running}`, "is-soft"));
+    if (route.probability_reply === false) chips.push(chip("概率主动回复：关", "is-soft"));
+    else if (route.probability_reply === true) chips.push(chip("概率主动回复：开", "is-soft"));
     return chips;
   }
 
@@ -2441,6 +2443,18 @@ window.MiyuSettings = (() => {
     const bindingFor = (field, keyOverride) => {
       const key = keyOverride || field.key;
       const base = nestedBinding(route, key);
+      // 概率主动回复:配置里是 true/false/缺省,下拉框只认字符串。
+      if (key === "probability_reply") {
+        return {
+          get: () => (route.probability_reply === true ? "on" : route.probability_reply === false ? "off" : ""),
+          set: (value) => {
+            if (value === "on") route.probability_reply = true;
+            else if (value === "off") route.probability_reply = false;
+            else delete route.probability_reply;
+            dirty();
+          }
+        };
+      }
       return { ...base, set: (value) => {
         if (key === "conversation.id") value = String(value ?? "").trim();
         base.set(value);

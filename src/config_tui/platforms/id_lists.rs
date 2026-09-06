@@ -78,8 +78,15 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
     loop {
         let mut options = vec![t("+ Add", "+ 新增").to_string()];
         options.extend(ids.iter().enumerate().map(|(index, id)| {
-            let alias = aliases.get(&id.to_string()).map(String::as_str).unwrap_or("");
-            let primary = if index == 0 { t(" (primary)", "(主管理员)") } else { "" };
+            let alias = aliases
+                .get(&id.to_string())
+                .map(String::as_str)
+                .unwrap_or("");
+            let primary = if index == 0 {
+                t(" (primary)", "(主管理员)")
+            } else {
+                ""
+            };
             if alias.is_empty() {
                 format!("{id}{primary}")
             } else {
@@ -101,7 +108,11 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
             KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
             KeyCode::Enter => {
-                let index = if selected == 0 { None } else { Some(selected - 1) };
+                let index = if selected == 0 {
+                    None
+                } else {
+                    Some(selected - 1)
+                };
                 let current_id = index.and_then(|i| ids.get(i).copied());
                 let current_alias = current_id
                     .and_then(|id| aliases.get(&id.to_string()).cloned())
@@ -112,7 +123,10 @@ pub(in crate::config_tui) fn edit_qq_admin_list(
                         current_id.map(|id| id.to_string()).unwrap_or_default(),
                     ),
                     Field::new(
-                        t("Alias (recipient name shown to the AI)", "别名(AI 发消息时的收件人名)"),
+                        t(
+                            "Alias (recipient name shown to the AI)",
+                            "别名(AI 发消息时的收件人名)",
+                        ),
                         current_alias,
                     ),
                 ];
