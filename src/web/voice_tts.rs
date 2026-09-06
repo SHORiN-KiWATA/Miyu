@@ -273,7 +273,14 @@ pub(crate) fn mimo_request_body(cfg: &MimoTtsConfig, text: &str) -> Result<Value
     if !instruction.is_empty() {
         messages.push(json!({ "role": "user", "content": instruction }));
     }
-    let style = cfg.style.trim();
+    // 标签之间 MiMo 要空格;配置里(TUI 多选)存的是逗号分隔,顿号/中文逗号也认。
+    let style = cfg
+        .style
+        .split(|ch: char| ch == ',' || ch == '，' || ch == '、' || ch.is_whitespace())
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     let content = if style.is_empty() {
         text.to_string()
     } else {
@@ -540,7 +547,7 @@ mod tests {
         // 预置音色:文本在 assistant,风格标签作前缀,指令在 user。
         let mut cfg = mimo_cfg();
         cfg.voice = "冰糖".to_string();
-        cfg.style = "温柔 慵懒".to_string();
+        cfg.style = "温柔,慵懒".to_string();
         cfg.instruction = "语速稍快".to_string();
         let body = mimo_request_body(&cfg, "今天也是充满希望的一天").unwrap();
         assert_eq!(body["model"], "mimo-v2.5-tts");

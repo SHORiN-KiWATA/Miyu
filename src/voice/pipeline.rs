@@ -230,7 +230,10 @@ impl Pipeline {
                 Phase::Window {
                     dictation: true, ..
                 } => Vec::new(),
-                Phase::Window { .. } | Phase::Awaiting { .. } => self.close_window(),
+                Phase::Window { .. } | Phase::Awaiting { .. } => {
+                    self.phase = Phase::Idle;
+                    vec![VoiceEvent::ListenOff]
+                }
                 Phase::Idle => {
                     self.phase = Phase::Awaiting { silent: 0 };
                     self.speech_run = 0;

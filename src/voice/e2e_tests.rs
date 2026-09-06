@@ -118,7 +118,7 @@ fn sense_voice_transcribes_chinese() {
     );
 }
 
-/// `miyu listen` 是开关:空闲时进入等待指令(Wake),已在听时关窗(WindowClosed),
+/// `miyu listen` 是开关:空闲时进入等待指令(Wake),已在听时关窗(ListenOff),
 /// 再按又进入等待指令;听写窗口内忽略。
 #[test]
 #[ignore = "需要本地语音模型"]
@@ -137,7 +137,7 @@ fn listen_control_toggles_window() {
     );
     let second = pipeline.control(Control::Listen);
     assert!(
-        matches!(second.as_slice(), [VoiceEvent::WindowClosed]),
+        matches!(second.as_slice(), [VoiceEvent::ListenOff]),
         "listening → listen should close: {second:?}"
     );
     // 关掉后静默不再产生超时事件(已回到 Idle)。

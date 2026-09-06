@@ -190,6 +190,7 @@ pub fn run_worker() -> Result<()> {
                 VoiceEvent::SpeechStart => send("voice.speech_start", json!({})),
                 VoiceEvent::ListeningTimeout => send("voice.timeout", json!({})),
                 VoiceEvent::WindowClosed => send("voice.window_closed", json!({})),
+                VoiceEvent::ListenOff => send("voice.window_closed", json!({ "reason": "listen" })),
                 VoiceEvent::Transcribed { request_id, text } => send(
                     "voice.transcribed",
                     json!({ "request_id": request_id, "text": text }),
@@ -442,7 +443,7 @@ pub fn run_test(keyword: Option<String>, device: Option<String>, timings: bool) 
             VoiceEvent::ListeningTimeout => {
                 println!("… {}", t("timed out, back to wake word", "超时,回到待唤醒"))
             }
-            VoiceEvent::WindowClosed => println!(
+            VoiceEvent::WindowClosed | VoiceEvent::ListenOff => println!(
                 "… {}",
                 t(
                     "window closed, wake word required again",

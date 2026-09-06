@@ -14,9 +14,8 @@ use crate::config_tui::*;
 use crate::web::voice_tts::{MIMO_MODELS, MIMO_VOICES};
 use anyhow::Context as _;
 
-/// MiMo 常用风格标签(文档 2026-09,可手填其它)。
+/// MiMo 风格标签(文档 2026-09):情绪 / 语气 / 音色定位 / 角色 / 方言,多选。
 const MIMO_STYLES: &[&str] = &[
-    "",
     "温柔",
     "开心",
     "活泼",
@@ -26,14 +25,31 @@ const MIMO_STYLES: &[&str] = &[
     "严肃",
     "深情",
     "撒娇",
+    "深沉",
+    "干练",
+    "高冷",
     "悲伤",
     "兴奋",
+    "委屈",
+    "无奈",
+    "欣慰",
+    "甜美",
+    "清亮",
+    "磁性",
+    "醇厚",
+    "空灵",
+    "稚嫩",
+    "沙哑",
     "夹子音",
     "御姐音",
+    "正太音",
+    "大叔音",
     "东北话",
     "四川话",
+    "河南话",
     "粤语",
     "台湾腔",
+    "唱歌",
 ];
 
 /// MiniMax 可选模型(t2a_v2 文档,2026-09)。
@@ -485,21 +501,20 @@ fn edit_mimo_connection(stdout: &mut io::Stdout, config: &mut AppConfig) -> Resu
 
 fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()> {
     let cfg = config.voice.tts.mimo.clone();
-    let mut style_field = Field::new(
-        t(
-            "Style tag (prefix, e.g. 温柔 / 开心 / 东北话; several separated by spaces)",
-            "风格标签(加在文本开头,如 温柔 / 开心 / 东北话;多个用空格隔开)",
-        ),
-        cfg.style.clone(),
-    )
-    .choices(MIMO_STYLES);
-    style_field.empty_choice_label = t("(none)", "(不加)");
     let mut fields = vec![
-        style_field,
+        // 多选菜单(Enter 进入,Tab 勾选),值是逗号分隔;发请求时转成 MiMo 要的空格。
         Field::new(
             t(
-                "Instruction (tone/role/pace; voice description for voicedesign)",
-                "指令(语气/角色/语速;voicedesign 模型下写音色描述,必填)",
+                "Style tags (Enter to pick, several allowed; empty = none)",
+                "风格标签(回车进菜单勾选,可多个;空=不加)",
+            ),
+            cfg.style.clone(),
+        )
+        .multi_choices(MIMO_STYLES),
+        Field::new(
+            t(
+                "Instruction (Enter to type: tone/role/pace; voice description for voicedesign)",
+                "指令(回车输入:语气/角色/语速;voicedesign 模型下写音色描述,必填)",
             ),
             cfg.instruction.clone(),
         ),

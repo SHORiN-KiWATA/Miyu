@@ -41,6 +41,9 @@ pub enum VoiceEvent {
     ListeningTimeout,
     /// 会话/听写窗口关闭(静默超窗或被要求关闭),重新需要唤醒词。
     WindowClosed,
+    /// 快捷键呼叫在"已在听"时再按一次:窗口已关,宿主应掐掉进行中的回合、
+    /// 丢弃尚未播出的播报,并给用户一个"不听了"的反馈。
+    ListenOff,
     /// 外部音频(浏览器录音)的转写结果。
     Transcribed { request_id: String, text: String },
     /// 阶段耗时(诊断/量尺用):stage = kws | stt | stt_load。
@@ -61,7 +64,7 @@ pub enum Control {
     CloseWindow,
     /// 快捷键呼叫(开关):空闲时不用唤醒词直接进入等待指令状态,行为与
     /// 唤醒命中后无指令一致(吐 [`VoiceEvent::Wake`],等下一句当指令);
-    /// 已在等指令或追问窗口内则关窗(吐 [`VoiceEvent::WindowClosed`])。听写中忽略。
+    /// 已在等指令或追问窗口内则关窗(吐 [`VoiceEvent::ListenOff`])。听写中忽略。
     Listen,
     /// 进入听写:免唤醒短窗,识别结果以 [`VoiceEvent::Dictation`] 吐出。
     /// `external` 为 true 时音频不来自麦克风,而是宿主经 [`Control::Audio`]

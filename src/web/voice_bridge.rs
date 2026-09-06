@@ -55,6 +55,9 @@ static ACTIVE_RUN: Mutex<Option<String>> = Mutex::new(None);
 /// 「在听」通知的代数:唤醒后延迟一小段再弹,期间若同一口气里的指令已到
 /// (voice.command 使代数失效)就只弹「收到」,不连弹两条。
 static WAKE_NOTICE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 语音会话"代":快捷键把窗口关掉一次加一。回合在跑/在合成时被这样关掉,
+/// 回合完成后的通知与播报一律作废,免得关了还念。
+static VOICE_WINDOW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const WAKE_NOTICE_DELAY_MS: u64 = 1200;
 /// 浏览器录音转写的在途请求。
 static TRANSCRIBES: Mutex<Option<HashMap<String, oneshot::Sender<Result<String, String>>>>> =
@@ -357,6 +360,15 @@ fn handle_worker_event(state: &DaemonState, kind: &str, data: Value) {
             if let Some(sink) = DICTATION.lock().unwrap().take() {
                 let _ = sink.send(DictationRelay::Ended);
             }
+            // 快捷键再按一次关掉的:掐回合、作废还没播的播报、给个"不听了"的
+            // 反馈。静默超时不打扰;模型自己调 end_voice_chat 关窗时告别语照念。
+            if text_field(&data, "reason") == "listen" {
+                VOICE_WINDOW_GEN.fetch_add(1, Ordering::Relaxed);
+                WAKE_NOTICE_GEN.fetch_add(1, Ordering::Relaxed);
+                cancel_active_run(state);
+                send_signal("voice.stop_speaking", json!({}));
+                notify(state, t("Miyu", "未有"), t("stopped listening", "不听了"));
+            }
         }
         "voice.transcribed" => {
             let request_id = text_field(&data, "request_id");
@@ -521,6 +533,7 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
     // 在回复末尾给 <speak> 口语版。
     let content = format!("<voice_input>{content}</voice_input>");
     let socket = state.paths.ipc_socket();
+    let window_gen = VOICE_WINDOW_GEN.load(Ordering::Relaxed);
     send_signal("voice.hold", json!({ "on": true }));
     let outcome = async {
         let mut stream = crate::ipc::connect(&socket).await?;
@@ -589,7 +602,13 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
             return Err(error);
         }
     };
+    let window_closed = || VOICE_WINDOW_GEN.load(Ordering::Relaxed) != window_gen;
     match how {
+        "completed" if window_closed() => {
+            // 回合跑完前窗口已被关(快捷键再按 / 没事了 / 超时):不念不弹。
+            send_signal("voice.hold", json!({ "on": false }));
+            tracing::debug!("语音回合完成时窗口已关,跳过播报");
+        }
         "completed" => {
             // 通知正文与播报用同一份口语版:有 <speak> 用 <speak>,没有就清洗正文。
             let spoken = crate::web::voice_tts::spoken_text(&reply, &tts);
@@ -608,6 +627,14 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
                 None
             };
             send_signal("voice.hold", json!({ "on": false }));
+            if window_closed() {
+                // 合成这一两秒里被关掉了:音频作废。
+                if let Some(path) = synthesized {
+                    let _ = std::fs::remove_file(path);
+                }
+                tracing::debug!("合成期间窗口已关,丢弃播报");
+                return Ok(());
+            }
             notify(state, t("Miyu", "未有"), &summary);
             match synthesized {
                 Some(path) => send_signal(
