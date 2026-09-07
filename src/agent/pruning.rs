@@ -1,11 +1,14 @@
 //! 上下文溢出的处置。
 //!
-//! 三个层次，代价递增：`prune_stale_history` 丢掉过期的工具输出，
-//! `spill_tool_output` 把大块输出转存到磁盘只留引用，`handle_overflow` 做真正
-//! 的压缩（让模型总结掉旧回合）。
+//! 两个层次，代价递增：`spill_tool_output` 把大块工具输出转存到磁盘只留引用
+//! （落盘时发生，零缓存代价），`handle_overflow` 做真正的压缩（让模型总结掉
+//! 旧回合，一次前缀缓存 reset）。
 //!
-//! `maybe_cold_resume_prune` 处理的是冷启动：进程重启后接着旧会话跑，历史可能
-//! 早就超了窗口，得在发第一个请求之前先清理。
+//! 09-07 退役了夹在中间的「机械折叠」层（0.5 提示档 + 0.6 折叠档 +
+//! 冷恢复剪枝）：它折的是 `turns.tool_reports`，而那一列从 07-01 起就只装
+//! `extract_persistable_tool_report` 的白名单精选小结，从来不装工具输出本体
+//! ——实测 410 轮共 ~1.2KB，连单批 12,500 字节的收割闸门都够不着，一次都没
+//! 触发过。真正的工具体量在 `tool_flow`，已由 `prune_tool_flow` 在落盘时截断。
 
 use crate::agent::*;
 
@@ -66,59 +69,6 @@ impl Agent {
         Some(replacement)
     }
 
-    /// Cold-resume prune: after idling past the provider cache TTL the next
-    /// request is a full-price cold start anyway, so a history rewrite right
-    /// now is free cache-wise and only shrinks that first request. Uses a
-    /// minimal harvest gate for the same reason.
-    pub(in crate::agent) fn maybe_cold_resume_prune(&self) -> Result<()> {
-        if !self.config.context.prune_stale_tool_reports {
-            return Ok(());
-        }
-        let minutes = self.config.context.cold_prune_after_minutes;
-        if minutes == 0 {
-            return Ok(());
-        }
-        let Some(last) = self.state.session_last_request_at()? else {
-            return Ok(());
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        if now.saturating_sub(last) < (minutes as i64).saturating_mul(60) {
-            return Ok(());
-        }
-        let stats = self.state.prune_stale_tool_reports(2, 1024)?;
-        if stats.turns > 0 {
-            tracing::info!(
-                turns = stats.turns,
-                saved_chars = stats.saved_chars,
-                idle_minutes = now.saturating_sub(last) / 60,
-                "context_rewrite reason=cold_resume_prune"
-            );
-        }
-        Ok(())
-    }
-
-    /// Mechanical prune behind the harvest gate: rewriting history is a
-    /// prefix-cache reset, so the batch must save at least ~window/64 tokens
-    /// (~window/16 chars) to pay for it. Protects the newest 2 turns.
-    pub(in crate::agent) fn prune_stale_history(
-        &self,
-        context_window: usize,
-    ) -> Result<crate::state::PruneStats> {
-        let min_saved_chars = (context_window / 16).max(8192);
-        let stats = self.state.prune_stale_tool_reports(2, min_saved_chars)?;
-        if stats.turns > 0 {
-            tracing::info!(
-                turns = stats.turns,
-                saved_chars = stats.saved_chars,
-                "context_rewrite reason=prune"
-            );
-        }
-        Ok(stats)
-    }
-
     /// Derives the verbatim tail budget for compaction. Fixed token count by
     /// design (the trigger scales with the window, the tail does not — that
     /// geometry is what stops the re-compaction loop); chat sessions default
@@ -154,43 +104,16 @@ impl Agent {
             self.consecutive_compacts.store(0, Ordering::Relaxed);
             self.rapid_compacts.store(0, Ordering::Relaxed);
             self.compact_stuck.store(false, Ordering::Relaxed);
-            // Below-trigger watermarks: each tier does only the cheapest
-            // thing that helps. snip prunes stale tool reports mechanically
-            // (no LLM call); soft just says the context is growing, once.
-            if let Some(window) = context_window {
-                let snip_threshold =
-                    (window as f32 * self.config.context.compact_snip_ratio).max(1.0) as usize;
-                let soft_threshold =
-                    (window as f32 * self.config.context.compact_soft_ratio).max(1.0) as usize;
-                if context_tokens >= snip_threshold {
-                    if self.config.context.prune_stale_tool_reports {
-                        let stats = self.prune_stale_history(window)?;
-                        if stats.turns > 0 {
-                            on_event(AgentEvent::Notice {
-                                text: format!(
-                                    "{} {} · ~{} chars",
-                                    crate::i18n::text(
-                                        "Folded stale tool records from turns:",
-                                        "已机械折叠旧轮次的工具记录："
-                                    ),
-                                    stats.turns,
-                                    stats.saved_chars,
-                                ),
-                            })?;
-                        }
-                    }
-                } else if context_tokens >= soft_threshold
-                    && !self.soft_notice_sent.swap(true, Ordering::Relaxed)
-                {
-                    on_event(AgentEvent::Notice {
-                        text: crate::i18n::text(
-                            "Context is getting large; older tool records will fold first, then the history will be compacted automatically.",
-                            "上下文渐大；将先机械折叠旧工具记录，随后才会自动压缩历史。",
-                        )
-                        .to_string(),
-                    })?;
-                }
-            }
+            // Below the trigger there is nothing left to do. The sub-trigger
+            // watermarks (a 0.5 "context is getting large" notice and a 0.6
+            // mechanical fold of `turns.tool_reports`) were retired on 09-07:
+            // the fold could never fire, because `tool_reports` holds only the
+            // curated report whitelist (`extract_persistable_tool_report`),
+            // never bulk tool output — measured at ~1.2 KB across 410 turns
+            // against a 12,500-byte harvest gate. The real tool mass lives in
+            // `tool_flow` and is already trimmed at write time by
+            // `prune_tool_flow`, which costs no cache reset at all. That left
+            // the 0.5 notice announcing a fold that could not happen.
             return Ok(None);
         }
         if self.compact_stuck.load(Ordering::Relaxed) {
@@ -206,26 +129,6 @@ impl Agent {
                 let force_threshold =
                     (window as f32 * self.config.context.compact_force_ratio).max(1.0) as usize;
                 let force = context_tokens >= force_threshold;
-                // Prune first: it is free, and when it alone lands the
-                // context back under the trigger the paid summary call (and
-                // its cache reset) is skipped entirely.
-                if self.config.context.prune_stale_tool_reports {
-                    let stats = self.prune_stale_history(window)?;
-                    if stats.turns > 0 && !force {
-                        let post_tokens =
-                            usize::try_from(self.effective_context_tokens()?).unwrap_or(usize::MAX);
-                        if !check.check_tokens(post_tokens) {
-                            on_event(AgentEvent::Notice {
-                                text: crate::i18n::text(
-                                    "Folded stale tool records; context is back under the compaction threshold.",
-                                    "已机械折叠旧工具记录；上下文已回落到压缩阈值之下。",
-                                )
-                                .to_string(),
-                            })?;
-                            return Ok(None);
-                        }
-                    }
-                }
                 on_event(AgentEvent::CompactStart)?;
                 let compactor = compact::Compactor::new(
                     self.client.clone(),

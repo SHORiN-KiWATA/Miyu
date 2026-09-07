@@ -289,19 +289,7 @@ pub(in crate::cli) async fn run_session_command(
         }
         SessionCommand::Compact { target } => {
             let entry = resolve_managed_session(paths, &target).await?;
-            let (_, data) = session_admin(
-                paths,
-                IpcCommand::Compact {
-                    target: session_ref(&entry),
-                },
-            )
-            .await?;
-            if data["compacted"].as_bool().unwrap_or(false) {
-                println!("{}: {}", t("compacted", "已压缩"), entry.name);
-            } else {
-                println!("{}", t("nothing to compact", "没有可压缩的内容"));
-            }
-            Ok(())
+            compact_session(paths, session_ref(&entry), Some(&entry.name)).await
         }
         SessionCommand::Models { target, model } => {
             let entry = resolve_managed_session(paths, &target).await?;
@@ -357,6 +345,29 @@ pub(in crate::cli) async fn run_session_command(
             Ok(())
         }
     }
+}
+
+/// 压缩一个会话的上下文。`miyu compact`(缺省当前会话)与
+/// `miyu session compact <目标>` 共用这一条;`name` 只用于回显。
+///
+/// 走 `session_admin` 而不是裸 IPC:daemon 没起就先拉起来——压缩要过 actor,
+/// 没有进程内直连的等价路径。目标会话有回合在跑时 daemon 会拒(admin busy),
+/// 那是设计:压缩重写消息数组,在跑的回合手里那份会成悬空引用。
+pub(in crate::cli) async fn compact_session(
+    paths: &MiyuPaths,
+    target: SessionRef,
+    name: Option<&str>,
+) -> Result<()> {
+    let (_, data) = session_admin(paths, IpcCommand::Compact { target }).await?;
+    if data["compacted"].as_bool().unwrap_or(false) {
+        match name {
+            Some(name) => println!("{}: {}", t("compacted", "已压缩"), name),
+            None => println!("{}", t("compacted", "已压缩")),
+        }
+    } else {
+        println!("{}", t("nothing to compact", "没有可压缩的内容"));
+    }
+    Ok(())
 }
 
 /// stdio 模式的会话操作:同一套 IPC,结果以 JSON 返回给分发器,不打印。

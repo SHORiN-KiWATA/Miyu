@@ -105,6 +105,7 @@ pub enum Command {
     RemoveShellHook,
     History(HistoryArgs),
     Pop(PopArgs),
+    Compact(CompactArgs),
     Kb(KbArgs),
     /// Semantic embedding: status, installed models, rebuild vectors.
     Embed(EmbedArgs),
@@ -437,6 +438,15 @@ pub struct PopArgs {
 
 #[derive(Debug, Args)]
 pub struct ResetArgs {
+    /// 目标会话(名字、编号或 id);缺省为终端集成会话
+    #[arg(long, value_name = "SESSION")]
+    pub session: Option<String>,
+}
+
+/// `miyu compact`:立即压缩一个会话的上下文。与 `reset`/`pop` 同形——缺省打
+/// 终端集成会话,`--session` 才换目标;程序驱动的宿主用 `miyu session compact`。
+#[derive(Debug, Args)]
+pub struct CompactArgs {
     /// 目标会话(名字、编号或 id);缺省为终端集成会话
     #[arg(long, value_name = "SESSION")]
     pub session: Option<String>,

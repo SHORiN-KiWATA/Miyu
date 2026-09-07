@@ -161,15 +161,6 @@ impl StateStore {
         self.conv_db.load_last_summary(&self.session())
     }
 
-    pub fn prune_stale_tool_reports(
-        &self,
-        protect_recent: usize,
-        min_saved_chars: usize,
-    ) -> Result<PruneStats> {
-        self.conv_db
-            .prune_stale_tool_reports(&self.session(), protect_recent, min_saved_chars)
-    }
-
     pub fn replace_visible_with_summary(
         &self,
         fold_turn_ids: &[String],

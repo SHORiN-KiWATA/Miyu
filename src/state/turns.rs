@@ -250,10 +250,6 @@ impl StateStore {
         Ok(recoveries.len())
     }
 
-    pub fn session_last_request_at(&self) -> Result<Option<i64>> {
-        self.conv_db.session_last_request_at(&self.session())
-    }
-
     pub fn merge_turn_footprint(
         &self,
         turn_id: &str,

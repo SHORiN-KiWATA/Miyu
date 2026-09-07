@@ -420,20 +420,6 @@ impl ConversationDb {
         Ok(merged)
     }
 
-    /// Unix seconds of this session's most recent completed/interrupted
-    /// request write-point. None on legacy sessions (cold-resume prune skips).
-    pub fn session_last_request_at(&self, session_id: &str) -> Result<Option<i64>> {
-        let conn = self.conn.lock().unwrap();
-        let value: Option<Option<i64>> = conn
-            .query_row(
-                "SELECT last_request_at FROM sessions WHERE session_id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(value.flatten())
-    }
-
     /// 追加一条工具报告（v25 起走 `turn_tool_reports` 子表）。
     ///
     /// 一次 INSERT，**没有读**。原来是「读整列 → 解析 → push → 整个序列化 →

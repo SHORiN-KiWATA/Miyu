@@ -52,7 +52,8 @@ pub(in crate::cli) fn root_help_template() -> String {
   history            Show conversation history
   reset              Clear the terminal-integration session context
   reset-memory       Erase this persona's long-term memory
-  pop                Move conversation turns out of active context",
+  pop                Move conversation turns out of active context
+  compact            Compact the terminal-integration session context now",
         "  fish-init          集成到 fish，集成后可在终端直接使用自然语言交流
   bash-init          集成到 bash
   zsh-init           集成到 zsh
@@ -62,7 +63,8 @@ pub(in crate::cli) fn root_help_template() -> String {
   history            显示会话历史
   reset              清除终端集成会话上下文
   reset-memory       清空长期记忆
-  pop                将对话轮次移出当前上下文",
+  pop                将对话轮次移出当前上下文
+  compact            立即压缩终端集成会话上下文",
     );
     if is_zh() {
         format!(
@@ -263,6 +265,11 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
             "Move conversation turns out of active context",
             "将对话轮次移出当前上下文",
         ),
+        (
+            "compact",
+            "Compact the terminal-integration session context now",
+            "立即压缩终端集成会话上下文",
+        ),
         ("kb", "Manage the knowledge base", "管理知识库"),
         (
             "update-default-kb",
@@ -315,6 +322,7 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         "reset",
         "reset-memory",
         "pop",
+        "compact",
     ] {
         command = command.mut_subcommand(name, |subcommand| subcommand.hide(true));
     }
@@ -353,6 +361,14 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         .mut_subcommand("history", localize_history_command)
         .mut_subcommand("pop", localize_pop_command)
         .mut_subcommand("reset", |command| {
+            command.mut_arg("session", |arg| {
+                arg.help(t(
+                    "Target session (name, list number, or id); defaults to the terminal session",
+                    "目标会话(名字、编号或 id);缺省为终端集成会话",
+                ))
+            })
+        })
+        .mut_subcommand("compact", |command| {
             command.mut_arg("session", |arg| {
                 arg.help(t(
                     "Target session (name, list number, or id); defaults to the terminal session",

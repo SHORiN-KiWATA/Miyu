@@ -304,8 +304,6 @@ pub struct Agent {
     /// window instantly — compacting harder won't help ("thrashing").
     last_compact_max_seq: std::sync::atomic::AtomicI64,
     rapid_compacts: std::sync::atomic::AtomicU32,
-    /// One-shot "context is getting large" notice at the soft watermark.
-    soft_notice_sent: std::sync::atomic::AtomicBool,
     /// SpinnerTick 的发射周期。终端直连形态用 40ms 驱动动画；daemon 内
     /// 的回合（平台/WebUI/子代理）tick 出不了进程（event_map 丢弃），
     /// 唯一作用是给 journal 尾部冲刷兜底，200ms 足够——25Hz 定时器在

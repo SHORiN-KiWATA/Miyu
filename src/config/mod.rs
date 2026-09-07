@@ -701,19 +701,6 @@ pub struct ContextConfig {
     /// trigger after compaction (re-compaction loop guard).
     #[serde(default)]
     pub compact_tail_tokens: Option<usize>,
-    /// Soft watermark: a one-shot "context is getting large" notice, no
-    /// history rewrite (a rewrite here would needlessly crater the cache).
-    #[serde(default = "default_compact_soft_ratio")]
-    pub compact_soft_ratio: f32,
-    /// Mechanical watermark: old turns' tool_reports fold into placeholders
-    /// (no LLM call). Must satisfy soft <= snip <= trim_at_ratio.
-    #[serde(default = "default_compact_snip_ratio")]
-    pub compact_snip_ratio: f32,
-    /// Enables the mechanical prune layer (free: tool output is
-    /// re-derivable). Batched behind a harvest gate so each rewrite pays for
-    /// its one-time prefix-cache reset.
-    #[serde(default = "default_true")]
-    pub prune_stale_tool_reports: bool,
     /// 历史工具结果分级剪枝（字符）：落库时超过 chars 的输出改写成
     /// 「头 head + 省略标记 + 尾 tail」。0 = 关闭。默认值抄 dsh 的
     /// compaction-tool-result-pruner（8192 / 4096 / 1024）。
@@ -723,13 +710,6 @@ pub struct ContextConfig {
     pub tool_result_prune_head_chars: usize,
     #[serde(default = "default_tool_result_prune_tail_chars")]
     pub tool_result_prune_tail_chars: usize,
-    /// Cold-resume prune: a session idle longer than this resumes against an
-    /// expired provider cache, so rewriting history at that moment costs no
-    /// extra misses — it only shrinks the full-price first request. Minutes;
-    /// 0 disables. Default 1440 (24h, conservative for DeepSeek; drop to ~5
-    /// for Anthropic ephemeral cache).
-    #[serde(default = "default_cold_prune_after_minutes")]
-    pub cold_prune_after_minutes: u64,
     /// Summarization requests fork the live conversation (same byte prefix,
     /// same tools + one appended instruction) so the provider prefix cache
     /// pays for re-reading the history — roughly a 10x input-cost saving on
@@ -982,13 +962,9 @@ impl Default for ContextConfig {
             default_context_window: default_context_window(),
             compact_force_ratio: default_compact_force_ratio(),
             compact_tail_tokens: None,
-            compact_soft_ratio: default_compact_soft_ratio(),
-            compact_snip_ratio: default_compact_snip_ratio(),
-            prune_stale_tool_reports: true,
             tool_result_prune_chars: default_tool_result_prune_chars(),
             tool_result_prune_head_chars: default_tool_result_prune_head_chars(),
             tool_result_prune_tail_chars: default_tool_result_prune_tail_chars(),
-            cold_prune_after_minutes: default_cold_prune_after_minutes(),
             compact_cache_reuse: true,
         }
     }

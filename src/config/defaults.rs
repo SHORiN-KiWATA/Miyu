@@ -404,30 +404,19 @@ pub(crate) fn default_calculator_backend() -> String {
     "rust-simple".to_string()
 }
 
-/// Compact trigger watermark. 0.8 (was 0.9) leaves room between the trigger
-/// and the force watermark for the cheap mechanical layer to act first.
 pub(crate) fn default_tool_output_spill_bytes() -> usize {
     50_000
 }
 
+/// Compact trigger watermark. Kept at 0.8 rather than 0.9 for headroom on
+/// small windows: the reserve floor is 4096 tokens, so a 32k window at 0.9
+/// would leave less room for the answer than the reserve asks for.
 pub(crate) fn default_trim_at_ratio() -> f32 {
     0.8
 }
 
 pub(crate) fn default_compact_force_ratio() -> f32 {
     0.9
-}
-
-pub(crate) fn default_compact_soft_ratio() -> f32 {
-    0.5
-}
-
-pub(crate) fn default_compact_snip_ratio() -> f32 {
-    0.6
-}
-
-pub(crate) fn default_cold_prune_after_minutes() -> u64 {
-    1440
 }
 
 pub(crate) fn default_trim_batch_ratio() -> f32 {

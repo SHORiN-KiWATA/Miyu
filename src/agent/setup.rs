@@ -115,7 +115,6 @@ impl Agent {
             compact_stuck: std::sync::atomic::AtomicBool::new(false),
             last_compact_max_seq: std::sync::atomic::AtomicI64::new(-1),
             rapid_compacts: std::sync::atomic::AtomicU32::new(0),
-            soft_notice_sent: std::sync::atomic::AtomicBool::new(false),
             spinner_interval: crate::render::wait_spinner::SPINNER_INTERVAL,
         })
     }
@@ -229,7 +228,6 @@ impl Agent {
                 compatible_previous,
             )?;
             self.state.recover_stale_turns()?;
-            self.maybe_cold_resume_prune()?;
         }
         self.system_prompt = self.assemble_system_prompt(mode_prompt);
         Ok(())

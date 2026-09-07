@@ -15,9 +15,8 @@ pub(in crate::cli) fn state_cumulative(state: &ipc::SessionState) -> TurnTokens 
 }
 
 /// One line per context watermark: absolute tokens left before each tier
-/// fires (soft notice / mechanical prune / compaction / forced compaction).
-/// Absolute values, not percentages — same reasoning as the cache accounting
-/// log line.
+/// fires (compaction / forced compaction). Absolute values, not percentages
+/// — same reasoning as the cache accounting log line.
 pub(in crate::cli) fn compact_watermark_text(
     context_tokens: usize,
     window: usize,
@@ -37,10 +36,8 @@ pub(in crate::cli) fn compact_watermark_text(
         context_tokens,
         window,
         [
-            tier(&t("notice", "提示"), context.compact_soft_ratio),
-            tier(&t("prune", "折叠"), context.compact_snip_ratio),
-            tier(&t("compact", "压缩"), context.trim_at_ratio),
-            tier(&t("force", "强制"), context.compact_force_ratio),
+            tier(t("compact", "压缩"), context.trim_at_ratio),
+            tier(t("force", "强制"), context.compact_force_ratio),
         ]
         .join(" · ")
     )

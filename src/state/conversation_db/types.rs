@@ -80,12 +80,6 @@ impl TurnStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PruneStats {
-    pub turns: usize,
-    pub saved_chars: usize,
-}
-
 /// Deterministic per-turn tool footprint. BTreeSet: sorted, deduplicated,
 /// byte-deterministic serialization (cache-purity requirement for anything
 /// that ends up in a rendered summary).

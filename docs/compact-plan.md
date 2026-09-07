@@ -1,5 +1,17 @@
 # Miyu Compact 功能优化计划 v2
 
+> **2026-09-07 更新：Phase 2「机械轻量层」已整层退役，本文该节只作历史记录。**
+> 它折的是 `turns.tool_reports`，而那一列从 07-01 起就只装
+> `extract_persistable_tool_report` 的白名单精选小结（artifact 操作 /
+> `load_tools` / 表情包 / `remember_fact` / `task`、deep_research 结论），
+> 从来不装工具输出本体——实测线上库 370 轮全空、09-04 备份 410 轮共 ~1.2KB，
+> 连单批 12,500 字节的收割闸门都够不着，一次都没触发过。工具输出的真实体量
+> 在 08-18 引入的 `tool_flow` 列（实测占终端会话回放字节的 63%，加上调用参数
+> 82%），由 `prune_tool_flow` 在**落盘时**截断（8192 → 头 4096 + 尾 1024），
+> 零缓存代价。随之退役的还有 0.5 soft 提示档（它宣告的折叠不可能发生，且
+> 「会话内一次」的闩锁挂在每回合新建的 `Agent` 上、跨回合根本不生效）与
+> ③ TTL 冷恢复剪枝。水位线现为两档：`trim_at_ratio` 压缩 / `compact_force_ratio` 强制。
+
 > 2026-08-06。取代 v1。v1 基于二手资料，本版基于对四个仓库的**实证逐行研究**（四个并行研究 agent，全部结论带 file:line 证据）：
 > - DeepSeek-Reasonix（Go，esengine/DeepSeek-Reasonix，卖点即前缀缓存稳定性）
 > - pi（TS，badlogic/pi-mono，coding-agent + harness 重构版两代）

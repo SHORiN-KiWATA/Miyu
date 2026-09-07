@@ -293,6 +293,21 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 run_pop(&paths, args)
             }
         }
+        Some(Command::Compact(args)) => match args.session.as_deref().or(session_arg.as_deref()) {
+            Some(target) => {
+                let entry = turn_request::resolve_managed_session(&paths, target).await?;
+                let name = entry.name.clone();
+                session_cmds::compact_session(
+                    &paths,
+                    crate::ipc::SessionRef::Id { id: entry.id },
+                    Some(&name),
+                )
+                .await
+            }
+            None => {
+                session_cmds::compact_session(&paths, crate::ipc::SessionRef::Current, None).await
+            }
+        },
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
         Some(Command::Embed(args)) => run_embed(&paths, args).await,
         Some(Command::UpdateDefaultKb) => run_update_default_kb(&paths).await,

@@ -341,16 +341,6 @@ impl AppConfig {
         if self.context.compact_force_ratio < self.context.trim_at_ratio {
             bail!("context.compact_force_ratio must be >= context.trim_at_ratio");
         }
-        if !(0.05..=1.0).contains(&self.context.compact_soft_ratio)
-            || !(0.05..=1.0).contains(&self.context.compact_snip_ratio)
-        {
-            bail!("context.compact_soft_ratio and compact_snip_ratio must be between 0.05 and 1.0");
-        }
-        if self.context.compact_soft_ratio > self.context.compact_snip_ratio
-            || self.context.compact_snip_ratio > self.context.trim_at_ratio
-        {
-            bail!("context watermarks must be ordered: compact_soft_ratio <= compact_snip_ratio <= trim_at_ratio <= compact_force_ratio");
-        }
         if !(0.01..=0.9).contains(&self.context.trim_batch_ratio) {
             bail!("context.trim_batch_ratio must be between 0.01 and 0.9");
         }

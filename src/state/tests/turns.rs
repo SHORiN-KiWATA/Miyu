@@ -751,43 +751,6 @@ fn history_limit_scaling() {
     }
 }
 
-/// 量尺：`cargo test --lib state::tests::turns::prune_rereads_archived_turns -- --ignored --nocapture`
-///
-/// `prune_stale_tool_reports` 的 SELECT 把每个已完成可见回合的 `tool_reports`
-/// 整块拉出来，然后在循环里对「已归档」的直接 `continue`。反复压缩时绝大多数
-/// 回合都已归档，等于每次把整个会话的报告读一遍再全扔掉。
-#[test]
-#[ignore]
-fn prune_rereads_archived_turns() {
-    println!("\n  回合数   首次 prune(ms)   再次 prune(ms)   再次读到的无用字节KB");
-    for turns in [50usize, 100, 200] {
-        let (_temp, store) = test_store();
-        let report = "x".repeat(2 * 1024);
-        for index in 0..turns {
-            let turn_id = format!("turn{index}");
-            store
-                .start_turn(&turn_id, &format!("问 {index}"), std::process::id())
-                .unwrap();
-            for _ in 0..3 {
-                store.append_persisted_context(&turn_id, &report).unwrap();
-            }
-            store
-                .complete_turn(&turn_id, &format!("答 {index}"), None)
-                .unwrap();
-        }
-        let start = std::time::Instant::now();
-        let first = store.prune_stale_tool_reports(5, 1).unwrap();
-        let first_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let start = std::time::Instant::now();
-        let second = store.prune_stale_tool_reports(5, 1).unwrap();
-        let second_ms = start.elapsed().as_secs_f64() * 1000.0;
-        // 第二次一条都不该动，但报告还是被整块读了出来
-        let wasted_kb = (turns.saturating_sub(5)) * 3 * 2;
-        println!("  {turns:>6}   {first_ms:>13.2}   {second_ms:>13.2}   {wasted_kb:>18}");
-        let _ = (first, second);
-    }
-}
-
 // ── v25：工具报告子表 ────────────────────────────────────────────
 
 /// 追加进去的顺序必须原样读回来。子表用 `report_id` 自增排序，写入端不查
@@ -876,68 +839,4 @@ fn deleting_a_turn_takes_its_reports_with_it() {
             .unwrap();
     }
     assert_eq!(count(&db), 0, "回合删了但报告还留着");
-}
-
-/// 裁剪必须把**两处**的报告一起折叠，归档里也得两处都有。
-///
-/// 这是 v25 最容易出错的地方：只看 JSON 列的话，子表里那些报告一条都发现不了
-/// ——裁剪报告「省了 0 字节」，而上下文该多大还多大。反过来只删列不删子表行，
-/// 读回来就是「占位符 + 原文全接在后面」，等于白折叠。
-#[test]
-fn pruning_folds_both_the_column_and_the_child_table() {
-    let (temp, store) = test_store();
-    let db = temp.path().join("state/conversation.db");
-    let old_report = "老".repeat(2048);
-    let new_report = "新".repeat(2048);
-
-    for id in ["t1", "t2", "t3", "t4"] {
-        store.start_turn(id, id, 999_999).unwrap();
-        // 一半写进 JSON 列（模拟 v25 之前），一半走子表
-        {
-            let conn = rusqlite::Connection::open(&db).unwrap();
-            conn.execute(
-                "UPDATE turns SET tool_reports = ?1 WHERE turn_id = ?2",
-                rusqlite::params![serde_json::to_string(&vec![&old_report]).unwrap(), id],
-            )
-            .unwrap();
-        }
-        store.append_persisted_context(id, &new_report).unwrap();
-        store.complete_turn(id, "reply", None).unwrap();
-    }
-
-    let before = store.load_visible_turns().unwrap();
-    assert_eq!(
-        before[0].tool_reports,
-        [old_report.clone(), new_report.clone()]
-    );
-
-    let stats = store.prune_stale_tool_reports(2, 1024).unwrap();
-    assert_eq!(stats.turns, 2, "最老的两个回合该被折叠");
-
-    let after = store.load_visible_turns().unwrap();
-    // 折叠后只剩占位符——子表行必须已经删掉，否则原文会接在后面
-    assert_eq!(after[0].tool_reports.len(), 1, "子表行没删干净");
-    assert!(after[0].tool_reports[0].contains("已折叠"));
-    assert!(
-        after[0].tool_reports[0].contains('2'),
-        "占位符该说折了 2 条"
-    );
-    // 受保护的两个原样不动
-    assert_eq!(
-        after[2].tool_reports,
-        [old_report.clone(), new_report.clone()]
-    );
-
-    // 归档里两处都得在，不能凭空丢数据
-    let archive: String = {
-        let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.query_row(
-            "SELECT tool_reports_archive FROM turns WHERE turn_id = 't1'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap()
-    };
-    let archived: Vec<String> = serde_json::from_str(&archive).unwrap();
-    assert_eq!(archived, [old_report, new_report], "归档漏了子表那部分");
 }

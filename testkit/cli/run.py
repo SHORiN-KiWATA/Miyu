@@ -8,6 +8,7 @@
     --model / --system-prompt / --append-system-prompt / --tools / --no-tools /
     --context-window / --no-memory(memory.db 的 episodes 行数不变)
     --session X --create / 历史延续 / session list|show|clear|rename|delete / 会话不存在退出码 3
+    miyu compact:缺省当前会话 / --session / 压缩后上下文实际变小 / 不存在退出码 3
     --stdin 长输入不截断
     --timeout → 退出码 124;模型返回 500 → 退出码 1
     miyu stdio:ready / 并发两回合事件归属 / question→answer 往返 / cancel / session op / ping / EOF 退出
@@ -229,6 +230,33 @@ def one_shot_scenarios():
     code, out, _ = cli(["session", "list", "--json"])
     names = [s_["name"] for s_ in json.loads(out).get("sessions", [])]
     check("session delete 后列表不含", "trans2" not in names and "devsess" not in names, names)
+
+    # 6b. compact:顶层命令(缺省终端集成会话)/ --session / 会话不存在
+    # 切点两个约束都得满足:最近 2 轮无视预算必保(MIN_TAIL_TURNS),第 3 新的
+    # 那轮才受逐字尾巴预算 min(16384, window/4)=16384 约束。所以要 4 轮、每轮
+    # 约 1 万 token——少于 3 轮或每轮太小,压缩正确地什么都不做。总量 ~4 万
+    # token 也远低于 0.8×168000 的自动压缩线,免得自动档先动手。
+    filler = "miyu compact fixture line with several ordinary words\n" * 800
+    cli(["ask", "--output-format", "json", "--session", "compactme", "--create", "--stdin", "TK big1"], stdin=filler)
+    for index in range(2, 5):
+        cli(["ask", "--output-format", "json", "--session", "compactme", "--stdin", f"TK big{index}"], stdin=filler)
+    code, out, _ = cli(["session", "show", "compactme", "--json"])
+    before_tokens = json.loads(out).get("context_tokens", 0) if code == 0 else 0
+    code, out, err = cli(["compact", "--session", "compactme"], timeout=180)
+    check("compact --session → 已压缩", code == 0 and "已压缩" in out,
+          f"code={code} out={out.strip()[:80]} err={err.strip()[:120]}")
+    code, out, _ = cli(["session", "show", "compactme", "--json"])
+    after_tokens = json.loads(out).get("context_tokens", 0) if code == 0 else 0
+    check("compact 后上下文明显变小", 0 < after_tokens < before_tokens * 3 // 4,
+          f"{before_tokens} → {after_tokens}")
+    code, out, _ = cli(["compact"], timeout=180)
+    check("compact 不带参数打当前会话", code == 0 and out.strip() != "", f"code={code} out={out.strip()[:80]}")
+    code, out, err = cli(["compact", "--session", "nosuchsession"])
+    check("compact --session 不存在 → 退出码 3", code == 3, f"code={code} err={err.strip()[:80]}")
+    code, out, _ = cli(["--help"])
+    check("--help 的终端集成节列出 compact", "立即压缩终端集成会话上下文" in out,
+          [line for line in out.splitlines() if "compact" in line])
+    cli(["session", "delete", "compactme", "--yes"])
 
     # 7. --no-memory
     before = episodes_count()

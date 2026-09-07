@@ -465,42 +465,6 @@ fn second_tail_compact_supersedes_the_previous_summary() {
 }
 
 #[test]
-fn prune_folds_old_tool_reports_behind_the_harvest_gate() {
-    let (_temp, store) = test_store();
-    let big_report = "x".repeat(4096);
-    for id in ["t1", "t2", "t3", "t4"] {
-        store.start_turn(id, id, 999999).unwrap();
-        store
-            .conv_db
-            .append_tool_reports(id, &[big_report.clone()])
-            .unwrap();
-        store.complete_turn(id, "reply", None).unwrap();
-    }
-
-    // Harvest gate: potential savings (~8KB from t1+t2) below the
-    // threshold → nothing is rewritten.
-    let stats = store.prune_stale_tool_reports(2, 1_000_000).unwrap();
-    assert_eq!(stats.turns, 0);
-    let turns = store.load_visible_turns().unwrap();
-    assert_eq!(turns[0].tool_reports[0], big_report);
-
-    // Gate passes: the two oldest turns fold, newest two are protected.
-    let stats = store.prune_stale_tool_reports(2, 1024).unwrap();
-    assert_eq!(stats.turns, 2);
-    assert!(stats.saved_chars > 6000);
-    let turns = store.load_visible_turns().unwrap();
-    assert!(turns[0].tool_reports[0].contains("已折叠"));
-    assert!(turns[1].tool_reports[0].contains("已折叠"));
-    assert_eq!(turns[2].tool_reports[0], big_report);
-    assert_eq!(turns[3].tool_reports[0], big_report);
-
-    // Monotonic: a second pass finds nothing new to rewrite (the
-    // archived turns are never re-pruned, so the cache is not re-hit).
-    let stats = store.prune_stale_tool_reports(2, 1024).unwrap();
-    assert_eq!(stats.turns, 0);
-}
-
-#[test]
 fn empty_summary_leaves_visible_turns_unchanged() {
     let (_temp, store) = test_store();
     store.start_turn("t1", "hello", 999999).unwrap();
