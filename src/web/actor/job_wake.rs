@@ -557,9 +557,10 @@ pub(in crate::web) fn wake_local_session_for_job(
             mode: AgentMode::Normal,
             images: Vec::new(),
             cwd: Some(completion.workspace.clone()),
-            origin_tty: completion.origin_tty.clone(),
+            origin_tty: completion.origin_tty.clone().map(Box::new),
             audience: PromptAudience::Owner,
             profile: None,
+            overrides: None,
             cancel: cancel_rx,
             turn_origin: Box::new(crate::tools::workspace::TurnOrigin::JobWake),
         })

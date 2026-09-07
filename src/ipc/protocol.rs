@@ -48,6 +48,39 @@ pub enum SessionRef {
     Name { name: String },
 }
 
+/// 「仅本回合生效」的覆盖集。每一项都是 `None`/空 = 不覆盖。
+///
+/// 设计约束:这些值**不写 config、不写会话覆盖表**,回合结束即消失。取值
+/// 无界的项(窗口、提示词)走 Agent 字段而不是改 config,免得把
+/// `TurnResourceCache`(键=整份 config)冲刷掉。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TurnOverrides {
+    /// 本回合模型池;空 = 沿用会话/全局池。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<crate::config::ActiveProviderModelConfig>,
+    /// 本回合上下文窗口(token)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<usize>,
+    /// 整体替换人格/模式提示词(掉缓存,宿主自担)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// 追加在系统提示词末尾的宿主指令(进 system 侧,不化石)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
+    /// `Some(false)` = 本回合不写长期记忆/日记/经历,也不给 remember_fact。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_writes: Option<bool>,
+    /// 工具白名单;`Some(vec![])` = 一个工具都不给。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_allowlist: Option<Vec<String>>,
+}
+
+impl TurnOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
     pub version: u16,
@@ -150,6 +183,11 @@ pub enum Command {
         /// set, the turn runs there without moving the current pointer.
         #[serde(default)]
         session_id: Option<String>,
+        /// 仅本回合生效的覆盖(模型/窗口/提示词/记忆/工具面),不落盘。
+        /// 程序驱动的 CLI(`miyu ask --model …`、`miyu stdio`)用;REPL/WebUI
+        /// 不传。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        overrides: Option<TurnOverrides>,
     },
     QueueTurnUpdate {
         run_id: String,

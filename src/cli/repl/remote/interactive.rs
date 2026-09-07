@@ -1028,6 +1028,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
             &images,
             Some(active_session_id.clone()),
             Some(&jobs_feed),
+            None,
         )
         .await
         {

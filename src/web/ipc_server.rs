@@ -582,6 +582,7 @@ pub(in crate::web) async fn handle_ipc_connection(
             cwd,
             session_id,
             origin_tty,
+            overrides,
         } => {
             handle_ipc_turn(
                 &state,
@@ -592,6 +593,7 @@ pub(in crate::web) async fn handle_ipc_connection(
                 cwd,
                 session_id,
                 origin_tty,
+                overrides,
             )
             .await?;
         }
@@ -776,6 +778,7 @@ pub(in crate::web) async fn handle_ipc_turn(
     cwd: Option<std::path::PathBuf>,
     session_id: Option<String>,
     origin_tty: Option<crate::ipc::OriginTty>,
+    overrides: Option<crate::ipc::TurnOverrides>,
 ) -> Result<()> {
     let content = match validate_content(content) {
         Ok(content) => content,
@@ -853,9 +856,12 @@ pub(in crate::web) async fn handle_ipc_turn(
             mode,
             images,
             cwd,
-            origin_tty,
+            origin_tty: origin_tty.map(Box::new),
             audience: PromptAudience::Owner,
             profile: None,
+            overrides: overrides
+                .filter(|overrides| !overrides.is_empty())
+                .map(Box::new),
             cancel: cancel_rx,
             turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })

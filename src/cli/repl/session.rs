@@ -29,8 +29,11 @@ pub(in crate::cli) async fn one_shot_session(
     continue_session: bool,
 ) -> Result<TurnSession> {
     if let Some(arg) = session_arg {
+        // 与 `miyu session list` 同一份列表、同一套编号,找不到退出码 3。
         return Ok(TurnSession::Explicit(
-            resolve_session_id_for_turn(paths, arg).await?,
+            crate::cli::turn_request::resolve_managed_session(paths, arg)
+                .await?
+                .id,
         ));
     }
     if continue_session {
@@ -46,14 +49,18 @@ pub(in crate::cli) fn ephemeral_session_name() -> String {
     t("One-shot", "一次性对话").to_string()
 }
 
-pub(in crate::cli) async fn create_ephemeral_session(paths: &MiyuPaths) -> Result<String> {
+/// `mode`(normal/dev)决定阅后即焚会话建在哪个人格名下;None = 普通。
+pub(in crate::cli) async fn create_ephemeral_session(
+    paths: &MiyuPaths,
+    mode: Option<&str>,
+) -> Result<String> {
     let (_, data) = session_admin(
         paths,
         IpcCommand::CreateSession {
             name: Some(ephemeral_session_name()),
             switch: false,
             kind: Some(crate::state::ASK_SESSION_KIND.to_string()),
-            mode: None,
+            mode: mode.map(str::to_string),
         },
     )
     .await?;
@@ -257,6 +264,7 @@ pub(in crate::cli) async fn apply_repl_session_switch(
 }
 
 /// One row of the daemon's session list, parsed from `ListSessions` JSON.
+#[derive(Clone, Debug)]
 pub(in crate::cli) struct SessionListEntry {
     pub(in crate::cli) id: String,
     pub(in crate::cli) name: String,
@@ -693,32 +701,6 @@ pub(in crate::cli) async fn session_admin(
     ipc::ensure_daemon(paths, None).await?;
     let refreshed = MiyuPaths::new()?;
     send_ipc_admin(&refreshed, command).await
-}
-
-/// Resolves a `miyu session/delete` target argument outside the REPL:
-/// numbers index into the visible session list, anything else is a name.
-/// Resolves a `--session` argument (name or list index) to a concrete
-/// session id, without moving the global current pointer.
-pub(in crate::cli) async fn resolve_session_id_for_turn(
-    paths: &MiyuPaths,
-    arg: &str,
-) -> Result<String> {
-    let (_, data) = session_admin(paths, IpcCommand::ListSessions { mode: None }).await?;
-    let entries = session_list_entries(&data);
-    if let Ok(index) = arg.parse::<usize>() {
-        if let Some(entry) = index.checked_sub(1).and_then(|index| entries.get(index)) {
-            return Ok(entry.id.clone());
-        }
-        bail!(
-            "{}: {index}",
-            t("no session with this number", "没有这个编号的会话")
-        );
-    }
-    entries
-        .into_iter()
-        .find(|entry| entry.name.eq_ignore_ascii_case(arg) || entry.id == arg)
-        .map(|entry| entry.id)
-        .ok_or_else(|| anyhow::anyhow!("{}: {arg}", t("session not found", "找不到该会话")))
 }
 
 /// `/goal edit`（无参数）的编辑器内变身：把「/goal edit <当前目标>」放进

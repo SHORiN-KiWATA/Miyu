@@ -202,6 +202,7 @@ pub(in crate::cli) async fn run_shell_intercept(
             false,
             AgentMode::Normal,
             TurnSession::Current,
+            None,
         )
         .await
     } else {

@@ -21,7 +21,7 @@ pub(in crate::cli) async fn run_stt_once(
         return Ok(());
     };
     eprintln!("\x1b[2m» {text}\x1b[0m");
-    run_chat_with_options(paths, text, None, plain, mode, session).await
+    run_chat_with_options(paths, text, None, plain, mode, session, None).await
 }
 
 /// `miyu listen`:让前端直接进入等待指令状态(等价于唤醒词命中),

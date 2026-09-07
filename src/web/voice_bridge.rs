@@ -546,6 +546,7 @@ async fn run_voice_turn(state: &DaemonState, content: String) -> Result<()> {
                 origin_tty: None,
                 cwd: None,
                 session_id: Some(session_id.clone()),
+                overrides: None,
             }),
         )
         .await?;

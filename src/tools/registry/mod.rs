@@ -79,6 +79,16 @@ impl ToolRegistry {
         self.tools.remove(name).is_some()
     }
 
+    /// 只留白名单里的工具(程序驱动 CLI 的 `--tools`);空名单 = 清空。
+    /// 名单里不存在的名字静默略过,由调用方决定要不要提醒。
+    pub fn retain_named(&mut self, keep: &[String]) {
+        for name in self.tool_names() {
+            if !keep.iter().any(|kept| kept == &name) {
+                self.unregister(&name);
+            }
+        }
+    }
+
     pub(crate) fn skill_catalog_fingerprint(&self) -> Option<[u8; 32]> {
         self.skill_catalog_fingerprint
     }

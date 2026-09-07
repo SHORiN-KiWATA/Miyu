@@ -157,7 +157,13 @@ pub(in crate::cli) fn apply_chinese_help_template(mut command: clap::Command) ->
 }
 
 pub(in crate::cli) fn localize_top_args(command: clap::Command) -> clap::Command {
-    command
+    localize_turn_options(command)
+        .mut_arg("stdin", |arg| {
+            arg.help(t(
+                "Read the message body from stdin up to EOF (no probe timeout)",
+                "从标准输入读正文(读到 EOF,不受探测超时限制)",
+            ))
+        })
         .mut_arg("debug", |arg| {
             arg.help(t(
                 "Write detailed diagnostics to the Miyu log directory",
@@ -186,6 +192,16 @@ pub(in crate::cli) fn localize_top_args(command: clap::Command) -> clap::Command
 
 pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::Command {
     let descriptions = [
+        (
+            "session",
+            "Manage sessions: list / new / show / delete / rename / clear / pop / compact / models / workspace",
+            "会话管理:list / new / show / delete / rename / clear / pop / compact / models / workspace",
+        ),
+        (
+            "stdio",
+            "Long-running protocol mode: one JSON request per stdin line, one JSON event per stdout line",
+            "长驻协议模式:stdin 一行一请求(JSON),stdout 一行一事件;宿主软件把 Miyu 当后端用",
+        ),
         (
             "ask",
             "Send one message to the assistant as a one-shot chat",
@@ -311,6 +327,8 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         "web",
         "tool-call",
         "ask",
+        "session",
+        "stdio",
         "list-models",
         "export",
         "import",
@@ -329,10 +347,19 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
     }
     command = command
         .mut_subcommand("ask", localize_ask_command)
+        .mut_subcommand("session", localize_session_command)
         .mut_subcommand("models", localize_models_command)
         .mut_subcommand("variant", localize_variant_command)
         .mut_subcommand("history", localize_history_command)
         .mut_subcommand("pop", localize_pop_command)
+        .mut_subcommand("reset", |command| {
+            command.mut_arg("session", |arg| {
+                arg.help(t(
+                    "Target session (name, list number, or id); defaults to the terminal session",
+                    "目标会话(名字、编号或 id);缺省为终端集成会话",
+                ))
+            })
+        })
         .mut_subcommand("kb", localize_kb_command)
         .mut_subcommand("memory", localize_memory_command)
         .mut_subcommand("skills", localize_skills_command)
@@ -401,9 +428,156 @@ pub(in crate::cli) fn localize_import_command(command: clap::Command) -> clap::C
 }
 
 pub(in crate::cli) fn localize_ask_command(command: clap::Command) -> clap::Command {
-    command.mut_arg("message", |arg| {
-        arg.help(t("Message to send", "要发送的消息"))
-    })
+    localize_turn_options(command)
+        .mut_arg("message", |arg| {
+            arg.help(t("Message to send", "要发送的消息"))
+        })
+        .mut_arg("read_stdin", |arg| {
+            arg.help(t(
+                "Read the message body from stdin up to EOF (no probe timeout)",
+                "从标准输入读正文(读到 EOF,不受探测超时限制)",
+            ))
+        })
+}
+
+/// 根命令与 `ask` 各 flatten 一份 `TurnOptions`,帮助文案共用这里。
+/// `mut_arg` 的名字必须存在(否则 clap panic),所以这里只写 TurnOptions 的字段。
+pub(in crate::cli) fn localize_turn_options(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("session", |arg| {
+            arg.help(t(
+                "Target session (name, list number, or id) for this command only",
+                "仅本次命令使用的目标会话(名字、编号或 id)",
+            ))
+        })
+        .mut_arg("continue_session", |arg| {
+            arg.help(t(
+                "Send the message into the terminal-integration session instead of a throwaway one-shot chat",
+                "把消息发进终端集成会话,而不是用完即弃的一次性对话",
+            ))
+        })
+        .mut_arg("create", |arg| {
+            arg.help(t(
+                "Create the --session if it does not exist (its name is the session name)",
+                "--session 指名的会话不存在时新建(名字即会话名)",
+            ))
+        })
+        .mut_arg("mode", |arg| {
+            arg.help(t(
+                "Mode for a newly created session (normal/dev); rejected for existing sessions",
+                "新建会话的模式(normal/dev);对已有会话传了报错",
+            ))
+        })
+        .mut_arg("model", |arg| {
+            arg.help(t(
+                "Model for this turn only (provider/model, bare name, or list-models index); not persisted",
+                "本回合模型(provider/model、裸名或 list-models 序号);不落盘",
+            ))
+        })
+        .mut_arg("context_window", |arg| {
+            arg.help(t(
+                "Context window in tokens for this turn only; not persisted",
+                "本回合上下文窗口(token 数);不落盘",
+            ))
+        })
+        .mut_arg("system_prompt", |arg| {
+            arg.help(t(
+                "Replace the system prompt (text or @file); every call is a cache cold start",
+                "整体替换系统提示词(文本或 @文件);每次调用都是缓存冷启动",
+            ))
+        })
+        .mut_arg("append_system_prompt", |arg| {
+            arg.help(t(
+                "Append host instructions after the persona prompt (text or @file); cache-stable when repeated",
+                "在人格提示词后追加宿主指令(文本或 @文件);每回合同一段则缓存稳定",
+            ))
+        })
+        .mut_arg("no_memory", |arg| {
+            arg.help(t(
+                "Do not write long-term memory, diary, or episodes for this turn",
+                "本回合不写长期记忆、日记与经历",
+            ))
+        })
+        .mut_arg("tools", |arg| {
+            arg.help(t(
+                "Tool allowlist, comma-separated",
+                "工具白名单,逗号分隔",
+            ))
+        })
+        .mut_arg("no_tools", |arg| {
+            arg.help(t("Give this turn no tools at all", "本回合不给任何工具"))
+        })
+        .mut_arg("image", |arg| {
+            arg.help(t("Attach an image (repeatable)", "附图,可多次"))
+        })
+        .mut_arg("cwd", |arg| {
+            arg.help(t(
+                "Workspace for this turn; defaults to the caller's current directory",
+                "本回合工作区;缺省为调用方当前目录",
+            ))
+        })
+        .mut_arg("output_format", |arg| {
+            arg.help(t(
+                "Output format: text (default), json (one final line), stream-json (one event per line)",
+                "输出格式:text(默认)、json(一行终态)、stream-json(逐事件一行)",
+            ))
+        })
+        .mut_arg("quiet", |arg| {
+            arg.help(t(
+                "Text mode: no progress or tool lines",
+                "text 模式下不打进度与工具行",
+            ))
+        })
+        .mut_arg("timeout", |arg| {
+            arg.help(t(
+                "Seconds before the turn is cancelled (exit 124); json/stream-json/stdio only",
+                "超时秒数,到点取消回合(退出码 124);仅 json/stream-json/stdio",
+            ))
+        })
+}
+
+pub(in crate::cli) fn localize_session_command(command: clap::Command) -> clap::Command {
+    let subs = [
+        (
+            "list",
+            "List this persona's sessions (normal + dev); --json for raw output",
+            "列出当前人格的会话(普通+开发模式);--json 直出",
+        ),
+        ("new", "Create a session", "新建会话"),
+        (
+            "show",
+            "Session details (mode, workspace, turns, context usage)",
+            "会话详情(模式、工作区、轮数、上下文占用)",
+        ),
+        ("delete", "Delete a session", "删除会话"),
+        ("rename", "Rename a session", "重命名会话"),
+        (
+            "clear",
+            "Clear a session's context (history and queue); the session stays",
+            "清空会话上下文(历史与队列),会话本身保留",
+        ),
+        (
+            "pop",
+            "Move the oldest N turns out of the active context",
+            "把最旧 N 轮移出活跃上下文",
+        ),
+        ("compact", "Compact a session's context", "压缩会话上下文"),
+        (
+            "models",
+            "Show or set the session's model override (`default` follows the global pool)",
+            "查看/设置会话模型覆盖(`default` 恢复跟随全局池)",
+        ),
+        (
+            "workspace",
+            "Show or bind the session workspace; --clear unbinds",
+            "查看/绑定会话工作区;--clear 解绑",
+        ),
+    ];
+    let mut command = command;
+    for (name, en, zh) in subs {
+        command = command.mut_subcommand(name, |sub| sub.about(t(en, zh)));
+    }
+    command
 }
 
 pub(in crate::cli) fn localize_models_command(command: clap::Command) -> clap::Command {
@@ -438,12 +612,19 @@ pub(in crate::cli) fn localize_history_command(command: clap::Command) -> clap::
 }
 
 pub(in crate::cli) fn localize_pop_command(command: clap::Command) -> clap::Command {
-    command.mut_arg("count", |arg| {
-        arg.help(t(
-            "Number of oldest turns to pop; omit to select interactively",
-            "要弹出的最旧轮次数；省略则进入交互多选",
-        ))
-    })
+    command
+        .mut_arg("count", |arg| {
+            arg.help(t(
+                "Number of oldest turns to pop; omit to select interactively",
+                "要弹出的最旧轮次数；省略则进入交互多选",
+            ))
+        })
+        .mut_arg("session", |arg| {
+            arg.help(t(
+                "Target session (name, list number, or id); defaults to the terminal session",
+                "目标会话(名字、编号或 id);缺省为终端集成会话",
+            ))
+        })
 }
 
 pub(in crate::cli) fn localize_config_command(command: clap::Command) -> clap::Command {

@@ -69,6 +69,11 @@ pub async fn run() -> Result<()> {
     cli::run(cli, paths).await
 }
 
+/// 退出码:`main.rs` 用,见 `cli::exit_code`。
+pub fn exit_code_for(error: &anyhow::Error) -> i32 {
+    cli::exit_code::exit_code_for(error)
+}
+
 /// 错误前缀的本地化文案。`main.rs` 打印失败时要用，而 `i18n` 是私有模块。
 pub fn error_label() -> &'static str {
     i18n::text("error", "错误")

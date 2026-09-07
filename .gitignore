@@ -20,3 +20,9 @@ __pycache__/
 testkit/embedding/home/
 testkit/embedding/out-*.txt
 testkit/embedding/kbsrc/
+
+# testkit/cli 黑盒与真宿主 demo 的一次性产物
+testkit/cli/home/
+testkit/cli/home-demo/
+testkit/cli/out/
+testkit/cli/out-demo/

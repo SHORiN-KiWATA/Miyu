@@ -5,8 +5,13 @@
 async fn main() {
     limit_malloc_arenas();
     if let Err(error) = miyu::run().await {
-        eprintln!("{}: {error:#}", miyu::error_label());
-        std::process::exit(1);
+        // 带码的错误(用法/会话不存在/超时/取消)按码退出;JSON 输出模式已经把
+        // 错误打给宿主了,正文为空就不再往 stderr 复述。
+        let message = format!("{error:#}");
+        if !message.trim().is_empty() {
+            eprintln!("{}: {message}", miyu::error_label());
+        }
+        std::process::exit(miyu::exit_code_for(&error));
     }
 }
 

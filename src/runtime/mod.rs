@@ -104,7 +104,10 @@ pub(crate) fn trim_process_memory() {
 pub(crate) fn trim_process_memory() {}
 
 // ── MAX_CONTENT_CHARS ──
-pub(crate) const MAX_CONTENT_CHARS: usize = 20_000;
+/// 单回合正文上限。09-07 从 20,000 提到 200,000:程序驱动的 CLI(`--stdin`、
+/// stdio)要喂整篇文档,2 万字符连一份中等长度的 README 都装不下。上限仍要
+/// 有——IPC 帧 24 MiB、落库与估 token 都按它兜底。
+pub(crate) const MAX_CONTENT_CHARS: usize = 200_000;
 
 // ── EVENT_CAPACITY ──
 pub(crate) const EVENT_CAPACITY: usize = 4096;

@@ -39,6 +39,7 @@ pub(in crate::web) async fn actor_loop(
                 origin_tty,
                 audience,
                 profile,
+                overrides,
                 cancel,
                 turn_origin,
             } => {
@@ -82,6 +83,7 @@ pub(in crate::web) async fn actor_loop(
                         display_content,
                         attachment_run_id,
                         images,
+                        overrides,
                     },
                     mode,
                     audience,
@@ -96,7 +98,7 @@ pub(in crate::web) async fn actor_loop(
                     crate::tools::workspace::with_session(
                         session_id,
                         crate::tools::workspace::with_origin_tty(
-                            origin_tty,
+                            origin_tty.map(|origin| *origin),
                             crate::tools::workspace::with_platform_sender(
                                 platform_sender,
                                 crate::tools::workspace::with_turn_origin(*turn_origin, task),

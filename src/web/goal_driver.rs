@@ -331,6 +331,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
             origin_tty: None,
             audience: PromptAudience::Owner,
             profile: None,
+            overrides: None,
             cancel: cancel_rx,
             turn_origin: Box::new(origin),
         })

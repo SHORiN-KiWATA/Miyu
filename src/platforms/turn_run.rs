@@ -116,6 +116,7 @@ pub(crate) async fn run_platform_turn(
             origin_tty: None,
             audience: PromptAudience::External,
             profile: Some(profile),
+            overrides: None,
             cancel: cancel_rx,
             turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })

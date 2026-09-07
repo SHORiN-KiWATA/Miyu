@@ -4,6 +4,7 @@
 //! 就生效，而那时命令行还没解析。
 
 use crate::cli::*;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "miyu", version, about = "Miyu CLI AI Agent")]
@@ -11,15 +12,13 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub debug: bool,
 
+    /// 纯文本输出(= `--output-format text --quiet`),保留给老脚本。
     #[arg(long)]
     pub stdout: bool,
 
-    /// 仅为本次命令指定目标会话（名称或编号），不改变全局当前会话
-    #[arg(long)]
-    pub session: Option<String>,
-
-    #[arg(short = 'c', long = "continue", conflicts_with = "session")]
-    pub continue_session: bool,
+    /// 一次性对话的回合选项;`miyu ask` 子命令上同样一套,子命令的赢。
+    #[command(flatten)]
+    pub turn: TurnOptions,
 
     #[arg(long, hide = true)]
     pub shell_intercept: bool,
@@ -30,7 +29,8 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub shell: Option<String>,
 
-    #[arg(long, hide = true)]
+    /// 从标准输入读正文(读到 EOF,不再受 5 秒探测限制),并入消息尾部。
+    #[arg(long)]
     pub stdin: bool,
 
     #[arg(long, hide = true)]
@@ -113,7 +113,7 @@ pub enum Command {
     UpdateDefaultKb,
     Memory(MemoryArgs),
     Skills(SkillsArgs),
-    Reset,
+    Reset(ResetArgs),
     #[command(name = "reset-memory")]
     ResetMemoryCli,
     Wipe(WipeArgs),
@@ -129,12 +129,196 @@ pub enum Command {
     /// MCP stdio 工具桥(claude-code 供应商内部使用,由 claude 拉起)
     #[command(name = "mcp-serve", hide = true)]
     McpServe,
+    /// 会话管理:list / new / show / delete / rename / clear / pop / compact / models / workspace
+    Session(SessionArgs),
+    /// 长驻协议模式:stdin 一行一请求(JSON),stdout 一行一事件;宿主软件把 Miyu 当后端用
+    Stdio,
+}
+
+/// 一次性回合的选项。根命令与 `ask` 子命令各 flatten 一份,`merged` 合并。
+///
+/// 覆盖类参数(模型/窗口/提示词/记忆/工具)全部只对本回合生效、不落盘;
+/// 会话类参数(`--session --create --mode`)只在建会话时决定模式。
+#[derive(Debug, Args, Clone, Default)]
+pub struct TurnOptions {
+    /// 仅为本次命令指定目标会话(名称、编号或 id),不改变全局当前会话
+    #[arg(long, value_name = "SESSION")]
+    pub session: Option<String>,
+
+    #[arg(short = 'c', long = "continue", conflicts_with = "session")]
+    pub continue_session: bool,
+
+    /// `--session` 指名的会话不存在时新建(名字即会话名)
+    #[arg(long, requires = "session")]
+    pub create: bool,
+
+    /// 新建会话的模式(normal/dev);对已有会话传了报错
+    #[arg(long, value_name = "MODE", value_parser = ["normal", "dev"])]
+    pub mode: Option<String>,
+
+    /// 本回合模型:provider/model、裸名或 `list-models` 序号;不落盘
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
+
+    /// 本回合上下文窗口(token 数);不落盘
+    #[arg(long, value_name = "TOKENS")]
+    pub context_window: Option<usize>,
+
+    /// 整体替换系统提示词(文本或 @文件);每次调用都是缓存冷启动
+    #[arg(long, value_name = "TEXT|@FILE")]
+    pub system_prompt: Option<String>,
+
+    /// 追加在系统提示词末尾的宿主指令(文本或 @文件);每回合同一段则缓存稳定
+    #[arg(long, value_name = "TEXT|@FILE")]
+    pub append_system_prompt: Option<String>,
+
+    /// 本回合不写长期记忆、日记与经历
+    #[arg(long)]
+    pub no_memory: bool,
+
+    /// 工具白名单,逗号分隔
+    #[arg(
+        long,
+        value_name = "NAMES",
+        value_delimiter = ',',
+        conflicts_with = "no_tools"
+    )]
+    pub tools: Option<Vec<String>>,
+
+    /// 本回合不给任何工具
+    #[arg(long)]
+    pub no_tools: bool,
+
+    /// 附图,可多次
+    #[arg(long, value_name = "PATH")]
+    pub image: Vec<PathBuf>,
+
+    /// 本回合工作区;缺省为调用方当前目录
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// 输出格式:text(默认)、json(一行终态)、stream-json(逐事件一行)
+    #[arg(long, value_name = "FORMAT", value_enum)]
+    pub output_format: Option<OutputFormat>,
+
+    /// text 模式下不打进度与工具行
+    #[arg(long)]
+    pub quiet: bool,
+
+    /// 超时秒数;到点取消回合,退出码 124
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
+}
+
+impl TurnOptions {
+    /// 子命令那份压在根命令那份之上:子命令给了的项赢,没给的沿用根命令。
+    pub fn merged(self, over: TurnOptions) -> TurnOptions {
+        TurnOptions {
+            session: over.session.or(self.session),
+            continue_session: over.continue_session || self.continue_session,
+            create: over.create || self.create,
+            mode: over.mode.or(self.mode),
+            model: over.model.or(self.model),
+            context_window: over.context_window.or(self.context_window),
+            system_prompt: over.system_prompt.or(self.system_prompt),
+            append_system_prompt: over.append_system_prompt.or(self.append_system_prompt),
+            no_memory: over.no_memory || self.no_memory,
+            tools: over.tools.or(self.tools),
+            no_tools: over.no_tools || self.no_tools,
+            image: if over.image.is_empty() {
+                self.image
+            } else {
+                over.image
+            },
+            cwd: over.cwd.or(self.cwd),
+            output_format: over.output_format.or(self.output_format),
+            quiet: over.quiet || self.quiet,
+            timeout: over.timeout.or(self.timeout),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+    #[value(name = "stream-json")]
+    StreamJson,
 }
 
 #[derive(Debug, Args)]
 pub struct MessageArgs {
+    #[command(flatten)]
+    pub turn: TurnOptions,
+
+    /// 从标准输入读正文(读到 EOF),并入消息尾部
+    #[arg(long = "stdin")]
+    pub read_stdin: bool,
+
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub message: Vec<String>,
+}
+
+/// `miyu session …`:程序驱动的会话管理面,全部映射到 daemon 的会话 IPC。
+#[derive(Debug, Args)]
+pub struct SessionArgs {
+    #[command(subcommand)]
+    pub command: SessionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommand {
+    /// 列出当前人格的会话(普通+开发模式);`--json` 直出
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// 新建会话
+    New {
+        name: String,
+        #[arg(long, value_name = "MODE", value_parser = ["normal", "dev"])]
+        mode: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 查看会话详情(模式、工作区、轮数、上下文占用)
+    Show {
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 删除会话
+    Delete {
+        target: String,
+        /// 跳过确认
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 重命名
+    Rename { target: String, name: String },
+    /// 清空会话上下文(历史与队列),会话本身保留
+    Clear { target: String },
+    /// 把最旧 N 轮移出活跃上下文
+    Pop {
+        target: String,
+        #[arg(value_parser = parse_positive_pop_count)]
+        count: usize,
+    },
+    /// 压缩会话上下文
+    Compact { target: String },
+    /// 查看/设置会话的模型覆盖(`default` 恢复跟随全局池)
+    Models {
+        target: String,
+        model: Option<String>,
+    },
+    /// 查看/绑定会话工作区;`--clear` 解绑
+    Workspace {
+        target: String,
+        dir: Option<PathBuf>,
+        #[arg(long, conflicts_with = "dir")]
+        clear: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -245,6 +429,17 @@ pub struct HistoryArgs {
 pub struct PopArgs {
     #[arg(value_parser = parse_positive_pop_count)]
     pub count: Option<usize>,
+
+    /// 目标会话(名字、编号或 id);缺省为终端集成会话
+    #[arg(long, value_name = "SESSION")]
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResetArgs {
+    /// 目标会话(名字、编号或 id);缺省为终端集成会话
+    #[arg(long, value_name = "SESSION")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Args)]

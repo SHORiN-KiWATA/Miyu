@@ -434,6 +434,7 @@ mod tests {
                 path: std::path::PathBuf::from("/dev/pts/7"),
                 shell_pid: 4321,
             }),
+            overrides: None,
         });
         let writer = tokio::spawn(async move { send(&mut left, &request).await });
         let received = receive::<Request>(&mut right).await.unwrap().unwrap();
@@ -448,12 +449,14 @@ mod tests {
                 cwd,
                 session_id,
                 origin_tty,
+                overrides,
             } => {
                 assert_eq!(content, "hello");
                 assert_eq!(mode, "normal");
                 assert_eq!(images.len(), 1);
                 assert_eq!(cwd, Some(std::path::PathBuf::from("/tmp/workdir")));
                 assert_eq!(session_id.as_deref(), Some("sess_test"));
+                assert!(overrides.is_none());
                 let origin = origin_tty.expect("origin tty should round-trip");
                 assert_eq!(origin.path, std::path::PathBuf::from("/dev/pts/7"));
                 assert_eq!(origin.shell_pid, 4321);
@@ -472,6 +475,7 @@ mod tests {
             cwd: None,
             session_id: None,
             origin_tty: None,
+            overrides: None,
         });
         assert!(send(&mut left, &request).await.is_err());
     }

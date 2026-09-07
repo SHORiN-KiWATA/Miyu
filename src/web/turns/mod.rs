@@ -343,6 +343,7 @@ pub(in crate::web) async fn create_turn(
             origin_tty: None,
             audience: PromptAudience::External,
             profile: None,
+            overrides: None,
             cancel: cancel_rx,
             turn_origin: Box::new(crate::tools::workspace::TurnOrigin::Human),
         })

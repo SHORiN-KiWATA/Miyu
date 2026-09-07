@@ -17,6 +17,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
     images: &[Option<crate::clipboard::PastedImage>],
     session_override: Option<String>,
     jobs_feed: Option<&JobsFeed>,
+    overrides: Option<crate::ipc::TurnOverrides>,
 ) -> Result<Option<RemoteTurnSummary>> {
     let refreshed_paths = if direct_mode_requested() {
         None
@@ -61,6 +62,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
             } else {
                 None
             },
+            overrides,
         }),
     )
     .await?;

@@ -230,6 +230,13 @@ pub struct Agent {
     /// rendered as a tail system message after the user turn. Kept out of the
     /// system prompt so the stable prefix stays byte-identical across turns.
     turn_system_context: Vec<String>,
+    /// 程序驱动 CLI 的「整体替换提示词」。设了就顶掉人格/模式提示词与
+    /// 属主主机环境块(风格锁等人格附件对纯后端用法是噪音);运行时追加段
+    /// 与记忆前言照旧。刻意不进指纹:否则每个带覆盖的回合都翻转指纹文件。
+    system_prompt_override: Option<String>,
+    /// 程序驱动 CLI 的「本回合上下文窗口」。走字段而不改 config,免得冲刷
+    /// 以整份 config 为键的 TurnResourceCache。
+    context_window_override: Option<usize>,
     /// Raw user input snapshot taken before platform plugins wrapped the turn
     /// content (instruction boilerplate, group history, …). The memory diary
     /// records this instead of the wrapped prompt — the minimal C10 "记忆只读
