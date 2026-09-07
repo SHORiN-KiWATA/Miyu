@@ -512,10 +512,7 @@ fn edit_mimo_style(stdout: &mut io::Stdout, config: &mut AppConfig) -> Result<()
         )
         .multi_choices(MIMO_STYLES),
         // MiMo 没有数值语速/音量,全靠这一句自然语言。
-        Field::new(
-            t("Prompt", "提示词"),
-            cfg.prompt.clone(),
-        ),
+        Field::new(t("Prompt", "提示词"), cfg.prompt.clone()),
         Field::new(
             t("Preview sentence", "试听语句"),
             config.voice.tts.preview_text.clone(),

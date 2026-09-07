@@ -424,11 +424,20 @@ async fn google_policy_block_is_suppressed_and_classified() {
         .downcast_ref::<HttpStatusFailure>()
         .expect("policy block should classify as an HTTP-style failure");
     assert_eq!(failure.kind, HttpFailureKind::ContentPolicy);
-    assert!(cooldown_for_error(&error).is_none(), "内容裁定不该让端点冷却");
-    assert!(endpoint_failover_allowed(&error), "应允许切到池里下一个端点");
+    assert!(
+        cooldown_for_error(&error).is_none(),
+        "内容裁定不该让端点冷却"
+    );
+    assert!(
+        endpoint_failover_allowed(&error),
+        "应允许切到池里下一个端点"
+    );
     assert!(!same_endpoint_retry_allowed(&error), "同端点重打必然再撞");
     let text = format!("{error:#}");
-    assert!(text.contains("content policy") || text.contains("内容策略"), "{text}");
+    assert!(
+        text.contains("content policy") || text.contains("内容策略"),
+        "{text}"
+    );
 }
 
 /// 静默失败:SUCCESS + 空正文 + 零用量 → 报错并带 error_message 步的正文。
