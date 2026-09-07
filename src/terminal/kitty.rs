@@ -12,6 +12,17 @@ pub fn is_native_kitty_terminal() -> bool {
     is_native_kitty(std::env::var("TERM").as_deref().unwrap_or_default())
 }
 
+/// 本进程是否已经往终端发过 Unicode 占位符图片。
+///
+/// 活动区靠这个决定腾地方时用哪种滚动:发过图之后 scrollback 里就有占位符行,
+/// 受限区滚动会让 kitty 给它们留残影(见 `LiveReplTail::apply_output_frame`),
+/// 得改整屏滚;纯文字会话保持原路径,零开销。
+pub fn images_emitted() -> bool {
+    IMAGES_EMITTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static IMAGES_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn is_native_kitty(term: &str) -> bool {
     term == "xterm-kitty"
 }
@@ -203,6 +214,7 @@ fn write_image(
     let rgba = image.to_rgba8();
     let chunks = rgba.as_raw().chunks(RAW_CHUNK_BYTES);
     let chunk_count = chunks.len();
+    IMAGES_EMITTED.store(true, std::sync::atomic::Ordering::Relaxed);
     for (index, chunk) in chunks.enumerate() {
         write!(output, "\x1b_Gq=2,")?;
         if index == 0 {

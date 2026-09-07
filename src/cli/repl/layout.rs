@@ -14,10 +14,26 @@ pub(in crate::cli) fn terminal_frame_layout(
     columns: u16,
     bottom_margin: Option<u16>,
 ) -> TerminalFrameLayout {
+    terminal_frame_layout_with_scrolls(frame, start, columns, bottom_margin).0
+}
+
+/// 同 `terminal_frame_layout`,另外按顺序给出帧里每一次顶到页底的滚动
+/// 发生在哪个字节偏移(见 `FrameScroll`)。逐字节喂,追踪器才知道当前字节
+/// 的偏移;vte 的解析器本来就是字节状态机,跨调用切开 UTF-8 也没问题。
+pub(in crate::cli) fn terminal_frame_layout_with_scrolls(
+    frame: &[u8],
+    start: (u16, u16),
+    columns: u16,
+    bottom_margin: Option<u16>,
+) -> (TerminalFrameLayout, Vec<FrameScroll>) {
     let mut parser = VteParser::new();
     let mut tracker = TerminalFrameTracker::new(start, columns, bottom_margin);
-    parser.advance(&mut tracker, frame);
-    tracker.finish()
+    for (index, byte) in frame.iter().enumerate() {
+        tracker.byte_index = index.saturating_add(1);
+        parser.advance(&mut tracker, std::slice::from_ref(byte));
+    }
+    tracker.byte_index = frame.len();
+    tracker.finish_with_scrolls()
 }
 
 #[derive(Clone, Copy)]

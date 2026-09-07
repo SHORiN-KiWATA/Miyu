@@ -2,9 +2,10 @@
 
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
 use crate::cli::repl::editor::*;
+use crate::cli::repl::layout::terminal_frame_layout_with_scrolls;
 use crate::cli::repl::tail::{
     live_frame_output_bottom, live_tail_next_start, live_tail_placement, max_live_tail_start,
-    LiveTailPlacement,
+    queue_lifted_frame, FrameScroll, LiveTailPlacement,
 };
 use crate::cli::repl::width::*;
 use crate::cli::*;
@@ -500,4 +501,155 @@ fn live_tail_coalesces_adjacent_stream_chunks_and_can_discard_them() {
     assert_eq!(live.pending_chunks[1].text, "answer text");
     live.discard_pending_chunks();
     assert!(live.pending_chunks.is_empty());
+}
+
+// ---- kitty 图片残影:帧的滚动点与「整屏滚 + 插回」的切段 ----
+
+#[test]
+fn terminal_frame_records_where_each_bottom_scroll_happens() {
+    let (layout, scrolls) = terminal_frame_layout_with_scrolls(b"ab\ncd\nef", (0, 5), 20, Some(5));
+
+    assert_eq!(layout.cursor, (2, 5));
+    assert_eq!(
+        scrolls,
+        vec![
+            FrameScroll {
+                end: 3,
+                col_after: 0
+            },
+            FrameScroll {
+                end: 6,
+                col_after: 0
+            },
+        ]
+    );
+}
+
+#[test]
+fn terminal_frame_attributes_a_wrap_scroll_to_the_wrapping_grapheme() {
+    // 4 列:abcd 填满一行,e 折到下一行——顶在页底就是一次滚动,记在 e 自己
+    // 的结束偏移(5)上,滚完光标停在第 1 列。
+    let (_, scrolls) = terminal_frame_layout_with_scrolls(b"abcdef", (0, 5), 4, Some(5));
+    assert_eq!(
+        scrolls,
+        vec![FrameScroll {
+            end: 5,
+            col_after: 1
+        }]
+    );
+
+    // 折行紧跟换行:两次滚动必须落在不同偏移,否则帧切不开。
+    let (_, scrolls) = terminal_frame_layout_with_scrolls(b"abcde\n", (0, 5), 4, Some(5));
+    assert_eq!(
+        scrolls,
+        vec![
+            FrameScroll {
+                end: 5,
+                col_after: 1
+            },
+            FrameScroll {
+                end: 6,
+                col_after: 0
+            },
+        ]
+    );
+
+    // 宽字符与多字节:「中」占 2 列,折行后光标在第 2 列,偏移是它 3 个字节的末尾。
+    let (_, scrolls) = terminal_frame_layout_with_scrolls("abc中".as_bytes(), (0, 5), 4, Some(5));
+    assert_eq!(
+        scrolls,
+        vec![FrameScroll {
+            end: 6,
+            col_after: 2
+        }]
+    );
+}
+
+#[test]
+fn terminal_frame_without_bottom_margin_never_scrolls() {
+    let (_, scrolls) = terminal_frame_layout_with_scrolls(b"a\nb\nc\n", (0, 5), 20, None);
+    assert!(scrolls.is_empty());
+}
+
+fn move_to(col: u16, row: u16) -> String {
+    format!("\x1b[{};{}H", row + 1, col + 1)
+}
+
+#[test]
+fn lifted_frame_scrolls_the_whole_screen_and_pushes_the_tail_back() {
+    // 页底第 5 行,光标已经在页底,帧 "a\nb\nc" 要滚两次。
+    let frame = b"a\nb\nc";
+    let (_, scrolls) = terminal_frame_layout_with_scrolls(frame, (0, 5), 20, Some(5));
+    let mut transaction = Vec::new();
+    queue_lifted_frame(&mut transaction, frame, (0, 5), 5, 0, &scrolls, 10).unwrap();
+
+    let expected = format!(
+        "{}{}\n\n{}\x1b[2L{}{}{}\x1b[r{}{}{}\x1b[r",
+        "\x1b[r",
+        move_to(0, 9),
+        move_to(0, 4),
+        "\x1b[1;6r",
+        move_to(0, 3),
+        "a\nb\n",
+        "\x1b[1;6r",
+        move_to(0, 5),
+        "c",
+    );
+    assert_eq!(String::from_utf8(transaction).unwrap(), expected);
+}
+
+#[test]
+fn lifted_frame_lifts_leading_scroll_without_consuming_the_frame() {
+    // 光标掉到了页底之下两行:先整屏抬两行,帧再从页底写起,帧本身不滚。
+    let frame = b"tail";
+    let mut transaction = Vec::new();
+    queue_lifted_frame(&mut transaction, frame, (0, 5), 5, 2, &[], 10).unwrap();
+
+    let expected = format!(
+        "{}{}\n\n{}\x1b[2L{}{}tail\x1b[r",
+        "\x1b[r",
+        move_to(0, 9),
+        move_to(0, 4),
+        "\x1b[1;6r",
+        move_to(0, 5),
+    );
+    assert_eq!(String::from_utf8(transaction).unwrap(), expected);
+}
+
+#[test]
+fn lifted_frame_is_cut_into_pieces_when_taller_than_the_page() {
+    // 页底第 2 行(页只有 3 行),帧要滚 3 次:先抬 2 行写两段,再抬 1 行写一段,
+    // 末尾不滚的部分直接写。三段拼起来必须正好是整个帧,一个字节不多不少。
+    let frame = b"a\nb\nc\nd";
+    let (_, scrolls) = terminal_frame_layout_with_scrolls(frame, (0, 2), 20, Some(2));
+    assert_eq!(scrolls.len(), 3);
+    let mut transaction = Vec::new();
+    queue_lifted_frame(&mut transaction, frame, (0, 2), 2, 0, &scrolls, 10).unwrap();
+    let text = String::from_utf8(transaction).unwrap();
+
+    assert_eq!(text.matches("\x1b[2L").count(), 1);
+    assert_eq!(text.matches("\x1b[1L").count(), 1);
+    let pieces: Vec<&str> = text
+        .split("\x1b[1;3r")
+        .skip(1)
+        .map(|piece| {
+            let start = piece.find('H').map(|i| i + 1).unwrap_or(0);
+            let end = piece.find("\x1b[r").unwrap_or(piece.len());
+            &piece[start..end]
+        })
+        .collect();
+    assert_eq!(pieces, vec!["a\nb\n", "c\n", "d"]);
+}
+
+#[test]
+fn lifted_frame_falls_back_to_the_scroll_region_on_a_one_row_page() {
+    // 光标在第 0 行还要滚:抬不了,整段交给受限区滚动。
+    let frame = b"a\nb";
+    let (_, scrolls) = terminal_frame_layout_with_scrolls(frame, (0, 0), 20, Some(0));
+    let mut transaction = Vec::new();
+    queue_lifted_frame(&mut transaction, frame, (0, 0), 0, 0, &scrolls, 10).unwrap();
+    assert_eq!(
+        String::from_utf8(transaction).unwrap(),
+        format!("\x1b[1;1r{}a\nb\x1b[r", move_to(0, 0))
+    );
 }

@@ -4,62 +4,85 @@
 //! 现在停在第几行——**不能每次都去问终端**（ESC[6n 要等回答，在流式输出里会
 //! 卡住）。
 //!
-//! `lift_external_output_into_page` 处理外部输出（命令、图片）插进来的情况：
-//! 那些内容不归活动区管，但会把活动区顶走，得把记账补上。
+//! 正文里出现过 kitty 图片之后，腾地方的滚动改走 `queue_lifted_frame`：
+//! 整屏滚而不是受限区滚，原因见那里的注释。
 
 use crate::cli::repl::tail::*;
 
-impl LiveReplTail {
-    /// 把刚打完的外部输出整屏上滚，直到它完全落进正文页内。
-    ///
-    /// kitty 图形协议原文：设了页边距之后，只有「完全落在页内」的图片才
-    /// 跟着滚动，越界的会被裁剪并留在原地。图片是顺着光标往下打的，底部
-    /// 常常正压在活动区上——恰好越界。此后每一次受限区滚动它都不动，文字
-    /// 走了图不走，一次留一条残影；一次会话滚几百次，屏幕上就堆成一叠重
-    /// 复的切片。
-    ///
-    /// 原本是个死锁：那个本该把图抬出活动区的滚动，正是 kitty 拒绝对图生
-    /// 效的滚动。所以要趁这一刻整屏滚一次——整屏滚没有页边距，图片一定跟
-    /// 着走。这里也正是唯一能这么做的时机：活动区已经 suspend、那几行是
-    /// 空的，被一起带上去不会留下痕迹（在别处整屏滚会把画着 ┃ 的输入框推
-    /// 进正文）。
-    pub(in crate::cli) fn lift_external_output_into_page(&mut self) -> Result<()> {
-        let (_, terminal_rows) = terminal::size().unwrap_or((80, 24));
-        let terminal_rows = terminal_rows.max(1);
-        let page_bottom = self.tail_start.saturating_sub(1);
-        let cursor_row = cursor_row_or(self.output_cursor.1);
-        let overflow = cursor_row.saturating_sub(page_bottom);
-        if std::env::var_os("MIYU_TAIL_TRACE").is_some() {
-            use std::io::Write as _;
-            let path = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
-                .join(".miyu/cache/logs/tail-trace.log");
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(
-                    file,
-                    "lift: 光标行={cursor_row} 页底={page_bottom} 需抬升={overflow}                      tail_start={} 屏高={terminal_rows}",
-                    self.tail_start
-                );
-            }
+/// 正文里有 kitty 图片时，把帧写进页内的另一种办法：**帧本身一行都不滚**。
+///
+/// kitty 的 Unicode 占位符图片不是钉在坐标上的，而是每一帧扫描可见行、给每个
+/// 占位符行生成一条一行高的引用；屏内的行只在脏了才重扫，**历史区的行每帧都
+/// 重扫**，重扫前只清「本行当前 row」上的旧引用。受限区（DECSTBM）滚动时 kitty
+/// 只搬完全落在页内的引用（`scroll_filter_margins_func`），历史区那些 row 为负
+/// 的一律不动；而用户滚上去看历史时视口是钉住的（scrolled_by 逐次 +1），历史行
+/// 下一帧在 row-1 重扫，旧 row 上那条引用没人清、又没被搬，就画在比原位低一行
+/// 的地方——正文每滚一次多一条，这就是「图片切片一条条往下复制」。kitty 默认开着
+/// pixel_scroll，每帧还会多扫视口上方一行，所以就算没滚上去看，图片底行刚进历史
+/// 时也会留下一条。整屏滚动没有页边距，走 `scroll_filter_func`，负 row 的引用
+/// 一起搬，干净（`testkit/kitty-image/ghost_probe.py` 三个变体的实测）。
+///
+/// 做法：帧要滚 k 行，就先整屏滚 k 行（活动区跟着上去），再在页底下面插回 k 行
+/// 把活动区推回原位——页内的效果与受限区滚 k 行逐格相同，滚出去的也同样进
+/// scrollback——然后把帧写在比原来高 k 行的位置，它落到页底时正好写完。帧里的
+/// 滚动点由 `FrameScroll` 给出；一次最多只能抬「光标所在行数」那么多，帧比页
+/// 还高时就按滚动点切成几段，每段照此办理。光标已在最顶行还要滚（页只有一行）
+/// 才退回受限区滚动。
+pub(in crate::cli) fn queue_lifted_frame(
+    transaction: &mut Vec<u8>,
+    frame: &[u8],
+    frame_start: (u16, u16),
+    bottom: u16,
+    leading_scroll: u16,
+    scrolls: &[FrameScroll],
+    terminal_rows: u16,
+) -> Result<()> {
+    let last_row = terminal_rows.saturating_sub(1);
+    let region = format!("\x1b[1;{}r", bottom.saturating_add(1));
+    let queue_lift = |transaction: &mut Vec<u8>, lines: u16| -> Result<()> {
+        queue!(transaction, Print("\x1b[r"), MoveTo(0, last_row))?;
+        for _ in 0..lines {
+            queue!(transaction, Print("\n"))?;
         }
-        if overflow == 0 {
+        queue!(
+            transaction,
+            MoveTo(0, bottom.saturating_add(1).saturating_sub(lines)),
+            Print(format!("\x1b[{lines}L"))
+        )?;
+        Ok(())
+    };
+    // 开头那几行「光标已经掉到页底之下」的滚动不消耗帧的内容,单独抬。
+    if leading_scroll > 0 {
+        queue_lift(transaction, leading_scroll)?;
+    }
+    let (mut col, mut row) = frame_start;
+    let mut position = 0usize;
+    let mut next_scroll = 0usize;
+    loop {
+        let remaining = scrolls.len().saturating_sub(next_scroll);
+        let lift = remaining.min(usize::from(row));
+        if lift == 0 {
+            queue!(transaction, Print(&region), MoveTo(col, row))?;
+            transaction.extend_from_slice(frame.get(position..).unwrap_or_default());
+            queue!(transaction, Print("\x1b[r"))?;
             return Ok(());
         }
-        let mut stdout = io::stdout();
-        queue!(stdout, MoveTo(0, terminal_rows.saturating_sub(1)))?;
-        for _ in 0..overflow {
-            queue!(stdout, Print("\n"))?;
-        }
-        // 停在滚完后内容真正的末尾:调用方随后会重新查询光标来定位活动区。
-        queue!(stdout, MoveTo(0, page_bottom))?;
-        stdout.flush()?;
-        self.output_cursor = (0, page_bottom);
-        Ok(())
+        let lift_rows = lift.min(usize::from(u16::MAX)) as u16;
+        queue_lift(transaction, lift_rows)?;
+        row = row.saturating_sub(lift_rows);
+        let last = scrolls[next_scroll + lift - 1];
+        let end = last.end.clamp(position, frame.len());
+        queue!(transaction, Print(&region), MoveTo(col, row))?;
+        transaction.extend_from_slice(&frame[position..end]);
+        queue!(transaction, Print("\x1b[r"))?;
+        position = end;
+        col = last.col_after;
+        row = bottom;
+        next_scroll += lift;
     }
+}
 
+impl LiveReplTail {
     pub(in crate::cli) fn suspend(&mut self) -> Result<()> {
         if !self.rendered {
             return Ok(());
@@ -243,7 +266,8 @@ impl LiveReplTail {
         } else {
             self.output_cursor
         };
-        let bounded = terminal_frame_layout(frame, frame_start, columns, output_bottom);
+        let (bounded, scrolls) =
+            terminal_frame_layout_with_scrolls(frame, frame_start, columns, output_bottom);
 
         let mut transaction = Vec::with_capacity(frame.len().saturating_add(96));
         if shift > 0 {
@@ -253,21 +277,36 @@ impl LiveReplTail {
                 Print(format!("\x1b[{shift}L"))
             )?;
         }
-        if let Some(bottom) = output_bottom {
-            queue!(
-                transaction,
-                Print(format!("\x1b[1;{}r", bottom.saturating_add(1)))
+        let lifted = output_bottom.filter(|_| {
+            crate::terminal::kitty::images_emitted() && (leading_scroll > 0 || !scrolls.is_empty())
+        });
+        if let Some(bottom) = lifted {
+            queue_lifted_frame(
+                &mut transaction,
+                frame,
+                frame_start,
+                bottom,
+                leading_scroll,
+                &scrolls,
+                terminal_rows,
             )?;
-        }
-        if let Some(bottom) = output_bottom.filter(|_| leading_scroll > 0) {
-            queue!(transaction, MoveTo(0, bottom))?;
-            for _ in 0..leading_scroll {
-                queue!(transaction, Print("\n"))?;
+        } else {
+            if let Some(bottom) = output_bottom {
+                queue!(
+                    transaction,
+                    Print(format!("\x1b[1;{}r", bottom.saturating_add(1)))
+                )?;
             }
+            if let Some(bottom) = output_bottom.filter(|_| leading_scroll > 0) {
+                queue!(transaction, MoveTo(0, bottom))?;
+                for _ in 0..leading_scroll {
+                    queue!(transaction, Print("\n"))?;
+                }
+            }
+            queue!(transaction, MoveTo(frame_start.0, frame_start.1))?;
+            transaction.extend_from_slice(frame);
+            queue!(transaction, Print("\x1b[r"))?;
         }
-        queue!(transaction, MoveTo(frame_start.0, frame_start.1))?;
-        transaction.extend_from_slice(frame);
-        queue!(transaction, Print("\x1b[r"))?;
         if shift < 0 {
             queue!(
                 transaction,

@@ -12,6 +12,9 @@
 mod frame;
 mod queue;
 
+#[cfg(test)]
+pub(in crate::cli) use frame::queue_lifted_frame;
+
 use crate::cli::repl::editor::*;
 use crate::cli::*;
 
@@ -25,9 +28,9 @@ use crate::cli::*;
 /// `~/.miyu/cache/logs/tail-trace.log`）。
 ///
 /// 这段重绘靠绝对屏幕行号 + DECSTBM 受限滚动区 + 插入/删除行来搬动活动
-/// 区。受限区里滚出去的行是直接丢弃、不进 scrollback 的，而 kitty 的图
-/// 片锚在文本行上——所以只有「用户滚过历史 + 新输出推动」这个组合才暴
-/// 露。要定位就得看出错那一刻实际发了哪些序列。
+/// 区（上边距为 1 时，受限区里滚出去的行照样进 scrollback）。kitty 的占位
+/// 符图片在受限区滚动下会留残影（见 frame.rs 的 `queue_lifted_frame`），所
+/// 以发过图之后腾地方改走整屏滚。要定位就得看出错那一刻实际发了哪些序列。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn trace_tail_redraw(
     tail_start: u16,
@@ -142,6 +145,17 @@ pub(in crate::cli) struct TerminalFrameLayout {
     pub(in crate::cli) occupied_bottom: Option<u16>,
 }
 
+/// 帧里一次「顶到页底、把正文滚上去一行」的事件。
+///
+/// `end` 是引发这次滚动的字节(换行符,或折行的那个字位)在帧里的**结束偏移**,
+/// 帧从这里切开,前一段恰好滚了这么多次;`col_after` 是滚完之后光标停的列
+/// (换行是 0,折行是那个字位的宽度),后一段从这里接着写。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cli) struct FrameScroll {
+    pub(in crate::cli) end: usize,
+    pub(in crate::cli) col_after: u16,
+}
+
 pub(in crate::cli) struct TerminalFrameTracker {
     pub(in crate::cli) columns: usize,
     pub(in crate::cli) bottom_margin: Option<usize>,
@@ -150,7 +164,12 @@ pub(in crate::cli) struct TerminalFrameTracker {
     pub(in crate::cli) saved_cursor: (usize, usize, bool),
     pub(in crate::cli) pending_wrap: bool,
     pub(in crate::cli) pending_text: String,
+    /// `pending_text` 里每个 char 在帧里的结束偏移,与其一一对应。
+    pub(in crate::cli) pending_ends: Vec<usize>,
     pub(in crate::cli) occupied_bottom: Option<usize>,
+    /// 正在喂给追踪器的字节在帧里的结束偏移(喂第 i 个字节时为 i+1)。
+    pub(in crate::cli) byte_index: usize,
+    pub(in crate::cli) scrolls: Vec<FrameScroll>,
 }
 
 impl TerminalFrameTracker {
@@ -166,7 +185,10 @@ impl TerminalFrameTracker {
             saved_cursor: (cursor_col, cursor_row, false),
             pending_wrap: false,
             pending_text: String::new(),
+            pending_ends: Vec::new(),
             occupied_bottom: None,
+            byte_index: 0,
+            scrolls: Vec::new(),
         }
     }
 
@@ -183,23 +205,42 @@ impl TerminalFrameTracker {
         }
     }
 
+    pub(in crate::cli) fn finish_with_scrolls(mut self) -> (TerminalFrameLayout, Vec<FrameScroll>) {
+        self.flush_text();
+        let scrolls = std::mem::take(&mut self.scrolls);
+        (self.finish(), scrolls)
+    }
+
     pub(in crate::cli) fn flush_text(&mut self) {
         if self.pending_text.is_empty() {
             return;
         }
         let text = std::mem::take(&mut self.pending_text);
+        let ends = std::mem::take(&mut self.pending_ends);
+        // 折行引发的滚动要记在那个字位自己的结束偏移上,而不是记在触发
+        // flush 的控制字节上——否则一个字位和紧随的换行会记成同一个偏移,
+        // 帧就没法在两次滚动之间切开。
+        let current = self.byte_index;
+        let mut chars_seen = 0usize;
         for grapheme in text.graphemes(true) {
+            chars_seen = chars_seen.saturating_add(grapheme.chars().count());
+            self.byte_index = ends
+                .get(chars_seen.saturating_sub(1))
+                .copied()
+                .unwrap_or(current);
             self.print_width(UnicodeWidthStr::width(grapheme));
         }
+        self.byte_index = current;
     }
 
     pub(in crate::cli) fn print_width(&mut self, width: usize) {
         if width == 0 {
             return;
         }
+        let mut scrolled = false;
         if self.pending_wrap || self.cursor_col.saturating_add(width) > self.columns {
             self.cursor_col = 0;
-            self.index();
+            scrolled = self.index();
             self.pending_wrap = false;
         }
         self.occupied_bottom = Some(
@@ -213,16 +254,27 @@ impl TerminalFrameTracker {
         } else {
             self.cursor_col = next_col;
         }
+        if scrolled {
+            if let Some(last) = self.scrolls.last_mut() {
+                last.col_after = self.cursor_col.min(u16::MAX as usize) as u16;
+            }
+        }
     }
 
-    pub(in crate::cli) fn index(&mut self) {
+    /// 光标下移一行;顶在页底时记一次滚动并返回 true。
+    pub(in crate::cli) fn index(&mut self) -> bool {
         if self
             .bottom_margin
             .is_some_and(|bottom| self.cursor_row >= bottom)
         {
-            return;
+            self.scrolls.push(FrameScroll {
+                end: self.byte_index,
+                col_after: self.cursor_col.min(u16::MAX as usize) as u16,
+            });
+            return true;
         }
         self.cursor_row = self.cursor_row.saturating_add(1);
+        false
     }
 
     pub(in crate::cli) fn move_down(&mut self, count: usize) {
@@ -279,6 +331,7 @@ impl TerminalFrameTracker {
 impl VtePerform for TerminalFrameTracker {
     fn print(&mut self, character: char) {
         self.pending_text.push(character);
+        self.pending_ends.push(self.byte_index);
     }
 
     fn execute(&mut self, byte: u8) {

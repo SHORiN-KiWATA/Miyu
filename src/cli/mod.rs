@@ -69,8 +69,8 @@ use repl::live_turn::{
 };
 use repl::remote::{run_remote_repl, try_run_remote_chat};
 use repl::tail::{
-    cursor_col_or, cursor_row_or, synchronized_terminal_update, LiveRawMode, LiveReplTail,
-    TerminalFrameLayout, TerminalFrameTracker,
+    cursor_col_or, cursor_row_or, synchronized_terminal_update, FrameScroll, LiveRawMode,
+    LiveReplTail, TerminalFrameLayout, TerminalFrameTracker,
 };
 use repl::wake::follow_wake_run;
 use repl::width::{truncate_visible_width, visible_width, wrap_visible_width};

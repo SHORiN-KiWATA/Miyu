@@ -363,7 +363,6 @@ pub(in crate::cli) async fn follow_wake_run(
                         t("Could not display tool image", "工具图片显示失败")
                     ))?;
                 }
-                live.lift_external_output_into_page()?;
                 live.external_output_active = false;
                 live.output_cursor = cursor_position_or(live.output_cursor);
                 live.resume_at(live.output_cursor)?;

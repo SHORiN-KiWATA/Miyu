@@ -492,11 +492,9 @@ pub(in crate::cli) async fn try_run_remote_chat(
                         t("Could not display tool image", "工具图片显示失败")
                     ))?;
                 }
-                // 图片打完就得抬进正文页内,否则之后每次受限区滚动它都不
-                // 动(kitty 只搬完全落在页内的图),残影会一路堆下去。
-                if let Some(live) = live.as_deref_mut() {
-                    live.lift_external_output_into_page()?;
-                }
+                // 图片打完不用再单独「抬进页内」:残影的根因不在图片的位置,而在
+                // 受限区滚动本身(见 tail/frame.rs 的 queue_lifted_frame),此后的
+                // 帧都会改走整屏滚,活动区 resume 时自己会把光标下方的溢出滚掉。
             }
             "question.requested" => {
                 renderer.prepare_for_external_output()?;
