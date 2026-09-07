@@ -26,3 +26,4 @@ testkit/cli/home/
 testkit/cli/home-demo/
 testkit/cli/out/
 testkit/cli/out-demo/
+testkit/cli/xdg-run/
