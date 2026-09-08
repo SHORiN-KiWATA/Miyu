@@ -62,10 +62,20 @@ def stop_daemon() -> None:
     )
 
 
-def ask(prompt: str, pdf: Path) -> str:
+def ask(prompt: str, pdf: Path, *, tools: bool) -> str:
+    """A 组必须 `tools=False`。
+
+    留着工具的话模型会自己 `strings probe.pdf | grep SECRET-` 把暗号抠出来,
+    回答里照样有暗号——测的就成了"命令行能读文件",跟内联块一点关系没有
+    (09-08 GLM 5.3 flash 实测到的假阳性)。断了工具,说得出暗号就只可能是
+    从内容块里读到的。
+    """
+    args = [str(BIN), "ask", "--image", str(pdf), "--no-memory", "--timeout", "180"]
+    if not tools:
+        args.append("--no-tools")
+    args.append(prompt)
     result = subprocess.run(
-        [str(BIN), "ask", "--image", str(pdf), "--no-memory", "--timeout", "180", prompt],
-        env=ENV, cwd=WORK, capture_output=True, text=True, timeout=200,
+        args, env=ENV, cwd=WORK, capture_output=True, text=True, timeout=200
     )
     return result.stdout + result.stderr
 
@@ -84,18 +94,19 @@ def main() -> int:
 
     failures = []
 
-    print(f"== A 吃 PDF ({PROVIDER}/{MODEL}) 暗号={secret}")
+    print(f"== A 吃 PDF ({PROVIDER}/{MODEL}) 暗号={secret} · 工具已断")
     write_config(["text", "image", "pdf"])
     stop_daemon()
-    out = ask(prompt, pdf)
+    out = ask(prompt, pdf, tools=False)
     print(out.strip()[:400])
     if secret not in out:
         failures.append(f"A: 回答里没有暗号 {secret} —— PDF 没送到模型面前")
 
+    # B 组保留工具:它验的正是"降级后模型还能靠路径把文件拿到手"。
     print(f"\n== B 不吃 PDF ({PROVIDER}/{PLAIN_MODEL})")
     write_config(["text"])
     stop_daemon()
-    out = ask("我发了个什么文件？路径是什么？", pdf)
+    out = ask("我发了个什么文件？路径是什么？", pdf, tools=True)
     print(out.strip()[:400])
     if str(pdf) not in out and "probe.pdf" not in out:
         failures.append("B: 不内联时连路径都没给到模型 —— 文件静默消失了")
