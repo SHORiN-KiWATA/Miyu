@@ -544,16 +544,35 @@ pub(in crate::web) async fn handle_ipc_connection(
             reserve_admin_for_session(&state.manager, &session_id)
                 .map_err(|error| anyhow::anyhow!(error.message))?;
             let (reply, receiver) = oneshot::channel();
+            let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
             if state
                 .actor_tx
                 .send(ActorCommand::Compact {
                     session_id: session_id.clone(),
+                    events: Some(events_tx),
                     reply,
                 })
                 .is_err()
             {
                 release_admin(&state.manager);
                 anyhow::bail!("Miyu core worker is unavailable");
+            }
+            // 摘要边生成边转发。actor 那头在回复之前就把 sender 丢了,所以
+            // `recv()` 收到 None 即"事件已发完",不用和 oneshot 抢 select,
+            // 也就不会出现"先拿到结果、尾巴几个 chunk 掉地上"。事件 id 对
+            // 这条路没有意义(客户端按 kind 分流),从 0 递增即可。
+            let mut event_id = 0u64;
+            while let Some((kind, data)) = events_rx.recv().await {
+                event_id += 1;
+                ipc::send(
+                    &mut stream,
+                    &IpcFrame::Event {
+                        id: event_id,
+                        kind,
+                        data,
+                    },
+                )
+                .await?;
             }
             match receiver.await {
                 Ok(Ok(data)) => {

@@ -98,6 +98,9 @@ pub(in crate::web) async fn compact_conversation(
         .actor_tx
         .send(ActorCommand::Compact {
             session_id: session_id.clone(),
+            // WebUI 的压缩进度条挂在**回合气泡**上(`handleContextEvent` 要一个
+            // live 气泡),手动压缩没有气泡可挂,所以这里不订流,行为不变。
+            events: None,
             reply,
         })
         .is_err()

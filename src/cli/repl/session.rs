@@ -698,9 +698,21 @@ pub(in crate::cli) async fn session_admin(
     paths: &MiyuPaths,
     command: IpcCommand,
 ) -> Result<(ipc::SessionState, serde_json::Value)> {
+    session_admin_streaming(paths, command, |_, _| Ok(())).await
+}
+
+/// `session_admin` + 中途事件回调,见 [`send_ipc_admin_streaming`]。
+pub(in crate::cli) async fn session_admin_streaming<F>(
+    paths: &MiyuPaths,
+    command: IpcCommand,
+    on_event: F,
+) -> Result<(ipc::SessionState, serde_json::Value)>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<()>,
+{
     ipc::ensure_daemon(paths, None).await?;
     let refreshed = MiyuPaths::new()?;
-    send_ipc_admin(&refreshed, command).await
+    send_ipc_admin_streaming(&refreshed, command, on_event).await
 }
 
 /// `/goal edit`（无参数）的编辑器内变身：把「/goal edit <当前目标>」放进
@@ -734,12 +746,31 @@ pub(in crate::cli) async fn send_ipc_admin(
     paths: &MiyuPaths,
     command: IpcCommand,
 ) -> Result<(ipc::SessionState, serde_json::Value)> {
+    send_ipc_admin_streaming(paths, command, |_, _| Ok(())).await
+}
+
+/// 同上,但把终局帧之前到达的事件逐条交给 `on_event`(kind, data)。
+///
+/// 管理面的绝大多数命令是一问一答,只有压缩会在中间吐 `context.compact_*`
+/// ——它要跑一次完整的摘要调用,几十秒不吭声的话终端看着就是死的。所以这里
+/// 收帧改成循环而不是只读一帧;不关心事件的调用方用上面那层薄壳,行为不变。
+pub(in crate::cli) async fn send_ipc_admin_streaming<F>(
+    paths: &MiyuPaths,
+    command: IpcCommand,
+    mut on_event: F,
+) -> Result<(ipc::SessionState, serde_json::Value)>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<()>,
+{
     let mut stream = ipc::connect(&paths.ipc_socket()).await?;
     ipc::send(&mut stream, &IpcRequest::new(command)).await?;
-    match ipc::receive::<IpcFrame>(&mut stream).await? {
-        Some(IpcFrame::AdminResult { state, data }) => Ok((state, data)),
-        Some(IpcFrame::Error { message, .. }) => bail!("{message}"),
-        _ => bail!("Miyu core returned an invalid admin response"),
+    loop {
+        match ipc::receive::<IpcFrame>(&mut stream).await? {
+            Some(IpcFrame::Event { kind, data, .. }) => on_event(&kind, &data)?,
+            Some(IpcFrame::AdminResult { state, data }) => return Ok((state, data)),
+            Some(IpcFrame::Error { message, .. }) => bail!("{message}"),
+            _ => bail!("Miyu core returned an invalid admin response"),
+        }
     }
 }
 

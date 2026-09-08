@@ -8,7 +8,8 @@
     --model / --system-prompt / --append-system-prompt / --tools / --no-tools /
     --context-window / --no-memory(memory.db 的 episodes 行数不变)
     --session X --create / 历史延续 / session list|show|clear|rename|delete / 会话不存在退出码 3
-    miyu compact:缺省当前会话 / --session / 压缩后上下文实际变小 / 不存在退出码 3
+    miyu compact:缺省当前会话 / --session / 压缩后上下文实际变小 / 不存在退出码 3 /
+                 摘要流式出正文(管道不上色、真 TTY 下暗色)
     --stdin 长输入不截断
     --timeout → 退出码 124;模型返回 500 → 退出码 1
     miyu stdio:ready / 并发两回合事件归属 / question→answer 往返 / cancel / session op / ping / EOF 退出
@@ -19,6 +20,7 @@
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -94,6 +96,14 @@ def find_socket():
 
 def cli(args, stdin=None, timeout=60):
     proc = subprocess.run([str(MIYU), *args], env=env(), input=stdin, capture_output=True, text=True, timeout=timeout)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def cli_tty(args, timeout=180):
+    """在伪终端里跑。管道里我们**故意**不上色,所以暗色流式只能在 TTY 下验。"""
+    quoted = " ".join(shlex.quote(str(a)) for a in [MIYU, *args])
+    proc = subprocess.run(["script", "-qec", quoted, "/dev/null"], env=env(),
+                          capture_output=True, text=True, timeout=timeout)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -245,6 +255,14 @@ def one_shot_scenarios():
     code, out, err = cli(["compact", "--session", "compactme"], timeout=180)
     check("compact --session → 已压缩", code == 0 and "已压缩" in out,
           f"code={code} out={out.strip()[:80]} err={err.strip()[:120]}")
+    # 摘要必须边生成边出:终局那行之前得有正文。整条命令是一次几十秒的模型
+    # 调用,不流式的话终端在整段时间里一个字都没有(09-08 用户点名)。
+    lines = [line for line in out.splitlines() if line.strip()]
+    body = "\n".join(lines[:-1])
+    check("compact 摘要流式出正文(终局行之前非空)", len(lines) > 1 and len(body) > 40,
+          f"lines={len(lines)} body_len={len(body)} head={body[:60]!r}")
+    check("compact 终局行仍是最后一行", lines[-1].strip().startswith("已压缩"), lines[-1][:60])
+    check("compact 管道里不上色", "\x1b[" not in out, repr(out[:60]))
     code, out, _ = cli(["session", "show", "compactme", "--json"])
     after_tokens = json.loads(out).get("context_tokens", 0) if code == 0 else 0
     check("compact 后上下文明显变小", 0 < after_tokens < before_tokens * 3 // 4,
@@ -256,6 +274,16 @@ def one_shot_scenarios():
     code, out, _ = cli(["--help"])
     check("--help 的终端集成节列出 compact", "立即压缩终端集成会话上下文" in out,
           [line for line in out.splitlines() if "compact" in line])
+    # 暗色流式只在 TTY 下生效,单独开一个会话在伪终端里验(上面那个已经
+    # 压过一次,再压是 no-op)。
+    cli(["ask", "--output-format", "json", "--session", "compactpty", "--create", "--stdin", "TK p1"], stdin=filler)
+    for index in range(2, 5):
+        cli(["ask", "--output-format", "json", "--session", "compactpty", "--stdin", f"TK p{index}"], stdin=filler)
+    code, out, err = cli_tty(["compact", "--session", "compactpty"])
+    has_dim = "\x1b[90m" in out
+    check("compact 在真 TTY 下暗色流式", code == 0 and has_dim and "已压缩" in out,
+          f"code={code} dim={has_dim} tail={out.strip()[-40:]!r}")
+    cli(["session", "delete", "compactpty", "--yes"])
     cli(["session", "delete", "compactme", "--yes"])
 
     # 7. --no-memory

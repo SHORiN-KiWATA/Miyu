@@ -363,8 +363,33 @@ pub(in crate::web) async fn actor_loop(
                 release_admin(&manager);
                 let _ = reply.send(result);
             }
-            ActorCommand::Compact { session_id, reply } => {
+            ActorCommand::Compact {
+                session_id,
+                events: event_sink,
+                reply,
+            } => {
+                // 事件出口是 `Option`,发送失败(客户端断开)一律吞掉:渲染
+                // 不该影响一次已经在花钱的摘要调用。kind/data 与回合路
+                // (`event_map`)逐字一致,客户端一套解析吃两条路。
+                let forward = move |event: AgentEvent| -> Result<()> {
+                    let Some(sink) = event_sink.as_ref() else {
+                        return Ok(());
+                    };
+                    let frame = match event {
+                        AgentEvent::CompactStart => Some(("context.compact_start", json!({}))),
+                        AgentEvent::CompactChunk(chunk) => (chunk.kind
+                            == crate::llm::ChatStreamKind::Content)
+                            .then(|| ("context.compact_delta", json!({ "delta": chunk.text }))),
+                        AgentEvent::CompactEnd => Some(("context.compact_end", json!({}))),
+                        _ => None,
+                    };
+                    if let Some((kind, data)) = frame {
+                        let _ = sink.send((kind.to_string(), data));
+                    }
+                    Ok(())
+                };
                 let result = async {
+                    let mut forward = forward;
                     let updates_default = &*state_store.session_id() == &*session_id;
                     let compact = if updates_default {
                         let agent = ensure_actor_agent(
@@ -375,7 +400,7 @@ pub(in crate::web) async fn actor_loop(
                             &turn_engine,
                         )?;
                         let compact = agent
-                            .compact_now(|_| Ok(()))
+                            .compact_now(&mut forward)
                             .await
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
                         manager.lock().unwrap().context = current_context(agent)
@@ -386,7 +411,7 @@ pub(in crate::web) async fn actor_loop(
                         let target_agent = build_actor_agent(&config, &paths, &store)
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
                         target_agent
-                            .compact_now(|_| Ok(()))
+                            .compact_now(&mut forward)
                             .await
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?
                     };

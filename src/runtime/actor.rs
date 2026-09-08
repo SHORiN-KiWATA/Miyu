@@ -85,6 +85,14 @@ pub(crate) enum ActorCommand {
     },
     Compact {
         session_id: Arc<str>,
+        /// 摘要生成的实时事件出口(`context.compact_start|delta|end` 的
+        /// kind + data)。手动压缩要跑一次完整的模型调用,几十秒里一个字都不
+        /// 出的话用户只能看着光标发呆——自动压缩早就是流式的(回合的事件
+        /// 映射器管着),这条通道让手动路也能同样喂给终端。
+        /// `None` = 不需要流(WebUI 现在走这条:它的压缩进度条挂在回合气泡
+        /// 上,手动压缩没有气泡可挂)。发送端满/断开一律忽略,绝不能让
+        /// 渲染问题打断已经在跑的压缩。
+        events: Option<tokio::sync::mpsc::UnboundedSender<(String, Value)>>,
         reply: oneshot::Sender<std::result::Result<Value, AdminFailure>>,
     },
     Shutdown,

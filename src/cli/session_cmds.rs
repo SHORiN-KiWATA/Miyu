@@ -8,7 +8,7 @@ use crate::cli::args::{ModelsArgs, SessionCommand};
 use crate::cli::exit_code::usage_error;
 use crate::cli::model_cmds::{run_models_for_session, session_model_override_snapshot};
 use crate::cli::pop_cmds::{print_pop_outcome, PopOutcome};
-use crate::cli::repl::session::{session_admin, SessionListEntry};
+use crate::cli::repl::session::{session_admin, session_admin_streaming, SessionListEntry};
 use crate::cli::turn_request::{
     create_named_session, list_managed_sessions, resolve_managed_session,
 };
@@ -173,6 +173,7 @@ async fn pop_session(paths: &MiyuPaths, entry: &SessionListEntry, count: usize) 
 pub(in crate::cli) async fn run_session_command(
     paths: &MiyuPaths,
     command: SessionCommand,
+    plain: bool,
 ) -> Result<()> {
     match command {
         SessionCommand::List { json } => {
@@ -289,7 +290,7 @@ pub(in crate::cli) async fn run_session_command(
         }
         SessionCommand::Compact { target } => {
             let entry = resolve_managed_session(paths, &target).await?;
-            compact_session(paths, session_ref(&entry), Some(&entry.name)).await
+            compact_session(paths, session_ref(&entry), Some(&entry.name), plain).await
         }
         SessionCommand::Models { target, model } => {
             let entry = resolve_managed_session(paths, &target).await?;
@@ -353,12 +354,49 @@ pub(in crate::cli) async fn run_session_command(
 /// 走 `session_admin` 而不是裸 IPC:daemon 没起就先拉起来——压缩要过 actor,
 /// 没有进程内直连的等价路径。目标会话有回合在跑时 daemon 会拒(admin busy),
 /// 那是设计:压缩重写消息数组,在跑的回合手里那份会成悬空引用。
+///
+/// 摘要边生成边以暗色打出来(与自动压缩的 `write_compact_chunk` 同一个观感):
+/// 这是一次几十秒的模型调用,不流式的话终端在整段时间里一个字都没有。
+/// `plain` 或非 TTY 时不上色,但正文照出——管道里也该看得见它在干活。
 pub(in crate::cli) async fn compact_session(
     paths: &MiyuPaths,
     target: SessionRef,
     name: Option<&str>,
+    plain: bool,
 ) -> Result<()> {
-    let (_, data) = session_admin(paths, IpcCommand::Compact { target }).await?;
+    let dim = !plain && io::stdout().is_terminal();
+    let mut streamed = false;
+    let (_, data) = session_admin_streaming(paths, IpcCommand::Compact { target }, |kind, data| {
+        match kind {
+            "context.compact_delta" => {
+                let delta = data
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if delta.is_empty() {
+                    return Ok(());
+                }
+                let mut out = io::stdout().lock();
+                if dim {
+                    write!(out, "\x1b[90m{delta}\x1b[0m")?;
+                } else {
+                    write!(out, "{delta}")?;
+                }
+                out.flush()?;
+                streamed = true;
+            }
+            // 收尾换行只在真出过正文时补,否则「没有可压缩的内容」前面会
+            // 凭空多一个空行。
+            "context.compact_end" if streamed => {
+                let mut out = io::stdout().lock();
+                writeln!(out)?;
+                out.flush()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    })
+    .await?;
     if data["compacted"].as_bool().unwrap_or(false) {
         match name {
             Some(name) => println!("{}: {}", t("compacted", "已压缩"), name),

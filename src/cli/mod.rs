@@ -284,6 +284,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                         target: target.to_string(),
                         count,
                     },
+                    plain,
                 )
                 .await;
             }
@@ -301,11 +302,13 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                     &paths,
                     crate::ipc::SessionRef::Id { id: entry.id },
                     Some(&name),
+                    plain,
                 )
                 .await
             }
             None => {
-                session_cmds::compact_session(&paths, crate::ipc::SessionRef::Current, None).await
+                session_cmds::compact_session(&paths, crate::ipc::SessionRef::Current, None, plain)
+                    .await
             }
         },
         Some(Command::Kb(args)) => run_kb(&paths, args).await,
@@ -342,7 +345,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::ToolCallCmd(args)) => run_tool_call(&paths, args).await,
         Some(Command::McpServe) => run_mcp_serve(&paths).await,
         Some(Command::Session(args)) => {
-            session_cmds::run_session_command(&paths, args.command).await
+            session_cmds::run_session_command(&paths, args.command, plain).await
         }
         Some(Command::Stdio) => stdio::run_stdio(&paths).await,
         Some(Command::Normal) => run_repl(&paths, AgentMode::Normal).await,
