@@ -47,7 +47,9 @@ impl OpenAiCompatibleClient {
         loop {
             attempt = attempt.saturating_add(1);
             let started = Instant::now();
-            let send = build_request().send();
+            // Zen 的识别头在这里统一补:chat / responses / anthropic 三条线
+            // 的发送都收口在本函数,别处再加就会漏掉其中一条。
+            let send = zen_headers::apply(build_request(), &self.provider, request_id).send();
             let response = if let Some(timeouts) = self.request_timeouts {
                 match tokio::time::timeout(timeouts.response_header, send).await {
                     Ok(response) => response,

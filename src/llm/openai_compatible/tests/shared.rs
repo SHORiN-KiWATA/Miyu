@@ -65,6 +65,11 @@ pub(super) async fn write_truncated_sse_response(stream: &mut tokio::net::TcpStr
 }
 
 pub(super) async fn read_http_headers(stream: &mut tokio::net::TcpStream) {
+    let _ = read_http_request_head(stream).await;
+}
+
+/// 同 `read_http_headers`,但把请求头原文交回来——要断言发了哪些头的测试用。
+pub(super) async fn read_http_request_head(stream: &mut tokio::net::TcpStream) -> String {
     let mut request = Vec::new();
     let mut byte = [0u8; 1];
     while !request.ends_with(b"\r\n\r\n") {
@@ -72,6 +77,7 @@ pub(super) async fn read_http_headers(stream: &mut tokio::net::TcpStream) {
         assert_ne!(read, 0, "connection closed before request headers");
         request.push(byte[0]);
     }
+    String::from_utf8_lossy(&request).to_string()
 }
 
 pub(super) async fn write_http_sse_response(stream: &mut tokio::net::TcpStream, body: &str) {
