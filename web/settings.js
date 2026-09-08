@@ -2051,7 +2051,8 @@ window.MiyuSettings = (() => {
         imageField(doc, "avatar_path", "头像", "st-avatar-preview"),
         imageField(doc, "board_image_path", "看板图片", "st-board-preview"),
         row("看板大字", textInput(doc.board_title || "", (value) => { doc.board_title = value.trim() || null; ctx.markConfigDirty(); }, { placeholder: ctx.DEFAULT_BOARD_TITLE })),
-        row("看板小字", textInput(doc.board_subtitle || "", (value) => { doc.board_subtitle = value.trim() || null; ctx.markConfigDirty(); }, { placeholder: ctx.DEFAULT_BOARD_SUBTITLE }))
+        row("看板小字", textInput(doc.board_subtitle || "", (value) => { doc.board_subtitle = value.trim() || null; ctx.markConfigDirty(); }, { placeholder: ctx.DEFAULT_BOARD_SUBTITLE })),
+        row("输入框提示", textInput(doc.composer_placeholder || "", (value) => { doc.composer_placeholder = value.trim() || null; ctx.markConfigDirty(); }, { placeholder: ctx.defaultComposerPlaceholder(displayName(doc) || "Miyu") }), { hint: "输入框为空时显示的灰字；留空按人格名生成。" })
       ], { title: "空白页看板", description: "新会话第一屏显示的头像、大图与文案。" }));
     };
     const starterTab = (body) => {

@@ -21,6 +21,9 @@
   const artifactTextScale = () => 1.2 / UI_SCALE;
   const DEFAULT_BOARD_TITLE = "今天想聊些什么？";
   const DEFAULT_BOARD_SUBTITLE = "从一个问题、计划或此刻的想法开始。";
+  // 输入框提示跟着人格名走,所以是函数不是常量;与后端
+  // `web::dto::default_composer_placeholder` 保持同一句话。
+  const defaultComposerPlaceholder = (name) => `给 ${name} 发消息`;
   const DEFAULT_STARTER_PROMPTS = ["查询今天的天气", "分析一个问题", "发表情包打个招呼吧", "搜索一张图片"];
   // 档位一律用供应商原值(max/high/minimal…),不翻译:译名和文档、和模型
   // 实际认的参数值对不上,查起来反而费劲。"没设"这一档没有原值,只好写字。
@@ -321,6 +324,7 @@
       board_image_url: "/assets/miyuwallpaper.png",
       board_title: DEFAULT_BOARD_TITLE,
       board_subtitle: DEFAULT_BOARD_SUBTITLE,
+      composer_placeholder: defaultComposerPlaceholder("Miyu"),
       starter_prompts: DEFAULT_STARTER_PROMPTS
     },
     sessions: [],
@@ -797,6 +801,8 @@
       : null;
     const boardTitle = String(value?.board_title || "").trim() || DEFAULT_BOARD_TITLE;
     const boardSubtitle = String(value?.board_subtitle || "").trim() || DEFAULT_BOARD_SUBTITLE;
+    const composerPlaceholder =
+      String(value?.composer_placeholder || "").trim() || defaultComposerPlaceholder(name);
     const configuredPrompts = Array.isArray(value?.starter_prompts) ? value.starter_prompts : [];
     const starterPrompts = DEFAULT_STARTER_PROMPTS.map((fallback, index) => String(configuredPrompts[index] || "").trim() || fallback);
     // revision 只在图片 URL 真正变化时更新:每次快照都取 Date.now() 会让
@@ -812,6 +818,7 @@
       board_image_url: boardImageUrl,
       board_title: boardTitle,
       board_subtitle: boardSubtitle,
+      composer_placeholder: composerPlaceholder,
       starter_prompts: starterPrompts,
       revision
     };
@@ -841,6 +848,7 @@
     elements.emptyKickerName.textContent = state.persona.name;
     elements.emptyTitle.textContent = state.persona.board_title;
     elements.emptySubtitle.textContent = state.persona.board_subtitle;
+    elements.composerInput.placeholder = state.persona.composer_placeholder;
     const boardImageUrl = state.persona.board_image_url;
     elements.emptyVisual.hidden = !boardImageUrl;
     elements.emptyBoardImage.alt = `${state.persona.name} 看板图片`;
@@ -1060,6 +1068,7 @@
           board_image_path: _BoardImagePath,
           board_title: _BoardTitle,
           board_subtitle: _BoardSubtitle,
+          composer_placeholder: _ComposerPlaceholder,
           starter_prompts: _StarterPrompts,
           ...document
         }) => document)
@@ -9470,6 +9479,7 @@
       setSettingsView,
       DEFAULT_BOARD_TITLE,
       DEFAULT_BOARD_SUBTITLE,
+      defaultComposerPlaceholder,
       DEFAULT_STARTER_PROMPTS
     });
     elements.reloadConfigButton.addEventListener("click", loadConfigDraft);

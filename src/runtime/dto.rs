@@ -55,6 +55,9 @@ pub(crate) struct PromptDocument {
     pub(crate) board_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) board_subtitle: Option<String>,
+    /// WebUI 输入框为空时的提示。留空则按人格名生成「给 <名字> 发消息」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) composer_placeholder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) starter_prompts: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

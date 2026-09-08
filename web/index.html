@@ -172,6 +172,7 @@
           <form class="composer" id="composerForm">
             <div class="queue-tray" id="queueTray" aria-label="排队中的消息" hidden></div>
             <div class="attachment-tray" id="attachmentTray" aria-label="待发送附件" hidden></div>
+            <!-- 首屏兜底:人格加载完由 applyPersona 换成配置值(或按人格名生成的默认句)。 -->
             <textarea id="composerInput" rows="3" placeholder="给 Miyu 发消息" aria-label="消息" disabled></textarea>
             <input id="attachmentInput" type="file" multiple hidden>
             <div class="composer-footer">

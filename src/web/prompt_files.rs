@@ -198,12 +198,19 @@ pub(in crate::web) fn collect_prompt_file_mutations(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string),
+                composer_placeholder: document
+                    .composer_placeholder
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
                 starter_prompts: document.starter_prompts.clone(),
             };
             let metadata = if metadata.avatar_path.is_none()
                 && metadata.board_image_path.is_none()
                 && metadata.board_title.is_none()
                 && metadata.board_subtitle.is_none()
+                && metadata.composer_placeholder.is_none()
                 && metadata.starter_prompts.is_none()
             {
                 None

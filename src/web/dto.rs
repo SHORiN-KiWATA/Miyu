@@ -11,6 +11,12 @@ pub(in crate::web) const DEFAULT_BOARD_TITLE: &str = "今天想聊些什么？";
 
 pub(in crate::web) const DEFAULT_BOARD_SUBTITLE: &str = "从一个问题、计划或此刻的想法开始。";
 
+/// 输入框为空时的提示。跟着人格名走,所以是函数不是常量:此前这句写死在
+/// index.html 里,人格改了名输入框还留着旧名字。
+pub(in crate::web) fn default_composer_placeholder(persona_name: &str) -> String {
+    format!("给 {persona_name} 发消息")
+}
+
 pub(in crate::web) const DEFAULT_STARTER_PROMPTS: [&str; 4] = [
     "查询今天的天气",
     "分析一个问题",
