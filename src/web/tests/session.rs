@@ -59,6 +59,7 @@ fn persona_asset_cleanup_normalizes_managed_reference_paths() {
                 board_image_path: None,
                 board_title: None,
                 board_subtitle: None,
+                composer_placeholder: None,
                 starter_prompts: None,
                 original_name: None,
             }],
@@ -261,6 +262,7 @@ fn persona_file_mutations_include_avatar_sidecar() {
         board_image_path: None,
         board_title: None,
         board_subtitle: None,
+        composer_placeholder: None,
         starter_prompts: None,
         original_name: None,
     }];
@@ -288,6 +290,7 @@ fn persona_identity_uses_default_and_custom_values() {
     let default = persona_identity(&config, &prompts);
     assert_eq!(default.name, "Miyu");
     assert_eq!(default.avatar_url.as_deref(), Some("/assets/miyu-logo.png"));
+    assert_eq!(default.composer_placeholder, "给 Miyu 发消息");
 
     config.prompt.active_persona = "Alice.md".to_string();
     let prompts = PromptDocuments {
@@ -298,6 +301,7 @@ fn persona_identity_uses_default_and_custom_values() {
             board_image_path: None,
             board_title: None,
             board_subtitle: None,
+            composer_placeholder: None,
             starter_prompts: None,
             original_name: None,
         }],
@@ -306,6 +310,31 @@ fn persona_identity_uses_default_and_custom_values() {
     let custom = persona_identity(&config, &prompts);
     assert_eq!(custom.name, "Alice");
     assert_eq!(custom.avatar_url.as_deref(), Some("/api/persona/avatar"));
+    // 没配就跟着人格名走——此前这句写死在 index.html 里,改了人格名输入框
+    // 还留着 "给 Miyu 发消息"。
+    assert_eq!(custom.composer_placeholder, "给 Alice 发消息");
+
+    // 配了就用配的;空白串不算配置(与看板文案同一把尺)。
+    let with_placeholder = |value: Option<&str>| {
+        let prompts = PromptDocuments {
+            personas: vec![PromptDocument {
+                name: "Alice.md".to_string(),
+                content: "prompt".to_string(),
+                avatar_path: None,
+                board_image_path: None,
+                board_title: None,
+                board_subtitle: None,
+                composer_placeholder: value.map(str::to_string),
+                starter_prompts: None,
+                original_name: None,
+            }],
+            identities: Vec::new(),
+        };
+        persona_identity(&config, &prompts).composer_placeholder
+    };
+    assert_eq!(with_placeholder(Some("说点什么…")), "说点什么…");
+    assert_eq!(with_placeholder(Some("   ")), "给 Alice 发消息");
+    assert_eq!(with_placeholder(None), "给 Alice 发消息");
 }
 
 #[test]
