@@ -67,6 +67,7 @@ impl OpenAiCompatibleClient {
             antigravity,
             codex,
             claude_code_dev_mode: false,
+            zen_session: None,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -160,6 +161,7 @@ impl OpenAiCompatibleClient {
             antigravity,
             codex,
             claude_code_dev_mode: false,
+            zen_session: None,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -292,6 +294,7 @@ impl OpenAiCompatibleClient {
             antigravity,
             codex,
             claude_code_dev_mode: false,
+            zen_session: None,
         };
         client.restore_saved_thinking_variants(paths);
         Ok(client)
@@ -415,6 +418,7 @@ impl OpenAiCompatibleClient {
             antigravity: self.antigravity.clone(),
             codex: self.codex.clone(),
             claude_code_dev_mode: self.claude_code_dev_mode,
+            zen_session: self.zen_session.clone(),
         }
     }
 
@@ -422,6 +426,14 @@ impl OpenAiCompatibleClient {
     /// (off/dev/normal/all)按它裁决。其他协议不受影响。
     pub fn with_claude_code_dev_mode(mut self, dev: bool) -> Self {
         self.claude_code_dev_mode = dev;
+        self
+    }
+
+    /// 声明这个客户端服务于哪个会话。目前只有 opencode Zen 的
+    /// `x-opencode-session` 用它:一次对话对应服务端一个会话,而不是整个
+    /// daemon 共用一个。派生出去的辅助客户端(压缩、判官)跟着继承。
+    pub fn with_zen_session(mut self, session_id: &str) -> Self {
+        self.zen_session = Some(session_id.to_string());
         self
     }
 

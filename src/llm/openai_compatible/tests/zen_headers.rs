@@ -164,3 +164,43 @@ async fn separate_calls_get_separate_message_ids() {
         header_value(&heads[1], "x-opencode-request"),
     );
 }
+
+/// 会话头跟着 Miyu 的会话走：同一段对话恒定（跨 daemon 重启也一样，因为是
+/// 确定性散列），换一段对话就换一个。整个 daemon 共用一个会话，服务端那边
+/// 所有对话会糊成一条。
+#[tokio::test]
+async fn the_session_header_follows_the_miyu_session() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let server = tokio::spawn(async move {
+        let mut heads = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            heads.push(read_http_request_head(&mut stream).await);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        }
+        heads
+    });
+
+    let base = test_client(test_provider("opencode", OPENCODE_ZEN_BASE_URL));
+    for session in ["session-a", "session-a", "session-b"] {
+        let client = base.clone().with_zen_session(session);
+        client
+            .send_with_transport_retry("llm_1730000000000_9", "chat.send", || {
+                client.client.post(&url)
+            })
+            .await
+            .unwrap();
+    }
+
+    let heads = server.await.unwrap();
+    let session_of = |head: &str| header_value(head, "x-opencode-session");
+    assert_eq!(session_of(&heads[0]), session_of(&heads[1]));
+    assert_ne!(session_of(&heads[0]), session_of(&heads[2]));
+}

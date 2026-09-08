@@ -108,6 +108,10 @@ pub struct OpenAiCompatibleClient {
     /// 本会话是否 dev 模式(Agent 构造时置位),claude-code 的双四档工具
     /// 作用域(native_tools/miyu_tools)按它判定。
     claude_code_dev_mode: bool,
+    /// 会话标识,只给 opencode Zen 的 `x-opencode-session` 用(Agent 构造时
+    /// 由 `StateStore::session_id` 置位)。未置位时退回进程级的那个,见
+    /// `zen_headers`。
+    zen_session: Option<String>,
 }
 
 #[derive(Clone, Copy)]

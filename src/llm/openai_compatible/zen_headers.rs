@@ -54,6 +54,7 @@ pub(in crate::llm::openai_compatible) fn is_zen_endpoint(provider: &ProviderConf
 pub(in crate::llm::openai_compatible) fn apply(
     request: reqwest::RequestBuilder,
     provider: &ProviderConfig,
+    session: Option<&str>,
     request_id: &str,
 ) -> reqwest::RequestBuilder {
     if !is_zen_endpoint(provider) {
@@ -63,15 +64,22 @@ pub(in crate::llm::openai_compatible) fn apply(
         .header("User-Agent", OPENCODE_USER_AGENT)
         .header("x-opencode-client", OPENCODE_CLIENT)
         .header("x-opencode-project", OPENCODE_PROJECT)
-        .header("x-opencode-session", session_id())
+        .header("x-opencode-session", session_id(session))
         .header("x-opencode-request", message_id(request_id))
 }
 
-/// 本进程的会话 id。opencode 一次 run 一个,Miyu 是长驻服务,取进程级:每个
-/// HTTP 请求换一个看着像刷会话,而把会话 id 从 Agent 一路穿到 LLM 层要动十几
-/// 处构造点,换来的只是一个「未证实是否参与限速」的分桶维度(实测只确认了
-/// 服务端收这个头,没证据表明它决定额度)。重启即换,跟重开 CLI 一样。
-fn session_id() -> &'static str {
+/// 一次对话对应服务端一个会话:Miyu 的会话 id 确定性地映射成 opencode 形状,
+/// 同一段对话跨 daemon 重启也是同一个。够不到会话的地方(REPL 直连、配置界面
+/// 试连)退回进程级的那个——总比整个 daemon 共用一个、或者每个 HTTP 请求换一
+/// 个(看着像刷会话)强。
+fn session_id(session: Option<&str>) -> String {
+    match session.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(session) => format!("ses_{}", digest_suffix(session)),
+        None => process_session_id().to_string(),
+    }
+}
+
+fn process_session_id() -> &'static str {
     static SESSION: OnceLock<String> = OnceLock::new();
     SESSION.get_or_init(|| format!("ses_{}", random_suffix()))
 }
@@ -81,9 +89,13 @@ fn session_id() -> &'static str {
 /// 确定性映射:同一次逻辑调用换端点重试时头不变,这与 opencode 那边「一个用户
 /// 回合内恒定」的语义对得上。
 fn message_id(request_id: &str) -> String {
-    let digest = sha1::Sha1::digest(request_id.as_bytes());
-    let hex = format!("{digest:x}");
-    format!("msg_{}", &hex[..SUFFIX_LEN])
+    format!("msg_{}", digest_suffix(request_id))
+}
+
+/// 把任意标识散列成前缀之后那 26 位。十六进制是 base62 的子集,形状仍然对得上。
+fn digest_suffix(value: &str) -> String {
+    let digest = sha1::Sha1::digest(value.as_bytes());
+    format!("{digest:x}")[..SUFFIX_LEN].to_string()
 }
 
 /// 抓到的 id 前缀之后恒为 26 位。

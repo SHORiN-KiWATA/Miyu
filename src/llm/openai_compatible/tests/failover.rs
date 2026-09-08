@@ -93,6 +93,7 @@ async fn response_header_timeout_fails_over_to_the_next_endpoint() {
         antigravity: None,
         codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
     };
 
     let result = client
@@ -529,6 +530,7 @@ async fn endpoint_failover_resets_partial_reasoning_before_retry() {
         antigravity: None,
         codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
     let mut chunks = Vec::new();
@@ -619,6 +621,7 @@ async fn buffered_completion_fails_over_after_partial_content() {
         antigravity: None,
         codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     };
 

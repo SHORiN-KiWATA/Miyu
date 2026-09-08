@@ -153,6 +153,7 @@ pub(super) fn client_over(endpoints: Vec<LlmEndpoint>) -> OpenAiCompatibleClient
         antigravity: None,
         codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     }
 }
@@ -181,6 +182,7 @@ pub(super) fn test_client(provider: ProviderConfig) -> OpenAiCompatibleClient {
         antigravity: None,
         codex: None,
         claude_code_dev_mode: false,
+        zen_session: None,
         continuation_health: ResponsesContinuationHealth::detached(),
     }
 }

@@ -50,6 +50,8 @@ impl Agent {
         };
         // claude-code 中转的双四档工具作用域按会话模式裁决;其他协议无感。
         let client = client.with_claude_code_dev_mode(mode == AgentMode::Dev);
+        // opencode Zen 的会话头按这个走:一次对话对应服务端一个会话。
+        let client = client.with_zen_session(&state.session_id());
         let base_system_prompt = mode_system_prompt(&config, paths, mode, prompt_audience)?;
         let system_prompt = with_memory_preamble(
             with_host_environment(
