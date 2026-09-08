@@ -690,6 +690,15 @@ pub(in crate::web) fn prepare_web_attachment_data(
                     "attachment file is unavailable",
                 ));
             };
+            // PDF 例外:它跟图片视频一样有内联通路。走附件路交给 `agent::input`
+            // 判当前模型吃不吃得下——吃得下直接读文件本体,吃不下由那侧回落成
+            // 路径提示,与 REPL 粘贴 PDF 同一条路,不必在 web 层猜模型能力。
+            if crate::tools::vision::pdf_mime(&attachment.attachment.file_name).is_some() {
+                images.push(Some(ImageAttachment::Path {
+                    path: path.to_string_lossy().into_owned(),
+                }));
+                continue;
+            }
             let name = escape_attachment_attribute(&attachment.attachment.file_name);
             let mime = escape_attachment_attribute(&attachment.attachment.mime);
             let path = escape_attachment_attribute(&path.to_string_lossy());

@@ -81,7 +81,12 @@ impl Agent {
         // 视频先从路径附件里分出来:它和图片不是同一种内容块,能力判定也各管
         // 各的(08-27 用户要求"当附件"传)。扩展名判据与视觉工具同源,免得两边
         // 对"什么算视频"各有一套。
-        let (video_paths, image_paths): (Vec<&str>, Vec<&str>) = path_images
+        // PDF 同理再分一层(09-08):它既不是图也不是视频,`vision_analyze` 那条
+        // 旁路也不收它,所以能力判定与内容块都独立一份。
+        let (pdf_paths, media_paths): (Vec<&str>, Vec<&str>) = path_images
+            .iter()
+            .partition(|path| crate::tools::vision::pdf_mime(path).is_some());
+        let (video_paths, image_paths): (Vec<&str>, Vec<&str>) = media_paths
             .iter()
             .partition(|path| crate::tools::vision::video_mime(path).is_some());
         // Path 形态的图(shell-hook 跨进程、REPL 粘贴路径)在视觉模型
@@ -130,6 +135,29 @@ impl Agent {
                 None => unread_video_paths.push(path),
             }
         }
+        // PDF 与视频同构:吃得下才内联,吃不下原样留给下面的路径提示。读盘 +
+        // base64 同样挪去阻塞线程——20MB 的 PDF 编码完约 27MB,在 async worker
+        // 上同步做会把这条线程占住,而 daemon 还在同时服务 QQ 和别的会话。
+        let supports_pdf = self.current_model_supports_pdf();
+        let mut inline_pdfs: Vec<(String, String)> = Vec::new();
+        let mut unread_pdf_paths: Vec<&str> = Vec::new();
+        for path in &pdf_paths {
+            let owned = path.to_string();
+            let url = if supports_pdf {
+                tokio::task::spawn_blocking(move || {
+                    crate::tools::vision::local_pdf_data_url(&owned).ok()
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            match url {
+                Some(url) => inline_pdfs.push((url, pdf_file_name(path))),
+                None => unread_pdf_paths.push(path),
+            }
+        }
         // agy 线:模型自己用 view_file 看本地文件就是真图(09-04 实测图片/
         // 视频/音频/PDF 都通),不再花一次视觉旁路把图转述成文字。
         let native_media_viewer = self
@@ -146,9 +174,11 @@ impl Agent {
         };
 
         let inlined_video = !inline_video_urls.is_empty();
+        let inlined_pdf = !inline_pdfs.is_empty();
         let has_inline_media = (!binary_images.is_empty() || !inline_path_urls.is_empty())
             && current_model_supports_vision
-            || inlined_video;
+            || inlined_video
+            || inlined_pdf;
         let message = if has_inline_media {
             let mut parts = vec![ChatContentPart::Text {
                 text: content.clone(),
@@ -181,6 +211,15 @@ impl Agent {
                         video_url: crate::llm::VideoUrlContent { url },
                     }),
             );
+            // 同视频:只进本轮请求,不进 `turns.user_content`。
+            parts.extend(inline_pdfs.into_iter().map(|(file_data, filename)| {
+                ChatContentPart::File {
+                    file: crate::llm::FileContent {
+                        filename,
+                        file_data,
+                    },
+                }
+            }));
             ChatMessage::user_parts(parts)
         } else {
             ChatMessage::plain("user", &content)
@@ -269,6 +308,28 @@ impl Agent {
             hints.push(ChatMessage::turn_context(format!(
                 "用户粘贴了 {} 个本地视频路径：\n{}\n{tool_hint}",
                 unread_video_paths.len(),
+                list
+            )));
+        }
+        // PDF 没能内联时给路径。这里的门槛比图片/视频低——不要求 vision 工具
+        // 在场:PDF 从来就不走 vision_analyze,能读它的是原生文件工具
+        // (claude-code 的 Read / agy 的 view_file),再不济还有 run_command。
+        // 拿掉提示等于把文件藏起来,那才是最坏的结果。
+        if !unread_pdf_paths.is_empty() {
+            let list = unread_pdf_paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| format!("  [PDF {}] {}", index + 1, path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tool_hint = if native_media_viewer {
+                "Open these paths with view_file to read the documents themselves."
+            } else {
+                "当前模型不能直接读 PDF，可用文件工具打开这些路径。"
+            };
+            hints.push(ChatMessage::turn_context(format!(
+                "用户提供了 {} 个 PDF 路径：\n{}\n{tool_hint}",
+                unread_pdf_paths.len(),
                 list
             )));
         }
@@ -380,4 +441,15 @@ impl Agent {
         }
         Ok(images)
     }
+}
+
+/// PDF 内容块要带的文件名。openai-chat 的 `file` 块把它当必填字段,别的协议
+/// 拿它当标题——两处都不能是空串,所以取不到 basename 时兜底一个通用名。
+fn pdf_file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("document.pdf")
+        .to_string()
 }

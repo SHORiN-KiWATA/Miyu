@@ -392,6 +392,94 @@ async fn path_images_are_inlined_when_model_supports_vision() {
 ///
 /// 判据与图片各管各的:模型吃视频才内联,不吃就原样留给 `vision_analyze`——
 /// 而已经内联的那些不该再提示去调工具,否则白烧一次旁路请求。
+/// PDF 与视频同构:吃得下就内联成 `file` 块,吃不下留路径提示。
+///
+/// 两头都要钉住。只钉内联那半,回归成"总是内联"时测试照样绿,而池里换上一个
+/// 不吃 PDF 的模型就会带着一段它读不懂的内容块发过去。
+#[tokio::test]
+async fn local_pdf_paths_inline_only_when_the_model_takes_pdf() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let pdf = temp.path().join("report.pdf");
+    std::fs::write(&pdf, b"%PDF-1.4\n1 0 obj\n").unwrap();
+    let pdf_path = pdf.to_string_lossy().to_string();
+
+    let build = |modalities: Vec<String>| {
+        let mut config = AppConfig::default();
+        let provider_id = config.provider(None).unwrap().id.clone();
+        let model = config.provider(None).unwrap().default_model.clone();
+        for provider in &mut config.providers {
+            if provider.id == provider_id {
+                provider
+                    .model_modalities
+                    .insert(model.clone(), modalities.clone());
+            }
+        }
+        config.active_provider_models =
+            Some(vec![ActiveProviderModelConfig { provider_id, model }]);
+        config
+    };
+
+    fn pdf_parts(prepared: &crate::agent::PreparedUserInput) -> Vec<&crate::llm::FileContent> {
+        match &prepared.message.content {
+            Some(crate::llm::ChatContent::Parts(parts)) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    crate::llm::ChatContentPart::File { file } => Some(file),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    let agent_for = |config: AppConfig| {
+        let state = StateStore::new(&paths).unwrap();
+        let client =
+            OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+        Agent::new(
+            config,
+            &paths,
+            state,
+            client,
+            ToolRegistry::new(),
+            AgentMode::Normal,
+        )
+        .unwrap()
+    };
+
+    // 吃 PDF:内联成 file 块,带上原始文件名与 data URL,不再提示走工具。
+    let agent = agent_for(build(vec!["text".into(), "pdf".into()]));
+    assert!(agent.current_model_supports_pdf());
+    let images = vec![Some(PastedImage::Path(pdf_path.clone()))];
+    let prepared = agent.prepare_user_input("总结一下", &images).await.unwrap();
+    let parts = pdf_parts(&prepared);
+    assert_eq!(parts.len(), 1, "吃 PDF 的模型应当内联 file 块");
+    assert_eq!(parts[0].filename, "report.pdf");
+    assert!(
+        parts[0]
+            .file_data
+            .starts_with("data:application/pdf;base64,"),
+        "内联的是 PDF data URL,拿到的是 {}",
+        &parts[0].file_data[..parts[0].file_data.len().min(40)]
+    );
+    let hints = format!("{:?}", prepared.hints);
+    assert!(!hints.contains("PDF 路径"), "已内联就别再叫它另找工具");
+
+    // 不吃 PDF:不内联,改成路径提示——文件不能就这么消失。
+    let agent = agent_for(build(vec!["text".into(), "image".into()]));
+    assert!(!agent.current_model_supports_pdf());
+    let images = vec![Some(PastedImage::Path(pdf_path.clone()))];
+    let prepared = agent.prepare_user_input("总结一下", &images).await.unwrap();
+    assert!(
+        pdf_parts(&prepared).is_empty(),
+        "不吃 PDF 的模型不该收到 file 块"
+    );
+    let hints = format!("{:?}", prepared.hints);
+    assert!(hints.contains("PDF 路径"), "至少要把路径告诉它:{hints}");
+    assert!(hints.contains(&pdf_path), "提示里要有真实路径");
+}
+
 #[tokio::test]
 async fn local_video_paths_inline_when_the_model_takes_video() {
     let temp = tempfile::tempdir().unwrap();

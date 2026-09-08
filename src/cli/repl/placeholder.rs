@@ -126,6 +126,8 @@ pub(in crate::cli) use crate::clipboard::{media_placeholder_prefix, MEDIA_PLACEH
 pub(in crate::cli) fn media_placeholder_label(path: &str) -> &'static str {
     if crate::tools::vision::video_mime(path).is_some() {
         "Video"
+    } else if crate::tools::vision::pdf_mime(path).is_some() {
+        "PDF"
     } else {
         "Image"
     }
@@ -136,11 +138,13 @@ pub(in crate::cli) fn find_repl_placeholders(input: &str) -> Vec<(usize, usize)>
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        let prefix_len = if i + 7 <= chars.len()
-            && MEDIA_PLACEHOLDER_PREFIXES
-                .contains(&chars[i..i + 7].iter().collect::<String>().as_str())
-        {
-            Some(7)
+        // 媒体前缀按各自长度匹配。曾经写死 7("[Image "/"[Video " 恰好都是 7),
+        // 加一个更短的前缀就会整条漏掉——`[PDF ` 只有 5 位。
+        let prefix_len = if let Some(prefix) = MEDIA_PLACEHOLDER_PREFIXES.iter().find(|prefix| {
+            let len = prefix.chars().count();
+            i + len <= chars.len() && chars[i..i + len].iter().collect::<String>() == **prefix
+        }) {
+            Some(prefix.chars().count())
         } else if i + 8 <= chars.len() && chars[i..i + 8].iter().collect::<String>() == "[Pasted " {
             Some(8)
         } else if i + 4 <= chars.len() && chars[i..i + 4].iter().collect::<String>() == "[粘贴 " {

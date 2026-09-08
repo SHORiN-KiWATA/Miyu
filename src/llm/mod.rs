@@ -57,6 +57,16 @@ pub enum ChatContentPart {
     /// `{"type":"video_url","video_url":{"url":…}}`,仅视频能力模型接受。
     #[serde(rename = "video_url")]
     VideoUrl { video_url: VideoUrlContent },
+    /// PDF 输入(09-08):openai-chat 约定
+    /// `{"type":"file","file":{"filename":…,"file_data":"data:application/pdf;base64,…"}}`,
+    /// 仅 PDF 能力模型接受。
+    ///
+    /// 变体名与字段名跟着**线格式**走(同 `ImageUrl`/`VideoUrl` 的惯例):
+    /// openai-chat 那条线是把 `ChatMessage` 直接 serde 出去的,名字一改就发错。
+    /// 另两个协议的形状差得远——Anthropic 是 `document` 块套 base64 source,
+    /// Responses 是 `input_file`——由各自的 lower 从这里改写。
+    #[serde(rename = "file")]
+    File { file: FileContent },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +77,15 @@ pub struct ImageUrlContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoUrlContent {
     pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileContent {
+    /// 原始文件名。openai-chat 的 `file` 块必须带它;Anthropic 不要,但模型
+    /// 看得见,一份带名字的文档比 "document 1" 好指认。
+    pub filename: String,
+    /// `data:application/pdf;base64,…`
+    pub file_data: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

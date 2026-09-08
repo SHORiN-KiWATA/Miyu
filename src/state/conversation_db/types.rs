@@ -347,6 +347,7 @@ pub struct TurnInlineMedia {
 
 pub const INLINE_MEDIA_KIND_IMAGE: &str = "image";
 pub const INLINE_MEDIA_KIND_VIDEO: &str = "video";
+pub const INLINE_MEDIA_KIND_PDF: &str = "pdf";
 pub const INLINE_MEDIA_KIND_TEXT: &str = "text";
 
 /// 附件本体。旧行把内容存在 `data` 列里,`path` 为 `None`;v29 起新上传一律

@@ -190,7 +190,7 @@ pub struct TurnOptions {
     #[arg(long)]
     pub no_tools: bool,
 
-    /// 附图,可多次
+    /// 附件(图片/视频/PDF),可多次
     #[arg(long, value_name = "PATH")]
     pub image: Vec<PathBuf>,
 

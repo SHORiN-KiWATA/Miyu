@@ -62,7 +62,12 @@ pub(in crate::agent) fn clipboard_binary_image_from_tool_result(
 
 /// 会在工具结果之后追加媒体块的工具。历史重放只对这些回合查一次
 /// `turn_inline_media`,别的回合不多付一次查询。
-pub(in crate::agent) const INLINE_MEDIA_TOOLS: &[&str] = &["vision_analyze", "read_clipboard"];
+///
+/// `read_platform_file` 在名单里是因为 QQ 的 PDF 也走内联寄存(09-08):漏掉
+/// 它,重放时那份 PDF 就凭空消失,模型在后续轮次里看见自己引用过一份读不到
+/// 的文档。
+pub(in crate::agent) const INLINE_MEDIA_TOOLS: &[&str] =
+    &["vision_analyze", "read_clipboard", "read_platform_file"];
 
 /// 某次工具调用之后要追加给模型的媒体:剪贴板图片(旧路)与
 /// `vision_analyze` 的 inline 寄存(09-03)走同一条出口。
@@ -89,7 +94,10 @@ pub(in crate::agent) fn inline_media_from_tool_result(
 pub(in crate::agent) fn inline_media_message(
     items: &[crate::state::TurnInlineMedia],
 ) -> Option<ChatMessage> {
-    use crate::state::{INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_TEXT, INLINE_MEDIA_KIND_VIDEO};
+    use crate::state::{
+        INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_PDF, INLINE_MEDIA_KIND_TEXT,
+        INLINE_MEDIA_KIND_VIDEO,
+    };
     if items.is_empty() {
         return None;
     }
@@ -126,6 +134,16 @@ pub(in crate::agent) fn inline_media_message(
                     });
                 }
             }
+            INLINE_MEDIA_KIND_PDF => {
+                if let Some(url) = inline_media_url(item) {
+                    parts.push(ChatContentPart::File {
+                        file: crate::llm::FileContent {
+                            filename: pdf_item_file_name(item),
+                            file_data: url,
+                        },
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -134,7 +152,10 @@ pub(in crate::agent) fn inline_media_message(
 
 /// 媒体块的内容 parts(不含文本块的包装);供"图进工具结果"形态使用。
 fn inline_media_parts(items: &[crate::state::TurnInlineMedia]) -> Vec<ChatContentPart> {
-    use crate::state::{INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_TEXT, INLINE_MEDIA_KIND_VIDEO};
+    use crate::state::{
+        INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_PDF, INLINE_MEDIA_KIND_TEXT,
+        INLINE_MEDIA_KIND_VIDEO,
+    };
     let mut parts = Vec::with_capacity(items.len());
     for item in items {
         match item.kind.as_str() {
@@ -156,6 +177,16 @@ fn inline_media_parts(items: &[crate::state::TurnInlineMedia]) -> Vec<ChatConten
                 if let Some(url) = inline_media_url(item) {
                     parts.push(ChatContentPart::VideoUrl {
                         video_url: crate::llm::VideoUrlContent { url },
+                    });
+                }
+            }
+            INLINE_MEDIA_KIND_PDF => {
+                if let Some(url) = inline_media_url(item) {
+                    parts.push(ChatContentPart::File {
+                        file: crate::llm::FileContent {
+                            filename: pdf_item_file_name(item),
+                            file_data: url,
+                        },
                     });
                 }
             }
@@ -206,6 +237,17 @@ pub(in crate::agent) fn push_tool_result_with_media(
     if let Some(message) = inline_media_message(items) {
         messages.push(message);
     }
+}
+
+/// 内联 PDF 的文件名。`source` 存的是落盘路径,basename 就是用户发过来的
+/// 那个名字;拿不到就兜底,因为 openai-chat 的 `file` 块不接受空 filename。
+fn pdf_item_file_name(item: &crate::state::TurnInlineMedia) -> String {
+    std::path::Path::new(&item.source)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("document.pdf")
+        .to_string()
 }
 
 fn inline_media_url(item: &crate::state::TurnInlineMedia) -> Option<String> {
@@ -334,6 +376,19 @@ pub(in crate::agent) fn active_text_pool_supports_video(config: &AppConfig) -> b
     !choices.is_empty()
         && choices.iter().all(|choice| {
             config.model_accepts_message_input(&choice.provider_id, &choice.model, &["video"])
+        })
+}
+
+/// 活跃文本池能不能直接吃 PDF。同视频的规矩:要**池里每个模型**都支持。
+///
+/// 不支持时 PDF 不内联,路径留在正文里——中转线(claude-code 的 Read /
+/// antigravity 的 view_file)的原生文件工具本来就读得了 PDF,直连线的模型
+/// 至少知道文件在哪、能拿 run_command 去处理,比塞一段它读不懂的内容块强。
+pub(crate) fn active_text_pool_supports_pdf(config: &AppConfig) -> bool {
+    let choices = config.active_provider_model_choices();
+    !choices.is_empty()
+        && choices.iter().all(|choice| {
+            config.model_accepts_message_input(&choice.provider_id, &choice.model, &["pdf"])
         })
 }
 

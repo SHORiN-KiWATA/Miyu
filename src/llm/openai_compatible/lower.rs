@@ -87,6 +87,11 @@ pub(in crate::llm::openai_compatible) fn lower_responses_user_content(
                 crate::llm::ChatContentPart::VideoUrl { .. } => {
                     json!({"type": "input_text", "text": "[video input omitted: this provider protocol has no video support]"})
                 }
+                // Responses 的 PDF 块:`input_file` + `filename` + `file_data`
+                // (data URL)。跟 chat completions 是两个字段名,不能照搬。
+                crate::llm::ChatContentPart::File { file } => {
+                    json!({"type": "input_file", "filename": file.filename, "file_data": file.file_data})
+                }
             })
             .collect(),
         Some(crate::llm::ChatContent::Text(text)) => vec![json!({"type": "input_text", "text": text})],
@@ -104,7 +109,8 @@ pub(in crate::llm::openai_compatible) fn chat_content_text(
             .filter_map(|part| match part {
                 crate::llm::ChatContentPart::Text { text } => Some(text),
                 crate::llm::ChatContentPart::ImageUrl { .. }
-                | crate::llm::ChatContentPart::VideoUrl { .. } => None,
+                | crate::llm::ChatContentPart::VideoUrl { .. }
+                | crate::llm::ChatContentPart::File { .. } => None,
             })
             .collect::<Vec<_>>()
             .join(""),
@@ -191,21 +197,35 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_user_content(
     content: Option<crate::llm::ChatContent>,
 ) -> Vec<AnthropicContentBlock> {
     match content {
-        Some(crate::llm::ChatContent::Parts(parts)) => parts
-            .into_iter()
-            .filter_map(|part| match part {
-                crate::llm::ChatContentPart::Text { text } => {
-                    Some(AnthropicContentBlock::Text { text })
-                }
-                crate::llm::ChatContentPart::ImageUrl { image_url } => {
-                    lower_anthropic_image_url(&image_url.url)
-                }
-                crate::llm::ChatContentPart::VideoUrl { .. } => Some(AnthropicContentBlock::Text {
-                    text: "[video input omitted: this provider protocol has no video support]"
-                        .to_string(),
-                }),
-            })
-            .collect(),
+        Some(crate::llm::ChatContent::Parts(parts)) => {
+            let mut blocks: Vec<AnthropicContentBlock> = parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    crate::llm::ChatContentPart::Text { text } => {
+                        Some(AnthropicContentBlock::Text { text })
+                    }
+                    crate::llm::ChatContentPart::ImageUrl { image_url } => {
+                        lower_anthropic_image_url(&image_url.url)
+                    }
+                    crate::llm::ChatContentPart::VideoUrl { .. } => {
+                        Some(AnthropicContentBlock::Text {
+                            text:
+                                "[video input omitted: this provider protocol has no video support]"
+                                    .to_string(),
+                        })
+                    }
+                    crate::llm::ChatContentPart::File { file } => {
+                        lower_anthropic_document(&file.file_data)
+                    }
+                })
+                .collect();
+            // Anthropic 规定 document 块摆在文本块**之前**,而 Miyu 组装 parts
+            // 时正文在最前(图/视频/PDF 依次追加)。稳定分区把 document 提上来,
+            // 同类块之间的原有次序不动——这一层是字节纯度的一部分,排序不确定
+            // 就等于每轮换一份前缀。
+            blocks.sort_by_key(|block| !matches!(block, AnthropicContentBlock::Document { .. }));
+            blocks
+        }
         Some(crate::llm::ChatContent::Text(text)) => vec![AnthropicContentBlock::Text { text }],
         None => vec![AnthropicContentBlock::Text {
             text: String::new(),
@@ -226,6 +246,29 @@ pub(in crate::llm::openai_compatible) fn lower_anthropic_image_url(
     let data = url.strip_prefix("data:")?;
     let (media_type, base64) = data.split_once(";base64,")?;
     Some(AnthropicContentBlock::Image {
+        source: AnthropicImageSource::Base64 {
+            media_type: media_type.to_string(),
+            data: base64.to_string(),
+        },
+    })
+}
+
+/// PDF → Anthropic `document` 块。`source` 与 image 同构,所以复用同一个
+/// 拆解:`data:<media_type>;base64,<data>` 或直接 URL。拆不开就整块丢掉——
+/// 发一个残缺的 source 只会换来 400。
+pub(in crate::llm::openai_compatible) fn lower_anthropic_document(
+    url: &str,
+) -> Option<AnthropicContentBlock> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Some(AnthropicContentBlock::Document {
+            source: AnthropicImageSource::Url {
+                url: url.to_string(),
+            },
+        });
+    }
+    let data = url.strip_prefix("data:")?;
+    let (media_type, base64) = data.split_once(";base64,")?;
+    Some(AnthropicContentBlock::Document {
         source: AnthropicImageSource::Base64 {
             media_type: media_type.to_string(),
             data: base64.to_string(),
@@ -320,7 +363,8 @@ pub(in crate::llm::openai_compatible) fn chat_content_text_ref(
             .filter_map(|part| match part {
                 crate::llm::ChatContentPart::Text { text } => Some(text.clone()),
                 crate::llm::ChatContentPart::ImageUrl { .. }
-                | crate::llm::ChatContentPart::VideoUrl { .. } => None,
+                | crate::llm::ChatContentPart::VideoUrl { .. }
+                | crate::llm::ChatContentPart::File { .. } => None,
             })
             .collect::<Vec<_>>()
             .join(""),

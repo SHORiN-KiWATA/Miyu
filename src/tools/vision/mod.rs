@@ -388,6 +388,73 @@ pub(crate) fn video_mime(value: &str) -> Option<&'static str> {
     })
 }
 
+/// 按扩展名识别 PDF。判据跟 [`video_mime`] 摆在一起,是因为附件分流要在同一处
+/// 把三种媒体拆开——分散到三个模块去问"这算不算 X",迟早会各有一套答案。
+pub(crate) fn pdf_mime(value: &str) -> Option<&'static str> {
+    let lower = value
+        .split('?')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_lowercase();
+    (lower.rsplit('.').next()? == "pdf").then_some("application/pdf")
+}
+
+/// PDF 体积上限。Anthropic 的 document 块规定整个请求 ≤32MB,base64 编码
+/// 还要 +33%,所以本体卡在 20MB——留出提示词与历史的余量。超限不静默截断
+/// (截一半的 PDF 不是 PDF),落回路径提示让模型用文件工具自己读。
+const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024;
+
+pub(crate) fn local_pdf_data_url(value: &str) -> Result<String> {
+    let path = expand_path(value);
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("failed to read pdf {}", path.display()))?;
+    if metadata.len() > MAX_PDF_BYTES {
+        bail!(
+            "pdf too large: {} bytes (limit {MAX_PDF_BYTES})",
+            metadata.len()
+        )
+    }
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("failed to read pdf {}", path.display()))?;
+    // 魔数校验:扩展名骗得过分流,骗不过供应商——一份改名成 .pdf 的 zip 只会
+    // 在对端换来一个 400,而错误发生在这里更好排查。
+    if !bytes.starts_with(b"%PDF-") {
+        bail!("not a PDF file (missing %PDF- header): {}", path.display())
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:application/pdf;base64,{encoded}"))
+}
+
+/// 把一个本地 PDF 包成待寄存的内联媒体。`data` 留空、只记路径:重放时由
+/// `inline_media_url` 按需读盘,对话库里不会多存一份 base64——与视频同待遇。
+///
+/// 先校验能不能读、体积在不在上限内(同 [`local_pdf_data_url`] 的尺子),
+/// 免得寄存一个取走时才发现是坏的引用。
+pub(crate) fn pdf_inline_media(path: &str) -> Result<Vec<crate::state::TurnInlineMedia>> {
+    let mime = pdf_mime(path).context("not a PDF path")?;
+    let expanded = expand_path(path);
+    let metadata = std::fs::metadata(&expanded)
+        .with_context(|| format!("failed to stat pdf {}", expanded.display()))?;
+    if !metadata.is_file() {
+        bail!("pdf path is not a file: {}", expanded.display())
+    }
+    if metadata.len() > MAX_PDF_BYTES {
+        bail!(
+            "pdf is {:.1} MB; the limit is {} MB",
+            metadata.len() as f64 / 1024.0 / 1024.0,
+            MAX_PDF_BYTES / 1024 / 1024
+        )
+    }
+    Ok(vec![crate::state::TurnInlineMedia {
+        call_id: String::new(),
+        seq: 0,
+        kind: crate::state::INLINE_MEDIA_KIND_PDF.to_string(),
+        mime: mime.to_string(),
+        source: expanded.display().to_string(),
+        data: None,
+    }])
+}
+
 /// 视频体积上限,对齐 GLM 官方规格(08-27:GLM-5V-Turbo / 4.6V / 4.5V 及其他
 /// 多模态模型 200MB;GLM-4V-Plus 另有 20MB 且 ≤30 秒的更紧限制,由服务端自己
 /// 回错)。原先卡在 24MB,是按"base64 过中转"定的保守线,把 GLM 能吃的量挡在

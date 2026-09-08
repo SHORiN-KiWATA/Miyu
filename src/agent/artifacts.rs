@@ -88,7 +88,9 @@ pub(in crate::agent) fn chat_message_text(message: &ChatMessage) -> Option<Strin
                 .iter()
                 .filter_map(|part| match part {
                     ChatContentPart::Text { text } => Some(text.as_str()),
-                    ChatContentPart::ImageUrl { .. } | ChatContentPart::VideoUrl { .. } => None,
+                    ChatContentPart::ImageUrl { .. }
+                    | ChatContentPart::VideoUrl { .. }
+                    | ChatContentPart::File { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),

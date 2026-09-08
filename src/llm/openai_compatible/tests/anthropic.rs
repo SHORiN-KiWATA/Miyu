@@ -65,6 +65,99 @@ fn anthropic_lowering_keeps_remote_image_urls() {
     assert_eq!(json[1]["text"], "describe");
 }
 
+/// PDF 下放到 Anthropic:`document` 块 + base64 source,而且要摆在文本块
+/// **之前**(官方规格)。Miyu 组装 parts 时正文在最前,所以这里必须前置。
+#[test]
+fn anthropic_lowering_puts_pdf_documents_before_text() {
+    let content = lower_anthropic_user_content(Some(ChatContent::Parts(vec![
+        ChatContentPart::Text {
+            text: "总结这份文档".to_string(),
+        },
+        ChatContentPart::File {
+            file: crate::llm::FileContent {
+                filename: "report.pdf".to_string(),
+                file_data: "data:application/pdf;base64,JVBERi0xLjQK".to_string(),
+            },
+        },
+    ])));
+    let json = serde_json::to_value(content).unwrap();
+
+    assert_eq!(json[0]["type"], "document");
+    assert_eq!(json[0]["source"]["type"], "base64");
+    assert_eq!(json[0]["source"]["media_type"], "application/pdf");
+    assert_eq!(json[0]["source"]["data"], "JVBERi0xLjQK");
+    assert_eq!(json[1]["type"], "text");
+    assert_eq!(json[1]["text"], "总结这份文档");
+}
+
+/// 前置是**稳定**分区:同类块之间的原有次序不能被打乱。这一层是字节纯度的
+/// 一部分,排序不确定就等于每轮换一份前缀、缓存全废。
+#[test]
+fn anthropic_lowering_pdf_reorder_is_stable() {
+    let pdf = |name: &str, data: &str| ChatContentPart::File {
+        file: crate::llm::FileContent {
+            filename: name.to_string(),
+            file_data: format!("data:application/pdf;base64,{data}"),
+        },
+    };
+    let content = lower_anthropic_user_content(Some(ChatContent::Parts(vec![
+        ChatContentPart::Text {
+            text: "one".to_string(),
+        },
+        pdf("a.pdf", "QQ=="),
+        ChatContentPart::Text {
+            text: "two".to_string(),
+        },
+        pdf("b.pdf", "Qg=="),
+    ])));
+    let json = serde_json::to_value(content).unwrap();
+
+    assert_eq!(json[0]["source"]["data"], "QQ==");
+    assert_eq!(json[1]["source"]["data"], "Qg==");
+    assert_eq!(json[2]["text"], "one");
+    assert_eq!(json[3]["text"], "two");
+}
+
+/// openai-chat 那条线是把 `ChatMessage` 直接 serde 出去的,所以变体的线格式
+/// **就是** OpenAI 的 file 块。改名字就是发错请求,这个断言是那道闸。
+#[test]
+fn openai_chat_pdf_part_serializes_as_file_block() {
+    let json = serde_json::to_value(ChatContentPart::File {
+        file: crate::llm::FileContent {
+            filename: "report.pdf".to_string(),
+            file_data: "data:application/pdf;base64,JVBERi0xLjQK".to_string(),
+        },
+    })
+    .unwrap();
+
+    assert_eq!(json["type"], "file");
+    assert_eq!(json["file"]["filename"], "report.pdf");
+    assert_eq!(
+        json["file"]["file_data"],
+        "data:application/pdf;base64,JVBERi0xLjQK"
+    );
+}
+
+/// Responses 用的是另一套字段名(`input_file`/`file_data`),照搬 chat 的形状
+/// 会被拒。
+#[test]
+fn responses_pdf_part_uses_input_file() {
+    let content =
+        lower_responses_user_content(Some(ChatContent::Parts(vec![ChatContentPart::File {
+            file: crate::llm::FileContent {
+                filename: "report.pdf".to_string(),
+                file_data: "data:application/pdf;base64,JVBERi0xLjQK".to_string(),
+            },
+        }])));
+
+    assert_eq!(content[0]["type"], "input_file");
+    assert_eq!(content[0]["filename"], "report.pdf");
+    assert_eq!(
+        content[0]["file_data"],
+        "data:application/pdf;base64,JVBERi0xLjQK"
+    );
+}
+
 #[test]
 fn anthropic_stream_waits_for_message_stop() {
     let mut state = AnthropicStreamState::default();
