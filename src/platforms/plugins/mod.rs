@@ -15,6 +15,28 @@ pub(super) const FIXED_OUTPUT_METADATA_KEY: &str = "platform.fixed_output";
 pub(super) const SUPPRESS_FINAL_REPLY_METADATA_KEY: &str = "platform.suppress_final_reply";
 pub(super) const SUPPRESS_PRIOR_REPLY_METADATA_KEY: &str = "platform.suppress_prior_reply";
 
+/// 宿主代发最终答复的工具名。这三个都走 [`send_fixed_tool_output`]，它带
+/// `SUPPRESS_PRIOR_REPLY_METADATA_KEY`——连模型在**调用之前**说的话都要抑制，
+/// 因为那是模型对结果的猜测，权威答复由宿主给。
+///
+/// 名字做成常量而不是就地字面量，是为了让注册点和这张表共用同一个真相源：
+/// 改名时编译器会把两边一起带走，表不会悄悄漂掉。中间消息投递靠这张表避开
+/// 「先发猜测、再发宿主答复」（见 `platforms::turn_run` 的 `tool.started` 臂）。
+pub(super) const TOOL_MANAGE_PLATFORM_ACCESS: &str = "manage_platform_access";
+pub(super) const TOOL_ADD_ACTIVE_JUDGEMENT_SKIP: &str = "add_active_judgement_skip_qq";
+pub(super) const TOOL_REMOVE_ACTIVE_JUDGEMENT_SKIP: &str = "remove_active_judgement_skip_qq";
+
+const HOST_AUTHORED_REPLY_TOOLS: &[&str] = &[
+    TOOL_MANAGE_PLATFORM_ACCESS,
+    TOOL_ADD_ACTIVE_JUDGEMENT_SKIP,
+    TOOL_REMOVE_ACTIVE_JUDGEMENT_SKIP,
+];
+
+/// 这个工具的最终答复是不是由宿主代发（因而会抑制调用前的正文）。
+pub(crate) fn tool_authors_host_reply(name: &str) -> bool {
+    HOST_AUTHORED_REPLY_TOOLS.contains(&name)
+}
+
 async fn send_fixed_tool_output(context: &PlatformTurnContext, text: &str) -> Result<()> {
     let mut message = OutboundMessage::text(OutboundOrigin::Tool, text);
     message

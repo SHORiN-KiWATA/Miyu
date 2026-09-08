@@ -47,7 +47,7 @@ impl PlatformPlugin for AccessManagerPlugin {
         }
         registry.register(
             ToolSpec::new(
-                "manage_platform_access",
+                super::TOOL_MANAGE_PLATFORM_ACCESS,
                 "Directly manage Miyu's QQ administrators, private-chat whitelist, and group-chat whitelist. Call this when the current Miyu administrator asks to grant, revoke, or list access. Grant and revoke take effect immediately. The Rust host sends the final QQ result, so do not call send_message_to_user and do not add another acknowledgement.",
                 json!({
                     "type": "object",

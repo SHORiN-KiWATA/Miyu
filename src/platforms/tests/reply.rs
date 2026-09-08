@@ -102,6 +102,44 @@ async fn intermediate_flush_sends_round_text_once() {
     ));
 }
 
+/// 工具边界 flush 之后 `text` 会被清空,区间偏移必须跟着归零——否则下一次
+/// flush 拿着上一轮的字节位置去裁新文本,裁掉的是无辜的内容。
+///
+/// 抑制这件事本身要留着:工具直发过一次,之后模型接着说的还是同一件事。
+#[test]
+fn round_flushed_rebases_ranges_and_keeps_suppression() {
+    // 没在抑制:清空后照旧没在抑制。
+    let mut idle = ReplySuppression::default();
+    idle.round_flushed();
+    assert!(idle.round_ranges(10).is_empty());
+
+    // 正在抑制:锚点跟着清空的 text 回到 0,于是新累积的正文继续被裁掉。
+    let mut active = ReplySuppression::default();
+    active.direct_send_succeeded("前半部分。".len());
+    assert!(active.final_reply_already_sent);
+    active.round_flushed();
+    assert!(
+        active.final_reply_already_sent,
+        "整轮标记不该被回合内的 flush 清掉"
+    );
+    assert_eq!(active.round_ranges(6), vec![(0, 6)]);
+    assert_eq!(
+        cut_suppressed_ranges(
+            "工具已经发过了",
+            &active.round_ranges("工具已经发过了".len())
+        ),
+        ""
+    );
+
+    // 旧区间不会留到下一段:它们指向的字节已经不存在了。
+    let mut closed = ReplySuppression::default();
+    closed.direct_send_succeeded(3);
+    closed.close_range(9);
+    assert_eq!(closed.round_ranges(9), vec![(3, 9)]);
+    closed.round_flushed();
+    assert!(closed.round_ranges(9).is_empty());
+}
+
 #[tokio::test]
 async fn intermediate_flush_skips_empty_and_cuts_direct_send_ranges() {
     let (_temp, context, adapter) = test_turn_context(false);
