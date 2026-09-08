@@ -311,6 +311,7 @@ mod tests {
             protocol: "openai-chat".to_string(),
             api_key: None,
             models: vec!["vision-model".to_string()],
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),

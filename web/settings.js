@@ -1388,7 +1388,7 @@ window.MiyuSettings = (() => {
   function isBuiltinProvider(provider) { return Boolean(BUILTIN_PROTOCOLS[String(provider?.protocol || "").trim()]); }
 
   function providerDefaults(provider = {}) {
-    return { id: "", display_name: "", base_url: "", protocol: "auto", api_key: null, models: [], model_context_window: {}, model_costs: {}, model_modalities: {}, default_model: "", timeout_seconds: 60, temperature: 1.0, anthropic_max_tokens: 4096, extra_body: null, ...provider };
+    return { id: "", display_name: "", base_url: "", protocol: "auto", api_key: null, models: [], custom_models: [], model_context_window: {}, model_costs: {}, model_modalities: {}, default_model: "", timeout_seconds: 60, temperature: 1.0, anthropic_max_tokens: 4096, extra_body: null, ...provider };
   }
 
   function providerCard(provider, index) {
@@ -1477,6 +1477,10 @@ window.MiyuSettings = (() => {
             if (!name) return;
             provider.models = Array.isArray(provider.models) ? provider.models : [];
             if (!provider.models.includes(name)) provider.models.push(name);
+            // 手填的名字也记进 custom_models:配置 TUI 的模型列表来自供应商
+            // 目录,不记这一份的话,这里加的内测模型在那边根本不显示。
+            provider.custom_models = Array.isArray(provider.custom_models) ? provider.custom_models : [];
+            if (!provider.custom_models.includes(name)) provider.custom_models.push(name);
             if (!provider.default_model) provider.default_model = name;
             dirty();
             close();
@@ -1582,6 +1586,7 @@ window.MiyuSettings = (() => {
       "-",
       { label: "移除", icon: "trash-2", danger: true, onSelect: () => {
         provider.models = (provider.models || []).filter((item) => item !== model);
+        provider.custom_models = (provider.custom_models || []).filter((item) => item !== model);
         for (const key of ["model_context_window", "model_costs", "model_modalities", "model_temperature", "model_tools_loading_mode"]) if (provider[key] && typeof provider[key] === "object") delete provider[key][model];
         if (provider.default_model === model) provider.default_model = provider.models[0] || "";
         pruneModelReferences();

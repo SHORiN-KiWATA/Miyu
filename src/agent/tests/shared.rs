@@ -58,6 +58,7 @@ pub(super) fn queue_test_config(base_url: String) -> AppConfig {
             protocol: "openai-chat".to_string(),
             api_key: Some("test-key".to_string()),
             models: vec!["test-model".to_string()],
+            custom_models: Vec::new(),
             model_context_window: Default::default(),
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),

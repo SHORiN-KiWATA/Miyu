@@ -199,6 +199,7 @@ async fn binary_image_reaches_vision_pool_then_text_model() {
         protocol: "openai-chat".to_string(),
         api_key: Some("test-key".to_string()),
         models: vec!["vision-model".to_string()],
+        custom_models: Vec::new(),
         model_context_window: Default::default(),
         model_temperature: HashMap::new(),
         model_tools_loading_mode: HashMap::new(),

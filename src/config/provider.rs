@@ -274,6 +274,13 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
+    /// 用户手填的模型名。供应商的 `/models` 目录是动态拉取的,内测模型不在
+    /// 里面,手填的名字得有个自己的落脚点:只记在 `models` 里的话,一取消
+    /// 激活它就从配置里没了,模型菜单(列表其余部分全来自拉取结果)里也就
+    /// 跟着消失。有了这份清单,自定义模型跟拉取来的模型一样能激活能取消,
+    /// 删掉要显式删。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_models: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub model_context_window: HashMap<String, usize>,
     /// 按模型温度覆盖;缺项回退 `temperature`(供应商默认)。验收:模型
@@ -512,6 +519,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: vec![OPENCODE_DEFAULT_CHAT_MODEL.to_string()],
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
@@ -535,6 +543,7 @@ impl ProviderConfig {
             protocol: "anthropic".to_string(),
             api_key: Some("$env:ANTHROPIC_API_KEY".to_string()),
             models: Vec::new(),
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
@@ -695,6 +704,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: Vec::new(),
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),
@@ -718,6 +728,7 @@ impl ProviderConfig {
             protocol: default_provider_protocol(),
             api_key: None,
             models: Vec::new(),
+            custom_models: Vec::new(),
             model_context_window: HashMap::new(),
             model_temperature: HashMap::new(),
             model_tools_loading_mode: HashMap::new(),

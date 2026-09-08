@@ -147,6 +147,109 @@ pub(in crate::config_tui) fn auto_configure_model_tags(
     }
 }
 
+/// 模型目录分组:手填的模型置顶,后面接拉取结果(同名只留置顶那份),按
+/// `filter` 过滤后按组织分组;"All" 组恒收全部。
+///
+/// 手填的必须置顶:它们不在供应商目录里,混进几百条中间就等于没加。同名去重
+/// 是给内置 CLI 供应商准备的——它的目录本来就并了 `models`(见 `cli_catalog`)。
+///
+/// 抽成自由函数是为了能直接测:`ProviderBrowser` 要一份 `MiyuPaths`,建一个
+/// 就会去碰真实 home。
+pub(in crate::config_tui) fn group_models(
+    custom: &[String],
+    raw: &[String],
+    filter: &str,
+) -> BTreeMap<String, Vec<ModelEntry>> {
+    let filter = filter.to_ascii_lowercase();
+    let mut grouped: BTreeMap<String, Vec<ModelEntry>> = BTreeMap::new();
+    let listed = custom.iter().chain(
+        raw.iter()
+            .filter(|model| !custom.iter().any(|known| known == *model)),
+    );
+    for model in listed {
+        if !filter.is_empty() && !model.to_ascii_lowercase().contains(&filter) {
+            continue;
+        }
+        let org = model
+            .split_once('/')
+            .map(|(org, _)| org)
+            .unwrap_or("All")
+            .to_string();
+        let name = model
+            .split_once('/')
+            .map(|(_, name)| name)
+            .unwrap_or(model)
+            .to_string();
+        grouped
+            .entry("All".to_string())
+            .or_default()
+            .push(ModelEntry::new(model, model));
+        if org != "All" {
+            grouped
+                .entry(org)
+                .or_default()
+                .push(ModelEntry::new(&name, model));
+        }
+    }
+    grouped
+}
+
+/// 记下一个手填的模型名并激活它。已经在目录里或已经手填过就不重复记
+/// (返回 `false`):目录里的本来就是正常模型,再记一份只会让它被永久置顶,
+/// 还多一条删得掉的假条目。
+pub(in crate::config_tui) fn insert_custom_model(
+    config: &mut AppConfig,
+    provider_idx: usize,
+    raw_models: &[String],
+    name: &str,
+) -> bool {
+    let Some(provider) = config.providers.get_mut(provider_idx) else {
+        return false;
+    };
+    if raw_models.iter().any(|model| model == name)
+        || provider.custom_models.iter().any(|model| model == name)
+    {
+        return false;
+    }
+    provider.custom_models.push(name.to_string());
+    if !provider.models.iter().any(|model| model == name) {
+        provider.models.push(name.to_string());
+    }
+    if provider.default_model.trim().is_empty() {
+        provider.default_model = name.to_string();
+    }
+    true
+}
+
+/// 删掉一个手填的模型:手填清单、激活状态、按模型的设置、各处池子引用一起
+/// 清掉。不是手填的返回 `false`——拉取来的模型是供应商目录的内容,这里只是
+/// 显示,删不掉。
+pub(in crate::config_tui) fn remove_custom_model(
+    config: &mut AppConfig,
+    provider_idx: usize,
+    model: &str,
+) -> bool {
+    let Some(provider) = config.providers.get_mut(provider_idx) else {
+        return false;
+    };
+    if !provider.custom_models.iter().any(|item| item == model) {
+        return false;
+    }
+    let provider_id = provider.id.clone();
+    provider.custom_models.retain(|item| item != model);
+    provider.models.retain(|item| item != model);
+    provider.model_context_window.remove(model);
+    provider.model_temperature.remove(model);
+    provider.model_tools_loading_mode.remove(model);
+    provider.model_modalities.remove(model);
+    provider.model_costs.remove(model);
+    if provider.default_model == model {
+        provider.default_model = provider.models.first().cloned().unwrap_or_default();
+    }
+    config.remove_active_model_references(&provider_id, model);
+    true
+}
+
 pub(in crate::config_tui) fn models_url(base_url: &str) -> String {
     let mut url = base_url.trim().trim_end_matches('/').to_string();
     if url.ends_with("/chat/completions") {
@@ -640,6 +743,7 @@ pub(in crate::config_tui) fn edit_provider_form(
             protocol: fields[3].value.trim().to_string(),
             api_key: Some(fields[4].value.trim().to_string()).filter(|value| !value.is_empty()),
             models: provider.models.clone(),
+            custom_models: provider.custom_models.clone(),
             model_context_window: provider.model_context_window.clone(),
             model_temperature: provider.model_temperature.clone(),
             model_tools_loading_mode: provider.model_tools_loading_mode.clone(),
