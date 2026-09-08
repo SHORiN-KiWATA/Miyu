@@ -83,7 +83,11 @@ fn message_tokens(msg: &ChatMessage) -> usize {
             .map(|p| match p {
                 crate::llm::ChatContentPart::Text { text } => text_tokens(text),
                 crate::llm::ChatContentPart::ImageUrl { .. }
-                | crate::llm::ChatContentPart::VideoUrl { .. } => IMAGE_TOKEN_ESTIMATE,
+                | crate::llm::ChatContentPart::VideoUrl { .. }
+                // PDF 按页计费,一页比一张图贵不少;但这个估算只用来判溢出,
+                // 而 PDF 块和图片一样只进本轮请求、不进历史,拿同一个常数
+                // 兜着即可——真实数字下一轮就由供应商的 usage 覆盖。
+                | crate::llm::ChatContentPart::File { .. } => IMAGE_TOKEN_ESTIMATE,
             })
             .sum(),
         None => 0,

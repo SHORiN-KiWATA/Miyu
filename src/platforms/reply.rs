@@ -276,6 +276,17 @@ impl ReplySuppression {
         self.final_reply_already_sent = false;
     }
 
+    /// 回合中途把已说的正文当中间消息发走、`text` 随即清空之后的复位。
+    ///
+    /// 与 [`Self::model_started`] 的区别在于「这不是新一轮模型回复」:抑制这件
+    /// 事本身还在继续,只有区间偏移要跟着清空的 `text` 归零。`open_at` 是
+    /// 「从这里往后都抑制」的游标,text 一空它的锚点就是 0;本来没在抑制的
+    /// 仍旧没在抑制。`final_reply_already_sent` 属于整轮,不动。
+    pub(crate) fn round_flushed(&mut self) {
+        self.ranges.clear();
+        self.open_at = self.open_at.map(|_| 0);
+    }
+
     pub(crate) fn finish(mut self, text_len: usize) -> (Vec<(usize, usize)>, bool) {
         self.close_range(text_len);
         (self.ranges, self.final_reply_already_sent)

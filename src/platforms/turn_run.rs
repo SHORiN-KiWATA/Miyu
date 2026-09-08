@@ -201,9 +201,29 @@ pub(crate) async fn run_platform_turn(
             "reasoning.reset" => {
                 start_model_reply(&mut text, &mut reply_suppression);
             }
+            // 步与步之间的正文在这里就发,不等回合收尾。
+            //
+            // `reasoning.start` 一个人做不到这件事:它每次 **LLM 请求** 发一次,
+            // 而中转线(claude-code / codex / antigravity)的工具循环在对端,
+            // Miyu 的回合循环整轮只发一次,于是那一次落在回合开头、text 还空着,
+            // flush 空转,中间说的话全积到 run.completed 一起投递。09-08 取证:
+            // 六天 42 次私聊回合、2570 次工具调用,只 flush 出 1 条,还是端点
+            // 切换换来的第二次 reasoning.start 的副作用。本地工具线一并受益
+            // ——不必等工具跑完才见到上一段正文。
             "tool.started" => {
                 let readable = format_platform_tool_started_log(&run_id, &data);
                 tracing::info!(target: "miyu::qq", "\n{readable}");
+                let host_authored = data
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(crate::platforms::plugins::tool_authors_host_reply);
+                if intermediate_replies && !host_authored {
+                    if let Some(context) = platform_context.as_ref() {
+                        flush_intermediate_reply(context, &text, &reply_suppression).await;
+                        text.clear();
+                        reply_suppression.round_flushed();
+                    }
+                }
             }
             "tool.image" => {
                 if let Some(id) = data

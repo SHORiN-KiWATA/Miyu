@@ -1,4 +1,6 @@
-use super::super::send_fixed_tool_output;
+use super::super::{
+    send_fixed_tool_output, TOOL_ADD_ACTIVE_JUDGEMENT_SKIP, TOOL_REMOVE_ACTIVE_JUDGEMENT_SKIP,
+};
 use crate::config::REAL_CONTEXT_PLUGIN_ID;
 use crate::platforms::access_control::{
     administrator_authorization, is_effective_admin, ONEBOT_PLATFORM,
@@ -315,7 +317,7 @@ pub(super) fn register_tools(registry: &mut ToolRegistry, context: Arc<PlatformT
     let add_context = context.clone();
     registry.register(
         ToolSpec::new(
-            "add_active_judgement_skip_qq",
+            TOOL_ADD_ACTIVE_JUDGEMENT_SKIP,
             "Add one QQ user to the global list that skips active-reply social judgement. Safety and moderation judgement remain enabled. The Rust host sends the final result, so do not send another acknowledgement.",
             schema.clone(),
             move |arguments| {
@@ -328,7 +330,7 @@ pub(super) fn register_tools(registry: &mut ToolRegistry, context: Arc<PlatformT
     );
     registry.register(
         ToolSpec::new(
-            "remove_active_judgement_skip_qq",
+            TOOL_REMOVE_ACTIVE_JUDGEMENT_SKIP,
             "Remove one QQ user from the global list that skips active-reply social judgement. The Rust host sends the final result, so do not send another acknowledgement.",
             schema,
             move |arguments| {

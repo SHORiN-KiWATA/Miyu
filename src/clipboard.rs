@@ -117,13 +117,15 @@ fn try_command(cmd: &str, args: &[&str], mime: &str) -> Result<Option<ClipboardI
     }
 }
 
-/// 附件占位符的两种标签。图片与视频共用同一条通路(`PastedImage::Path` → 内联
-/// 内容块),但**显示给用户的标签必须分开**:把视频显示成 `[Image N]`,用户会以为
-/// 粘错了(08-28 用户点名)。
+/// 附件占位符的三种标签。图片、视频、PDF 共用同一条通路
+/// (`PastedImage::Path` → 内联内容块),但**显示给用户的标签必须分开**:把视频
+/// 显示成 `[Image N]`,用户会以为粘错了(08-28 用户点名)。
 ///
-/// 放在这里而不是 cli 侧:`agent` 改写占位符时也要认这两个前缀,而 agent 不该
+/// 放在这里而不是 cli 侧:`agent` 改写占位符时也要认这几个前缀,而 agent 不该
 /// 依赖 cli。两份各写一套迟早漂移——刚在视频格式表上吃过这个亏。
-pub const MEDIA_PLACEHOLDER_PREFIXES: [&str; 2] = ["[Image ", "[Video "];
+///
+/// 长度不齐(`[PDF ` 只有 5 位),匹配方按各自长度来,别写死。
+pub const MEDIA_PLACEHOLDER_PREFIXES: [&str; 3] = ["[Image ", "[Video ", "[PDF "];
 
 /// 这段文本以哪个媒体占位符前缀开头。
 pub fn media_placeholder_prefix(segment: &str) -> Option<&'static str> {
@@ -140,6 +142,10 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", 
 /// `TextPath`,Ctrl+V 粘出来就是一行纯文本路径,连占位符都没有(08-27 用户实测)。
 /// 名单与 `tools::vision::video_mime` 保持一致。
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mkv", "mov", "webm", "mpeg", "mpg"];
+/// PDF 走同一条附件通路。不在名单里的后果与视频当年一样:Ctrl+V 粘出来只是
+/// 一行纯文本路径,连占位符都没有,能读 PDF 的模型也就永远收不到文件。
+/// 名单与 `tools::vision::pdf_mime` 保持一致。
+const PDF_EXTENSIONS: &[&str] = &["pdf"];
 
 pub enum ClipboardContent {
     None,
@@ -341,7 +347,9 @@ pub fn parse_clipboard_path(text: &str) -> Option<ClipboardPath> {
         .and_then(|e| e.to_str())
         .map(|e| {
             let e = e.to_ascii_lowercase();
-            IMAGE_EXTENSIONS.contains(&e.as_str()) || VIDEO_EXTENSIONS.contains(&e.as_str())
+            IMAGE_EXTENSIONS.contains(&e.as_str())
+                || VIDEO_EXTENSIONS.contains(&e.as_str())
+                || PDF_EXTENSIONS.contains(&e.as_str())
         })
         .unwrap_or(false);
     Some(ClipboardPath {
@@ -469,5 +477,36 @@ mod clipboard_path_tests {
                 .is_media
         );
         assert!(parse_clipboard_path("/nope/missing.mp4").is_none());
+    }
+
+    /// PDF 走同一条附件通路(09-08)。漏配的后果与视频当年一样:Ctrl+V 粘出来
+    /// 只是一行文本路径,能读 PDF 的模型永远收不到文件本体。
+    #[test]
+    fn pdf_paths_take_the_attachment_lane() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("report.pdf");
+        std::fs::write(&path, b"%PDF-1.4\n").unwrap();
+        let path = path.display().to_string();
+
+        assert!(parse_clipboard_path(&path).expect("路径存在").is_media);
+        // 两份格式表同步,同视频的规矩。
+        for ext in PDF_EXTENSIONS {
+            let named = temp.path().join(format!("sync.{ext}"));
+            std::fs::write(&named, b"%PDF-1.4\n").unwrap();
+            let named = named.display().to_string();
+            assert!(
+                parse_clipboard_path(&named).unwrap().is_media,
+                "PDF_EXTENSIONS 里的 {ext} 应当走附件通路"
+            );
+            assert!(
+                crate::tools::vision::pdf_mime(&named).is_some(),
+                "{ext} 在 PDF_EXTENSIONS 里,pdf_mime 也必须认它"
+            );
+        }
+        // 大小写与查询串不该骗过判据。
+        assert!(crate::tools::vision::pdf_mime("/tmp/A.PDF").is_some());
+        assert!(crate::tools::vision::pdf_mime("https://x/a.pdf?v=1").is_some());
+        assert!(crate::tools::vision::pdf_mime("/tmp/a.pdfx").is_none());
+        assert!(crate::tools::vision::pdf_mime("/tmp/a.png").is_none());
     }
 }

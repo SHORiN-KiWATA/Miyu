@@ -34,7 +34,9 @@ fn text_of(message: &ChatMessage) -> Option<String> {
                 .iter()
                 .filter_map(|part| match part {
                     ChatContentPart::Text { text } => Some(text.as_str()),
-                    ChatContentPart::ImageUrl { .. } | ChatContentPart::VideoUrl { .. } => None,
+                    ChatContentPart::ImageUrl { .. }
+                    | ChatContentPart::VideoUrl { .. }
+                    | ChatContentPart::File { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -113,6 +115,19 @@ pub(in crate::llm::openai_compatible) fn render_user_blocks(
                             tail_blocks.push(json!({
                                 "type": "text",
                                 "text": "[video input omitted: the claude-code relay has no video support]"
+                            }));
+                        }
+                        // 中转线的 message_input_modalities 恒为纯文本,PDF 本来
+                        // 就不会内联到这里(`agent::input` 那侧已经把路径留给了
+                        // 原生文件工具)。留这一臂是防御:真漏进来也只说明"有个
+                        // PDF 没送到",而不是把 base64 当正文发出去。
+                        ChatContentPart::File { file } => {
+                            tail_blocks.push(json!({
+                                "type": "text",
+                                "text": format!(
+                                    "[pdf input omitted: the relay takes text only; open {} with your file tool]",
+                                    file.filename
+                                )
                             }));
                         }
                     }

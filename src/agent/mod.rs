@@ -25,6 +25,8 @@ pub(crate) use control::{
     AgentMode, AgentTurnControl, QueueIngressBarrier, QueueIngressReservation, RedoPromptInput,
     TurnSupersedeSignal,
 };
+// 平台侧的 PDF 工具要问同一个能力判定,不能自己另写一份"池吃不吃 PDF"。
+pub(crate) use images::active_text_pool_supports_pdf;
 use images::*;
 use journal::*;
 use prompt::*;

@@ -179,6 +179,11 @@ pub(in crate::llm::openai_compatible) enum AnthropicContentBlock {
     Text { text: String },
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
+    /// PDF 输入。官方规格:`source` 与 image 同构(base64 / url),块要摆在
+    /// 文本块**之前**,base64 里不能有换行;整个请求 ≤32MB、≤600 页
+    /// (200k 窗口的模型 100 页)。
+    #[serde(rename = "document")]
+    Document { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,

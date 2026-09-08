@@ -884,4 +884,29 @@ fn video_placeholders_carry_their_own_label() {
     assert_eq!(media_placeholder_label("/tmp/a.mp4"), "Video");
     assert_eq!(media_placeholder_label("/tmp/a.mkv"), "Video");
     assert_eq!(media_placeholder_label("/tmp/a.png"), "Image");
+    assert_eq!(media_placeholder_label("/tmp/a.pdf"), "PDF");
+}
+
+/// `[PDF ` 只有 5 位,而前缀匹配一度写死 7("[Image "/"[Video " 恰好都是 7)。
+/// 写死的那版会把 PDF 占位符整条漏掉:光标能走进去、上色不生效、路径改写
+/// 也认不出来。
+#[test]
+fn pdf_placeholders_are_found_despite_shorter_prefix() {
+    let input = "看 [PDF 1] 和 [PDF 2: /tmp/b.pdf] 还有 [Image 3]";
+    let spots = find_repl_placeholders(input);
+    let chars: Vec<char> = input.chars().collect();
+    let slice = |n: usize| chars[spots[n].0..spots[n].1].iter().collect::<String>();
+
+    assert_eq!(spots.len(), 3, "三个占位符都要认出来");
+    assert_eq!(slice(0), "[PDF 1]");
+    assert_eq!(slice(1), "[PDF 2: /tmp/b.pdf]");
+    assert_eq!(slice(2), "[Image 3]");
+
+    // 序号照旧解析得出,PDF 与图片走同一套改写。
+    let idx = |n: usize| {
+        parse_image_placeholder_index(input, spots[n].0, spots[n].1).expect("能解析出序号")
+    };
+    assert_eq!(idx(0), 1);
+    assert_eq!(idx(1), 2);
+    assert_eq!(idx(2), 3);
 }

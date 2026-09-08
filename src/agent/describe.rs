@@ -18,6 +18,12 @@ impl Agent {
         crate::agent::images::active_text_pool_supports_video(&self.config)
     }
 
+    /// 当前对话模型能否直接读 PDF。理由同视频:PDF 没有"视觉旁路"这条第二
+    /// 通路——`vision_analyze` 只认图片和视频——所以不吃就是不内联。
+    pub(in crate::agent) fn current_model_supports_pdf(&self) -> bool {
+        crate::agent::images::active_text_pool_supports_pdf(&self.config)
+    }
+
     pub(in crate::agent) async fn describe_images_with_vision_provider(
         &self,
         input: &str,
