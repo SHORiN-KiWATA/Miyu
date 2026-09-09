@@ -220,7 +220,7 @@ pub fn overview() -> Vec<JobOverview> {
 
 /// 完成且已报告的任务直接从注册表移除(验收 08-16 用户反馈:"做完了
 /// 也不删除,一直留着占用后台"——此前只打标记,条目终身堆积)。日志
-/// 文件留在磁盘,唤醒消息里带着 log_path,要翻旧账用 read_file。
+/// 文件留在磁盘,唤醒消息里带着 log_path,要翻旧账用 read。
 pub fn acknowledge(job_id: &str) {
     let mut jobs = jobs().lock().unwrap();
     let terminal = jobs.get(job_id).is_some_and(|job| job.state.is_terminal());
@@ -395,7 +395,7 @@ pub async fn spawn_background(
         "job_id": job_id,
         "pid": pid,
         "log": log_path.display().to_string(),
-        "note": "Background command running. You will be woken automatically when it finishes — do not poll job_status to wait; query it only when you need interim logs. Never assume the result before completion."
+        "note": "Background command running. You will be woken automatically when it finishes — do not poll job(action=status) to wait; query it only when you need interim logs. Never assume the result before completion."
     }))?)
 }
 
@@ -471,7 +471,7 @@ where
         "kind": "background_subagent",
         "job_id": job_id,
         "log": log_path.display().to_string(),
-        "note": "Subagent detached to the background. Query with job_status (the log holds its progress); never assume its result before it finishes — you will be woken automatically when it completes."
+        "note": "Subagent detached to the background. Query with job(action=status) (the log holds its progress); never assume its result before it finishes — you will be woken automatically when it completes."
     }))?)
 }
 
@@ -636,7 +636,7 @@ pub async fn stop_job(job_id: &str) -> Result<()> {
 async fn job_stop(args: Value) -> Result<String> {
     let ids = requested_job_ids(&args);
     if ids.is_empty() {
-        bail!("provide at least one of job_id or job_ids; usage: job_stop({{\"job_ids\":[\"abc123\"]}})");
+        bail!("provide at least one of job_id or job_ids; usage: job({{\"action\":\"stop\",\"job_ids\":[\"abc123\"]}})");
     }
     let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
     let current = super::workspace::try_session();
@@ -724,7 +724,7 @@ pub fn register_management(registry: &mut ToolRegistry) {
 fn job_spec() -> ToolSpec {
     let actions = json!(["status", "stop"]);
     let action_hint = "status inspects, stop terminates. Defaults to status.";
-    let description = "Inspect background jobs. action=status with no other argument lists this session's jobs, each with recent_output (log tail) and log_size. For one job's incremental output pass job_id plus offset; for several pass job_ids (the log budget is split between them). To read a log in full, read its log_path with read (paged by line). action=stop terminates jobs (commands get SIGTERM then SIGKILL; subagents are aborted), single or by job_ids. Add all=true to reach other sessions.";
+    let description = "Inspect background jobs. action=status with no other argument lists this session's jobs, each with recent_output (log tail) and log_size. For one job's incremental output pass job_id plus offset; for several pass job_ids (the log budget is split between them). action=stop terminates jobs (commands get SIGTERM then SIGKILL; subagents are aborted), single or by job_ids. Add all=true to reach other sessions.";
     ToolSpec::new(
         "job",
         description,

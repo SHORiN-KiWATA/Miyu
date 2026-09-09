@@ -7,7 +7,7 @@
     "properties": {
       "command": {
         "type": "string",
-        "description": "The shell command or script to run. May contain complex multi-line commands; prefer apply_patch for file edits."
+        "description": "The shell command or script to run. May contain complex multi-line commands; prefer edit for file edits."
       },
       "timeout_seconds": {
         "type": "integer",

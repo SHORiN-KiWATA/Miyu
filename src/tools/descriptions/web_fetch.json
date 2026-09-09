@@ -1,7 +1,7 @@
 {
   "name": "web_fetch",
   "display_name": "读取网页",
-  "description": "Fetch a URL and return markdown, text, or html.",
+  "description": "Fetch a URL and return markdown, text, or html. When your reply draws on the page, end it with the source, as `title (url)`.",
   "parameters": {
     "type": "object",
     "properties": {

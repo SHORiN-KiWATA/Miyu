@@ -1,0 +1,53 @@
+{
+  "name": "goal",
+  "display_name": "长任务目标",
+  "description": "Read or steer this session's long-task goal. action=get returns the goal plus the goal_id and revision every other action needs. action=create starts one for a genuinely long objective, never for single-turn work. action=edit|pause|resume|complete|blocked act on the current goal and need goal_id and revision copied from a get. create, edit, pause and resume only run on a turn a human started. complete and blocked also run inside the goal's own automatic round, where blocked needs blocked_reason and is refused before the minimum consecutive round count.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "get",
+          "create",
+          "edit",
+          "pause",
+          "resume",
+          "complete",
+          "blocked"
+        ],
+        "description": "Defaults to get when omitted."
+      },
+      "goal_id": {
+        "type": "string",
+        "description": "Exact id returned by action get. Required by every action except get and create."
+      },
+      "revision": {
+        "type": "integer",
+        "description": "Exact positive revision returned by action get. Required by every action except get and create."
+      },
+      "objective": {
+        "type": "string",
+        "description": "The concrete objective. Required with create, optional with edit."
+      },
+      "max_goal_rounds": {
+        "type": "integer",
+        "description": "Optional positive limit on automatic continuation rounds. Valid with create and edit."
+      },
+      "blocked_reason": {
+        "type": "string",
+        "description": "Concrete blocking condition. Required with blocked."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "planning"
+  ]
+}
