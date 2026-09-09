@@ -26,9 +26,31 @@ fn tool_arguments(arguments: &str) -> Option<serde_json::Value> {
     Some(args)
 }
 
+/// 单路径参数:Miyu/agy 是 `path`(agy 的 AbsolutePath/TargetFile 在流层已
+/// 归一成 path),claude 原生工具是 `file_path`,NotebookEdit 是 `notebook_path`。
 fn path_arg(args: &serde_json::Value) -> Option<String> {
-    let path = args.get("path")?.as_str()?.trim();
-    (!path.is_empty()).then(|| path.to_string())
+    ["path", "file_path", "notebook_path"]
+        .iter()
+        .filter_map(|key| args.get(key)?.as_str())
+        .map(str::trim)
+        .find(|path| !path.is_empty())
+        .map(str::to_string)
+}
+
+/// codex 的 `file_change` 事件折成 `edit` 时带整组 `paths`(`path` 只是第一个)。
+fn paths_arg(args: &serde_json::Value) -> Vec<String> {
+    args.get("paths")
+        .and_then(serde_json::Value::as_array)
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 补丁工具把路径藏在 `patchText` 的头部，而不是 `path` 参数里。08-21 工具面
@@ -68,22 +90,42 @@ fn patch_paths(args: &serde_json::Value) -> Vec<(PathAccess, String)> {
 
 /// 一次工具调用碰过的全部文件路径。`path` 参数类工具直接读；`edit`/`apply_patch`
 /// 走 `patchText` 的补丁头。
+///
+/// 中转线的名字也在这里认(09-10):三条线的工具调用全走 `RemoteToolStarted`,
+/// 名字是 CLI 那头的——claude 原生 `Read`/`Edit`/`Write`/`MultiEdit`/
+/// `NotebookEdit`,agy 的 `view_file`/`write_to_file`/`replace_file_content`,
+/// codex 把 `file_change` 折成 `edit` + `paths` 数组。取证前活库 42 个
+/// remote 轮 footprint 全空,`<modified-files>` 与回灌在中转线上从没有过内容。
 pub(in crate::agent) fn tool_call_paths(name: &str, arguments: &str) -> Vec<(PathAccess, String)> {
     let Some(args) = tool_arguments(arguments) else {
         return Vec::new();
     };
     let access = match name {
-        "read" | "read_file" => PathAccess::Read,
-        "write_file" | "edit_file" | "edit_string" => PathAccess::Write,
+        "read" | "read_file" | "Read" | "view_file" => PathAccess::Read,
+        "write_file"
+        | "edit_file"
+        | "edit_string"
+        | "Edit"
+        | "Write"
+        | "MultiEdit"
+        | "NotebookEdit"
+        | "write_to_file"
+        | "replace_file_content"
+        | "multi_replace_file_content" => PathAccess::Write,
         "edit" | "apply_patch" => {
-            let paths = patch_paths(&args);
-            return if paths.is_empty() {
-                path_arg(&args)
+            let mut paths = patch_paths(&args);
+            if paths.is_empty() {
+                paths = paths_arg(&args)
+                    .into_iter()
+                    .map(|path| (PathAccess::Write, path))
+                    .collect();
+            }
+            if paths.is_empty() {
+                paths = path_arg(&args)
                     .map(|path| vec![(PathAccess::Write, path)])
-                    .unwrap_or_default()
-            } else {
-                paths
-            };
+                    .unwrap_or_default();
+            }
+            return paths;
         }
         _ => return Vec::new(),
     };

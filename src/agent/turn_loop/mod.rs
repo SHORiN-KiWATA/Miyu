@@ -221,10 +221,12 @@ impl Agent {
                             break Some(result);
                         }
                         Some((chunk, received_at)) = chunk_rx.recv() => {
-                            record_remote_tool_chunk(
+                            if let Some(delta) = record_remote_tool_chunk(
                                 &chunk,
                                 &self.pending_remote_tool_calls,
-                            );
+                            ) {
+                                self.state.merge_turn_footprint(current_turn_id, &delta)?;
+                            }
                             emit_model_chunk_at(
                                 chunk,
                                 received_at,
@@ -398,7 +400,11 @@ impl Agent {
                 continue;
             };
             while let Ok((chunk, received_at)) = chunk_rx.try_recv() {
-                record_remote_tool_chunk(&chunk, &self.pending_remote_tool_calls);
+                if let Some(delta) =
+                    record_remote_tool_chunk(&chunk, &self.pending_remote_tool_calls)
+                {
+                    self.state.merge_turn_footprint(current_turn_id, &delta)?;
+                }
                 emit_model_chunk_at(
                     chunk,
                     received_at,
@@ -1164,16 +1170,20 @@ impl Agent {
 /// 中转侧工具活动的收集:RemoteToolStarted/Finished 的 JSON 载荷折成
 /// ToolFlowCall,失败结果加 "tool error: " 前缀让 SafeToolCall 的 ok 判定
 /// 复用既有规则。
-fn record_remote_tool_chunk(
+///
+/// 返回值是这次调用该记进 `turns.tool_footprint` 的增量:只在 Finished 且
+/// 成功时给(与本地工具"成功才记"同一口径),用 Started 时存下的名字与参数算。
+/// 中转轮永远进不了本地那条 `tool_call_footprint` 分支,`replay_rounds` 又按
+/// 契约过滤 remote 轮——不在这里记,`<modified-files>` 与压后回灌在三条中转线
+/// 上就永远是空的(09-10 活库取证 0/42)。
+pub(in crate::agent) fn record_remote_tool_chunk(
     chunk: &ChatStreamChunk,
     pending: &std::sync::Mutex<Vec<crate::state::ToolFlowCall>>,
-) {
+) -> Option<crate::state::ToolFootprint> {
     let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).ok();
     match chunk.kind {
         ChatStreamKind::RemoteToolStarted => {
-            let Some(value) = parse(&chunk.text) else {
-                return;
-            };
+            let value = parse(&chunk.text)?;
             let field = |key: &str| {
                 value
                     .get(key)
@@ -1190,11 +1200,10 @@ fn record_remote_tool_chunk(
                     .unwrap_or_default(),
                 output: String::new(),
             });
+            None
         }
         ChatStreamKind::RemoteToolFinished => {
-            let Some(value) = parse(&chunk.text) else {
-                return;
-            };
+            let value = parse(&chunk.text)?;
             let id = value
                 .get("id")
                 .and_then(serde_json::Value::as_str)
@@ -1208,14 +1217,15 @@ fn record_remote_tool_chunk(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             let mut pending = pending.lock().unwrap();
-            if let Some(call) = pending.iter_mut().rev().find(|call| call.id == id) {
-                call.output = if ok {
-                    output.to_string()
-                } else {
-                    format!("tool error: {output}")
-                };
-            }
+            let call = pending.iter_mut().rev().find(|call| call.id == id)?;
+            call.output = if ok {
+                output.to_string()
+            } else {
+                format!("tool error: {output}")
+            };
+            ok.then(|| tool_call_footprint(&call.name, &call.arguments))
+                .flatten()
         }
-        _ => {}
+        _ => None,
     }
 }

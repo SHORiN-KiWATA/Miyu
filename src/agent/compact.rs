@@ -1,7 +1,9 @@
 use crate::agent::compact_analysis::{
     compact_system_prompt, strip_analysis_block, AnalysisChunkFilter,
 };
-use crate::agent::compact_extras::{build_compact_extras, CompactExtras, CompactExtrasPolicy};
+use crate::agent::compact_extras::{
+    build_compact_extras, CompactExtras, CompactExtrasPolicy, FoldFootprints,
+};
 use crate::agent::tool_report::replay_rounds;
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, OpenAiCompatibleClient, ToolDefinition, Usage,
@@ -348,6 +350,9 @@ impl Compactor {
         // Deterministic footprint: merged from the folded turns plus the
         // previous summary row (which carries everything it already folded).
         let mut footprint = self.state.load_merged_footprint(&fold_turn_ids)?;
+        // 回灌候选只看这次折叠区(与上一份摘要合并前的快照):中转线碰过的
+        // 文件只有 footprint 知道。
+        let fold_footprint = footprint.clone();
         if let Some(prev) = previous_summary.as_ref() {
             footprint.merge(
                 self.state
@@ -480,20 +485,29 @@ impl Compactor {
                 .and_then(|json| serde_json::from_str::<CompactExtras>(&json).ok()),
             None => None,
         };
-        let extras = self
-            .extras_policy
-            .as_ref()
-            .map(|policy| {
-                build_compact_extras(
+        let extras = match self.extras_policy.as_ref() {
+            Some(policy) => {
+                let tail_turn_ids = tail
+                    .iter()
+                    .map(|turn| turn.turn_id.clone())
+                    .collect::<Vec<_>>();
+                let footprints = FoldFootprints {
+                    fold: fold_footprint,
+                    tail: self.state.load_merged_footprint(&tail_turn_ids)?,
+                };
+                Some(build_compact_extras(
                     policy,
                     &self.state.session_id(),
                     fold,
                     tail,
+                    &footprints,
                     previous_extras.as_ref(),
                     prev_text.as_deref(),
-                )
-            })
-            .filter(|extras| !extras.is_empty());
+                ))
+                .filter(|extras| !extras.is_empty())
+            }
+            None => None,
+        };
         let extras_json = extras.as_ref().map(serde_json::to_string).transpose()?;
         let restored_files = extras
             .as_ref()

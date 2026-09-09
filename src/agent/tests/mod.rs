@@ -10,6 +10,7 @@ mod input;
 mod prompt;
 mod queue_journal;
 mod reasoning;
+mod remote_tools;
 mod shared;
 mod stream;
 mod vision;
