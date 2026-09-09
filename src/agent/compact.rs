@@ -528,6 +528,14 @@ fn add_usage(total: &mut Usage, usage: &Usage) {
         .saturating_add(usage.effective_total_tokens());
     // 缓存字段曾被丢弃:fork 式折叠明明大量命中,summary 轮与用量史却
     // 记 0,Σ 命中率随折叠次数被系统性低估(deepseek 报告 P1 实证)。
+    //
+    // 09-09 补:上一轮只补了供应商原始字段,漏了归一化后的
+    // `cache_read_tokens` —— 而 `TurnTokens::from_usage` 读的正是它,于是
+    // 摘要行的 token_cache_read 照旧记 0。实测 fork 摘要 26911 prompt 里
+    // 命中 25984(96.6%),落库仍是 0。
+    total.cache_read_tokens = total.cache_read_tokens.saturating_add(usage.cache_read_tokens);
+    total.cache_write_tokens = total.cache_write_tokens.saturating_add(usage.cache_write_tokens);
+    total.cache_reported |= usage.cache_reported;
     if let Some(hit) = usage.prompt_cache_hit_tokens {
         total.prompt_cache_hit_tokens = Some(
             total
@@ -967,5 +975,30 @@ mod tests {
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
         let short = "short";
         assert_eq!(truncate_for_summary(short), short);
+    }
+
+    /// fork 摘要大量命中缓存,而摘要行落库记的是 `TurnTokens::from_usage`
+    /// 读的那个归一化字段。累加时漏掉它 → 命中率永远显示 0(09-09 实测:
+    /// 26911 prompt 命中 25984,落库仍是 0)。退回修复前这条报红。
+    #[test]
+    fn add_usage_keeps_the_normalized_cache_counters() {
+        let round = Usage {
+            prompt_tokens: 26911,
+            completion_tokens: 4031,
+            total_tokens: 30942,
+            cache_read_tokens: 25984,
+            cache_reported: true,
+            prompt_cache_hit_tokens: Some(25984),
+            ..Usage::default()
+        };
+        let mut total = Usage::default();
+        add_usage(&mut total, &round);
+        add_usage(&mut total, &round);
+
+        assert_eq!(total.cache_read_tokens, 51968);
+        assert!(total.cache_reported);
+        let tokens = crate::llm::TurnTokens::from_usage(Some(&total));
+        assert_eq!(tokens.cache_read, 51968, "落库口径必须带上命中数");
+        assert_eq!(tokens.prompt, 53822);
     }
 }
