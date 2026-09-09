@@ -1257,7 +1257,7 @@
     const duration = asFiniteNumber(millis, 0);
     if (count <= 0 || duration <= 0) return "";
     const rate = (count * 1000) / duration;
-    return `每秒 ${rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1)} tok`;
+    return `每秒 ${rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1)} toks`;
   }
 
   function formatUsageMeta({ turnTotal, turnPrompt, turnCached, estimated, cumulative, cumulativePrompt, cumulativeCached, generationTokens, generationMs }) {
