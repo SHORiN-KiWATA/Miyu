@@ -963,3 +963,43 @@ fn platform_tool_face_carries_scoped_vision() {
     // 非管理员只认已入库的 context_image_N,拿不到宿主任意路径。
     assert!(!guest.host_tools_allowed());
 }
+
+#[test]
+fn session_model_override_is_applied_to_the_target_session_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let persona = active_persona_scope(&state);
+    let record = state
+        .state_store
+        .create_session(&persona, "", "user", None)
+        .unwrap();
+    let session_id = record.session_id.clone();
+    let pinned = crate::config::ActiveProviderModelConfig {
+        provider_id: "pinned-provider".to_string(),
+        model: "pinned-model".to_string(),
+    };
+    state
+        .state_store
+        .set_session_model_override(&session_id, Some(std::slice::from_ref(&pinned)))
+        .unwrap();
+
+    let mut config = state.manager.lock().unwrap().config.clone();
+    apply_session_model_override_to(&mut config, &state.state_store, &session_id);
+    let applied = config
+        .active_provider_models
+        .as_ref()
+        .expect("the override is applied to the config");
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].provider_id, "pinned-provider");
+    assert_eq!(applied[0].model, "pinned-model");
+
+    // 没有覆盖时不改这份 config（调用方每次都是从全局配置克隆出来的）。
+    state
+        .state_store
+        .set_session_model_override(&session_id, None)
+        .unwrap();
+    let global = state.manager.lock().unwrap().config.clone();
+    let mut fresh = global.clone();
+    apply_session_model_override_to(&mut fresh, &state.state_store, &session_id);
+    assert_eq!(fresh.active_provider_models, global.active_provider_models);
+}

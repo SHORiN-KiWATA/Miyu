@@ -398,7 +398,7 @@ pub(in crate::web) async fn actor_loop(
                 // 前就置了 admin_busy,任务结束再 release,这一层保证不变。
                 // 代价是当前会话也统一走独立 agent(不复用 actor 缓存的那个,
                 // 它的 &mut 借用没法跨 spawn),多一次装配换回并发。
-                let config = config.clone();
+                let mut config = config.clone();
                 let paths = paths.clone();
                 let state_store = state_store.clone();
                 let manager = manager.clone();
@@ -408,6 +408,10 @@ pub(in crate::web) async fn actor_loop(
                         let mut forward = forward;
                         let updates_default = &*state_store.session_id() == &*session_id;
                         let store = state_store.pinned(&session_id);
+                        // 压缩用会话自己钉的模型池，和回合路一致。否则摘要会被
+                        // 路由到全局池里的另一家供应商：该会话的前缀缓存拿不到
+                        // （fork 白做），摘要与对话的模型/账单也对不上。
+                        apply_session_model_override_to(&mut config, &store, &session_id);
                         let target_agent = build_actor_agent(&config, &paths, &store)
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
                         let compact = target_agent

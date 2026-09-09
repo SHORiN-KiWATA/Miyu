@@ -110,6 +110,31 @@ fn tool_footprint_extracts_paths_and_memories() {
 }
 
 #[test]
+fn tool_footprint_reads_edit_patch_headers() {
+    let patch = "*** Begin Patch\n*** Add File: /tmp/new.rs\n+x\n*** Update File: src/lib.rs\n@@ a\n-x\n+y\n*** Delete File: old.rs\n*** End Patch";
+    let fp = tool_call_footprint(
+        "edit",
+        &serde_json::json!({ "patchText": patch }).to_string(),
+    )
+    .expect("edit patch must produce a footprint");
+    assert!(fp.read.is_empty());
+    assert!(fp.modified.contains("/tmp/new.rs"));
+    assert!(fp.modified.contains("src/lib.rs"));
+    assert!(fp.modified.contains("old.rs"));
+}
+
+#[test]
+fn tool_footprint_skips_patch_domain_prefixes() {
+    // kb:/artifact: 不是文件系统路径，别把它们塞进 modified。
+    let patch = "*** Begin Patch\n*** Add File: kb:notes/a.md\n+x\n*** Add File: artifact:report.md\n+y\n*** End Patch";
+    assert!(tool_call_footprint(
+        "edit",
+        &serde_json::json!({ "patchText": patch }).to_string()
+    )
+    .is_none());
+}
+
+#[test]
 fn persists_compact_sent_meme_report() {
     let output = serde_json::json!({
         "success": true,

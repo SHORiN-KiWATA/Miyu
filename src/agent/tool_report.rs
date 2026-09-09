@@ -8,45 +8,121 @@
 
 use crate::agent::*;
 
-/// Deterministic footprint extraction at tool-execution time: the only point
-/// where tool arguments still exist (completed turns don't persist them).
-/// Stub-mode lazy tools wrap real args in an `arguments` shell — unwrap it.
-pub(in crate::agent) fn tool_call_footprint(
-    name: &str,
-    arguments: &str,
-) -> Option<crate::state::ToolFootprint> {
+/// 一次工具调用碰过的文件是读还是写。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::agent) enum PathAccess {
+    Read,
+    Write,
+}
+
+/// 解析工具调用的真实参数。stub 懒工具把真参数包在 `arguments` 壳里，先拆壳。
+fn tool_arguments(arguments: &str) -> Option<serde_json::Value> {
     let mut args: serde_json::Value = serde_json::from_str(arguments).ok()?;
     if let Some(inner) = args.get("arguments") {
         if inner.is_object() {
             args = inner.clone();
         }
     }
-    let mut footprint = crate::state::ToolFootprint::default();
-    match name {
-        "read" | "read_file" => {
-            footprint
-                .read
-                .insert(args.get("path")?.as_str()?.trim().to_string());
-        }
-        "write_file" | "apply_patch" | "edit_string" => {
-            footprint
-                .modified
-                .insert(args.get("path")?.as_str()?.trim().to_string());
-        }
-        "remember_fact" => {
-            let content = args.get("content")?.as_str()?.trim();
-            if content.is_empty() {
-                return None;
+    Some(args)
+}
+
+fn path_arg(args: &serde_json::Value) -> Option<String> {
+    let path = args.get("path")?.as_str()?.trim();
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// 补丁工具把路径藏在 `patchText` 的头部，而不是 `path` 参数里。08-21 工具面
+/// 统一后现网写文件工具叫 `edit`（`write_file`/`edit_string` 是旧名），只认
+/// `path` 会把它的每次改动都漏掉。
+fn patch_paths(args: &serde_json::Value) -> Vec<(PathAccess, String)> {
+    let Some(raw) = args
+        .get("patchText")
+        .or_else(|| args.get("patch_text"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for line in raw.lines() {
+        for prefix in [
+            "*** Add File:",
+            "*** Update File:",
+            "*** Delete File:",
+            "*** Move to:",
+        ] {
+            let Some(value) = line
+                .strip_prefix(prefix)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            // kb:/artifact: 是知识库与产物域，不是文件系统路径。
+            if !value.starts_with("kb:") && !value.starts_with("artifact:") {
+                paths.push((PathAccess::Write, value.to_string()));
             }
-            let mut label: String = content.chars().take(80).collect();
-            if content.chars().count() > 80 {
-                label.push('…');
-            }
-            footprint.memories.insert(label);
         }
-        _ => return None,
     }
-    Some(footprint)
+    paths
+}
+
+/// 一次工具调用碰过的全部文件路径。`path` 参数类工具直接读；`edit`/`apply_patch`
+/// 走 `patchText` 的补丁头。
+pub(in crate::agent) fn tool_call_paths(name: &str, arguments: &str) -> Vec<(PathAccess, String)> {
+    let Some(args) = tool_arguments(arguments) else {
+        return Vec::new();
+    };
+    let access = match name {
+        "read" | "read_file" => PathAccess::Read,
+        "write_file" | "edit_file" | "edit_string" => PathAccess::Write,
+        "edit" | "apply_patch" => {
+            let paths = patch_paths(&args);
+            return if paths.is_empty() {
+                path_arg(&args)
+                    .map(|path| vec![(PathAccess::Write, path)])
+                    .unwrap_or_default()
+            } else {
+                paths
+            };
+        }
+        _ => return Vec::new(),
+    };
+    path_arg(&args)
+        .map(|path| vec![(access, path)])
+        .unwrap_or_default()
+}
+
+/// Deterministic footprint extraction at tool-execution time: the only point
+/// where tool arguments still exist (completed turns don't persist them).
+pub(in crate::agent) fn tool_call_footprint(
+    name: &str,
+    arguments: &str,
+) -> Option<crate::state::ToolFootprint> {
+    let mut footprint = crate::state::ToolFootprint::default();
+    if name == "remember_fact" {
+        let args = tool_arguments(arguments)?;
+        let content = args.get("content")?.as_str()?.trim();
+        if content.is_empty() {
+            return None;
+        }
+        let mut label: String = content.chars().take(80).collect();
+        if content.chars().count() > 80 {
+            label.push('…');
+        }
+        footprint.memories.insert(label);
+        return Some(footprint);
+    }
+    for (access, path) in tool_call_paths(name, arguments) {
+        match access {
+            PathAccess::Read => {
+                footprint.read.insert(path);
+            }
+            PathAccess::Write => {
+                footprint.modified.insert(path);
+            }
+        }
+    }
+    (!footprint.is_empty()).then_some(footprint)
 }
 
 pub(in crate::agent) fn extract_persistable_tool_report(

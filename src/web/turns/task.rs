@@ -152,19 +152,7 @@ async fn run_turn_task_inner(
         .as_ref()
         .is_none_or(|profile| profile.text_models.is_none())
     {
-        match base_store.session_model_override(&session_id) {
-            Ok(Some(models)) => config.active_provider_models = Some(models),
-            Ok(None) => {}
-            Err(error) => tracing::warn!(
-                error = %error,
-                session_id = &*session_id,
-                "{}",
-                t(
-                    "loading the session model override failed",
-                    "读取会话模型覆盖失败"
-                )
-            ),
-        }
+        apply_session_model_override_to(&mut config, &base_store, &session_id);
     }
     // 程序驱动 CLI 的「仅本回合」覆盖。模型池改的是这份私有 config(与会话
     // 覆盖同路,取值有限,TurnResourceCache 扛得住);其余项走 Agent 字段,
