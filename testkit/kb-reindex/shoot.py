@@ -16,6 +16,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+REPO = Path(__file__).resolve().parents[2]
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18436"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "/tmp/miyu-kb-reindex")
 # 面板一次最多收 MAX_DROP_FILES(200)个,多投的会被前端就地忽略。
@@ -30,6 +31,35 @@ def check(name, ok, detail=""):
     print(f"{'  ok ' if ok else 'FAIL '}{name}{f' — {detail}' if detail else ''}")
     if not ok:
         problems.append(f"{name}{f' — {detail}' if detail else ''}")
+
+
+def check_percent_never_lies():
+    """百分比必须向下取整、并且在真跑完之前封在 99。
+
+    `Math.round` 会把 6497/6507 这种「还差十个」四舍五入成 100%,于是卡片显示
+    100% 却还在跑(09-09 用户实拍)。100% 只能表示「完了」,不能表示「快完了」。
+    这条在源码层查那个纯函数,不用真起一趟重建去凑边界。
+    """
+    import re
+    import subprocess
+
+    source = (REPO / "web" / "dash-kb.js").read_text(encoding="utf-8")
+    body = re.search(r"function reindexPercent\([^)]*\)\s*\{(.*?)\n  \}", source, re.S)
+    if not body:
+        check("找得到 reindexPercent", False)
+        return
+    script = (
+        f"const f=(done,total)=>{{{body.group(1)}}};"
+        "const cases=[[0,6507,0],[6497,6507,99],[6506,6507,99],[6507,6507,99],[3253,6507,49]];"
+        "for (const [d,t,want] of cases) {"
+        "  const got=f(d,t);"
+        "  if (got!==want) { console.log(`BAD ${d}/${t} → ${got}, want ${want}`); process.exit(1); }"
+        "}"
+        "console.log('ok');"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    check("百分比向下取整且跑完前不到 100", done.returncode == 0,
+          (done.stdout + done.stderr).strip())
 
 
 def shot(page, name):
@@ -77,6 +107,7 @@ CARD = """
 
 
 def main():
+    check_percent_never_lies()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 950})

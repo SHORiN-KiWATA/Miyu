@@ -141,7 +141,7 @@
       return { label: "重建", value: "锁陈旧", hint: `锁已 ${Math.round((r.lock_age_secs || 0) / 60)} 分钟` };
     }
     if (r.running) {
-      const value = r.total > 0 ? `${Math.min(100, Math.round((r.done / r.total) * 100))}%` : "进行中";
+      const value = r.total > 0 ? `${reindexPercent(r.done, r.total)}%` : "进行中";
       const where = r.current ? ` · ${r.current.split("/").pop()}` : "";
       const hint = r.total > 0 ? `${r.done}/${r.total} 个文件${where}`
         : (r.phase === "starting" ? "正在启动…" : "统计文件中…");
@@ -150,6 +150,16 @@
     if (r.last_error) return { label: "重建", value: "上次失败", hint: `上次重建失败:${firstLine(r.last_error)}` };
     if (r.failed > 0) return { label: "重建", value: "空闲", hint: `上次有 ${r.failed} 个文件没能嵌入:${firstLine(r.last_file_error || "")}` };
     return { label: "重建", value: "空闲", hint: r.configured ? "可以重建" : "嵌入未配置,不会重建" };
+  }
+
+  /** 进行中的百分比。
+   *
+   * 向下取整,而且在真跑完之前封在 99——`Math.round` 会把 6497/6507 这种
+   * 「还差十个」四舍五入成 100%,于是卡片显示 100% 却还在跑(09-09 用户实拍)。
+   * 100% 只能表示「完了」,不能表示「快完了」。
+   */
+  function reindexPercent(done, total) {
+    return Math.min(99, Math.floor((done / total) * 100));
   }
 
   function firstLine(text) {
@@ -174,7 +184,7 @@
     // 进度条只在真跑着、且知道总数时出现;不知道总数就别画一根假的。
     if (r.running && r.total > 0) {
       const fill = D.el("i");
-      fill.style.width = `${Math.min(100, Math.round((r.done / r.total) * 100))}%`;
+      fill.style.width = `${reindexPercent(r.done, r.total)}%`;
       last.append(D.el("div.dash-card-progress", null, fill));
     }
     const actions = D.el("div.dash-card-actions");
@@ -664,7 +674,9 @@
     const info = reindexCard(status);
     set(info.label, info.value, info.hint);
     const fill = grid.lastElementChild.querySelector(".dash-card-progress > i");
-    if (fill && status.total > 0) fill.style.width = `${Math.min(100, Math.round((status.done / status.total) * 100))}%`;
+    if (fill && status.total > 0) {
+      fill.style.width = `${reindexPercent(status.done, status.total)}%`;
+    }
   }
 
   function pollReindex(delay = 2000) {
