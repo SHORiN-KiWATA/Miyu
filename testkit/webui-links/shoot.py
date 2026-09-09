@@ -71,6 +71,19 @@ LINK_PROBE = """
     inPre: body.querySelectorAll("pre a").length,
     nested: body.querySelectorAll("a a").length,
     text: body.textContent,
+    // 「标题 (地址)」整行成链:标题和地址要在同一个 <a> 里。
+    titled: Array.from(body.querySelectorAll("a.title-link")).map((a) => ({
+      href: a.href,
+      title: a.querySelector(".link-title")?.textContent || "",
+      url: a.querySelector(".link-url")?.textContent || "",
+    })),
+    // file:// 链接:浏览器不让 http 页面跳过去,所以是「点一下复制路径」。
+    paths: Array.from(body.querySelectorAll("a.path-link")).map((a) => ({
+      href: a.href,
+      text: a.textContent,
+      cursor: getComputedStyle(a).cursor,
+      tip: a.title,
+    })),
   };
 }
 """
@@ -197,7 +210,35 @@ def main():
         check("尖括号写法成链",
               any(href.startswith("https://archlinux.org") for href in links["auto"]))
         check("正文里还看得见原样地址", "https://wiki.archlinux.org" in links["text"])
+        # 09-09：模型给参考资料写的是纯文本「标题 (地址)」，修之前只有括号里那半
+        # 截成链，标题是死字；file:// 更惨，整条 [label](file://…) 原样漏成源码。
+        titled = next((item for item in links["titled"]
+                       if "arxiv.org" in item["href"]), None)
+        check("「标题 (地址)」整行成链", titled is not None,
+              json.dumps(links["titled"], ensure_ascii=False))
+        if titled:
+            check("标题进了同一个链接",
+                  titled["title"] == "Efficient LLM Collaboration via Planning",
+                  repr(titled["title"]))
+            check("地址那半截还在", "2506.11578v3" in titled["url"], titled["url"])
+        path_link = next((item for item in links["paths"] if item["href"].startswith("file://")), None)
+        check("file:// 链接成链", path_link is not None,
+              json.dumps(links["paths"], ensure_ascii=False))
+        if path_link:
+            check("file:// 链接是「点了复制」的样子", path_link["cursor"] == "copy", path_link["cursor"])
+            check("hover 看得到完整路径",
+                  path_link["tip"].endswith("/mcp-servers/bilibili-summary"), path_link["tip"])
+        check("Markdown 源码没漏出来", "](file://" not in links["text"])
         shot(page, "01-autolink")
+        # 参考资料那两行单独拍一张:这两条(标题成链 / file:// 成链)光看结构断言
+        # 不知道它长什么样。
+        titled_node = page.query_selector("a.title-link")
+        if titled_node is not None:
+            box = titled_node.evaluate_handle("el => el.closest('ul') || el.parentElement")
+            box.as_element().scroll_into_view_if_needed()
+            time.sleep(0.3)
+            box.as_element().screenshot(path=str(OUT / "08-title-links.png"))
+            print("  shot 08-title-links.png")
 
         # ── 第八项：链接卡片（真联网抓 OG，最多等 25 秒）─────
         cards = []
@@ -370,6 +411,41 @@ def main():
                       abs(card["thumbRatio"] - declared) < 0.06,
                       f"声明 {declared} 实测 {card['thumbRatio']}")
             shot(page, "04-meme-masonry")
+
+        # ── 外观偏好跨 origin ────────────────────────────────
+        # localStorage 按 **origin** 隔离:127.0.0.1 和 localhost 是同一台 daemon
+        # 的两个源,跟「换个 IP 进来」是同一回事。09-09 之前主题只存在浏览器本地,
+        # 于是换个地址进来就是另一套配色(用户反馈)。
+        alt = BASE.replace("127.0.0.1", "localhost")
+        page.goto(BASE, wait_until="networkidle")
+        page.wait_for_selector("#sidebarThemeButton", timeout=15000)
+        before = page.evaluate("() => document.body.dataset.theme")
+        page.click("#sidebarThemeButton")
+        stored = None
+        for _ in range(20):
+            time.sleep(0.3)
+            stored = page.evaluate(
+                "async () => (await (await fetch('/api/ui-prefs',"
+                " {credentials: 'same-origin'})).json()).theme")
+            if stored:
+                break
+        after = page.evaluate("() => document.body.dataset.theme")
+        check("主题切得动", before != after, f"{before} → {after}")
+        check("主题写到了 daemon 那边", stored == after, f"服务端 {stored} / 页面 {after}")
+        # 换个源进去,并且**清掉**那个源的本地存储再刷一次:这样通过的话,主题
+        # 只可能来自服务端。
+        page.goto(alt, wait_until="networkidle")
+        page.evaluate("() => localStorage.clear()")
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector("#sidebarThemeButton", timeout=15000)
+        alt_theme = None
+        for _ in range(20):
+            time.sleep(0.3)
+            alt_theme = page.evaluate("() => document.body.dataset.theme")
+            if alt_theme == after:
+                break
+        check("换个 origin 进来主题跟着走", alt_theme == after,
+              f"{alt} 上是 {alt_theme}，应为 {after}")
 
         browser.close()
 

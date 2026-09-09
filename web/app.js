@@ -412,6 +412,7 @@
     pinnedArtifacts: new Map(),
     dismissedArtifactIds: new Map(),
     colorScheme: null,
+    uiPrefs: {},
     matugenAvailable: null,
     reasoningExpanded: false,
     toolExpanded: false,
@@ -519,6 +520,41 @@
     }
   }
 
+  /*
+   * 外观偏好存在 daemon 那边。localStorage 按 **origin** 隔离:
+   * http://127.0.0.1:8300 和 http://192.168.1.7:8300 是两个源,同一台 Miyu 换个
+   * 地址进来就是另一份主题——「Miyu 长什么样」不该跟着浏览器地址栏走。
+   * 本地那份仍然写:它是首帧的即时值,服务端那份要等一个来回,先按本地上色能
+   * 免掉一次闪烁。窗口尺寸相关的偏好(侧栏折叠、分栏比例)故意不同步,手机和
+   * 台式机本来就该不一样。
+   */
+  const UI_PREF_KEYS = ["theme", "colorScheme", "chatFontSize", "reasoningExpanded", "toolExpanded"];
+
+  function saveUiPref(key, value) {
+    if (!UI_PREF_KEYS.includes(key)) return;
+    if (state.uiPrefs[key] === value) return;
+    state.uiPrefs[key] = value;
+    apiRequest("/api/ui-prefs", { method: "PUT", body: JSON.stringify({ [key]: value }) }).catch(() => {});
+  }
+
+  /** 登录之后拉一次服务端偏好并应用。失败就维持本地那份,不打扰用户。 */
+  async function syncUiPrefs() {
+    let prefs;
+    try {
+      prefs = await (await apiRequest("/api/ui-prefs")).json();
+    } catch (_) {
+      return;
+    }
+    if (!prefs || typeof prefs !== "object") return;
+    // 先记下服务端的值:下面几个 setter 会走 saveUiPref,记过就不会再发回去。
+    state.uiPrefs = { ...prefs };
+    if (prefs.theme) setTheme(prefs.theme);
+    if (prefs.colorScheme) setColorScheme(prefs.colorScheme);
+    if (prefs.chatFontSize) setChatFontSize(prefs.chatFontSize);
+    if (prefs.reasoningExpanded) setReasoningExpanded(prefs.reasoningExpanded === "true");
+    if (prefs.toolExpanded) setToolExpanded(prefs.toolExpanded === "true");
+  }
+
   function setTheme(theme, persist = true) {
     const selected = theme === "linen" ? "linen" : "graphite";
     elements.body.dataset.theme = selected;
@@ -535,7 +571,10 @@
     }
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.content = selected === "graphite" ? "#171821" : "#f6f0e2";
-    if (persist) safeStorageSet("miyu.web.theme", selected);
+    if (persist) {
+      safeStorageSet("miyu.web.theme", selected);
+      saveUiPref("theme", selected);
+    }
   }
 
   /*
@@ -557,7 +596,10 @@
       // 探测不到 matugen 输出时,「壁纸取色」整个选项不显示。
       if (button.dataset.schemeChoice === "matugen") button.hidden = state.matugenAvailable !== true;
     });
-    if (persist) safeStorageSet("miyu.web.colorScheme", requested);
+    if (persist) {
+      safeStorageSet("miyu.web.colorScheme", requested);
+      saveUiPref("colorScheme", requested);
+    }
   }
 
   async function probeMatugenTheme() {
@@ -583,7 +625,10 @@
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
     });
-    if (persist) safeStorageSet("miyu.web.chatFontSize", selected);
+    if (persist) {
+      safeStorageSet("miyu.web.chatFontSize", selected);
+      saveUiPref("chatFontSize", selected);
+    }
   }
 
   function setReasoningExpanded(value, persist = true) {
@@ -593,7 +638,10 @@
     document.querySelectorAll(".reasoning-block").forEach((block) => {
       block.open = state.reasoningExpanded;
     });
-    if (persist) safeStorageSet("miyu.web.reasoningExpanded", String(state.reasoningExpanded));
+    if (persist) {
+      safeStorageSet("miyu.web.reasoningExpanded", String(state.reasoningExpanded));
+      saveUiPref("reasoningExpanded", String(state.reasoningExpanded));
+    }
   }
 
   function setToolExpanded(value, persist = true) {
@@ -604,7 +652,10 @@
       card.classList.toggle("collapsed", !state.toolExpanded);
       card.querySelector(".tool-head")?.setAttribute("aria-expanded", String(state.toolExpanded));
     });
-    if (persist) safeStorageSet("miyu.web.toolExpanded", String(state.toolExpanded));
+    if (persist) {
+      safeStorageSet("miyu.web.toolExpanded", String(state.toolExpanded));
+      saveUiPref("toolExpanded", String(state.toolExpanded));
+    }
   }
 
   function thinkingVariantLabel(variant, short = false) {
@@ -3308,15 +3359,50 @@
     }
   }
 
-  function validHttpUrl(value) {
+  // 认得的协议。file:// 在里面是因为模型会用它指本地路径(MCP 服务器目录之类),
+  // 以前不认,整条 [label](file://…) 就原样漏成 Markdown 源码。
+  function validLinkUrl(value) {
     const raw = String(value || "").trim();
-    if (!/^https?:\/\//i.test(raw)) return null;
+    if (!/^(?:https?|file):\/\//i.test(raw)) return null;
     try {
       const url = new URL(raw);
-      return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+      return ["http:", "https:", "file:"].includes(url.protocol) ? url.href : null;
     } catch (_) {
       return null;
     }
+  }
+
+  function isFileUrl(href) {
+    return /^file:/i.test(String(href || ""));
+  }
+
+  function filePathOf(href) {
+    try {
+      return decodeURIComponent(String(href).replace(/^file:\/\//i, "")) || String(href);
+    } catch (_) {
+      return String(href).replace(/^file:\/\//i, "");
+    }
+  }
+
+  // 一个链接节点。file:// 单独一条路:浏览器从 http 页面导航到 file:// 会被安全
+  // 策略**静默**拦下——做成真链接的话点了什么都不会发生,比不成链更让人困惑。
+  // 所以本地路径改成「点一下把路径复制走」,hover 看完整路径。
+  function createLink(href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.rel = "noopener noreferrer";
+    if (isFileUrl(href)) {
+      const path = filePathOf(href);
+      link.classList.add("path-link");
+      link.title = path;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        copyText(path);
+      });
+    } else {
+      link.target = "_blank";
+    }
+    return link;
   }
 
   // 裸链接自动成链。模型经常直接把 URL 写进正文而不套 [](),以前这些只是纯文本,
@@ -3353,13 +3439,13 @@
     // 顿号后面还跟着字母,末尾修剪碰不到它,整段会被 new URL() 当成域名的一部分
     // punycode 掉(实测变成 xn--orgaur-kr3e)。汉字本身不排除——维基那种带中文
     // 路径的地址是合法的。
-    const matched = /^https?:\/\/[^\s<>"'`\u00a0\u2000-\u206f\u3000-\u303f\uff00-\uffef]+/i.exec(
+    const matched = /^(?:https?|file):\/\/[^\s<>"'`\u00a0\u2000-\u206f\u3000-\u303f\uff00-\uffef]+/i.exec(
       text.slice(index)
     );
     if (!matched) return null;
     const raw = trimUrlTail(matched[0]);
     if (!raw) return null;
-    const href = validHttpUrl(raw);
+    const href = validLinkUrl(raw);
     return href ? { raw, href } : null;
   }
 
@@ -3373,12 +3459,44 @@
   }
 
   function appendAutoLink(parent, raw, href) {
-    const link = document.createElement("a");
-    link.href = href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.className = "auto-link";
+    const link = createLink(href);
+    link.classList.add("auto-link");
     link.textContent = raw;
+    parent.appendChild(link);
+  }
+
+  // 「标题 (地址)」独占一行:模型给参考资料就是这么写的,标题是纯文本,于是以前
+  // 只有括号里那半截像链接,读起来像标题和地址是两码事。整行命中时标题进同一个
+  // <a>,点标题和点地址都能走。规则跟终端那边(src/render/link.rs)是同一套。
+  const TITLE_URL_LINE = /^([ \t]*)(\S[^\n]*?)([ \t]*)([（(])[ \t]*((?:https?|file):\/\/[^\s)）]+)[ \t]*([)）])[ \t]*$/;
+
+  function titleUrlLineAt(text, index) {
+    const lineEnd = text.indexOf("\n", index);
+    const line = lineEnd < 0 ? text.slice(index) : text.slice(index, lineEnd);
+    const matched = TITLE_URL_LINE.exec(line);
+    if (!matched) return null;
+    const [, indent, title, gap, open, url, close] = matched;
+    // 标题里再有地址就不是「标题 (地址)」;结尾是 ] 说明这其实是 [label](url),
+    // 那条本来就有自己的分支——不拦住的话整条 Markdown 会被当成标题原样漏出来。
+    if (title.includes("://") || title.endsWith("]")) return null;
+    const href = validLinkUrl(url);
+    return href ? { length: line.length, indent, title, gap, open, url, close, href } : null;
+  }
+
+  function appendTitleUrlLine(parent, hit, appendTitle) {
+    if (hit.indent) parent.appendChild(document.createTextNode(hit.indent));
+    const link = createLink(hit.href);
+    link.classList.add("auto-link", "title-link");
+    const title = document.createElement("span");
+    title.className = "link-title";
+    appendTitle(title, hit.title);
+    link.appendChild(title);
+    link.appendChild(document.createTextNode(`${hit.gap}${hit.open}`));
+    const address = document.createElement("span");
+    address.className = "link-url";
+    address.textContent = hit.url;
+    link.appendChild(address);
+    link.appendChild(document.createTextNode(hit.close));
     parent.appendChild(link);
   }
 
@@ -3394,6 +3512,17 @@
       if (end > plainStart) parent.appendChild(document.createTextNode(text.slice(plainStart, end)));
     };
     while (index < text.length) {
+      if ((index === 0 || text[index - 1] === "\n") && !insideAnchor(parent)) {
+        const titled = titleUrlLineAt(text, index);
+        if (titled) {
+          flushPlain(index);
+          appendTitleUrlLine(parent, titled, (node, source) =>
+            appendInline(node, source, depth + 1));
+          index += titled.length;
+          plainStart = index;
+          continue;
+        }
+      }
       if (text[index] === "\\" && text[index + 1] === "(") {
         const end = text.indexOf("\\)", index + 2);
         if (end > index + 1) {
@@ -3464,13 +3593,10 @@
         const labelEnd = text.indexOf("](", index + 1);
         const urlEnd = labelEnd >= 0 ? text.indexOf(")", labelEnd + 2) : -1;
         if (labelEnd > index + 1 && urlEnd > labelEnd + 2) {
-          const href = validHttpUrl(text.slice(labelEnd + 2, urlEnd));
+          const href = validLinkUrl(text.slice(labelEnd + 2, urlEnd));
           if (href) {
             flushPlain(index);
-            const link = document.createElement("a");
-            link.href = href;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
+            const link = createLink(href);
             appendInline(link, text.slice(index + 1, labelEnd), depth + 1);
             parent.appendChild(link);
             index = urlEnd + 1;
@@ -3483,7 +3609,7 @@
       // 这里看不到它们的内容。已经在 <a> 里(md 链接的标签)就不再套一层。
       if (text[index] === "<" && !insideAnchor(parent)) {
         const end = text.indexOf(">", index + 1);
-        const href = end > index + 1 ? validHttpUrl(text.slice(index + 1, end)) : null;
+        const href = end > index + 1 ? validLinkUrl(text.slice(index + 1, end)) : null;
         if (href) {
           flushPlain(index);
           appendAutoLink(parent, text.slice(index + 1, end), href);
@@ -3492,7 +3618,7 @@
           continue;
         }
       }
-      if ((text[index] === "h" || text[index] === "H") && !insideAnchor(parent)) {
+      if ("hHfF".includes(text[index]) && !insideAnchor(parent)) {
         const bare = bareUrlAt(text, index);
         if (bare) {
           flushPlain(index);
@@ -3977,6 +4103,16 @@
       if (end > plainStart) parent.appendChild(document.createTextNode(text.slice(plainStart, end)));
     };
     while (index < text.length) {
+      if (index === 0 || text[index - 1] === "\n") {
+        const titled = titleUrlLineAt(text, index);
+        if (titled) {
+          flushPlain(index);
+          appendTitleUrlLine(parent, titled, appendUserInline);
+          index += titled.length;
+          plainStart = index;
+          continue;
+        }
+      }
       if (text[index] === "\n") {
         flushPlain(index);
         parent.appendChild(document.createElement("br"));
@@ -3998,7 +4134,7 @@
       }
       if (text[index] === "<") {
         const end = text.indexOf(">", index + 1);
-        const href = end > index + 1 ? validHttpUrl(text.slice(index + 1, end)) : null;
+        const href = end > index + 1 ? validLinkUrl(text.slice(index + 1, end)) : null;
         if (href) {
           flushPlain(index);
           appendAutoLink(parent, text.slice(index + 1, end), href);
@@ -4007,7 +4143,7 @@
           continue;
         }
       }
-      if (text[index] === "h" || text[index] === "H") {
+      if ("hHfF".includes(text[index])) {
         const bare = bareUrlAt(text, index);
         if (bare) {
           flushPlain(index);
@@ -8337,6 +8473,8 @@
         const response = await apiRequest("/api/bootstrap");
         const snapshot = await response.json();
         applyBootstrap(snapshot);
+        // 认证过了才拉外观偏好:未登录时这个接口本来就该 401。
+        syncUiPrefs();
       } catch (error) {
         showBlockedState(error.status === 401, error.message);
       }

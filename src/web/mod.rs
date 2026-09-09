@@ -43,6 +43,7 @@ mod shared_files;
 mod tests;
 mod tty;
 mod turns;
+mod ui_prefs;
 mod voice_api;
 pub(crate) mod voice_bridge;
 pub(crate) mod voice_tts;
@@ -82,6 +83,7 @@ use sessions::*;
 use shared_files::*;
 use tty::*;
 use turns::*;
+use ui_prefs::*;
 use voice_api::*;
 
 use crate::runtime::{
@@ -116,7 +118,7 @@ use base64::Engine;
 use futures_util::stream::{self, Stream};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;

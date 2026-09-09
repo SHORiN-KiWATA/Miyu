@@ -47,6 +47,11 @@ https://zh.wikipedia.org/wiki/Arch_Linux
 
 行内代码里的地址不该被动：`https://example.com/inside-code`，句尾标点也不该被吃进去：见 https://example.org/trailing。
 
+参考资料是「标题 (地址)」这么写的，标题也该跟着成链（放进列表项里，免得占掉链接卡片的名额）：
+
+- Efficient LLM Collaboration via Planning (https://arxiv.org/html/2506.11578v3)
+- 本地路径也得认：[bilibili-summary](file:///home/mac/.miyu/mcp-servers/bilibili-summary)
+
 ```
 https://example.com/inside-fence
 ```

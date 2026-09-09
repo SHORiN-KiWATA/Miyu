@@ -102,11 +102,16 @@ body[data-theme="linen"] {
   --user-text: var(--md-sys-color-on-primary-container);
   /* 暗色:面板比气泡**亮**一档(One Dark 自己也是这么摆的),不是挖一个更黑的洞。 */
   --code-bg: var(--md-sys-color-surface-container-high);
-  --code-edge: color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 94%, var(--md-sys-color-primary));
 
   /* 正文高亮:暗色直接用 primary,亮色在 linen 块加深 */
   --hl: var(--md-sys-color-primary);
+
+  /* 链接色**不**从主题派生(用户 09-09 裁定)。primary 跟着壁纸走,于是「链接」
+     这件事在橄榄色壁纸下是橄榄色、在酒红壁纸下是酒红——而人对「蓝色带下划线
+     = 可点」是有肌肉记忆的,那点主题一致性不值得拿它去换。深浅各一支柔和的蓝,
+     终端那侧(src/render/style.rs 的 LINK_LABEL_STYLE)也是固定蓝,两端一致。 */
+  --link: #8fb6ec;
 
   /* 三档软阴影(阴影 rgba 常量按主题,允许保留) */
   --bubble-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
@@ -206,9 +211,10 @@ body[data-theme="linen"] {
      底色每压深一档就吃掉两成对比度,压到 surface-container-highest 时
      tok-o/t/y 会掉到 3.5:1 以下,而且 tok-t 补深之后会和 tok-n 撞成同一个色。 */
   --code-bg: var(--md-sys-color-surface);
-  --code-edge: color-mix(in srgb, var(--md-sys-color-outline) 42%, transparent);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 85%, var(--md-sys-color-surface));
   --hl: color-mix(in srgb, var(--md-sys-color-primary) 78%, var(--md-sys-color-on-surface));
+  /* 亮色那支要压得住奶油纸:实测 4.65:1(近白的 matugen 亮色板上 4.87:1)。 */
+  --link: #3a6ea8;
   --bubble-shadow: 0 1px 4px rgba(83, 64, 30, 0.07);
   --card-shadow: 0 2px 8px rgba(83, 64, 30, 0.06);
   --float-shadow: 0 18px 50px rgba(83, 64, 30, 0.2), 0 4px 12px rgba(83, 64, 30, 0.1);
@@ -1543,17 +1549,27 @@ body[data-theme="graphite"] .session-unread-dot {
   margin-top: 9px;
 }
 
-/* 自己发的消息里的代码块用**正文那套代码底色**,不再是拿气泡前景色压出来的
-   一层。语法色是照着 --code-bg / --code-ink 派生的,叠在强调色气泡上会糊成一团
-   ——亮色主题的气泡是实心主色,绿的字符串、红的关键字混进紫底谁也认不出来。
-   给它一块中性底,高亮在三套配色下都落在它被设计的那个背景上,顺带也跟助手
-   那侧长得一样。外圈一道细描边,让它在气泡里仍然像一块嵌进去的板子。 */
+/* 自己发的消息里的代码块跟着**气泡**走,不再借用正文那套 --code-bg。
+   借用的写法在亮色主题下必翻车:晨光的气泡是实心主色(深),而 --code-bg 是页面
+   那张奶油纸(浅)——深气泡上贴一张浅纸,谁看都不合理(用户 09-09 裁定)。
+   两套主题的用户气泡都是「深底浅字」(暗色 primary-container / 亮色 primary),
+   所以一条规则通吃:底色 = 气泡色兑进近黑,既比气泡深一档、又留着气泡的色相;
+   字色 = 气泡前景色。语法色跟着钉死在 One Dark 那套上——面板永远是深的,
+   就不该再跟主题的深浅走。 */
 .user-bubble .code-block {
   margin: 0;
+  --code-bg: color-mix(in srgb, var(--user-bg) 34%, #14141a);
+  --code-ink: var(--user-text);
+  --tok-c: #7f848e;
+  --tok-p: #abb2bf;
+  --tok-o: #56b6c2;
+  --tok-k: #c678dd;
+  --tok-s: #98c379;
+  --tok-n: #d19a66;
+  --tok-f: #61afef;
+  --tok-t: #e5c07b;
+  --tok-y: #e06c75;
   border-radius: var(--radius);
-  background: var(--code-bg);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--user-text) 24%, transparent);
-  color: var(--code-ink);
   white-space: normal;
 }
 
@@ -2135,27 +2151,39 @@ body[data-theme="graphite"] .session-unread-dot {
 }
 
 .markdown-body a {
-  color: var(--accent);
+  color: var(--link);
   font-weight: 600;
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
   text-underline-offset: 3px;
   overflow-wrap: anywhere;
 }
 
 .markdown-body a:hover {
-  text-decoration-color: var(--accent);
+  text-decoration-color: var(--link);
 }
 
-/* 代码块必须一眼看出是「一块面板」。原先没有边框,底色又和气泡只差 2–3%,
-   于是它读起来不是面板,是一片没有边界的文字——这是 09-09 连挨三轮「好丑」的
-   来源,而三轮都白改了配色:问题从来不在色板,在层次。
+/* 「标题 (地址)」整行成链时,地址那半截退半档:标题仍然是主角,但两截同属一个
+   链接,点哪儿都能走。 */
+.link-url {
+  font-weight: 400;
+  opacity: 0.72;
+}
+
+/* 本地路径链接。浏览器不让 http 页面跳 file://,所以这里点一下是复制路径——
+   光标形状先把这件事说清楚,免得点完以为链接坏了。 */
+a.path-link {
+  cursor: copy;
+}
+
+/* 代码块必须一眼看出是「一块面板」,但**不靠描边**(用户 09-09 裁定):层次
+   交给底色,一条线只是把「底色分得不够开」这件事糊过去。
    两条约束缺一不可:底色跟着主题的色相走(要符合网页背景),同时跟气泡差开一档。
    走查里 check_surfaces 就是钉这两条的(testkit/webui-links/syntax.py)。 */
 .code-block {
   margin: 2px 0 12px;
   overflow: hidden;
-  border: 1px solid var(--code-edge);
+  border: 0;
   border-radius: var(--radius);
   background: var(--code-bg);
   color: var(--code-ink);

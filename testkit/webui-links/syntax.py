@@ -96,6 +96,11 @@ SURFACE_JS = """
     panel: at(".assistant-content .code-block", "backgroundColor"),
     bubble: at(".assistant-content", "backgroundColor"),
     page: at("body", "backgroundColor"),
+    link: at(".assistant-content .markdown-body a", "color"),
+    userPanel: at(".user-bubble .code-block", "backgroundColor"),
+    userBubble: at(".user-bubble", "backgroundColor"),
+    panelBorder: at(".assistant-content .code-block", "borderTopWidth"),
+    userPanelBorder: at(".user-bubble .code-block", "borderTopWidth"),
   };
 }
 """
@@ -308,6 +313,9 @@ def run(page, check, user_code):
     page.set_viewport_size({"width": 1280, "height": 900})
     print(f"  shot {len(available)} 套色板 × (gallery/assistant/user) → {SHOTS}")
 
+    check("链接色不跟着壁纸走", len(set(LINK_COLORS.values())) <= 2,
+          "；".join(f"{name}={color}" for name, color in LINK_COLORS.items()))
+
     # 收摊:主题拨回默认,免得后面的走查在别的配色下截图。
     page.evaluate(THEME_JS, {"theme": "graphite", "matugen": False})
     page.wait_for_timeout(150)
@@ -331,6 +339,11 @@ def theme_ready(page):
         return False
 
 
+# 各套色板量到的链接色。链接**不该**跟着壁纸走,所以这里最多只该有深浅两支
+# (用户 09-09 裁定:primary 跟壁纸跑,链接色就成了橄榄色/酒红色)。
+LINK_COLORS = {}
+
+
 def check_surfaces(page, name, check):
     """代码面板必须既跟气泡分得开、又跟页面同一张纸。顺手拍一张整页留证。"""
     block = page.query_selector(".assistant-content .code-block")
@@ -349,6 +362,28 @@ def check_surfaces(page, name, check):
     check(f"{name} 面板和页面同一张纸", abs(warm[0] - warm[2]) <= 8,
           f"面板 R-B={warm[0]:.0f} 气泡={warm[1]:.0f} 页面={warm[2]:.0f}")
     print(f"    {name} 层次：页面 {fmt(page_bg)} → 气泡 {fmt(bubble)} → 面板 {fmt(panel)}")
+    if surfaces["link"]:
+        LINK_COLORS[name] = surfaces["link"]
+        link = srgb(surfaces["link"])
+        check(f"{name} 链接是蓝的", link[2] >= max(link) and link[2] - link[0] >= 40,
+              fmt(link))
+        ratio = contrast(surfaces["link"], surfaces["bubble"])
+        check(f"{name} 链接对比度", ratio >= 4.5, f"{ratio:.2f}:1（{fmt(link)}）")
+    # 描边是把「底色分得不够开」糊过去的办法,用户 09-09 裁定拿掉:上面那条明度差
+    # 就是它拿掉之后唯一的依靠,所以两条得一起守。
+    check(f"{name} 代码块没有描边",
+          surfaces["panelBorder"] in ("0px", "") and surfaces["userPanelBorder"] in ("0px", ""),
+          f"助手 {surfaces['panelBorder']} / 气泡内 {surfaces['userPanelBorder']}")
+    # 自己发的消息:气泡两套主题下都是「深底浅字」,里面的代码面板就不该是浅的。
+    # 亮色主题下它以前借用 --code-bg(页面那张奶油纸),于是深气泡上贴了张白纸。
+    if surfaces["userPanel"] and surfaces["userBubble"]:
+        user_panel, user_bubble = srgb(surfaces["userPanel"]), srgb(surfaces["userBubble"])
+        user_step = abs(luminance(user_panel) ** 0.5 - luminance(user_bubble) ** 0.5) * 255
+        check(f"{name} 气泡里的面板跟气泡分得开", user_step >= 7, f"{user_step:.0f}/255")
+        check(f"{name} 气泡里的面板不比气泡亮",
+              luminance(user_panel) <= luminance(user_bubble),
+              f"面板 {fmt(user_panel)} 气泡 {fmt(user_bubble)}")
+        print(f"    {name} 气泡层次：气泡 {fmt(user_bubble)} → 面板 {fmt(user_panel)}")
     page.screenshot(path=str(SHOTS / f"{name}-page.png"))
 
 
