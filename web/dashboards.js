@@ -310,19 +310,25 @@ window.MiyuDash = (() => {
   }
 
   /* 批量选择条:count 已选,total 可见总数;actions [{label, icon, danger, primary, onClick}]。 */
+  /* 按钮全部装进一个子容器,而不是和计数文字并排铺在同一个 flex 行里。
+     原先中间垫一个 flex:1 的 spacer 把危险按钮推到右边——宽容器里好看,窄容器
+     (比如知识库那条 300px 的目录树栏)里 spacer 自己占掉 80px,剩下的按钮被挤
+     成三行、错落着排,看着像坏了(09-09 用户反馈)。现在窄了就是「计数一行、按钮
+     一行」,宽了仍是左右分栏。 */
   function bulkBar({ count, total, noun = "项", onAll, onNone, actions = [] }) {
     const bar = el("div.dash-bulk-bar", { role: "toolbar" });
     bar.append(el("strong", { text: `已选 ${count} ${noun}` }));
-    if (onAll) bar.append(el("button.dash-button", { type: "button", text: total != null ? `全选可见 ${total}` : "全选", onclick: onAll }));
-    if (onNone) bar.append(el("button.dash-button", { type: "button", text: "清空选择", onclick: onNone }));
-    bar.append(el("span.dash-bulk-spacer"));
+    const group = el("div.dash-bulk-actions");
+    if (onAll) group.append(el("button.dash-button", { type: "button", text: total != null ? `全选 ${total}` : "全选", onclick: onAll }));
+    if (onNone) group.append(el("button.dash-button", { type: "button", text: "清空", onclick: onNone }));
     for (const action of actions) {
       const button = el(`button.dash-button${action.danger ? ".is-danger" : ""}${action.primary ? ".is-primary" : ""}`, { type: "button", onclick: action.onClick });
       button.disabled = !count;
       if (action.icon) button.append(icon(action.icon));
       button.append(action.label);
-      bar.append(button);
+      group.append(button);
     }
+    bar.append(group);
     return bar;
   }
 

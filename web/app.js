@@ -94,6 +94,10 @@
     moon: [["path", { d: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" }]],
     "image-search": [["rect", { x: "3", y: "3", width: "14", height: "14", rx: "2" }], ["circle", { cx: "11", cy: "9", r: "2" }], ["path", { d: "m3 15 4-4 5 5" }], ["circle", { cx: "18", cy: "18", r: "3" }], ["path", { d: "m20.2 20.2 1.8 1.8" }]],
     image: [["rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }], ["circle", { cx: "8.5", cy: "8.5", r: "1.5" }], ["path", { d: "m21 15-5-5L5 21" }]],
+    "file-video": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "m10 12.5 4 2.5-4 2.5z" }]],
+    "file-audio": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M15 12v5" }], ["path", { d: "M15 12l-4 1v5" }], ["circle", { cx: "9.5", cy: "18", r: "1.5" }], ["circle", { cx: "13.5", cy: "17", r: "1.5" }]],
+    "file-pdf": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 18v-5h1.5a1.5 1.5 0 0 1 0 3H8" }], ["path", { d: "M13 18v-5h1a2 2 0 0 1 0 5z" }], ["path", { d: "M18 13h-2v5" }], ["path", { d: "M16 15.5h1.5" }]],
+    "file-archive": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M9 6h1" }], ["path", { d: "M9 9h1" }], ["path", { d: "M9 12h1" }], ["rect", { x: "8", y: "15", width: "3", height: "4", rx: "1" }]],
     "file-code": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "m10 13-2 2 2 2" }], ["path", { d: "m14 13 2 2-2 2" }]],
     "file-markdown": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 16v-4l2 2 2-2v4" }], ["path", { d: "M15 12v4" }]],
     "file-json": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 12h1a1 1 0 0 1 0 2H8v2h1a1 1 0 0 1 0 2H8" }], ["path", { d: "M16 12h-1a1 1 0 0 0 0 2h1v2h-1" }]],
@@ -489,6 +493,9 @@
   function makeIconSlot(name, className = "") {
     const slot = document.createElement("span");
     slot.className = `icon-slot${className ? ` ${className}` : ""}`;
+    // 图标名留在 DOM 上:走查要断言「视频附件用的是视频图标」,不然只能比 SVG
+    // 路径字符串,那是一读就废的测试。
+    slot.dataset.icon = name;
     slot.setAttribute("aria-hidden", "true");
     slot.appendChild(createIcon(name));
     return slot;
@@ -3905,6 +3912,106 @@
     return node;
   }
 
+  /**
+   * 自己发出去的消息:只渲染代码块、行内代码和链接,别的一律原样。
+   *
+   * 不做完整 markdown 是有意的(09-09 用户拍板)。把 `*星号*` 变成斜体、`# 井号`
+   * 变成标题,等于把人原样打进去的字改掉了——而她收到的仍是原文,两边对不上。
+   * 代码块没有这个问题:``` 围栏本来就是「这段原样看」的意思;链接同理,地址
+   * 文字一个字都不变,只是变成可点的。
+   */
+  function renderUserText(container, source) {
+    const text = String(source || "");
+    const lines = text.split("\n");
+    const fragment = document.createDocumentFragment();
+    let buffer = [];
+    const flushText = () => {
+      if (!buffer.length) return;
+      const chunk = buffer.join("\n");
+      buffer = [];
+      // 围栏之间的空行不值得单独占一段。
+      if (!chunk.trim()) return;
+      const paragraph = document.createElement("p");
+      appendUserInline(paragraph, chunk);
+      fragment.appendChild(paragraph);
+    };
+    let index = 0;
+    while (index < lines.length) {
+      const fence = lines[index].match(/^\s*```\s*([\w.+-]*)\s*$/);
+      if (!fence) {
+        buffer.push(lines[index]);
+        index += 1;
+        continue;
+      }
+      flushText();
+      index += 1;
+      const body = [];
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        body.push(lines[index]);
+        index += 1;
+      }
+      // 收尾围栏可能没打,那也照样当代码块渲染——半截的围栏更该原样看。
+      index += 1;
+      fragment.appendChild(codeBlock(fence[1] || "", body.join("\n")));
+    }
+    flushText();
+    container.replaceChildren(fragment);
+  }
+
+  /** 行内:反引号、<url>、裸地址,其余原样。 */
+  function appendUserInline(parent, source) {
+    const text = String(source || "");
+    let index = 0;
+    let plainStart = 0;
+    const flushPlain = (end) => {
+      if (end > plainStart) parent.appendChild(document.createTextNode(text.slice(plainStart, end)));
+    };
+    while (index < text.length) {
+      if (text[index] === "\n") {
+        flushPlain(index);
+        parent.appendChild(document.createElement("br"));
+        index += 1;
+        plainStart = index;
+        continue;
+      }
+      if (text[index] === "`") {
+        const end = text.indexOf("`", index + 1);
+        if (end > index + 1) {
+          flushPlain(index);
+          const code = document.createElement("code");
+          code.textContent = text.slice(index + 1, end);
+          parent.appendChild(code);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if (text[index] === "<") {
+        const end = text.indexOf(">", index + 1);
+        const href = end > index + 1 ? validHttpUrl(text.slice(index + 1, end)) : null;
+        if (href) {
+          flushPlain(index);
+          appendAutoLink(parent, text.slice(index + 1, end), href);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if (text[index] === "h" || text[index] === "H") {
+        const bare = bareUrlAt(text, index);
+        if (bare) {
+          flushPlain(index);
+          appendAutoLink(parent, bare.raw, bare.href);
+          index += bare.raw.length;
+          plainStart = index;
+          continue;
+        }
+      }
+      index += 1;
+    }
+    flushPlain(text.length);
+  }
+
   function createUserMessage(content, timestamp, attributes = {}) {
     // 系统自动触发的后台任务跟进不是真实用户输入，渲染为居中系统事件而不是用户气泡。
     const rawContent = String(content || "");
@@ -3956,10 +4063,8 @@
     if (attributes.inputId) article.dataset.inputId = attributes.inputId;
     const bubble = document.createElement("div");
     bubble.className = "user-bubble";
-    const paragraph = document.createElement("p");
     const textContent = String(content || "");
-    paragraph.textContent = textContent;
-    bubble.appendChild(paragraph);
+    renderUserText(bubble, textContent);
     bubble.hidden = !textContent.trim();
     const attachments = createUserAttachments(attributes.attachments);
     const actions = document.createElement("div");
@@ -3979,6 +4084,34 @@
     if (attachments) article.appendChild(attachments);
     article.append(bubble, actions);
     return article;
+  }
+
+  /**
+   * 附件芯片的图标。全都画成 file-text 的话，一段视频和一份 md 长得一模一样,
+   * 扫一眼分不出哪个是哪个(09-09 用户实拍)。按 MIME 优先、拿不到再看扩展名。
+   */
+  const ATTACHMENT_EXTENSION_ICONS = {
+    md: "file-markdown", markdown: "file-markdown",
+    json: "file-json", jsonc: "file-json",
+    pdf: "file-pdf",
+    zip: "file-archive", tar: "file-archive", gz: "file-archive", xz: "file-archive",
+    zst: "file-archive", "7z": "file-archive", rar: "file-archive",
+    js: "file-code", mjs: "file-code", ts: "file-code", tsx: "file-code", jsx: "file-code",
+    py: "file-code", rs: "file-code", go: "file-code", c: "file-code", h: "file-code",
+    cpp: "file-code", hpp: "file-code", java: "file-code", rb: "file-code", php: "file-code",
+    sh: "file-code", bash: "file-code", zsh: "file-code", fish: "file-code", lua: "file-code",
+    toml: "file-code", yaml: "file-code", yml: "file-code", ini: "file-code", css: "file-code",
+    html: "file-code", xml: "file-code", sql: "file-code", nix: "file-code",
+  };
+
+  function attachmentIconName(attachment) {
+    const mime = String(attachment?.mime || "").toLowerCase();
+    if (attachment?.kind === "image" || mime.startsWith("image/")) return "image";
+    if (mime.startsWith("video/")) return "file-video";
+    if (mime.startsWith("audio/")) return "file-audio";
+    if (mime === "application/pdf") return "file-pdf";
+    const extension = String(attachment?.name || "").split(".").pop()?.toLowerCase() || "";
+    return ATTACHMENT_EXTENSION_ICONS[extension] || "file-text";
   }
 
   function createUserAttachments(values) {
@@ -4040,7 +4173,7 @@
         chip.setAttribute("download", "");
         chip.title = `下载 ${name}`;
       }
-      chip.appendChild(makeIconSlot("file-text"));
+      chip.appendChild(makeIconSlot(attachmentIconName(attachment)));
       const copy = document.createElement("span");
       const strong = document.createElement("strong");
       strong.textContent = name;
