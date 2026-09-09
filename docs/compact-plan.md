@@ -216,6 +216,13 @@ QQ 群聊文字历史（独立历史）：**也走 LLM 摘要**（用户已定�
 
 教训：A/B 测具当时用的是 deepseek-v4-flash + 25 轮会话，输出 3394–6083 tok、耗时 21.9–36.0s，离 90s 超时线还有一大截——**快模型 + 短会话恰好绕开了这个 bug**。验收模型和会话规模必须贴近实况（慢模型 + 长上下文）。
 
+**09-10 中转线统一走 Miyu 压缩**（用户裁定：claude-code / codex / antigravity 三线不依赖 CLI 自压缩，统一、可控；施工记录 `docs/plan/2026-09-10-relay-compact.md`）：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 三条中转线上 `<read-files>`/`<modified-files>` 恒空、回灌恒空（活库 42 个 remote 轮 footprint 0/42，agy 那 21 轮里真有 `view_file`×4、`write_to_file`×4） | 中转线的每次工具调用（原生工具与 `mcp__miyu__*` 桥工具都一样）走 `RemoteToolStarted/Finished` 折成 `remote: true` 轮；footprint 只在本地执行分支采集，`replay_rounds` 又按回放契约过滤 remote 轮——两个采集器都看不见。bda27508 认 `edit`/`patchText` 只救了直连线 | `record_remote_tool_chunk` 在 Finished 且 ok 时用 Started 存的名字+参数算 footprint 合进 `turns.tool_footprint`；`tool_call_paths` 认三线原生名（claude `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit` 的 `file_path`、agy `view_file`/`write_to_file` 的 `path`、codex `file_change` 折出的 `edit`+`paths`）；回灌候选 = 回放视图（近因序）+ 折叠区落库 footprint，跳过集加尾巴 footprint 的 read。`replay_rounds` 的 remote 过滤不动 |
+| claude-code 线两套压缩抢跑 | `--autocompact` 透传 Miyu 窗口，但 Miyu 0.8 线（168k→134,400）比 claude 的 W−33k 线（135,000）早 600 tok，Miyu 一压哈希链断、CLI 会话重开，claude 自压缩从没跑过；压缩请求 scope=compact 在中转线恒 ephemeral 不续传，fork 结构上不存在（09-09「fork 未交付」的真因） | 不再传 `--autocompact`（用户裁定「别固定上限，别设置就行」）；codex 也不加 `model_auto_compact_token_limit`。CLI 各自默认的自压缩仍在，只要 Miyu `context_window` 不大于 CLI 真实窗口，Miyu 先到 |
+
 ## 五、决策点（全部已定，2026-08-06）
 
 1. **摘要注入角色**：✅ 改 user 角色 + `<conversation-checkpoint>` 包裹 + "历史非指令"标注。

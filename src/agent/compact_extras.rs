@@ -459,11 +459,23 @@ fn export_transcript(
     Ok(path)
 }
 
+/// 折叠区与尾巴各自落库的 footprint(`turns.tool_footprint` 合并值)。
+///
+/// 回放视图 `replay_rounds` 按契约过滤 remote 轮,中转线(claude-code /
+/// codex / agy)碰过的文件只在 footprint 里有记录;直连线的路径两边都有,
+/// 按解析后路径去重。
+#[derive(Default)]
+pub(in crate::agent) struct FoldFootprints {
+    pub fold: crate::state::ToolFootprint,
+    pub tail: crate::state::ToolFootprint,
+}
+
 pub(in crate::agent) fn build_compact_extras(
     policy: &CompactExtrasPolicy,
     session_id: &str,
     fold: &[&Turn],
     tail: &[&Turn],
+    footprints: &FoldFootprints,
     previous: Option<&CompactExtras>,
     previous_summary: Option<&str>,
 ) -> CompactExtras {
@@ -474,11 +486,26 @@ pub(in crate::agent) fn build_compact_extras(
 
     if policy.restore_files > 0 && policy.restore_file_tokens > 0 && policy.restore_total_tokens > 0
     {
-        let candidates = touched_files(fold, &policy.workdir, false);
+        // 回放里的路径带近因顺序,排前面;footprint 只是集合,补在后面。
+        let mut candidates = touched_files(fold, &policy.workdir, false);
+        let mut seen: HashSet<PathBuf> = candidates.iter().cloned().collect();
+        for raw in footprints.fold.modified.iter().chain(&footprints.fold.read) {
+            let path = resolve_path(raw, &policy.workdir);
+            if seen.insert(path.clone()) {
+                candidates.push(path);
+            }
+        }
         // 尾巴逐字保留，它读过的文件正文已经在模型手里，再灌一遍是纯浪费。
-        let skip: HashSet<PathBuf> = touched_files(tail, &policy.workdir, true)
+        let mut skip: HashSet<PathBuf> = touched_files(tail, &policy.workdir, true)
             .into_iter()
             .collect();
+        skip.extend(
+            footprints
+                .tail
+                .read
+                .iter()
+                .map(|raw| resolve_path(raw, &policy.workdir)),
+        );
         extras.restored = restore_files(&candidates, &skip, policy);
     }
 

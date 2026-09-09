@@ -56,7 +56,6 @@ fn claude_code_client(dir: &std::path::Path, provider_id: &str) -> OpenAiCompati
         native_tools: "off".to_string(),
         miyu_tools: "off".to_string(),
         permission_mode: "bypassPermissions".to_string(),
-        autocompact: HashMap::new(),
         idle_timeout: Duration::from_secs(30),
         prefer_subscription: true,
     }));
@@ -252,7 +251,6 @@ async fn missing_binary_reports_actionable_error() {
         native_tools: "off".to_string(),
         miyu_tools: "off".to_string(),
         permission_mode: "bypassPermissions".to_string(),
-        autocompact: HashMap::new(),
         idle_timeout: Duration::from_secs(30),
         prefer_subscription: true,
     }));
@@ -358,7 +356,6 @@ async fn native_tool_scope_shapes_the_cli_args() {
             native_tools: scope.to_string(),
             miyu_tools: "off".to_string(),
             permission_mode: "bypassPermissions".to_string(),
-            autocompact: HashMap::new(),
             idle_timeout: Duration::from_secs(30),
             prefer_subscription: true,
         })
@@ -428,7 +425,6 @@ async fn duplicate_miyu_tools_are_excluded_when_both_toolsets_are_on() {
         native_tools: "all".to_string(),
         miyu_tools: "all".to_string(),
         permission_mode: "bypassPermissions".to_string(),
-        autocompact: HashMap::new(),
         idle_timeout: Duration::from_secs(30),
         prefer_subscription: true,
     }));
@@ -464,23 +460,19 @@ async fn duplicate_miyu_tools_are_excluded_when_both_toolsets_are_on() {
     );
 }
 
-/// --autocompact 跟随 Miyu 有效窗口(runtime 装配期夹到 100k–1M)。
+/// 压缩统一由 Miyu 做(09-10 用户裁定):不再把窗口透传成 --autocompact。
 #[tokio::test]
-async fn autocompact_follows_the_effective_window() {
+async fn relay_leaves_compaction_to_miyu() {
     let dir = tempfile::tempdir().unwrap();
     let mut client = claude_code_client(dir.path(), "cc-window");
-    let mut runtime = ClaudeCodeRuntime {
+    let runtime = ClaudeCodeRuntime {
         binary: fake_claude_script(dir.path()),
         native_tools: "off".to_string(),
         miyu_tools: "off".to_string(),
         permission_mode: "bypassPermissions".to_string(),
-        autocompact: HashMap::new(),
         idle_timeout: Duration::from_secs(30),
         prefer_subscription: true,
     };
-    runtime
-        .autocompact
-        .insert("cc-window\thaiku".to_string(), 168_000);
     client.claude_code = Some(Arc::new(runtime));
     client
         .chat_claude_code_stream(
@@ -492,5 +484,5 @@ async fn autocompact_follows_the_effective_window() {
         .await
         .unwrap();
     let args = read(dir.path(), "args.txt");
-    assert!(args.contains("--autocompact\n168000"), "{args}");
+    assert!(!args.contains("--autocompact"), "{args}");
 }
