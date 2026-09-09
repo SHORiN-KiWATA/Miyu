@@ -419,6 +419,23 @@ pub(crate) fn default_compact_force_ratio() -> f32 {
     0.9
 }
 
+/// 压后回灌的文件数。抄 Claude Code 的 5:再多就轮到摘要本身被挤掉,而第 6
+/// 个文件早已不在当下的工作集里。
+pub(crate) fn default_compact_restore_files() -> usize {
+    5
+}
+
+/// 单文件回灌上限。约等于 1000 行常规源码;超了只留路径,模型按需自己 read。
+pub(crate) fn default_compact_restore_file_tokens() -> usize {
+    4_000
+}
+
+/// 一次回灌的总预算。还会再受 window/8 封顶(小窗口自动缩),所以 168k 窗口
+/// 实际是 21k,32k 小窗只有 4k。
+pub(crate) fn default_compact_restore_total_tokens() -> usize {
+    24_000
+}
+
 pub(crate) fn default_trim_batch_ratio() -> f32 {
     0.15
 }

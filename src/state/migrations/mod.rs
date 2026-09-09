@@ -187,10 +187,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "sponsor_records",
         apply: apply_v32_sponsor_records,
     },
+    Migration {
+        version: 33,
+        name: "compact_v3",
+        apply: apply_v33_compact_v3,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 32;
+pub const LATEST_VERSION: i64 = 33;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

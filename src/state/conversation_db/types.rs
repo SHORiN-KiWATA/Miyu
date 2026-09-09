@@ -105,6 +105,17 @@ impl ToolFootprint {
     }
 }
 
+/// Provider-reported context occupancy at the end of a completed turn:
+/// prompt + completion of that turn's last request. The context meter anchors
+/// on this instead of a local o200k estimate, which drifts per tokenizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextAnchor {
+    pub turn_id: String,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    pub tokens: u64,
+}
+
 /// 一轮工具调用:assistant(可带思考)发起若干 call,随后各自的结果。
 /// `output` 与该轮模型实际看到的字节一致(超限时是 spill 预览),回放即重现。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -635,4 +635,59 @@ impl ConversationDb {
         tx.commit()?;
         Ok(recoveries)
     }
+
+    /// 记下该回合最后一次请求的上下文占用(供应商真实计数)。None = 未知,
+    /// 此时上下文表继续用本地估算。
+    pub fn set_turn_context_end(&self, turn_id: &str, tokens: Option<u64>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE turns SET token_context_end = ?1 WHERE turn_id = ?2",
+            params![tokens.map(|value| value as i64), turn_id],
+        )?;
+        Ok(())
+    }
+
+    /// 最新一条可见回合的上下文锚点,且仅当它是「已完成的普通回合 + 真实
+    /// (非估算)用量」时才算数。摘要行在尾(刚压完)、被打断的回合、估算用量
+    /// 一律返回 None —— 那些位置的数字不代表下一次请求的前缀大小。
+    pub fn load_context_anchor(&self, session_id: &str) -> Result<Option<ContextAnchor>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT turn_id, assistant_provider_id, assistant_model, token_context_end,
+                        token_usage_estimated, is_summary, status
+                   FROM turns
+                  WHERE session_id = ?1 AND hidden = 0
+                  ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((turn_id, provider_id, model, tokens, estimated, is_summary, status)) = row else {
+            return Ok(None);
+        };
+        if estimated != 0 || is_summary != 0 || status != "completed" {
+            return Ok(None);
+        }
+        let tokens = match tokens {
+            Some(value) if value > 0 => value as u64,
+            _ => return Ok(None),
+        };
+        Ok(Some(ContextAnchor {
+            turn_id,
+            provider_id,
+            model,
+            tokens,
+        }))
+    }
 }

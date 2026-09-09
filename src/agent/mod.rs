@@ -1,5 +1,6 @@
 mod artifacts;
 mod context;
+mod context_meter;
 mod control;
 mod history;
 mod images;
@@ -34,6 +35,8 @@ use reasoning::*;
 use reports::*;
 use tool_report::*;
 mod compact;
+mod compact_analysis;
+mod compact_extras;
 mod conversation;
 mod describe;
 pub(crate) mod overflow;
@@ -506,7 +509,8 @@ impl Agent {
             check.reserved_tokens,
             self.compact_tail_budget(context_window),
             self.preset_dialogs.len(),
-        );
+        )
+        .with_extras(self.compact_extras_policy());
         let mut on_chunk = |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
         let fork_builder = |fold_ids: &[String]| -> Result<compact::CompactForkParts> {
             Ok((

@@ -124,7 +124,7 @@ impl Agent {
         }
         if !self.suppress_session_history {
             if let Some(summary) = self.state.load_last_summary()? {
-                messages.push(summary_checkpoint_message(&summary.assistant_content));
+                messages.push(self.checkpoint_message(&summary)?);
             }
             let turns = self.state.load_visible_turns_excluding(current_turn_id)?;
             for turn in &turns {
@@ -312,6 +312,24 @@ impl Agent {
         grouped
     }
 
+    /// The one place a summary row becomes a message. Both the live request
+    /// and the compact fork prefix go through it — two renderings of the
+    /// checkpoint would diverge byte for byte and cost the whole prefix cache.
+    fn checkpoint_message(&self, summary: &crate::state::Turn) -> Result<ChatMessage> {
+        let extras = self
+            .state
+            .load_summary_extras_json(&summary.turn_id)?
+            .and_then(|json| {
+                serde_json::from_str::<crate::agent::compact_extras::CompactExtras>(&json).ok()
+            })
+            .map(|extras| extras.render())
+            .filter(|text| !text.is_empty());
+        Ok(summary_checkpoint_message(
+            &summary.assistant_content,
+            extras.as_deref(),
+        ))
+    }
+
     /// Byte-identical prefix of the live conversation covering exactly the
     /// turns about to fold: `[system][checkpoint][fold turns...]`. A fork
     /// summarization request built on this prefix re-reads the history at
@@ -330,7 +348,7 @@ impl Agent {
             messages.push(ChatMessage::assistant(assistant.clone(), None));
         }
         if let Some(summary) = self.state.load_last_summary()? {
-            messages.push(summary_checkpoint_message(&summary.assistant_content));
+            messages.push(self.checkpoint_message(&summary)?);
         }
         for turn in self.state.load_visible_turns()? {
             if turn.is_summary || !fold.contains(turn.turn_id.as_str()) {

@@ -293,3 +293,17 @@ pub(in crate::state) fn apply_v32_sponsor_records(conn: &Connection) -> Result<(
     )?;
     Ok(())
 }
+
+/// v33: compact v3。两列都挂在 `turns` 上。
+///
+/// `token_context_end` 是供应商报的「该回合最后一次请求的 prompt+completion」
+/// ——上下文占用的真值。此前触发线只有本地 o200k 估算,换供应商就系统性偏。
+/// NULL/0 = 未知(旧行、估算用量、被打断的回合),此时退回估算。
+///
+/// `compact_extras` 是摘要行的 JSON 附件(压后回灌的文件正文 + 折叠转录的
+/// 磁盘路径),每次请求跟在 checkpoint 后面重新渲染。state 层不认识 agent 的
+/// 类型,只存取字符串。
+pub(in crate::state) fn apply_v33_compact_v3(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "turns", "token_context_end", "INTEGER")?;
+    add_column_if_missing(conn, "turns", "compact_extras", "TEXT")
+}

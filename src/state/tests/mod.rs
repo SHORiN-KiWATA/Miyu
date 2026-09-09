@@ -5,6 +5,7 @@
 
 mod assets;
 mod compact;
+mod context_anchor;
 mod goals;
 mod platform;
 mod queue;

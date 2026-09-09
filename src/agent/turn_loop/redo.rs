@@ -141,6 +141,10 @@ impl Agent {
             tokens,
             result.usage_estimated,
         )?;
+        self.state.set_turn_context_end(
+            &candidate.turn_id,
+            crate::agent::context_meter::context_end_tokens(&result),
+        )?;
         if let (Some(provider), Some(model)) = (&result.provider_id, &result.model) {
             self.last_request_endpoint = Some((provider.clone(), model.clone()));
         }

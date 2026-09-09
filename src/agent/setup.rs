@@ -402,15 +402,6 @@ impl Agent {
         )
     }
 
-    pub fn effective_context_tokens(&self) -> Result<u64> {
-        let (messages, _) = self.chat_messages("", "")?;
-        let mut tokens = overflow::estimate_messages_tokens(&messages) as u64;
-        if self.tools_enabled {
-            tokens = tokens.saturating_add(self.tool_definition_tokens() as u64);
-        }
-        Ok(tokens)
-    }
-
     /// Session-scoped lifetime token total (Σ in the footer): keeps growing
     /// across compactions, resets to zero with the session history. The old
     /// global usage.json figure lives on in /usage as the global overview.

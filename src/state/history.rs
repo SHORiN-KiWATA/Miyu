@@ -169,6 +169,7 @@ impl StateStore {
         tokens: TurnTokens,
         token_usage_estimated: bool,
         footprint_json: Option<&str>,
+        extras_json: Option<&str>,
     ) -> Result<()> {
         self.conv_db.replace_visible_with_summary(
             &self.session(),
@@ -178,7 +179,13 @@ impl StateStore {
             tokens,
             token_usage_estimated,
             footprint_json,
+            extras_json,
         )
+    }
+
+    pub fn load_summary_extras_json(&self, turn_id: &str) -> Result<Option<String>> {
+        self.conv_db
+            .load_summary_extras_json(&self.session(), turn_id)
     }
 
     pub fn oldest_evictable_visible_turns(&self, count: usize) -> Result<Vec<Turn>> {

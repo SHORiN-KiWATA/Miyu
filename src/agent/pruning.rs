@@ -29,18 +29,7 @@ impl Agent {
         if cap == 0 || tool_name == "read" || tool_name == "read_file" || output.len() <= cap {
             return None;
         }
-        fn safe_segment(raw: &str) -> String {
-            raw.chars()
-                .map(|ch| {
-                    if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-                        ch
-                    } else {
-                        '_'
-                    }
-                })
-                .take(48)
-                .collect()
-        }
+        use crate::agent::compact_extras::safe_path_segment as safe_segment;
         let dir = self
             .paths
             .state_dir
@@ -78,6 +67,35 @@ impl Agent {
             .context
             .compact_tail_tokens
             .unwrap_or(16384.min(context_window / 4))
+    }
+
+    /// 压后重建的产出策略。窗口相关的预算缩放交给 `Compactor::with_extras`。
+    pub(in crate::agent) fn compact_extras_policy(&self) -> compact_extras::CompactExtrasPolicy {
+        let context = &self.config.context;
+        // 没有 read 工具时提示语不提「read 回来」:开空头支票只会换来幻觉。
+        let read_tool_available = self.tools_enabled && {
+            let tools = self.tools.lock().unwrap();
+            tools
+                .tool_names()
+                .iter()
+                .any(|name| name == "read" || name == "read_file")
+        };
+        compact_extras::CompactExtrasPolicy {
+            restore_files: context.compact_restore_files,
+            restore_file_tokens: context.compact_restore_file_tokens,
+            restore_total_tokens: context.compact_restore_total_tokens,
+            export_transcript: context.compact_transcript_export,
+            read_tool_available,
+            transcript_dir: self
+                .paths
+                .state_dir
+                .join("compact")
+                .join(compact_extras::safe_path_segment(&self.state.session_id())),
+            // 人格、配置、记忆库不回灌:它们走别的通路进上下文,回灌只是
+            // 把同一份内容再交一遍。
+            exclude_root: Some(self.paths.root_dir.clone()),
+            workdir: crate::tools::workspace::effective_workdir(),
+        }
     }
 
     pub(in crate::agent) async fn handle_overflow<F>(
@@ -137,7 +155,8 @@ impl Agent {
                     check.reserved_tokens,
                     self.compact_tail_budget(window),
                     self.preset_dialogs.len(),
-                );
+                )
+                .with_extras(self.compact_extras_policy());
                 let mut on_chunk =
                     |chunk: ChatStreamChunk| on_event(AgentEvent::CompactChunk(chunk));
                 let fork_builder = |fold_ids: &[String]| -> Result<compact::CompactForkParts> {
@@ -165,13 +184,23 @@ impl Agent {
                     }
                 };
                 if let Some(result) = result.as_ref() {
+                    let restored = if result.restored_files > 0 {
+                        format!(
+                            "{} {}",
+                            crate::i18n::text(", restored files", "，回灌文件"),
+                            result.restored_files,
+                        )
+                    } else {
+                        String::new()
+                    };
                     on_event(AgentEvent::Notice {
                         text: format!(
-                            "{} {} → {} {}",
+                            "{} {} → {} {}{}",
                             crate::i18n::text("Compacted: folded turns", "压缩完成：折叠轮次"),
                             result.folded_turns,
                             crate::i18n::text("kept verbatim", "逐字保留最近轮次"),
                             result.kept_turns,
+                            restored,
                         ),
                     })?;
                 }

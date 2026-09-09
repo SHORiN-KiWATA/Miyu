@@ -186,6 +186,14 @@ impl StateStore {
         self.conv_db.set_turn_tool_flow(turn_id, flow)
     }
 
+    pub fn set_turn_context_end(&self, turn_id: &str, tokens: Option<u64>) -> Result<()> {
+        self.conv_db.set_turn_context_end(turn_id, tokens)
+    }
+
+    pub fn load_context_anchor(&self) -> Result<Option<crate::state::ContextAnchor>> {
+        self.conv_db.load_context_anchor(&self.session())
+    }
+
     pub fn set_turn_context_messages(
         &self,
         turn_id: &str,
