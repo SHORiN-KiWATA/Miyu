@@ -149,6 +149,15 @@ pub const UNITS: &[DataUnit] = &[
         secret: false,
         why: "long-term memory per persona scope",
     },
+    // ---- data: ledger ----------------------------------------------------
+    DataUnit {
+        id: "data.ledger",
+        rel: "data/ledger/ledger.db",
+        kind: UnitKind::Sqlite,
+        tier: Tier::Core,
+        secret: false,
+        why: "personal ledger: books, accounts, categories, entries, budgets",
+    },
     // ---- data: knowledge base -------------------------------------------
     DataUnit {
         id: "kb.files",

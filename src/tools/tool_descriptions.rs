@@ -72,6 +72,8 @@ macro_rules! tool_description_files {
             include_str!("descriptions/install_aur_package.json"),
             include_str!("descriptions/kb.json"),
             include_str!("descriptions/load_skill.json"),
+            include_str!("descriptions/ledger.json"),
+            include_str!("descriptions/manage_ledger.json"),
             include_str!("descriptions/manage_script.json"),
             include_str!("descriptions/manage_meme.json"),
             include_str!("descriptions/manage_skill.json"),

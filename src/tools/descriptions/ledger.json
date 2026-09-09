@@ -1,0 +1,77 @@
+{
+  "name": "ledger",
+  "display_name": "记账",
+  "description": "Record and query personal income and expenses.\nAmounts are number strings like \"35.50\". A foreign currency is converted into the book's currency automatically and the rate is stored on the entry. The add result carries a budget field when a monthly budget is near or past its limit. Books, accounts, categories and budgets belong to manage_ledger.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["add", "list", "summary", "update", "delete"],
+        "description": "add records, list browses, summary reports a period, update edits, delete removes."
+      },
+      "amount": {
+        "type": "string",
+        "description": "For add and update: a number string like 35.50."
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["expense", "income", "transfer"],
+        "description": "For add and list: expense by default. A transfer moves money between two accounts."
+      },
+      "currency": {
+        "type": "string",
+        "description": "For add: an ISO code like JPY. Defaults to the book's currency."
+      },
+      "category": {
+        "type": "string",
+        "description": "For add, list and update: the category name."
+      },
+      "account": {
+        "type": "string",
+        "description": "For add and list: which account the money came from. Optional. For a transfer it is the source."
+      },
+      "to_account": {
+        "type": "string",
+        "description": "For add with kind=transfer: the destination account."
+      },
+      "note": {
+        "type": "string",
+        "description": "For add and update: what it was for, including the shop."
+      },
+      "date": {
+        "type": "string",
+        "description": "For add and update: 2026-09-08. Defaults to today."
+      },
+      "period": {
+        "type": "string",
+        "description": "For list and summary: a month like 2026-09, or a range like 2026-09-01..2026-09-15. Defaults to this month. summary takes a month only."
+      },
+      "query": {
+        "type": "string",
+        "description": "For list: match text in notes."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "For list: 1 to 100, 20 by default."
+      },
+      "book": {
+        "type": "string",
+        "description": "Which book. Only needed when more than one exists."
+      },
+      "id": {
+        "type": "string",
+        "description": "For update and delete: the entry id, or a unique prefix of it."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "For add: record even when an identical entry exists from minutes ago."
+      }
+    },
+    "required": ["action"]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": ["ledger"]
+}
