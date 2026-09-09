@@ -187,6 +187,21 @@ impl AppConfig {
     pub fn dev_scoped(&self) -> AppConfig {
         let mut config = self.clone();
         config.prompt.active_persona = crate::state::DEV_PERSONA.to_string();
+        // dev 不带记忆(09-09 用户裁定)。关的是整套:记忆工具不注册、联想
+        // 不注入、自动日记不写、`<associative-memory>` 前言也随之退场。
+        // 实测里 dev 会话被回灌过另一个 dev 会话的闲聊日记——编码回合既用
+        // 不上它,又把闲聊语域带回上下文。
+        //
+        // 关在配置层而不是各处加 `mode != Dev`:`memory_config()` 是全链
+        // 唯一判据,MemoryStore 的读写、联想、前言、工具注册都看它。
+        // 连带:`miyu pop` 弹出的回合不再进逐出库,也就找不回来了。
+        let uses_top_level = config.memory != MemoryConfig::default();
+        let memory = if uses_top_level {
+            &mut config.memory
+        } else {
+            &mut config.plugins.memory
+        };
+        memory.enabled = false;
         config
     }
 

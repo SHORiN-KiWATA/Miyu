@@ -256,6 +256,11 @@ pub struct Agent {
     tools_enabled: bool,
     max_tool_rounds: usize,
     tools: Arc<Mutex<ToolRegistry>>,
+    /// 情境化工具的原件(dev 专用,见 `apply_situational_tools`):判据要会话
+    /// 状态,建表时拿不到,所以每回合装配时增删。REPL 的 Agent 跨回合复用,
+    /// 判据可能从假翻真(切到 stub 档、`/pop` 出内容),摘掉之后必须放得回来
+    /// ——原件留在这里,不重建。
+    situational_tools: Vec<Arc<crate::tools::ToolSpec>>,
     memory: MemoryStore,
     memory_organizer: Option<MemoryOrganizerHandle>,
     memory_origin: MemoryOrigin,

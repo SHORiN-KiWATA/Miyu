@@ -8,6 +8,23 @@
 
 use crate::agent::*;
 
+/// 会按会话状态增删的工具(dev 专用):建表时判据还不存在,原件抓在
+/// `Agent` 上,每回合由 `apply_situational_tools` 决定挂不挂。
+const SITUATIONAL_TOOLS: &[&str] = &["load_tools"];
+
+fn situational_tool_specs(
+    tools: &ToolRegistry,
+    mode: AgentMode,
+) -> Vec<Arc<crate::tools::ToolSpec>> {
+    if mode != AgentMode::Dev {
+        return Vec::new();
+    }
+    SITUATIONAL_TOOLS
+        .iter()
+        .filter_map(|name| tools.shared(name))
+        .collect()
+}
+
 impl Agent {
     pub fn new(
         config: AppConfig,
@@ -41,8 +58,8 @@ impl Agent {
         // init) so concurrent turns can each build their own Agent; startup
         // maintenance (prompt-change reset, stale-turn recovery) lives in
         // `prepare_for_turn`.
-        // dev 有自己的记忆/技能(=切人格语义):把 config 的人格指针换成
-        // 保留人格 "dev",此后 MemoryStore/skills 派生目录全部随之隔离。
+        // dev 走保留人格 "dev" 的作用域:记忆整套在这里关掉(09-09),派生
+        // 目录也随之隔离,免得日后重开时读到默认人格的库。
         let config = if mode == AgentMode::Dev {
             config.dev_scoped()
         } else {
@@ -70,12 +87,20 @@ impl Agent {
         } else {
             persona_hint::load_dialogs(&config, paths, &config.active_persona_scope())
         };
+        let situational_tools = situational_tool_specs(&tools, mode);
         // 会话标记与 memory_origin 同源:日记记的和事实记的必须是同一个
         // 会话,否则会话级重置只清得掉一半。
         let memory_origin = MemoryOrigin::local(state.session_id().to_string());
         let memory = MemoryStore::new(&config, paths).with_session_id(&memory_origin.session_id);
-        memory.init()?;
-        let (memory_database_id, memory_generation) = memory.identity()?;
+        // 记忆关着就不建库(dev 走这条):`init`/`identity` 都会顺手创建
+        // 库文件并跑一次衰减,而这条路上没有任何东西会去读它。库身份只被
+        // 写日记/redo 的一致性校验用,那两处在关闭时先一步早退。
+        let (memory_database_id, memory_generation) = if config.memory_config().enabled {
+            memory.init()?;
+            memory.identity()?
+        } else {
+            (String::new(), 0)
+        };
         let on_overflow = config.context.on_overflow.clone();
         Ok(Self {
             state,
@@ -92,6 +117,7 @@ impl Agent {
             tools_enabled,
             max_tool_rounds,
             tools: Arc::new(Mutex::new(tools)),
+            situational_tools,
             memory,
             memory_organizer: None,
             memory_origin,
@@ -234,7 +260,47 @@ impl Agent {
             self.state.recover_stale_turns()?;
         }
         self.system_prompt = self.assemble_system_prompt(mode_prompt);
+        self.apply_situational_tools();
         Ok(())
+    }
+
+    /// 情境化工具的回合级增删(dev 专用,09-09)。
+    ///
+    /// 判据要会话状态,而工具表在 daemon 启动时就建好了,只能在每回合装配
+    /// 时决定。工具目录是缓存前缀的一部分,改它=整条前缀作废,所以判据
+    /// 必须挑在「本轮前缀反正已经断了」的时刻才翻转。
+    ///
+    /// `load_tools`:full 档下模型压根看不见它,也就不会调;留着的唯一理由
+    /// 是历史里已有调用记录(会话中途从需加载模型切过来)时它不能变成未知
+    /// 工具——而换档本身就换掉了整个工具面。
+    ///
+    /// 摘掉的工具原件留在 `situational_tools` 里:REPL 的 Agent 跨回合复用,
+    /// 判据翻真时得原样放回去,而 spec 里裹着闭包,重建不如留原件。
+    fn apply_situational_tools(&self) {
+        if self.mode != AgentMode::Dev || self.situational_tools.is_empty() {
+            return;
+        }
+        let stub_mode =
+            tools::is_stub_loading_mode(&tools::effective_tools_loading_mode(&self.config));
+        // 判据取不到就当「保留」:少一件工具只是省字节,凭空少一件却会让
+        // 模型照着历史撞未知工具,两种错的代价不对称。
+        let session_loaded_anything = self
+            .state
+            .load_session_loaded_tools()
+            .map(|loaded| !loaded.is_empty())
+            .unwrap_or(true);
+        let mut registry = self.tools.lock().unwrap();
+        for spec in &self.situational_tools {
+            let keep = match spec.name.as_str() {
+                "load_tools" => stub_mode || session_loaded_anything,
+                _ => true,
+            };
+            if keep {
+                registry.register_shared(spec.clone());
+            } else {
+                registry.unregister(&spec.name);
+            }
+        }
     }
 
     /// 人格/模式提示词之上的固定叠加顺序(顺序即缓存前缀,见 prompt 模块头)。
@@ -427,6 +493,9 @@ impl Agent {
 
     pub fn switch_mode(&mut self, mode: AgentMode, tools: ToolRegistry) {
         self.mode = mode;
+        // 情境化工具的原件跟着新表走:两张表是分别建的,拿旧表的 Arc 去
+        // 新表上放回,等于把上一模式的工具塞进这一模式。
+        self.situational_tools = situational_tool_specs(&tools, mode);
         self.tools = Arc::new(Mutex::new(tools));
         // 预设对话跟人格走:Normal↔Dev 切换后必须重算,否则 Dev 带着
         // 人格 dialogs(违反"Dev 无人格"),Dev→Normal 则永远没有。

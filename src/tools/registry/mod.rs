@@ -364,6 +364,18 @@ impl ToolRegistry {
         self.tools.get(name).map(Arc::as_ref)
     }
 
+    /// 取走一件工具的共享定义(情境化工具的回合级增删要用:摘掉之后还得
+    /// 放得回来,而 spec 里裹着闭包,重建一份不如把原件留在手上)。
+    pub(crate) fn shared(&self, name: &str) -> Option<Arc<ToolSpec>> {
+        self.tools.get(name).cloned()
+    }
+
+    /// 把 [`Self::shared`] 取出的定义原样放回。与 `register` 不同:描述已在
+    /// 首次注册时套过 JSON 真相源,这里不能再套第二遍。
+    pub(crate) fn register_shared(&mut self, tool: Arc<ToolSpec>) {
+        self.tools.insert(tool.name.clone(), tool);
+    }
+
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
     }

@@ -47,6 +47,9 @@ async fn command_catalog_carries_what_the_menu_needs() {
 /// `/reset-all-memory` 走 WebUI 时必须真的清掉那份记忆，且 dev 与普通模式各清
 /// 各的——dev 的记忆挂在保留人格名下，钥匙不对就清的是另一份（与
 /// `IpcCommand::ResetMemory` 同一个坑）。
+///
+/// dev 的记忆功能 09-09 起关掉了，但**清理入口必须还能清到历史遗留**：关掉
+/// 之前写下的那些还躺在保留人格的库里。种子数据因此要手工开着开关写。
 #[tokio::test]
 async fn web_memory_reset_all_clears_the_mode_it_was_asked_for() {
     let temp = tempfile::tempdir().unwrap();
@@ -55,7 +58,12 @@ async fn web_memory_reset_all_clears_the_mode_it_was_asked_for() {
     let config = state.manager.lock().unwrap().config.clone();
 
     let normal = crate::memory::MemoryStore::new(&config, &paths);
-    let dev = crate::memory::MemoryStore::new(&config.dev_scoped(), &paths);
+    // dev 作用域的记忆开关是关的,种子数据走一份手工打开的副本——库路径
+    // 与 `dev_scoped()` 完全相同(人格名才是钥匙),写的就是同一份。
+    let mut dev_config = config.dev_scoped();
+    dev_config.plugins.memory.enabled = true;
+    dev_config.memory.enabled = true;
+    let dev = crate::memory::MemoryStore::new(&dev_config, &paths);
     normal
         .remember_fact("普通模式记住 XMODIFIERS 这件事", "test")
         .unwrap();

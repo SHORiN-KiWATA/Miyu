@@ -455,6 +455,13 @@ async fn duplicate_miyu_tools_are_excluded_when_both_toolsets_are_on() {
         args.contains("glob") && args.contains("todowrite"),
         "glob/grep/todowrite 也在剔除表: {args}"
     );
+    // 09-09:edit 加入剔除表。原生 Edit/Write 覆盖同一个域(edit 只管文件
+    // 系统,kb:/artifact: 是另外两件工具),而中转线上它连 diff 都渲染不出来
+    // ——patch_preview 走 progress 的 Message 事件,桥不转发这一类。
+    assert!(
+        args.contains("edit"),
+        "edit 与原生 Edit/Write 重复,应剔除: {args}"
+    );
 }
 
 /// --autocompact 跟随 Miyu 有效窗口(runtime 装配期夹到 100k–1M)。

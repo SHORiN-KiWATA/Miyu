@@ -665,11 +665,10 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         // 聊天模型不带眼睛时由 vision 插件路由给专用视觉模型。
         vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
-    if config.memory_config().enabled {
-        // dev 独立记忆:同一套工具,库切到保留人格 "dev" 的命名空间,
-        // 与默认人格的记忆互不可见(验收问题一:开发模式也要有记忆)。
-        memory::register(&mut registry, config.dev_scoped(), paths.clone());
-    }
+    // 记忆整套退场(09-09 用户裁定,推翻 08-16 的"dev 也要有记忆"):
+    // remember_fact/recall_memories/search_evicted_context 三件不注册,配置
+    // 层的 `dev_scoped()` 同时关掉联想注入、自动日记与 system 里的
+    // `<associative-memory>` 前言。编码回合的记忆是代码库本身,不是日记。
     let task_tools = registry.clone();
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     if config.mcp.enabled {
@@ -771,11 +770,15 @@ pub(crate) fn build_tool_registry(
     } else {
         ToolRegistry::new()
     };
-    if config.tools.enabled && config.skills.enabled {
+    // 技能面只给 normal(09-09):dev 没有 manage_skill,拿到 load_skill 也
+    // 只能加载「怎么写 Miyu 技能」;而这里传的 config 未经 dev_scoped,
+    // persona 根解析成默认人格——dev 实际看见的是人格侧技能(实测清单里
+    // 是抖音下载与显卡直通),自己的 skills/personas/dev 反而从没被扫。
+    // 修作用域也只会让 dev 看见一个空目录,所以整件退场;dev 要用技能,
+    // 在 config/dev-prompt.md 里自己写一行路径即可,不占每轮字节。
+    if config.tools.enabled && config.skills.enabled && mode == AgentMode::Normal {
         register_skills(&mut registry, config, paths)?;
-        if mode == AgentMode::Normal {
-            register_skill_authoring(&mut registry, config.clone(), paths.clone());
-        }
+        register_skill_authoring(&mut registry, config.clone(), paths.clone());
     }
     if config.tools.enabled && interactive_questions {
         register_ask_question(&mut registry);
@@ -931,6 +934,49 @@ mod tests {
         assert!(names(&dev_registry(&config, &paths)).contains(&"vision_analyze".to_string()));
         config.plugins.vision.enabled = false;
         assert!(!names(&dev_registry(&config, &paths)).contains(&"vision_analyze".to_string()));
+    }
+
+    /// 回归:dev 的技能面与记忆面整套退场(09-09)。
+    ///
+    /// 退回这个提交之前,dev 会拿到 `load_skill`——而且它列出的是**默认
+    /// 人格**的技能(`register_skills` 收到的 config 没经过 `dev_scoped`),
+    /// 外加三件记忆工具。normal 侧必须一件不少。
+    #[test]
+    fn dev_registry_drops_skills_and_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = crate::config::AppConfig::default();
+        let names = |mode| -> Vec<String> {
+            build_tool_registry(&config, &paths, mode, false)
+                .unwrap()
+                .tool_names()
+        };
+        let dev = names(crate::agent::AgentMode::Dev);
+        for gone in [
+            "load_skill",
+            "recall_memories",
+            "remember_fact",
+            "search_evicted_context",
+        ] {
+            assert!(!dev.contains(&gone.to_string()), "dev still exposes {gone}");
+        }
+        // 干活的那些一件都不能少。
+        for kept in ["run_command", "edit", "task", "job", "todowrite"] {
+            assert!(dev.contains(&kept.to_string()), "dev lost {kept}");
+        }
+        let normal = names(crate::agent::AgentMode::Normal);
+        for kept in ["load_skill", "recall_memories", "remember_fact"] {
+            assert!(normal.contains(&kept.to_string()), "normal lost {kept}");
+        }
+    }
+
+    /// dev 的记忆是在配置层关的(`dev_scoped`),这一条守住那个开关——
+    /// 联想注入、自动日记、`<associative-memory>` 前言全看它。
+    #[test]
+    fn dev_scoped_config_turns_memory_off() {
+        let config = crate::config::AppConfig::default();
+        assert!(config.memory_config().enabled);
+        assert!(!config.dev_scoped().memory_config().enabled);
     }
 
     pub(super) fn test_paths(root: &std::path::Path) -> MiyuPaths {
@@ -1190,8 +1236,10 @@ mod tests {
             .any(|definition| definition.function.name == "divine"));
     }
 
+    /// 09-09 起技能面整体只给 normal:dev 连 `load_skill` 都没有(它在 dev
+    /// 里列的还是默认人格的技能,而 dev 又没有创作工具)。
     #[test]
-    fn skill_authoring_tools_are_normal_mode_only() {
+    fn skill_tools_are_normal_mode_only() {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
         let config = AppConfig::default();
@@ -1203,7 +1251,7 @@ mod tests {
         assert!(normal.contains("manage_skill"));
         assert!(!dev.contains("manage_skill"));
         assert!(normal.contains("load_skill"));
-        assert!(dev.contains("load_skill"));
+        assert!(!dev.contains("load_skill"));
     }
 
     #[test]
