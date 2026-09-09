@@ -13,7 +13,7 @@ use super::{vision, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, MemesPluginConfig};
 use crate::paths::MiyuPaths;
 use crate::prompts::MEME_DESCRIPTION_PROMPT;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use image::AnimationDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -281,6 +281,81 @@ mod tests {
         assert_eq!(sanitize_library("默认 表情"), "default");
     }
 
+    fn strict_meme_json() -> String {
+        json!({
+            "save": true,
+            "confidence": 100,
+            "positive_gates": {
+                "chat_reaction": true,
+                "emotion_or_meme": true,
+                "reusable": true,
+                "context_independent": true,
+                "persona_fit": true,
+                "meaning_clear": true,
+                "visual_quality": true
+            },
+            "risk_gates": {
+                "ordinary_photo": false,
+                "informational_content": false,
+                "privacy": false,
+                "advertisement": false,
+                "unsafe_or_abusive": false
+            },
+            "name": { "zh": "天才", "en": "genius" },
+            "description": "狐耳女孩比手指",
+            "usage": "夸人",
+            "tags": ["夸奖"],
+            "reason": ""
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn meme_classification_survives_code_fence_and_preamble() {
+        // 提示词里的 schema 示例自带 ```json 围栏,模型照抄就会带围栏回来;
+        // 直解会死在第 1 列。退回这个提交之前,这三条都报「不是严格 schema」。
+        let body = strict_meme_json();
+        for raw in [
+            format!("```json\n{body}\n```"),
+            format!("好的，分析结果如下：\n{body}"),
+            format!("```\n{body}\n```\n以上。"),
+        ] {
+            let parsed = parse_meme_classification(&raw)
+                .unwrap_or_else(|error| panic!("should parse {raw:?}: {error}"));
+            assert!(parsed.save);
+            assert_eq!(parsed.name.zh, "天才");
+        }
+    }
+
+    #[test]
+    fn meme_classification_tolerates_extra_fields() {
+        // 多吐一个字段不该让整次入库失败——真正的把关在 validate_classification。
+        let mut value: serde_json::Value = serde_json::from_str(&strict_meme_json()).unwrap();
+        value["mood"] = json!("happy");
+        value["positive_gates"]["cuteness"] = json!(true);
+        let parsed = parse_meme_classification(&value.to_string()).expect("extra fields are fine");
+        assert!(parsed.positive_gates.persona_fit);
+    }
+
+    #[test]
+    fn meme_classification_error_carries_the_real_reason() {
+        // 报错要能定位:少字段 / 拒答分别长什么样,得从消息里看得出来。
+        let error = parse_meme_classification("我不能分析这张图片。")
+            .expect_err("prose is not a classification")
+            .to_string();
+        assert!(
+            error.contains("response began: 我不能分析这张图片。"),
+            "{error}"
+        );
+
+        let mut value: serde_json::Value = serde_json::from_str(&strict_meme_json()).unwrap();
+        value.as_object_mut().unwrap().remove("tags");
+        let error = parse_meme_classification(&value.to_string())
+            .expect_err("missing required field")
+            .to_string();
+        assert!(error.contains("tags"), "{error}");
+    }
+
     /// 自动提示发送表情的平台/本地开关相互独立(两者默认都开)。
     #[test]
     fn platform_and_local_auto_send_gates_are_independent() {
@@ -450,18 +525,27 @@ mod tests {
     }
 
     #[test]
-    fn strict_schema_rejects_unknown_and_missing_fields() {
-        let mut value = serde_json::to_value(classification_json()).unwrap();
-        value["extra"] = json!(true);
-        assert!(serde_json::from_value::<MemeClassification>(value).is_err());
-
+    fn schema_rejects_missing_fields_but_tolerates_extra_ones() {
+        // 缺字段必须挡下:那些布尔闸门是判定依据,少一个就没法判。
         let mut missing = classification_json();
         missing.as_object_mut().unwrap().remove("confidence");
         assert!(serde_json::from_value::<MemeClassification>(missing).is_err());
 
+        let mut missing_gate = classification_json();
+        missing_gate["positive_gates"]
+            .as_object_mut()
+            .unwrap()
+            .remove("persona_fit");
+        assert!(serde_json::from_value::<MemeClassification>(missing_gate).is_err());
+
+        // 多字段则收下:模型多吐一个键不该让整次入库失败(`avoid` 的旧账)。
+        let mut value = serde_json::to_value(classification_json()).unwrap();
+        value["extra"] = json!(true);
+        assert!(serde_json::from_value::<MemeClassification>(value).is_ok());
+
         let mut nested = classification_json();
         nested["name"]["unexpected"] = json!("value");
-        assert!(serde_json::from_value::<MemeClassification>(nested).is_err());
+        assert!(serde_json::from_value::<MemeClassification>(nested).is_ok());
     }
 
     #[test]

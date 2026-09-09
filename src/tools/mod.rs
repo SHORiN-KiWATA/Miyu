@@ -10,6 +10,7 @@ mod awacy_query;
 mod calculator;
 mod caniplayonlinux_query;
 mod clipboard;
+mod cross_hints;
 mod deep_research;
 mod deepseek_status;
 mod default_tools;
@@ -31,6 +32,7 @@ mod mcp;
 pub(crate) mod memes;
 mod memory;
 mod moegirl;
+pub(crate) mod net_guard;
 mod package_advisor;
 mod patch_preview;
 pub(crate) mod platform_outreach;
@@ -271,6 +273,7 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "speak" => t("Speak", "说话"),
         "send_qq_message" => t("Send to QQ", "发送到 QQ"),
         "send_voice_message" => t("Send voice message", "发送语音"),
+        "sponsor" => t("Sponsorships", "赞助记账"),
         "deep_research" => t("Deep research", "深度研究"),
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
@@ -314,9 +317,7 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "manage_ledger" => t("Manage ledger", "账本管理"),
         "manage_script" => t("Manage scripts", "管理脚本"),
         "todowrite" => t("Todo list", "任务列表"),
-        "get_goal" => t("Goal", "读取目标"),
-        "create_goal" => t("Set goal", "创建目标"),
-        "update_goal" => t("Update goal", "更新目标"),
+        "goal" => t("Long-task goal", "长任务目标"),
         "review_aur_package" => t("Review AUR package", "审查 AUR 包"),
         "install_aur_package" => t("Install AUR package", "安装 AUR 包"),
         "review_pkgbuild_directory" => t("Review PKGBUILD directory", "审查 PKGBUILD 目录"),
@@ -497,7 +498,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
         memory::register(&mut registry, config.clone(), paths.clone());
     }
     // claude_code 委托工具已移除(08-21 用户裁定);中转供应商那条线不受影响。
-    let task_tools = registry.clone();
+    let mut task_tools = registry.clone();
+    // 子代理拿的是这一刻的快照,指路句也得按它自己的工具面补。
+    cross_hints::apply(&mut task_tools);
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
     // 记账只进这张表(以及 WebUI 走的同一张)。受限平台注册表里没有它——
     // 注册位置就是权限边界:QQ 群里的模型上下文里连工具名都不存在。
@@ -510,6 +513,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
     // 必须仍然可执行,否则模型模仿历史会撞未知工具。
     load_tools::register(&mut registry);
+    cross_hints::apply(&mut registry);
     registry
 }
 
@@ -682,6 +686,7 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
     // 必须仍然可执行,否则模型模仿历史会撞未知工具。
     load_tools::register(&mut registry);
+    cross_hints::apply(&mut registry);
     registry
 }
 
@@ -729,6 +734,7 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
     // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
     // 必须仍然可执行,否则模型模仿历史会撞未知工具。
     load_tools::register(&mut registry);
+    cross_hints::apply(&mut registry);
     registry
 }
 
@@ -1049,7 +1055,7 @@ mod tests {
             "/goal",                     // 怎么下的
             "unrelated to the messages", // 为什么和上文对不上
             "waiting",                   // 不许拿一整轮只说「我在等你」
-            "goal_abc123",               // CAS 凭证直接给它，省一次 get_goal
+            "goal_abc123",               // CAS 凭证直接给它，省一次 action=get
         ] {
             assert!(
                 lowered.contains(expected),
@@ -1085,7 +1091,7 @@ mod tests {
             "短版丢了来历或目标全文——压缩/编辑之后它就指向空气：\n{short}"
         );
         assert!(
-            short.contains(r#""revision":4"#) && short.matches("update_goal").count() == 2,
+            short.contains(r#""revision":4"#) && short.matches("goal {").count() == 2,
             "短版仍要带两条填好的调用——revision 每轮可能变，不该让模型去回忆：\n{short}"
         );
         // 仍要比完整版短：短版逐轮追加，长散文只该在第一轮出现一次。

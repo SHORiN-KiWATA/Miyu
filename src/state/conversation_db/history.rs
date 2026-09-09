@@ -299,11 +299,13 @@ impl ConversationDb {
             &format!("ATTACH DATABASE ?1 AS {archive_alias}"),
             params![archive_db],
         )?;
+        // origin_session_id 就是被逐出的这条会话:归档行带上它,
+        // 会话级的 `/reset-memory` 才清得掉自己那份。
         let insert_sql = format!(
             "INSERT OR IGNORE INTO {archive_alias}.evicted_turns
              (source_id, timestamp, role, content, created_at,
-              visibility, owner_principal, owner_display_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+              visibility, owner_principal, owner_display_name, origin_session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
         );
         let operation = (|| -> Result<usize> {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -321,6 +323,7 @@ impl ConversationDb {
                         turn.visibility,
                         turn.owner_principal,
                         turn.owner_display_name,
+                        session_id,
                     ],
                 )?;
             }

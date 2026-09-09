@@ -53,7 +53,9 @@ pub(super) fn stub_mode_description(registry: &ToolRegistry) -> String {
     // 一个静默的缓存杀手——往 scripts 目录扔一个未注册文件,tools 数组的
     // 字节就变,所有会话的前缀缓存从 token 0 掰断(08-17 实测)。
     let base = "Fetch full tool contracts. Stub-marked tools carry only a one-line summary and a permissive parameter shell. Request {\"names\":[\"tool_name\"]} to get each tool's full description and parameter JSON Schema, then call the tool with real arguments at the top level. group:name fetches a whole group at once.";
-    match unregistered_scripts_xml(registry) {
+    // 未注册脚本这段只在 manage_script 真的在场时才说得通:dev 注册表没有它,
+    // 那句「用 manage_script 注册」在那边是指向不存在工具的悬空引用。
+    match unregistered_scripts_xml(registry).filter(|_| registry.contains("manage_script")) {
         Some(xml) => format!("{base} Files in <unregistered_scripts> are not registered yet; read the listed path first and register them with manage_script.\n\n{xml}"),
         None => base.to_string(),
     }

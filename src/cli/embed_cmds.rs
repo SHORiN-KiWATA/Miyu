@@ -137,6 +137,30 @@ async fn status(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
             "semantic disabled (plugins.knowledge_base.embedding_enabled)"
         }
     );
+    // 后台那趟重建是子进程,失败了以前谁也看不见。`embed status` 的活儿正是
+    // 「一眼看出为什么语义检索没生效」,所以把上一趟的结局也报出来。
+    if let Ok(kb) = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone()) {
+        if let Ok(status) = kb.dashboard_reindex_status() {
+            let phase = status["phase"].as_str().unwrap_or("idle");
+            let progress = format!(
+                "{}/{} files, {} chunks",
+                status["done"], status["total"], status["indexed"]
+            );
+            println!("last knowledge base reindex: {phase} ({progress})");
+            for (label, key) in [
+                ("  error", "last_error"),
+                ("  file error", "last_file_error"),
+            ] {
+                let message = status[key].as_str().unwrap_or("").trim();
+                if !message.is_empty() {
+                    println!("{label}: {message}");
+                }
+            }
+            if phase == "failed" {
+                println!("  log: {}", status["log_path"].as_str().unwrap_or(""));
+            }
+        }
+    }
     shutdown_worker().await;
     Ok(())
 }
@@ -147,9 +171,16 @@ async fn reindex(config: &AppConfig, paths: &MiyuPaths, quiet: bool) -> Result<(
         return Ok(());
     };
     let store = MemoryStore::new(config, paths);
-    let count = store.backfill_embeddings(embedder.model_id()).await?;
-    if !quiet {
-        println!("memory: embedded {count} rows");
+    // 三样各建各的:记忆那步失败不该顺手把知识库那趟也带走。原来这里是 `?`,
+    // 一条记忆库报错就让整条命令提前退出,而知识库那半连开始都没开始——后台
+    // 重建正是这条命令的另一个形态,静默早退在界面上等于「什么都没发生」。
+    match store.backfill_embeddings(embedder.model_id()).await {
+        Ok(count) => {
+            if !quiet {
+                println!("memory: embedded {count} rows");
+            }
+        }
+        Err(error) => println!("memory: {error:#}"),
     }
     let library = tools::memes::current_persona_library(config);
     match tools::memes::reindex_library(config, paths, &library).await {

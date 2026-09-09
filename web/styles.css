@@ -86,7 +86,9 @@ body[data-theme="linen"] {
   --ribbon-soft: var(--md-sys-color-tertiary-container);
   --user-bg: var(--md-sys-color-primary-container);
   --user-text: var(--md-sys-color-on-primary-container);
-  --code-bg: var(--md-sys-color-surface-container-lowest);
+  /* 暗色:面板比气泡**亮**一档(One Dark 自己也是这么摆的),不是挖一个更黑的洞。 */
+  --code-bg: var(--md-sys-color-surface-container-high);
+  --code-edge: color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 94%, var(--md-sys-color-primary));
 
   /* 正文高亮:暗色直接用 primary,亮色在 linen 块加深 */
@@ -106,10 +108,30 @@ body[data-theme="linen"] {
   --chip-live: color-mix(in srgb, var(--accent-soft) 48%, transparent);
   --chip-fail: color-mix(in srgb, var(--danger-soft) 55%, transparent);
 
-  /* 代码语法色:同一派生式在两主题下自适应(暗色向亮字提亮,亮色向墨色加深) */
-  --tok-k: var(--gold);
-  --tok-v: color-mix(in srgb, var(--accent) 78%, var(--md-sys-color-on-surface));
-  --tok-s: color-mix(in srgb, var(--online) 78%, var(--md-sys-color-on-surface));
+  /*
+   * 代码语法色。全部从 MD3 token 派生,一个 vendor 主题的十六进制都不抄:
+   * MD3 保证同一个角色在亮色色板是深色调、在暗色色板是浅色调,所以同一条派生
+   * 式在两套内置主题和 matugen 按壁纸生成的任意色板下,都朝着「跟代码底色拉开」
+   * 的方向走(写死一套暗色主题的话,晨光下就是一片看不见的字)。
+   * 每条再往 --code-ink 兑一点:压掉高饱和色在 12.5px 等宽字上的刺眼感,也把
+   * matugen 偶尔给出的低对比色拽回来。
+   * 角色只有九个,故意少——壁纸生成的色板未必有九种分得开的色相,少上色比上一
+   * 堆分不清的色更好读。error 是三套色板下都必定是红的那个角色,给关键字;
+   * online 明确「不跟壁纸走」的固定绿,给字符串;剩下的交给 primary/tertiary。
+   */
+  /* 语法高亮用固定的标准色板(One Dark),不从主题变量派生。
+     派生版能跟着壁纸配色走,但代价是每换一张壁纸就换一套「关键字是什么颜色」——
+     而看代码的人对紫关键字/绿字符串/橙数字/蓝函数是有肌肉记忆的,那点主题一致性
+     不值得拿它去换(用户 09-09 裁定)。深浅两套各一份,见 linen 那块。 */
+  --tok-c: #7f848e;
+  --tok-p: #abb2bf;
+  --tok-o: #56b6c2;
+  --tok-k: #c678dd;
+  --tok-s: #98c379;
+  --tok-n: #d19a66;
+  --tok-f: #61afef;
+  --tok-t: #e5c07b;
+  --tok-y: #e06c75;
 }
 
 body[data-theme="linen"] {
@@ -144,10 +166,33 @@ body[data-theme="linen"] {
   --md-sys-color-outline-variant: #e3d8c1;
   --md-ext-color-online: #3e8e5c;
 
+  /* 语法高亮的浅色一套(One Light)。注释比原版的 #a0a1a7 压暗了一档——那个值
+     在浅底上只有 2.6:1,是「眯着眼找」的程度;注释该退到后面,但不该看不见。 */
+  --tok-c: #81828a;
+  --tok-p: #383a42;
+  --tok-o: #017eb4;
+  --tok-k: #a626a4;
+  --tok-s: #3f8141;
+  --tok-n: #986801;
+  --tok-f: #3a6fe0;
+  --tok-t: #a07001;
+  --tok-y: #d3453b;
+
   /* 亮色下少数别名的映射不同:用户气泡用实心主色,代码块改暖纸浅底 */
   --user-bg: var(--md-sys-color-primary);
   --user-text: var(--md-sys-color-on-primary);
-  --code-bg: color-mix(in srgb, var(--md-sys-color-surface-container-high) 96%, var(--md-sys-color-on-surface));
+  /* 浅色的代码面板 = **页面自己那张纸**(surface),不是白纸。
+     别再往 surface-container-lowest 上兑:壁纸生成的调色板(matugen)把它定成
+     #ffffff,兑一成暖色只把 R-B 拉到 2,而同一页的气泡是 18、底是 19——量出来
+     就是一块中性白补丁贴在暖奶油纸上,这正是「贴了张打印纸」的来源
+     (09-09 实测 panel rgb(253,253,251) / bubble rgb(242,238,224))。
+     用 surface 则天然跟着主题的色相走,且离气泡正好一档(matugen 亮色 +12、
+     内置晨光 -9),和暗色那边「比气泡高一档」是同一个手法。
+     顺带一提:浅色不能靠「压深」制造层次——One Light 那套色是照着近白底设计的,
+     底色每压深一档就吃掉两成对比度,压到 surface-container-highest 时
+     tok-o/t/y 会掉到 3.5:1 以下,而且 tok-t 补深之后会和 tok-n 撞成同一个色。 */
+  --code-bg: var(--md-sys-color-surface);
+  --code-edge: color-mix(in srgb, var(--md-sys-color-outline) 42%, transparent);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 85%, var(--md-sys-color-surface));
   --hl: color-mix(in srgb, var(--md-sys-color-primary) 78%, var(--md-sys-color-on-surface));
   --bubble-shadow: 0 1px 4px rgba(83, 64, 30, 0.07);
@@ -225,11 +270,15 @@ textarea:disabled {
   display: none !important;
 }
 
+/* 高度跟着可视视口走,而不是 100dvh。iOS Safari 不认 viewport meta 里的
+   interactive-widget=resizes-content,软键盘弹出时 dvh 一动不动,外壳就比可见
+   区域高出一个键盘,浏览器为了把输入框顶进视野只能滚动文档——表现是整页上移。
+   --app-height 由 syncAppHeight() 写,JS 没跑起来时回落到 100dvh。 */
 .app-shell {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   width: 100%;
-  height: calc(100dvh / var(--ui-scale));
+  height: var(--app-height, calc(100dvh / var(--ui-scale)));
   zoom: var(--ui-scale);
 }
 
@@ -1474,6 +1523,45 @@ body[data-theme="graphite"] .session-unread-dot {
   line-height: 1.7;
 }
 
+/* 自己发的消息里只会出现三样东西:段落、代码块、链接。段落之间要有气口,
+   代码块贴着气泡边会闷。 */
+.user-bubble > * + * {
+  margin-top: 9px;
+}
+
+/* 自己发的消息里的代码块用**正文那套代码底色**,不再是拿气泡前景色压出来的
+   一层。语法色是照着 --code-bg / --code-ink 派生的,叠在强调色气泡上会糊成一团
+   ——亮色主题的气泡是实心主色,绿的字符串、红的关键字混进紫底谁也认不出来。
+   给它一块中性底,高亮在三套配色下都落在它被设计的那个背景上,顺带也跟助手
+   那侧长得一样。外圈一道细描边,让它在气泡里仍然像一块嵌进去的板子。 */
+.user-bubble .code-block {
+  margin: 0;
+  border-radius: 6px;
+  background: var(--code-bg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--user-text) 24%, transparent);
+  color: var(--code-ink);
+  white-space: normal;
+}
+
+.user-bubble .code-block pre {
+  max-height: 320px;
+}
+
+.user-bubble > p > code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--user-text) 16%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.user-bubble a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
 .revision-editor {
   display: grid;
   width: min(86%, 640px);
@@ -1580,6 +1668,38 @@ body[data-theme="graphite"] .session-unread-dot {
   width: 14px;
   height: 14px;
   opacity: 0.7;
+}
+
+/* 能预览的芯片:整块点开预览,右下角箭头单独负责下载。 */
+.user-attachment-file.is-previewable {
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.user-attachment-file.is-previewable:hover,
+.user-attachment-file.is-previewable:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+}
+
+.user-attachment-download {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  align-content: center;
+  justify-items: center;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.65;
+}
+
+.user-attachment-download:hover {
+  opacity: 1;
+}
+
+.user-attachment-download .icon-slot {
+  width: 14px;
+  height: 14px;
 }
 
 .user-attachment-file > span:nth-child(2) {
@@ -2013,10 +2133,15 @@ body[data-theme="graphite"] .session-unread-dot {
   text-decoration-color: var(--accent);
 }
 
+/* 代码块必须一眼看出是「一块面板」。原先没有边框,底色又和气泡只差 2–3%,
+   于是它读起来不是面板,是一片没有边界的文字——这是 09-09 连挨三轮「好丑」的
+   来源,而三轮都白改了配色:问题从来不在色板,在层次。
+   两条约束缺一不可:底色跟着主题的色相走(要符合网页背景),同时跟气泡差开一档。
+   走查里 check_surfaces 就是钉这两条的(testkit/webui-links/syntax.py)。 */
 .code-block {
   margin: 2px 0 12px;
   overflow: hidden;
-  border: 0;
+  border: 1px solid var(--code-edge);
   border-radius: 8px;
   background: var(--code-bg);
   color: var(--code-ink);
@@ -2060,21 +2185,64 @@ body[data-theme="graphite"] .session-unread-dot {
   white-space: pre;
 }
 
-/* 代码语法色(供高亮标记使用) */
+/* 代码语法色。类名由 highlight.js 从 Prism 的 token 类型映射过来,九个角色:
+   c 注释 / p 标点 / o 运算符 / k 关键字 / s 字符串 / n 数值 / f 函数 /
+   t 类型标签 / y 属性变量,外加 diff 的增删行与 markdown 的粗斜体。 */
 .tok-c {
-  opacity: 0.5;
+  color: var(--tok-c);
+  font-style: italic;
+}
+
+.tok-p {
+  color: var(--tok-p);
+}
+
+.tok-o {
+  color: var(--tok-o);
 }
 
 .tok-k {
   color: var(--tok-k);
 }
 
-.tok-v {
-  color: var(--tok-v);
-}
-
 .tok-s {
   color: var(--tok-s);
+}
+
+.tok-n {
+  color: var(--tok-n);
+}
+
+.tok-f {
+  color: var(--tok-f);
+}
+
+.tok-t {
+  color: var(--tok-t);
+}
+
+.tok-y {
+  color: var(--tok-y);
+}
+
+.tok-b {
+  font-weight: 650;
+}
+
+.tok-i {
+  font-style: italic;
+}
+
+/* diff 的增删行:颜色之外再垫一层极淡的底,整行扫过去比只认颜色快。 */
+.tok-ins {
+  background: color-mix(in srgb, var(--tok-s) 15%, transparent);
+  color: var(--tok-s);
+}
+
+/* 删除行用红,不是关键字那个紫——补丁里紫色的「删掉」没人认得。 */
+.tok-del {
+  background: color-mix(in srgb, var(--tok-y) 15%, transparent);
+  color: var(--tok-y);
 }
 
 /* 思考签:气泡内小签,常驻极浅紫底;直播时换 live 底 + 标题流光 */
@@ -2088,6 +2256,8 @@ body[data-theme="graphite"] .session-unread-dot {
   width: fit-content;
   max-width: 100%;
   align-items: center;
+  /* 标题不再可压缩,极端长度只能靠芯片自己裁边——正好裁在圆角上。 */
+  overflow: hidden;
   padding: 4px 11px;
   border-radius: 6px;
   background: var(--chip-think);
@@ -2216,9 +2386,17 @@ body[data-theme="graphite"] .session-unread-dot {
   transform: rotate(90deg);
 }
 
+/* 这一段**不参与压缩**(`flex: 0 0 auto`)。
+   上一版给它 `flex: 0 1 auto` + `overflow: hidden`,结果 09-09 用户实拍到
+   「已思考」被压成「已…」——`overflow: hidden` 会把 flex 子项的自动最小尺寸压
+   成 0,一旦哪层祖先按 min-content 定宽,这段文字就先被牺牲掉。我在无头环境
+   里没能复现那个具体条件,所以不去猜是哪一层,直接断掉「可以被压缩」这件事:
+   长度改由 max-width 封顶、由芯片自己裁边,不再依赖任何容器的宽度算法。 */
 .reasoning-title {
   flex: 0 0 auto;
-  min-width: 0;
+  max-width: 24em;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2235,6 +2413,8 @@ body[data-theme="graphite"] .session-unread-dot {
   font-size: 11.5px;
   font-weight: 600;
   line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2394,6 +2574,260 @@ body[data-theme="graphite"] .session-unread-dot {
   box-shadow: var(--artifact-shadow);
 }
 
+/* ── 正文链接卡片 ───────────────────────────────────────────────
+   独占一行的链接升级成的卡片。宽度封在 520px:再宽在窄侧栏里会撑破气泡,
+   再窄图就没意义了。抓不到元数据时这些规则一条都不生效,正文保持原样。 */
+p.has-link-card {
+  margin: 10px 0;
+}
+
+.link-card {
+  display: block;
+  max-width: 520px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.link-card:hover,
+.link-card:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-2));
+  transform: translateY(-1px);
+}
+
+.link-card-media {
+  display: block;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-3, var(--surface-1));
+  aspect-ratio: 1.91 / 1;
+}
+
+.link-card-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.link-card-body {
+  display: grid;
+  padding: 11px 13px 10px;
+  gap: 5px;
+}
+
+.link-card-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.link-card-icon {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.link-card-icon.is-letter {
+  place-items: center;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.link-card-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.link-card-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.link-card-foot {
+  display: flex;
+  align-items: center;
+  margin-top: 1px;
+  gap: 6px;
+}
+
+.link-card-site {
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-card-arrow {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+@media (max-width: 836px) {
+  .link-card {
+    max-width: 100%;
+  }
+}
+
+/* 自动成链的裸地址会很长,别把气泡撑破。 */
+.markdown-body a.auto-link {
+  overflow-wrap: anywhere;
+}
+
+/* ── 附件预览浮层 ───────────────────────────────────────────────
+   自己发出去的附件点开后看内容。和 .lightbox 同一套遮罩语言,但内容区是
+   一块可滚动的面板而不是一张图。 */
+.attachment-preview {
+  position: fixed;
+  z-index: 90;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  padding: clamp(16px, 4vw, 48px);
+  inset: 0;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.attachment-preview.is-open {
+  opacity: 1;
+}
+
+.attachment-preview-scrim {
+  position: absolute;
+  border: 0;
+  cursor: zoom-out;
+  inset: 0;
+  background: rgb(0 0 0 / 68%);
+  backdrop-filter: blur(3px);
+}
+
+.attachment-preview-frame {
+  position: relative;
+  display: grid;
+  width: min(920px, 100%);
+  max-height: 100%;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  box-shadow: var(--artifact-shadow);
+  transform: scale(0.97);
+  transition: transform 140ms ease;
+}
+
+.attachment-preview.is-open .attachment-preview-frame {
+  transform: scale(1);
+}
+
+.attachment-preview-bar {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--line);
+  gap: 4px;
+}
+
+.attachment-preview-title {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  overflow: hidden;
+  gap: 8px;
+}
+
+.attachment-preview-title strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-preview-title small {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.attachment-preview-body {
+  overflow: auto;
+  min-height: 0;
+  padding: 14px 16px;
+}
+
+.attachment-preview-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.attachment-preview-video {
+  display: block;
+  width: 100%;
+  max-height: min(72dvh, 900px);
+  border-radius: 6px;
+  background: #000;
+}
+
+.attachment-preview-audio {
+  display: block;
+  width: 100%;
+}
+
+.attachment-preview-pdf {
+  display: block;
+  width: 100%;
+  height: min(72dvh, 900px);
+  border: 0;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.attachment-preview-note {
+  margin: 10px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.attachment-preview-body > .attachment-preview-note:only-child {
+  margin: 0;
+}
+
+body.has-attachment-preview {
+  overflow: hidden;
+}
+
 .lightbox-caption {
   overflow: hidden;
   max-width: min(46vw, 420px);
@@ -2408,7 +2842,8 @@ body[data-theme="graphite"] .session-unread-dot {
   display: none;
 }
 
-.lightbox-action {
+.lightbox-action,
+.preview-action {
   display: grid;
   width: 30px;
   height: 30px;
@@ -2417,12 +2852,14 @@ body[data-theme="graphite"] .session-unread-dot {
   color: var(--text-faint);
 }
 
-.lightbox-action:hover {
+.lightbox-action:hover,
+.preview-action:hover {
   background: var(--surface-2);
   color: var(--text);
 }
 
-.lightbox-action .icon-slot {
+.lightbox-action .icon-slot,
+.preview-action .icon-slot {
   width: 15px;
   height: 15px;
 }
@@ -2732,9 +3169,13 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   color: var(--danger);
 }
 
+/* 芯片被压窄时,标题这层必须自己截断:没有 overflow 的话
+   flex 只是把这个盒子挤小,里面的粗体名照样画到圆角背景外面去。 */
 .tool-title {
   display: flex;
   min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
   align-items: baseline;
   gap: 6px;
 }
@@ -2748,7 +3189,10 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
 }
 
 .tool-title strong {
-  flex: 0 0 auto;
+  /* 可缩:load_tools 一次点名四五个工具时,「加载：A、B、C、D」全在这一段里。
+     下限同 .reasoning-title —— 不给下限的话,窄气泡里连工具名都会被挤没。 */
+  flex: 0 1 auto;
+  min-width: 4em;
   font-size: 11.5px;
   font-weight: 600;
 }
@@ -7686,7 +8130,18 @@ body.miyu-paused *::after {
 }
 .dash-card-label { color: var(--text-soft); font-size: var(--fs-meta); letter-spacing: .04em; }
 .dash-card-value { font-family: var(--serif); font-size: 24px; font-weight: 600; line-height: 1.1; }
-.dash-card-hint { color: var(--text-faint); font-size: var(--fs-micro); }
+/* 长文件名会撑破卡片:`How-to_verify_GPG_key_of_official_.ISO_images_en.md` 这种
+   一个词就比卡片还宽,默认的断行规则不肯在词中间断,于是整段画到边框外面
+   (09-09 用户实拍)。允许任意位置断行,再封两行、超出打省略号;全文挂 title。 */
+.dash-card-hint {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 
 .dash-table-wrap { overflow-x: auto; }
 .dash-table {
@@ -7916,8 +8371,37 @@ body.miyu-paused *::after {
   padding: 10px 16px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-1);
   font-size: var(--fs-ui);
 }
-.dash-inline-main { font-weight: 600; }
+.dash-inline-main { font-weight: 600; white-space: nowrap; }
 .dash-inline-card .dash-button { margin-left: auto; }
+/* 紧凑版:一行装下,中段文字截断而不是换行。整条换行之后按钮独占一行,看着
+   像一根进度条(09-09 用户反馈内置库那条「占地方太大」)。 */
+.dash-inline-card.is-tight {
+  flex-wrap: nowrap;
+  gap: 10px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+}
+.dash-inline-card.is-tight .dash-cell-muted {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-inline-card.is-tight .dash-chip {
+  /* 「上次失败:…」可以很长,给它一个上限,别把整行推歪。 */
+  max-width: 18em;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-inline-card.is-tight .dash-chip.is-builtin { flex: none; }
+.dash-button.is-slim { padding: 4px 10px; }
+@media (max-width: 700px) {
+  .dash-inline-card.is-tight { flex-wrap: wrap; }
+  .dash-inline-card.is-tight .dash-cell-muted { flex-basis: 100%; }
+}
 .dash-split { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.2fr); gap: 16px; align-items: start; }
 @media (max-width: 900px) { .dash-split { grid-template-columns: 1fr; } }
 .dash-tree-pane, .dash-main-pane {
@@ -7967,9 +8451,20 @@ body.miyu-paused *::after {
 .dash-chip.is-clickable:hover { background: var(--surface-3); color: var(--text); }
 .dash-search-hint { margin: -6px 0 12px; color: var(--text-soft); font-size: var(--fs-meta); }
 .dash-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+/* 瀑布流:行单位 1px,跨行数由 JS 按卡片实际高度算(见 dash-memes.js)。
+   列还是自动填充,所以从左到右的顺序不变——搜索命中的前几张仍在最前。
+   JS 没跑起来时靠这里的默认跨行数兜底,不至于塌成一条线。 */
+.dash-gallery.is-masonry { grid-auto-rows: 1px; row-gap: 0; align-items: start; }
+.dash-gallery.is-masonry .dash-meme { grid-row-end: span 212; margin-bottom: 12px; }
+/* min-height:0 是关键:缩略图是列向 flex 的子项,它的「自动最小尺寸」会按
+   <img> 的固有高度算,于是 aspect-ratio 定的高度被顶掉——一张 120×420 的图
+   照样撑出 646px 的格子(实测)。 */
+.dash-gallery.is-masonry .dash-meme-thumb { aspect-ratio: 1; min-height: 0; overflow: hidden; }
 /* 手机:150px 一格会退成单列巨卡,收到三列;页头的「人格 → 库」提示与下拉里的「(当前人格)」重复,让位给上传按钮 */
 @media (max-width: 473px) {
   .dash-gallery { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+  .dash-gallery.is-masonry { row-gap: 0; }
+  .dash-gallery.is-masonry .dash-meme { grid-row-end: span 150; margin-bottom: 8px; }
   .dash-scope { flex-wrap: wrap; min-width: 0; }
   .dash-scope select { min-width: 0; max-width: 100%; }
   .dash-scope-hint { display: none; }
@@ -7980,7 +8475,7 @@ body.miyu-paused *::after {
 }
 .dash-meme:hover, .dash-meme:focus-visible { transform: translateY(-2px); box-shadow: var(--card-shadow); outline: none; }
 .dash-meme.is-disabled .dash-meme-thumb img { opacity: .35; filter: grayscale(1); }
-.dash-meme-thumb { position: relative; aspect-ratio: 1; background: var(--surface-2); display: flex; align-items: center; justify-content: center; }
+.dash-meme-thumb { position: relative; background: var(--surface-2); display: flex; align-items: center; justify-content: center; }
 .dash-meme-thumb img { width: 100%; height: 100%; object-fit: contain; }
 .dash-meme-badge {
   position: absolute; right: 6px; top: 6px; padding: 1px 6px; border-radius: 999px;
@@ -8552,7 +9047,10 @@ body.miyu-paused *::after {
 .st-drawer-title { display: grid; min-width: 0; gap: 2px; }
 .st-drawer-title strong { font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-drawer-title small { color: var(--text-faint); font-size: var(--fs-micro); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.st-tabs { position: relative; display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+/* flex: 0 0 auto 是必须的:抽屉是列向 flex,而这条 overflow-y: hidden 让本元素
+   的自动最小尺寸变成 0——不锁住 flex-shrink,标签页内容一长就把整条标签栏压
+   扁,里面 38px 高的按钮被自己的 overflow 从下面裁掉。 */
+.st-tabs { position: relative; display: flex; flex: 0 0 auto; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .st-tab { position: relative; flex: 0 0 auto; min-height: 38px; padding: 0 11px; border: 0; background: transparent; color: var(--text-soft); cursor: pointer; font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; transition: color .16s ease; }
 .st-tab:hover { color: var(--text); }
 .st-tab.is-active { color: var(--accent); }
@@ -8669,8 +9167,13 @@ body.miyu-paused *::after {
 }
 
 /* ── 批量选择(09-04):表情包选择模式、记忆/知识库勾选列、批量操作条 ── */
-.dash-bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, var(--surface-1)); box-shadow: var(--card-shadow); animation: dash-fade-up .22s ease-out both; }
-.dash-bulk-bar strong { font-size: var(--fs-ui); }
+.dash-bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, var(--surface-1)); box-shadow: var(--card-shadow); animation: dash-fade-up .22s ease-out both; }
+.dash-bulk-bar strong { flex: none; font-size: var(--fs-ui); }
+/* 按钮成组:窄了整组换行,不会散成三行。margin-left:auto 让宽容器里仍然右对齐。 */
+.dash-bulk-actions { display: flex; flex-wrap: wrap; align-items: center; margin-left: auto; gap: 8px; }
+/* compact:只剩两个按钮,不必再占一整条。 */
+.dash-bulk-bar.is-compact { padding: 6px 8px; }
+.dash-bulk-bar.is-compact .dash-bulk-actions { margin-left: 0; }
 .dash-bulk-spacer { flex: 1 1 auto; }
 .dash-row-check { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .dash-cell-check { justify-content: center; padding: 0 !important; }
@@ -8687,3 +9190,100 @@ body.miyu-paused *::after {
 .dash-meme-reason { margin: 0 0 14px; padding: 10px 12px 10px 14px; border-left: 3px solid var(--gold); border-radius: 8px; background: color-mix(in srgb, var(--gold) 12%, var(--surface-2)); }
 .dash-meme-reason-label { display: block; margin-bottom: 4px; color: var(--gold); font-size: var(--fs-micro); font-weight: 700; letter-spacing: .08em; }
 .dash-meme-reason p { margin: 0; font-size: var(--fs-ui); line-height: 1.6; }
+
+/* ── 赞助面板(09-09):领奖台、名次条、首字头像 ──
+   颜色全部由既有 token 混出(--gold / --accent),不新增色值。 */
+.dash-avatar {
+  flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface-2)); color: var(--text);
+  font-size: var(--fs-meta); font-weight: 600; line-height: 1;
+}
+.dash-sponsor-podium { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.dash-sponsor-podium-item {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); cursor: pointer;
+}
+.dash-sponsor-podium-item:hover, .dash-sponsor-podium-item:focus-visible { border-color: var(--accent); }
+/* 前三的强调只差在底色浓淡上：金 → 主色 → 淡金，冠军最实。 */
+.dash-sponsor-podium-item.is-1 { background: color-mix(in srgb, var(--gold) 18%, var(--surface-1)); border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); }
+.dash-sponsor-podium-item.is-2 { background: color-mix(in srgb, var(--accent) 12%, var(--surface-1)); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.dash-sponsor-podium-item.is-3 { background: color-mix(in srgb, var(--gold) 8%, var(--surface-1)); border-color: color-mix(in srgb, var(--gold) 20%, var(--line)); }
+.dash-sponsor-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dash-sponsor-medal { flex: none; font-size: 19px; line-height: 1; }
+/* 会被挤的那个孩子必须 flex:0 1 auto + min-width:0，否则长名字把整行撑出去。 */
+.dash-sponsor-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.dash-sponsor-amount { font-family: var(--serif); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dash-sponsor-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; font-size: var(--fs-micro); color: var(--text-soft); }
+.dash-sponsor-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.dash-sponsor-chips .dash-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dash-sponsor-list { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.dash-sponsor-row {
+  display: grid; grid-template-columns: 34px 30px minmax(0, 1.8fr) minmax(60px, 1.4fr) 100px 54px 84px;
+  align-items: center; gap: 10px; padding: 6px 10px; border-radius: 10px; cursor: pointer; font-size: var(--fs-meta);
+}
+.dash-sponsor-row:hover, .dash-sponsor-row:focus-visible { background: var(--surface-2); }
+.dash-sponsor-row > * { min-width: 0; }
+.dash-sponsor-rank { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.dash-sponsor-who { display: flex; flex-direction: column; min-width: 0; }
+/* 会被挤的孩子:flex 里 0 1 auto + min-width 0,grid 里 block + min-width 0,两种容器同一个类兜住。 */
+.dash-sponsor-cell { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-sponsor-total { text-align: right; font-variant-numeric: tabular-nums; }
+.dash-chip.dash-sponsor-total, .dash-chip.dash-sponsor-amount { justify-self: end; align-self: start; }
+/* 行 hover 时底色就是 --surface-2，进度槽得换一层才看得出来。 */
+.dash-sponsor-row .dash-hbar-track { background: color-mix(in srgb, var(--text-faint) 18%, transparent); }
+/* .dash-field 是 display:flex，会盖掉 [hidden] 的 UA 规则（币种切回人民币时那一格要真消失）。 */
+.dash-field[hidden] { display: none; }
+@media (max-width: 836px) {
+  /* 手机上三个并排只剩几十像素宽，改成竖着排；名次条把进度条与笔数收起来。 */
+  .dash-sponsor-podium { grid-template-columns: 1fr; }
+  .dash-sponsor-row { grid-template-columns: 30px 30px minmax(0, 1fr) 96px; gap: 8px; }
+  .dash-sponsor-row .dash-hbar-track, .dash-sponsor-row > :nth-last-child(-n+2) { display: none; }
+}
+
+/* ── 知识库拖放上传(09-09) ─────────────────────────────────────────── */
+/* 投放区是整个知识库面板而不是右边的文件树:库空时文件树只剩一行提示,而那正是
+   最想拖文件进来的时刻,把最小的目标留给最常见的动作说不过去。min-height 让面板
+   即使内容很短也铺满正文区,不然拖到空白处会被浏览器当成「打开这个文件」。 */
+.dash-drop-host { position: relative; min-height: 100%; }
+.dash-drop-host.is-dropping { outline: 2px dashed var(--accent); outline-offset: -8px; border-radius: 12px; }
+.dash-drop-veil {
+  position: absolute; inset: 0; z-index: 5; display: flex; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 12px;
+  /* 不吃指针事件:遮罩自己一旦成为拖放目标,鼠标进它就等于离开下面的面板,
+     指示层会随鼠标疯狂闪。 */
+  pointer-events: none;
+}
+/* .dash-drop-veil 是 display:flex,会盖掉 [hidden] 的 UA 规则。 */
+.dash-drop-veil[hidden] { display: none; }
+/* 面板可能比视口高;标签 sticky 在滚动口顶部,滚到哪都看得见。sticky 要生效,
+   flex 子项不能被拉伸,所以显式 align-self。 */
+.dash-drop-label {
+  position: sticky; top: 24px; align-self: flex-start; margin-top: 24px;
+  display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+  border: 1px dashed var(--accent); border-radius: 999px;
+  background: var(--surface-1); box-shadow: var(--card-shadow);
+  color: var(--text); font-size: var(--fs-ui); font-weight: 600;
+}
+.dash-drop-label svg { width: 16px; height: 16px; color: var(--accent); }
+/* 上传结果里的理由是服务端原话,可以很长(守卫那句拒绝有 100 多字符)。让它跟
+   文件名争宽度而不是把整行撑出记录框;全文在 title 上。 */
+.dash-upload-list .dash-chip { flex: 0 1 auto; min-width: 0; max-width: 62%; overflow: hidden; text-overflow: ellipsis; }
+
+/* 重建卡的进度条:只在真跑着且知道总数时才出现,所以它不是常驻元素——
+   高度与 .todo-progress 对齐(3px + 圆角),颜色用 accent 而不是 text-soft,
+   因为它代表「正在发生的事」而不是「已完成比例的静态展示」。 */
+.dash-card-progress {
+  overflow: hidden;
+  height: 3px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.dash-card-progress > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms ease;
+}

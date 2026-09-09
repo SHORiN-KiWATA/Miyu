@@ -16,6 +16,21 @@ window.MiyuDash = (() => {
     x: [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]],
     "chevron-left": [["path", { d: "m15 18-6-6 6-6" }]],
     "chevron-right": [["path", { d: "m9 18 6-6-6-6" }]],
+    // 展开态的箭头一直缺着:目录树折叠时画 chevron-right、展开时要 chevron-down,
+    // 表里没有就静默画出一个空 <svg>,于是展开之后箭头凭空消失(09-09 用户反馈)。
+    "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
+    // 下面这批同样是「用到了但表里没有」——`icon()` 对不认识的名字静默返回一个
+    // 空 <svg>,按钮上于是什么都不画。09-09 顺着 chevron-down 一并补齐,并加了
+    // 一条测试遍历各面板实际用到的名字,以后漏一个会当场报红。
+    "search": [["circle", { cx: "11", cy: "11", r: "8" }], ["path", { d: "m21 21-4.3-4.3" }]],
+    "x": [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]],
+    "check": [["path", { d: "M20 6 9 17l-5-5" }]],
+    "plus": [["path", { d: "M5 12h14" }], ["path", { d: "M12 5v14" }]],
+    "star": [["path", { d: "m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" }]],
+    "pencil": [["path", { d: "M12 20h9" }], ["path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" }]],
+    "eraser": [["path", { d: "m7 21-4.3-4.3a2 2 0 0 1 0-2.8l9.6-9.6a2 2 0 0 1 2.8 0l5.6 5.6a2 2 0 0 1 0 2.8L13 21" }], ["path", { d: "M22 21H7" }], ["path", { d: "m5 11 9 9" }]],
+    "archive": [["rect", { x: "2", y: "3", width: "20", height: "5", rx: "1" }], ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" }], ["path", { d: "M10 12h4" }]],
+    "sparkles": [["path", { d: "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" }], ["path", { d: "M20 3v4" }], ["path", { d: "M22 5h-4" }]],
     brain: [["path", { d: "M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" }], ["path", { d: "M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" }], ["path", { d: "M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" }]],
     plus: [["path", { d: "M5 12h14" }], ["path", { d: "M12 5v14" }]],
     pencil: [["path", { d: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" }], ["path", { d: "m15 5 4 4" }]],
@@ -119,7 +134,8 @@ window.MiyuDash = (() => {
       const card = el("div.dash-card", null,
         el("span.dash-card-label", { text: item.label }),
         value,
-        item.hint ? el("span.dash-card-hint", { text: item.hint }) : null);
+        // 小字封两行、超出打省略号(见 .dash-card-hint),全文靠 title 找回来。
+        item.hint ? el("span.dash-card-hint", { text: item.hint, title: item.hint }) : null);
       card.style.setProperty("--i", String(index));
       grid.append(card);
     });
@@ -310,19 +326,27 @@ window.MiyuDash = (() => {
   }
 
   /* 批量选择条:count 已选,total 可见总数;actions [{label, icon, danger, primary, onClick}]。 */
-  function bulkBar({ count, total, noun = "项", onAll, onNone, actions = [] }) {
-    const bar = el("div.dash-bulk-bar", { role: "toolbar" });
-    bar.append(el("strong", { text: `已选 ${count} ${noun}` }));
-    if (onAll) bar.append(el("button.dash-button", { type: "button", text: total != null ? `全选可见 ${total}` : "全选", onclick: onAll }));
-    if (onNone) bar.append(el("button.dash-button", { type: "button", text: "清空选择", onclick: onNone }));
-    bar.append(el("span.dash-bulk-spacer"));
+  /* 按钮全部装进一个子容器,而不是和计数文字并排铺在同一个 flex 行里。
+     原先中间垫一个 flex:1 的 spacer 把危险按钮推到右边——宽容器里好看,窄容器
+     (比如知识库那条 300px 的目录树栏)里 spacer 自己占掉 80px,剩下的按钮被挤
+     成三行、错落着排,看着像坏了(09-09 用户反馈)。现在窄了就是「计数一行、按钮
+     一行」,宽了仍是左右分栏。 */
+  function bulkBar({ count, total, noun = "项", onAll, onNone, actions = [], compact = false }) {
+    const bar = el(`div.dash-bulk-bar${compact ? ".is-compact" : ""}`, { role: "toolbar" });
+    // compact:数量写进动作按钮里,不再单占一行文字。选了多少,在「删除所选 N」
+    // 上看比在旁边一句「已选 N 个文件」上看更该看到(09-09 用户反馈)。
+    if (!compact) bar.append(el("strong", { text: `已选 ${count} ${noun}` }));
+    const group = el("div.dash-bulk-actions");
+    if (onAll && !compact) group.append(el("button.dash-button", { type: "button", text: total != null ? `全选 ${total}` : "全选", onclick: onAll }));
+    if (onNone) group.append(el("button.dash-button", { type: "button", text: "清空", onclick: onNone }));
     for (const action of actions) {
       const button = el(`button.dash-button${action.danger ? ".is-danger" : ""}${action.primary ? ".is-primary" : ""}`, { type: "button", onclick: action.onClick });
       button.disabled = !count;
       if (action.icon) button.append(icon(action.icon));
-      button.append(action.label);
-      bar.append(button);
+      button.append(compact ? `${action.label} ${count}` : action.label);
+      group.append(button);
     }
+    bar.append(group);
     return bar;
   }
 

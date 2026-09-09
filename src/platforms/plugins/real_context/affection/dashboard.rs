@@ -37,7 +37,8 @@ fn scope_for(account_id: &str, user_id: &str) -> PlatformPluginScopeKey {
 fn profile_json(settings: &RealContextPluginSettings, profile: &AffectionProfile) -> Value {
     let level = level_for_score(settings, profile.score, &profile.user_id);
     let mut value = serde_json::to_value(profile).unwrap_or(Value::Null);
-    value["level"] = json!(level.name);
+    // 面板是给人看的:规范名是英文 slug,展示层换回中文。
+    value["level"] = json!(level_display(level.name));
     value["reply_bias"] = json!(reply_bias(settings, profile.score, &profile.user_id));
     value["gain_multiplier"] = json!(gain_multiplier(settings, profile.score, &profile.user_id));
     value["max_score"] = json!(max_score_for_user(settings, &profile.user_id));
@@ -101,7 +102,7 @@ pub(crate) fn dashboard_list(
         .values()
         .map(|profile| {
             let level = level_for_score(settings, profile.score, &profile.user_id);
-            *levels.entry(level.name).or_insert(0) += 1;
+            *levels.entry(level_display(level.name)).or_insert(0) += 1;
             if profile.daily_date == today {
                 today_gain += profile.daily_gain;
                 today_loss += profile.daily_loss;

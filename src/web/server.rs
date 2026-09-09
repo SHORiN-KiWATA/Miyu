@@ -298,11 +298,22 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/app.js", get(app_asset))
         .route("/commands.js", get(commands_js_asset))
         .route("/lightbox.js", get(lightbox_js_asset))
+        .route("/preview.js", get(preview_js_asset))
+        .route("/linkcards.js", get(linkcards_js_asset))
         .route("/todos.js", get(todos_js_asset))
+        .route("/highlight.js", get(highlight_js_asset))
+        .route("/vendor/prism/prism.min.js", get(prism_js_asset))
         .route("/vendor/katex/katex.min.js", get(katex_js_asset))
         .route("/vendor/katex/katex.min.css", get(katex_css_asset))
         .route("/vendor/katex/fonts/{font}", get(katex_font_asset))
         .route("/api/media", get(media_stream))
+        // WebUI 链接卡片:元数据与缩略图都由 daemon 代抓,浏览器不直连第三方
+        // (CSP img-src/connect-src 都是 'self',放宽等于给远程像素追踪开门)。
+        .route("/api/link-preview", get(link_preview::link_preview))
+        .route(
+            "/api/link-preview/image/{asset_id}",
+            get(link_preview::link_preview_image),
+        )
         .route("/assets/miyu-logo.png", get(logo_asset))
         .route("/assets/miyuwallpaper.png", get(wallpaper_asset))
         .route("/api/health", get(health))
@@ -485,6 +496,15 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             "/api/dash/affection/emotion/reset",
             post(dash_emotion_reset),
         )
+        .route("/api/dash/sponsors/overview", get(dash_sponsors_overview))
+        .route(
+            "/api/dash/sponsors/records",
+            get(dash_sponsors_records).post(dash_sponsors_create),
+        )
+        .route(
+            "/api/dash/sponsors/records/{record_id}",
+            patch(dash_sponsors_patch).delete(dash_sponsors_delete),
+        )
         .route(
             "/api/attachments",
             post(upload_user_attachment).layer(DefaultBodyLimit::disable()),
@@ -544,6 +564,7 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/conversation/compact", post(compact_conversation))
         .route("/api/conversation/pop", post(pop_conversation))
         .route("/api/memory/reset", post(reset_memory_http))
+        .route("/api/memory/reset-all", post(reset_all_memory_http))
         .route("/api/goal", post(goal_command_http))
         .route("/api/jobs", get(list_jobs_http))
         .route("/api/usage/stats", get(usage_stats_web))

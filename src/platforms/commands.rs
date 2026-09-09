@@ -4,6 +4,7 @@ use crate::i18n::text as t;
 pub(crate) const RESET_COMMAND_ID: &str = "reset";
 pub(crate) const WIPE_COMMAND_ID: &str = "wipe";
 pub(crate) const RESET_MEMORY_COMMAND_ID: &str = "reset-memory";
+pub(crate) const RESET_ALL_MEMORY_COMMAND_ID: &str = "reset-all-memory";
 pub(crate) const STOP_COMMAND_ID: &str = "stop";
 pub(crate) const MODELS_COMMAND_ID: &str = "models";
 
@@ -28,6 +29,12 @@ pub(crate) const BUILTIN_COMMANDS: &[PlatformCommandDescriptor] = &[
     // 只清长期记忆,会话/技能不动;与 wipe 同款独立描述符+confirm 字面。
     PlatformCommandDescriptor {
         id: RESET_MEMORY_COMMAND_ID,
+        default_permission: PlatformCommandPermission::AdminOnly,
+    },
+    // 全量那条单独一个描述符:把"清本会话"开给群友是合理的,那不该顺带
+    // 把整个人格的记忆也交出去(wipe 与 reset 分家同一个理由)。
+    PlatformCommandDescriptor {
+        id: RESET_ALL_MEMORY_COMMAND_ID,
         default_permission: PlatformCommandPermission::AdminOnly,
     },
     PlatformCommandDescriptor {
@@ -57,6 +64,7 @@ pub(crate) enum ParsedPlatformCommand {
         confirmed: bool,
     },
     ResetMemory,
+    ResetAllMemory,
     Stop {
         has_arguments: bool,
     },
@@ -91,6 +99,16 @@ pub(crate) fn parse(config: &PlatformsConfig, text: &str) -> Option<ParsedPlatfo
             _ => return None,
         };
         Some(ParsedPlatformCommand::Wipe { confirmed })
+    } else if command.eq_ignore_ascii_case(RESET_ALL_MEMORY_COMMAND_ID) {
+        // 与 reset-memory 同款 confirm 处理:老习惯打出来不该被当成聊天。
+        // 顺序在前:两个名字都以 `reset-` 开头,但比对是全名相等,先后其实
+        // 无所谓——放这里只是让两条相邻好读。
+        match (parts.next(), parts.next()) {
+            (None, None) => {}
+            (Some(argument), None) if argument.eq_ignore_ascii_case("confirm") => {}
+            _ => return None,
+        }
+        Some(ParsedPlatformCommand::ResetAllMemory)
     } else if command.eq_ignore_ascii_case(RESET_MEMORY_COMMAND_ID) {
         // 不再要二次确认(与本地三条路一致):这条命令本来就是 AdminOnly,
         // 清的只是长期记忆,会话历史/技能/知识库都不动。仍然收下 `confirm`
@@ -202,6 +220,22 @@ mod tests {
             Some(ParsedPlatformCommand::ResetMemory)
         );
         assert_eq!(parse(&config, "/reset-memory now"), None);
+        // 全量那条是另一条命令,不能被 `/reset-memory` 的前缀比对吞掉。
+        assert_eq!(
+            parse(&config, "/reset-all-memory"),
+            Some(ParsedPlatformCommand::ResetAllMemory)
+        );
+        assert_eq!(
+            parse(&config, "/reset-all-memory confirm"),
+            Some(ParsedPlatformCommand::ResetAllMemory)
+        );
+        assert_eq!(parse(&config, "/reset-all-memory now"), None);
+        let reset_all = descriptor(RESET_ALL_MEMORY_COMMAND_ID).unwrap();
+        assert_eq!(
+            reset_all.default_permission,
+            PlatformCommandPermission::AdminOnly
+        );
+        assert!(!is_allowed(&config, reset_all, false));
 
         // Opening `/reset` up to a group used to hand out the memory wipe with
         // it, because both scopes shared one descriptor.

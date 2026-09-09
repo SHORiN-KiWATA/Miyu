@@ -219,6 +219,20 @@ pub(crate) fn init_data_db(conn: &Connection) -> Result<()> {
         "origin_message_id",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    // 会话级重置(`/reset-memory`)按这一列筛行。旧行没有标记(空串),只能
+    // 被 `reset_all` 清掉——纯增量迁移不回填,也无从回填。
+    add_column_if_missing(
+        conn,
+        "facts",
+        "origin_session_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        conn,
+        "pending_events",
+        "origin_session_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     migrate_memory_access_v1(conn)?;
     migrate_memory_subjects_v2(conn)?;
     conn.execute_batch(
@@ -304,6 +318,13 @@ pub(crate) fn init_state_db(conn: &Connection) -> Result<()> {
         conn,
         "evicted_turns",
         "owner_display_name",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    // 与 data 库同款:会话级重置只删得掉带标记的行。
+    add_column_if_missing(
+        conn,
+        "evicted_turns",
+        "origin_session_id",
         "TEXT NOT NULL DEFAULT ''",
     )?;
     conn.execute(

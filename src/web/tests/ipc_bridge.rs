@@ -486,6 +486,8 @@ async fn reset_memory_bumps_generation_in_the_requested_scope_only() {
         &state,
         IpcCommand::ResetMemory {
             mode: Some("dev".to_string()),
+            scope: ipc::MemoryResetScope::All,
+            session: None,
         },
     )
     .await
@@ -496,6 +498,56 @@ async fn reset_memory_bumps_generation_in_the_requested_scope_only() {
     let (_, normal_gen_after) = normal_store.identity().unwrap();
     assert_eq!(dev_gen_after, dev_gen_before + 1);
     assert_eq!(normal_gen_after, normal_gen_before);
+}
+
+/// 会话级重置清的是命令里点名的那个会话，不是 daemon 的全局指针——REPL 可以
+/// 挂在一条会话上而指针早就跟着别处走了。
+#[tokio::test]
+async fn session_scoped_memory_reset_honours_the_named_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let persona = active_persona_scope(&state);
+    state
+        .state_store
+        .adopt_sessions_for_persona(&persona)
+        .unwrap();
+    let target = state
+        .state_store
+        .create_session(&persona, "被点名的会话", "user", None)
+        .unwrap();
+    let config = state.manager.lock().unwrap().config.clone();
+    let store = crate::memory::MemoryStore::new(&config, &state.paths);
+    store
+        .clone()
+        .with_session_id(&target.session_id)
+        .remember_fact("点名会话记住 XMODIFIERS 这件事", "test")
+        .unwrap();
+    store
+        .clone()
+        .with_session_id(&state.state_store.session_id())
+        .remember_fact("指针会话记住 XMODIFIERS 这件事", "test")
+        .unwrap();
+
+    let data = handle_session_command(
+        &state,
+        IpcCommand::ResetMemory {
+            mode: None,
+            scope: ipc::MemoryResetScope::Session,
+            session: Some(ipc::SessionRef::Id {
+                id: target.session_id.clone(),
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(data["summary"]["facts"], 1);
+
+    let recalled = store
+        .recall_memories("XMODIFIERS", 5, false)
+        .unwrap()
+        .to_string();
+    assert!(!recalled.contains("点名会话"), "点名的会话没被清掉");
+    assert!(recalled.contains("指针会话"), "清到全局指针那条会话头上了");
 }
 
 #[tokio::test]

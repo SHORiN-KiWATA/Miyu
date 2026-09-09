@@ -257,9 +257,13 @@ pub(in crate::web) struct ResetMemoryRequest {
     /// `"dev"` 走开发模式那份记忆；其余（含缺省）是普通模式的。
     #[serde(default)]
     mode: Option<String>,
+    /// 会话级重置清哪个会话。缺省用 daemon 的当前指针——但 WebUI 可以同时
+    /// 开着好几个会话，那个指针未必是发命令的这一个，所以前端一定要带上。
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
-/// `/reset-memory`：清空当前模式的长期记忆。
+/// `/reset-memory`：只清这次会话记下的长期记忆。
 ///
 /// dev 的记忆挂在保留人格名下，钥匙必须与 Agent 构造时同一把 `dev_scoped()`，
 /// 否则清的是另一份（与 `IpcCommand::ResetMemory` 同一段逻辑）。
@@ -269,15 +273,36 @@ pub(in crate::web) async fn reset_memory_http(
     Json(request): Json<ResetMemoryRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_mutation(&headers, &state)?;
-    let config = state.manager.lock().unwrap().config.clone();
-    let config = if request.mode.as_deref() == Some("dev") {
-        config.dev_scoped()
-    } else {
-        config
+    let config = reset_memory_config(&state, request.mode.as_deref());
+    let session_id = match request.session_id {
+        Some(session_id) if !session_id.trim().is_empty() => session_id,
+        _ => state.state_store.session_id().to_string(),
     };
-    let memory = crate::memory::MemoryStore::new(&config, &state.paths);
-    memory
+    let summary = crate::memory::MemoryStore::new(&config, &state.paths)
+        .reset_session(&session_id)
+        .map_err(|error| ApiError::internal(safe_error_message(&error)))?;
+    Ok(Json(json!({ "ok": true, "text": summary.describe() })))
+}
+
+/// `/reset-all-memory`：清空当前模式的全部长期记忆。
+pub(in crate::web) async fn reset_all_memory_http(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<ResetMemoryRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_mutation(&headers, &state)?;
+    let config = reset_memory_config(&state, request.mode.as_deref());
+    crate::memory::MemoryStore::new(&config, &state.paths)
         .reset_all(false)
         .map_err(|error| ApiError::internal(safe_error_message(&error)))?;
     Ok(Json(json!({ "ok": true })))
+}
+
+fn reset_memory_config(state: &DaemonState, mode: Option<&str>) -> crate::config::AppConfig {
+    let config = state.manager.lock().unwrap().config.clone();
+    if mode == Some("dev") {
+        config.dev_scoped()
+    } else {
+        config
+    }
 }

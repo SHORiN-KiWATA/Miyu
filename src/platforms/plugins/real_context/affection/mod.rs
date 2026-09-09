@@ -11,6 +11,7 @@ use crate::config::{AppConfig, RealContextPluginSettings, REAL_CONTEXT_PLUGIN_ID
 use crate::i18n::{text_for, Locale};
 use crate::llm::{ChatMessage, OpenAiCompatibleClient};
 use crate::paths::MiyuPaths;
+use crate::platforms::access_control::ONEBOT_PLATFORM;
 use crate::platforms::{ConversationKind, PlatformTurnContext};
 use crate::state::{PlatformPluginScopeKey, StateStore};
 use crate::tools::{ToolRegistry, ToolSpec};
@@ -27,6 +28,8 @@ const LEGACY_PROFILE_KEY: &str = "affection_profile";
 const DEFAULT_PROFILE_KEY: &str = "affection_profile:default";
 const UPDATE_QUEUE_CAPACITY: usize = 4;
 const MAX_STORED_EVENTS: usize = 50;
+/// How many affection changes `query_qq_relationship` reports back.
+const QUERY_RECENT_CHANGES: usize = 3;
 const UPDATE_HISTORY_MESSAGES: usize = 12;
 const UPDATE_HISTORY_BYTES: usize = 48 * 1024;
 
@@ -100,13 +103,6 @@ pub(super) struct AffectionSnapshot {
     pub(super) level_name: &'static str,
     pub(super) relationship_prompt: String,
     pub(super) reply_bias: f64,
-    prompt: String,
-}
-
-impl AffectionSnapshot {
-    pub(super) fn prompt(&self) -> &str {
-        &self.prompt
-    }
 }
 
 #[derive(Default)]
@@ -260,61 +256,16 @@ pub(super) fn snapshot(
     };
     let level = level_for_score(settings, profile.score, &context.sender_id);
     let reply_bias = reply_bias(settings, profile.score, &context.sender_id);
-    let tags = if profile.tags.is_empty() {
-        "无".to_string()
-    } else {
-        profile.tags.join("、")
-    };
-    let note = if profile.note.trim().is_empty() {
-        "无"
-    } else {
-        profile.note.trim()
-    };
-    let recent = profile
-        .events
-        .iter()
-        .take(settings.affection_recent_events_for_prompt)
-        .map(|event| {
-            let direction = if event.delta > 0.0001 {
-                "变近"
-            } else if event.delta < -0.0001 {
-                "变远"
-            } else {
-                "无明显变化"
-            };
-            format!(
-                "- {}: 关系{}，原因：{}{}",
-                format_timestamp(event.created_at),
-                direction,
-                if event.reason.trim().is_empty() {
-                    "无原因"
-                } else {
-                    event.reason.trim()
-                },
-                tag_change_suffix(event)
-            )
-        })
-        .collect::<Vec<_>>();
-    let recent = if recent.is_empty() {
-        String::new()
-    } else {
-        format!("\n最近关系变化（新到旧）：\n{}", recent.join("\n"))
-    };
-    let prompt = format!(
-        "<qq-affection-context>\n这是内部关系信息，不得在回复中提到分数、档案、标签来源或内部实现。\n对方：{}（QQ {}）\n关系挡位：{}\n回复态度：{}\n对方备注：{}\n对方标签：{}{}\n</qq-affection-context>",
-        profile.sender_name,
-        profile.user_id,
-        level.name,
-        level.prompt,
-        note,
-        tags,
-        recent,
-    );
+    // v7 决策 4 之后这里只剩两个用处:判官那次独立调用的两行输入,以及
+    // ensure_profile 的副作用。原来还拼过一段 <qq-affection-context> 注入,
+    // 里面那句「不得在回复中提到分数、档案、标签来源或内部实现」是当年唯一
+    // 的护栏——快照撤掉后它就成了没人调用的死代码,而接手的
+    // query_qq_relationship 没把这条护栏带走。护栏现在写在工具描述里
+    // (常量字节、每请求发、不进历史化石),这段拼字符串的活删掉。
     Ok(Some(AffectionSnapshot {
         level_name: level.name,
         relationship_prompt: level.prompt.to_string(),
         reply_bias,
-        prompt,
     }))
 }
 
@@ -363,17 +314,17 @@ pub(super) fn register_query_tool(
     context: Arc<PlatformTurnContext>,
     settings: Arc<RealContextPluginSettings>,
 ) {
-    if !settings.affection_enable {
+    if !settings.affection_enable || context.conversation.platform != ONEBOT_PLATFORM {
         return;
     }
     registry.register(
         ToolSpec::new(
             "query_qq_relationship",
-            "Read Miyu's relationship state with a QQ user when relationship context is useful. The result intentionally omits numeric scores.",
+            "Look up how you privately feel about one QQ user: a relationship tier (no numbers), your own tags and notes, and what recently moved it. Let it colour how warmly you talk to them. It is your own read, never a record to quote back, so the tier and the tags stay out of what you say.",
             json!({
                 "type": "object",
                 "properties": {
-                    "user_id": { "type": "string", "description": "要查询关系的 QQ 号" }
+                    "user_id": { "type": "string", "description": "QQ user id." }
                 },
                 "required": ["user_id"],
                 "additionalProperties": false
@@ -384,7 +335,7 @@ pub(super) fn register_query_tool(
                 async move { query_relationship(arguments, context, settings).await }
             },
         )
-        .with_display_name("Query QQ relationship"),
+        .with_display_name("查询 QQ 好感与关系"),
     );
 }
 
@@ -400,14 +351,11 @@ async fn query_relationship(
         let level = level_for_score(&settings, settings.affection_initial_score, &user_id);
         return Ok(json!({
             "ok": true,
-            "has_profile": false,
-            "target_user_id": user_id,
-            "relationship_level": level.name,
-            "relationship_description": level.prompt,
+            "user_id": user_id,
+            "tier": level.name,
             "tags": [],
             "note": "",
-            "recent_changes": [],
-            "reply_guidance": "请用第一人称自然描述关系，不要提到档案、后台或具体数值。"
+            "recent_changes": []
         })
         .to_string());
     };
@@ -416,30 +364,44 @@ async fn query_relationship(
     let recent_changes = profile
         .events
         .iter()
-        .take(3)
-        .map(|event| {
-            json!({
-                "time": format_timestamp(event.created_at),
-                "direction": if event.delta > 0.0001 { "变近" } else if event.delta < -0.0001 { "变远" } else { "无明显变化" },
-                "reason": event.reason,
-                "tags_added": event.tags_add,
-                "tags_removed": event.tags_remove,
-            })
-        })
+        .take(QUERY_RECENT_CHANGES)
+        .map(recent_change_entry)
         .collect::<Vec<_>>();
     Ok(json!({
         "ok": true,
-        "has_profile": true,
-        "target_user_id": user_id,
-        "target_name": profile.sender_name,
-        "relationship_level": level.name,
-        "relationship_description": level.prompt,
+        "user_id": user_id,
+        "tier": level.name,
         "tags": profile.tags,
         "note": profile.note,
-        "recent_changes": recent_changes,
-        "reply_guidance": "请把这些信息改写成自然、有沉浸感的第一人称关系描述；不要输出具体分数或内部实现。"
+        "recent_changes": recent_changes
     })
     .to_string())
+}
+
+// Empty tag lists are dropped instead of shipped as `[]`: an ordinary entry
+// then costs three keys, and the two that survive always carry information.
+fn recent_change_entry(event: &AffectionEvent) -> Value {
+    let direction = if event.delta > 0.0001 {
+        "closer"
+    } else if event.delta < -0.0001 {
+        "farther"
+    } else {
+        "flat"
+    };
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        "time".to_string(),
+        json!(format_timestamp(event.created_at)),
+    );
+    entry.insert("direction".to_string(), json!(direction));
+    entry.insert("reason".to_string(), json!(event.reason));
+    if !event.tags_add.is_empty() {
+        entry.insert("tags_added".to_string(), json!(event.tags_add));
+    }
+    if !event.tags_remove.is_empty() {
+        entry.insert("tags_removed".to_string(), json!(event.tags_remove));
+    }
+    Value::Object(entry)
 }
 
 fn ensure_profile(
@@ -721,7 +683,7 @@ fn build_update_prompt(
         },
         job.sender_name,
         job.sender_id,
-        level.name,
+        level_display(level.name),
         level.prompt,
         if profile.note.trim().is_empty() { "无" } else { profile.note.trim() },
         tags,
@@ -907,7 +869,7 @@ mod tests {
             clamp_score(&settings, 100.0, "1"),
             settings.affection_regular_max_score
         );
-        assert_eq!(level_for_score(&settings, 100.0, "1").name, "信任");
+        assert_eq!(level_for_score(&settings, 100.0, "1").name, "trusted");
     }
 
     #[test]
@@ -964,11 +926,13 @@ mod tests {
             "3888705871",
             "default",
             10.0,
-            "中立",
+            "neutral",
             Locale::Zh,
         );
         assert!(chinese.starts_with("【好感度：初始化】\n"));
         assert!(chinese.contains("用户：Shiroha_xyz（QQ 3888705871）"));
+        // 档位的规范名是英文 slug,中文日志要翻回展示名。
+        assert!(chinese.contains("初始关系：中立"));
         assert!(chinese.contains("初始分数：10.000"));
 
         let english = format_affection_initialized_log(
@@ -978,7 +942,7 @@ mod tests {
             "3888705871",
             "default",
             10.0,
-            "中立",
+            "neutral",
             Locale::En,
         );
         assert!(english.starts_with("[Affection: initialized]\n"));

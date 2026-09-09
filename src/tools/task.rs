@@ -174,7 +174,19 @@ async fn run_task(
     {
         return spawn_background_task(context, params, anchor, progress).await;
     }
-    run_task_core(context, progress, params, anchor).await
+    Ok(run_task_core(context, progress, params, anchor)
+        .await?
+        .output)
+}
+
+/// 一次子代理运行的结果。
+///
+/// `state` 以前是后台路径把 `output` 当 JSON 反解出来的——而 08-21 的
+/// token-diet 把成功路径改成了纯文本,那次反解从此永远失败、悄悄退化成
+/// "completed",`budget_reached` 被当成正常完成上报。现在直接带出来。
+struct TaskRun {
+    output: String,
+    state: &'static str,
 }
 
 /// Detach the subagent run behind the shared background-job registry: its
@@ -193,21 +205,17 @@ async fn spawn_background_task(
         &progress,
         move |job_id, log_path| async move {
             let bridge = spawn_subagent_log_bridge(log_path.clone());
-            let output = run_task_core(context, bridge, params, anchor).await;
-            let state_label = match &output {
-                Ok(json) => serde_json::from_str::<Value>(json)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("state")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_else(|| "completed".to_string()),
-                Err(_) => "error".to_string(),
+            let run = run_task_core(context, bridge, params, anchor).await;
+            let state_label = match &run {
+                Ok(run) => run.state,
+                Err(_) => "error",
             };
-            let tail = match &output {
-                Ok(json) => format!("\n{}\n{json}\n", crate::tools::jobs::SUBAGENT_RESULT_MARKER),
+            let tail = match &run {
+                Ok(run) => format!(
+                    "\n{}\n{}\n",
+                    crate::tools::jobs::SUBAGENT_RESULT_MARKER,
+                    run.output
+                ),
                 Err(error) => format!("\n{}\n{error}\n", crate::tools::jobs::SUBAGENT_ERROR_MARKER),
             };
             let _ = std::fs::OpenOptions::new()
@@ -218,7 +226,7 @@ async fn spawn_background_task(
                     file.write_all(tail.as_bytes())
                 });
             tracing::debug!(job_id = %job_id, state = %state_label, "background subagent finished");
-            match state_label.as_str() {
+            match state_label {
                 "completed" | "budget_reached" => {
                     crate::tools::jobs::JobState::Exited { code: Some(0) }
                 }
@@ -281,7 +289,7 @@ async fn run_task_core(
     progress: crate::tools::ToolProgress,
     params: TaskParams,
     anchor: AuditAnchor,
-) -> Result<String> {
+) -> Result<TaskRun> {
     let TaskParams {
         description,
         prompt,
@@ -340,7 +348,10 @@ async fn run_task_core(
                 None,
                 &model_choice,
             );
-            return Ok(output);
+            return Ok(TaskRun {
+                output,
+                state: "error",
+            });
         }
     };
 
@@ -382,7 +393,7 @@ async fn run_task_core(
         Some(&stats),
         &model_choice,
     );
-    Ok(output)
+    Ok(TaskRun { output, state })
 }
 
 /// Persists an audit session for a subagent run: a hidden `kind='subagent'`

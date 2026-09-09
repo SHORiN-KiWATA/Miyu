@@ -74,12 +74,24 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 concat!("src=\"/lightbox.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
+                "src=\"/preview.js\"",
+                concat!("src=\"/preview.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
+                "src=\"/linkcards.js\"",
+                concat!("src=\"/linkcards.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
                 "src=\"/todos.js\"",
                 concat!("src=\"/todos.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
                 "src=\"/shared.js\"",
                 concat!("src=\"/shared.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
+                "src=\"/highlight.js\"",
+                concat!("src=\"/highlight.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
                 "href=\"/vendor/katex/katex.min.css\"",
@@ -93,6 +105,14 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 "src=\"/vendor/katex/katex.min.js\"",
                 concat!(
                     "src=\"/vendor/katex/katex.min.js?v=",
+                    env!("MIYU_BUILD_ID"),
+                    "\""
+                ),
+            )
+            .replace(
+                "src=\"/vendor/prism/prism.min.js\"",
+                concat!(
+                    "src=\"/vendor/prism/prism.min.js?v=",
                     env!("MIYU_BUILD_ID"),
                     "\""
                 ),
@@ -140,6 +160,22 @@ pub(in crate::web) async fn lightbox_js_asset(headers: HeaderMap) -> Response {
     )
 }
 
+pub(in crate::web) async fn preview_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        PREVIEW_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn linkcards_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        LINKCARDS_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(in crate::web) async fn todos_js_asset(headers: HeaderMap) -> Response {
     embedded_asset(
         &headers,
@@ -176,6 +212,7 @@ static DASH_SCRIPTS: &[(&str, &str)] = &[
         "dash-ledger-manage.js",
         include_str!("../../web/dash-ledger-manage.js"),
     ),
+    ("dash-sponsor.js", include_str!("../../web/dash-sponsor.js")),
     // 设置页(09-04 重做):字段模式表 + 渲染层,走同一条静态表。
     (
         "settings-schema.js",
@@ -200,6 +237,22 @@ pub(in crate::web) async fn dash_script_asset(
 
 pub(in crate::web) async fn logo_asset(headers: HeaderMap) -> Response {
     embedded_asset(&headers, MIYU_LOGO, "image/png")
+}
+
+pub(in crate::web) async fn highlight_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        HIGHLIGHT_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn prism_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        PRISM_JS.as_bytes(),
+        "text/javascript; charset=utf-8",
+    )
 }
 
 pub(in crate::web) async fn katex_js_asset(headers: HeaderMap) -> Response {

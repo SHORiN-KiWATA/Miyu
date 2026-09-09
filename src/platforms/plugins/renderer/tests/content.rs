@@ -3,6 +3,79 @@
 use super::shared::*;
 use crate::platforms::plugins::renderer::*;
 
+/// 把一份 markdown 里所有可见文字摊平成一个字符串。表格的文字不在 `spans`
+/// 里而在 `table` 里,两处都要走到。
+fn flattened_text(markdown: &str) -> String {
+    let mut out = String::new();
+    for block in collect_blocks(markdown) {
+        for span in &block.spans {
+            out.push_str(&span.text);
+        }
+        let Some(table) = block.table.as_ref() else {
+            continue;
+        };
+        for cell in table.header.iter().chain(table.rows.iter().flatten()) {
+            for span in cell {
+                out.push_str(&span.text);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn markdown_links_keep_their_url_visible() {
+    // 图里点不了也复制不了,链接被 pulldown-cmark 吃掉之后读者根本不知道它指向哪。
+    let text = flattened_text("详见 [Miyu 主页](https://github.com/shorinkiwata/Miyu) 谢谢。");
+    assert!(text.contains("Miyu 主页"), "{text}");
+    assert!(
+        text.contains("(https://github.com/shorinkiwata/Miyu)"),
+        "链接必须出现在正文里: {text}"
+    );
+}
+
+#[test]
+fn autolinks_do_not_print_the_url_twice() {
+    let text = flattened_text("[https://example.com](https://example.com)");
+    assert_eq!(
+        text.matches("https://example.com").count(),
+        1,
+        "标题本身就是网址时不该再补一遍: {text}"
+    );
+    let bare = flattened_text("<https://example.com/>");
+    assert_eq!(bare.matches("example.com").count(), 1, "{bare}");
+}
+
+#[test]
+fn image_urls_survive_too() {
+    // 图渲染器画不出图片,地址一丢读者就完全够不到那张图。
+    let text = flattened_text("![群里那张截图](https://example.com/shot.png)");
+    assert!(text.contains("群里那张截图"), "{text}");
+    assert!(text.contains("(https://example.com/shot.png)"), "{text}");
+}
+
+#[test]
+fn images_without_alt_text_still_show_their_url() {
+    // `![](url)` 以前整块什么都不剩。
+    let text = flattened_text("![](https://example.com/bare.png)");
+    assert_eq!(text.trim(), "(https://example.com/bare.png)", "{text}");
+}
+
+#[test]
+fn an_image_wrapped_in_a_link_keeps_both_targets() {
+    let text =
+        flattened_text("[![缩略图](https://example.com/thumb.png)](https://example.com/full)");
+    assert!(text.contains("(https://example.com/thumb.png)"), "{text}");
+    assert!(text.contains("(https://example.com/full)"), "{text}");
+}
+
+#[test]
+fn links_inside_tables_carry_their_url_too() {
+    let text =
+        flattened_text("| 名字 | 地址 |\n| --- | --- |\n| [首页](https://a.example) | x |\n");
+    assert!(text.contains("(https://a.example)"), "{text}");
+}
+
 #[test]
 fn renderer_client_and_payloads_satisfy_async_bounds() {
     fn assert_send_static<T: Send + 'static>() {}
@@ -432,6 +505,41 @@ fn documents_over_the_pixel_budget_fail_instead_of_truncating() {
     };
     let error = render(&markdown, &config).unwrap_err();
     assert!(error.to_string().contains("pixel limit"));
+}
+
+/// 表格样张(人工看效果用,不进 CI):cargo test render_table_sample -- --ignored
+#[test]
+#[ignore]
+fn render_table_sample() {
+    let markdown = r#"当前记录还是 14 位赞助人,共 17 笔,合计 ¥206.37。名单同步在
+[赞助面板](https://github.com/shorinkiwata/Miyu/wiki/sponsors),自动链接
+<https://example.com/> 不会被写两遍，图片同理：![榜单截图](https://example.com/board.png)
+
+| 排名 | 赞助人 | QQ | 金额 | 笔数 |
+|------|--------|---:|-----:|-----:|
+| 1 | [sudo] Password for nobody | 596113920 | ¥49.00 | 1 |
+| 2 | 沐风 | 3058704216 | ¥30.00 | 1 |
+| 3 | RyanZ | 2077987156 | ¥20.00 | 1 |
+| 4 | Yulliil.Moe | 1698752554 | ¥19.83 | 2 |
+| 5 | 走啦 | 5429162774 | ¥15.64 | 3 |
+| 6 | tythefish v2 | 3819589247 | ¥15.00 | 1 |
+| 7 | 换了又 | 3203029400 | ¥15.00 | 1 |
+| 8 | 玛丽小姐 | 3504638270 | ¥10.00 | 1 |
+| 9 | sudo 原子.fish | 2479343809 | ¥8.00 | 1 |
+| 10 | 雾雨凝霜 | 1146112953 | ¥8.00 | 1 |
+| 11 | 素萝MISS | 1512013587 | ¥5.20 | 1 |
+| 12 | シオフフ | 1531229883 | ¥5.00 | 1 |
+| 13 | 回笼觉觉主 | 5297780882 | ¥0.50 | 1 |
+"#;
+    let pages = render(markdown, &RenderConfig::default()).unwrap();
+    let out = std::env::temp_dir().join("miyu-table-sample.png");
+    std::fs::write(&out, &pages[0].png).unwrap();
+    eprintln!(
+        "sample: {} ({}x{})",
+        out.display(),
+        pages[0].width,
+        pages[0].height
+    );
 }
 
 /// 样张生成器(人工看效果用,不进 CI):cargo test render_font_sample -- --ignored

@@ -32,16 +32,16 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 #[allow(unused_imports)]
 pub use conversation_db::{
     interrupted_text, pending_placeholder, ArtifactAsset, ArtifactAssetData, ConversationDb,
-    GoalDenied, GoalPhase, GoalRecord, ImageAsset, ImageAssetData, PlatformAccessActor,
-    PlatformAccessGrant, PlatformAccessGrantKey, PlatformMemeRefRecord, PlatformPluginScopeKey,
-    PlatformSessionBinding, PlatformSessionBindingKey, QueuedPrompt, QueuedPromptAttachment,
-    RedoCandidate, RedoInputKind, RedoStart, ReplayEntry, SessionOverview, SessionRecord,
-    ToolFlowCall, ToolFlowRound, ToolFootprint, Turn, TurnFollowup, TurnInlineMedia,
-    TurnJournalEvent, TurnRedoCheckpointPayload, TurnReplay, TurnStatus, UserAttachment,
-    UserAttachmentData, DEFAULT_MAX_GOAL_ROUNDS, GLOBAL_PLATFORM_ACCOUNT_SCOPE,
-    INLINE_MEDIA_KIND_IMAGE, INLINE_MEDIA_KIND_PDF, INLINE_MEDIA_KIND_TEXT,
-    INLINE_MEDIA_KIND_VIDEO, USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE,
-    USER_ATTACHMENT_KIND_TEXT,
+    GoalDenied, GoalPhase, GoalRecord, ImageAsset, ImageAssetData, NewSponsorRecord,
+    PlatformAccessActor, PlatformAccessGrant, PlatformAccessGrantKey, PlatformMemeRefRecord,
+    PlatformPluginScopeKey, PlatformSessionBinding, PlatformSessionBindingKey, QueuedPrompt,
+    QueuedPromptAttachment, RedoCandidate, RedoInputKind, RedoStart, ReplayEntry, SessionOverview,
+    SessionRecord, SponsorOrder, SponsorRecord, SponsorSummary, SponsorTotal, ToolFlowCall,
+    ToolFlowRound, ToolFootprint, Turn, TurnFollowup, TurnInlineMedia, TurnJournalEvent,
+    TurnRedoCheckpointPayload, TurnReplay, TurnStatus, UserAttachment, UserAttachmentData,
+    DEFAULT_MAX_GOAL_ROUNDS, GLOBAL_PLATFORM_ACCOUNT_SCOPE, INLINE_MEDIA_KIND_IMAGE,
+    INLINE_MEDIA_KIND_PDF, INLINE_MEDIA_KIND_TEXT, INLINE_MEDIA_KIND_VIDEO,
+    USER_ATTACHMENT_KIND_FILE, USER_ATTACHMENT_KIND_IMAGE, USER_ATTACHMENT_KIND_TEXT,
 };
 pub use usage::{
     UsageMeta, UsageRange, UsageSnapshot, UsageStats, USAGE_KIND_AFFECTION, USAGE_KIND_GROUP_JOIN,

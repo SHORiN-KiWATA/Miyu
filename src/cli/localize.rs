@@ -51,7 +51,8 @@ pub(in crate::cli) fn root_help_template() -> String {
   variant            Switch the terminal session model's thinking level
   history            Show conversation history
   reset              Clear the terminal-integration session context
-  reset-memory       Erase this persona's long-term memory
+  reset-memory       Erase the long-term memory this terminal session produced
+  reset-all-memory   Erase this persona's entire long-term memory
   pop                Move conversation turns out of active context
   compact            Compact the terminal-integration session context now",
         "  fish-init          集成到 fish，集成后可在终端直接使用自然语言交流
@@ -62,7 +63,8 @@ pub(in crate::cli) fn root_help_template() -> String {
   variant            切换终端集成会话模型的思考档位
   history            显示会话历史
   reset              清除终端集成会话上下文
-  reset-memory       清空长期记忆
+  reset-memory       清空本次终端会话记下的长期记忆
+  reset-all-memory   清空当前人格的全部长期记忆
   pop                将对话轮次移出当前上下文
   compact            立即压缩终端集成会话上下文",
     );
@@ -285,8 +287,13 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         ),
         (
             "reset-memory",
-            "Erase this persona's long-term memory",
-            "清空长期记忆",
+            "Erase the long-term memory this terminal session produced",
+            "清空本次终端会话记下的长期记忆",
+        ),
+        (
+            "reset-all-memory",
+            "Erase this persona's entire long-term memory",
+            "清空当前人格的全部长期记忆",
         ),
         (
             "wipe",
@@ -321,6 +328,7 @@ pub(in crate::cli) fn localize_subcommands(mut command: clap::Command) -> clap::
         "history",
         "reset",
         "reset-memory",
+        "reset-all-memory",
         "pop",
         "compact",
     ] {

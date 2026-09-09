@@ -1,4 +1,7 @@
 mod download;
+#[cfg(test)]
+use crate::tools::net_guard::is_safe_remote_url;
+use crate::tools::net_guard::resolve_public_remote_target;
 mod providers;
 mod ranking;
 use download::*;
@@ -18,8 +21,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
-use std::net::IpAddr;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};

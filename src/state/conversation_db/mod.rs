@@ -14,6 +14,8 @@ pub use rows::{interrupted_text, pending_placeholder};
 mod sessions;
 mod shared_files;
 pub use shared_files::SharedFile;
+mod sponsors;
+pub use sponsors::*;
 mod turns;
 mod types;
 pub use types::*;
@@ -27,6 +29,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 

@@ -11,6 +11,7 @@ pub(in crate::web) mod memes;
 pub(in crate::web) mod memory;
 pub(in crate::web) mod qq;
 pub(in crate::web) mod scripts;
+pub(in crate::web) mod sponsor;
 
 use crate::config::AppConfig;
 use crate::web::*;

@@ -925,12 +925,38 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     footer.update_cumulative_tokens(cumulative_tokens);
                 }
                 ReplSlashCommand::ResetMemory => {
-                    // 不二次确认:只清长期记忆,会话历史/技能/知识库都不动。
+                    // 不二次确认:只清本会话记下的那部分,会话历史/技能/知识库
+                    // 都不动。会话点名发过去,免得 daemon 的全局指针早已换到
+                    // 别的会话上。
+                    let Some((_, data)) = repl_ipc_admin(
+                        paths,
+                        &mut live_repl,
+                        IpcCommand::ResetMemory {
+                            mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
+                            scope: crate::ipc::MemoryResetScope::Session,
+                            session: Some(crate::ipc::SessionRef::Id {
+                                id: active_session_id.clone(),
+                            }),
+                        },
+                    )
+                    .await?
+                    else {
+                        continue;
+                    };
+                    repl_note(
+                        &mut live_repl,
+                        &format!("\x1b[2m{}\x1b[0m\n", ipc_text(&data, "text")),
+                    )?;
+                }
+                ReplSlashCommand::ResetAllMemory => {
+                    // 不二次确认:清的是长期记忆全量,会话历史/技能/知识库仍不动。
                     let Some((_, _)) = repl_ipc_admin(
                         paths,
                         &mut live_repl,
                         IpcCommand::ResetMemory {
                             mode: (mode == AgentMode::Dev).then(|| "dev".to_string()),
+                            scope: crate::ipc::MemoryResetScope::All,
+                            session: None,
                         },
                     )
                     .await?
@@ -941,7 +967,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                         &mut live_repl,
                         &format!(
                             "\x1b[2m{}\x1b[0m\n",
-                            t("long-term memory erased", "长期记忆已清空")
+                            t("all long-term memory erased", "全部长期记忆已清空")
                         ),
                     )?;
                 }

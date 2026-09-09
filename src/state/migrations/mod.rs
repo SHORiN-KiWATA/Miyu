@@ -182,10 +182,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "queued_prompt_context_messages",
         apply: apply_v31_queued_prompt_context_messages,
     },
+    Migration {
+        version: 32,
+        name: "sponsor_records",
+        apply: apply_v32_sponsor_records,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 31;
+pub const LATEST_VERSION: i64 = 32;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

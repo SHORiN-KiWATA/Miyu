@@ -117,6 +117,8 @@ pub enum Command {
     Reset(ResetArgs),
     #[command(name = "reset-memory")]
     ResetMemoryCli,
+    #[command(name = "reset-all-memory")]
+    ResetAllMemoryCli,
     Wipe(WipeArgs),
     Web(WebArgs),
     Daemon(DaemonArgs),

@@ -389,7 +389,10 @@ pub(in crate::web) async fn dash_memory_pending_clear(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// 重置整个人格的记忆(事实/经历/待处理/修订/逐出归档),技能目录不动。
+/// 清空整个人格的记忆(事实/经历/待处理/修订/逐出归档),技能目录不动。
+///
+/// 面板按人格取数,没有会话维度,所以这里永远是"全部"那一档;要按会话清得
+/// 从聊天面 `/reset-memory` 走。
 pub(in crate::web) async fn dash_memory_reset(
     State(state): State<DaemonState>,
     headers: HeaderMap,

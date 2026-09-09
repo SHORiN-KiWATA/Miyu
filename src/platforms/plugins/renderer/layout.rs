@@ -217,16 +217,36 @@ pub(in crate::platforms::plugins::renderer) fn layout_table(
     }
     let column_count_u32 =
         u32::try_from(column_count).context("too many Markdown table columns")?;
-    let base_width = COLUMN_WIDTH / column_count_u32;
-    let remainder = COLUMN_WIDTH % column_count_u32;
-    if base_width <= TABLE_CELL_PADDING.saturating_mul(2) {
+    if COLUMN_WIDTH / column_count_u32 <= TABLE_CELL_PADDING.saturating_mul(2) {
         bail!("Markdown table has too many columns to render safely");
     }
 
-    let mut widths = Vec::with_capacity(column_count);
-    for index in 0..column_count_u32 {
-        widths.push(base_width + u32::from(index < remainder));
+    // 先量一遍每列的自然宽度（不换行时要多宽），再按内容分配。等分会让只装
+    // 一个字符的序号列和九位 QQ 号列一样宽，后者装不下就被逐字劈成两行。
+    let mut natural = vec![0_u32; column_count];
+    measure_row(
+        font_system,
+        &table.header,
+        true,
+        config,
+        palette,
+        fonts,
+        &mut natural,
+    );
+    for cells in &table.rows {
+        measure_row(
+            font_system,
+            cells,
+            false,
+            config,
+            palette,
+            fonts,
+            &mut natural,
+        );
     }
+    let metrics = metrics_for(BlockKind::Table, InlineStyle::default(), config);
+    let min_content = (metrics.font_size * 2.0).ceil().max(1.0) as u32;
+    let widths = plan_table_columns(&natural, COLUMN_WIDTH, TABLE_CELL_PADDING, min_content);
 
     let mut rows = Vec::with_capacity(table.rows.len().saturating_add(1));
     let mut source_y = 0_u32;
@@ -282,6 +302,67 @@ pub(in crate::platforms::plugins::renderer) fn layout_table(
         default_color: color(palette.text),
         inline_code_background: palette.code_background,
     })
+}
+
+/// 把一行单元格的自然宽度并进 `natural`（逐列取最大值）。
+#[allow(clippy::too_many_arguments)]
+fn measure_row(
+    font_system: &mut FontSystem,
+    cells: &[Vec<RichSpan>],
+    header: bool,
+    config: &NormalizedConfig,
+    palette: Palette,
+    fonts: &ResolvedFonts,
+    natural: &mut [u32],
+) {
+    for (index, spans) in cells.iter().enumerate() {
+        let Some(slot) = natural.get_mut(index) else {
+            break;
+        };
+        let width = natural_text_width(
+            font_system,
+            spans,
+            BlockKind::Table,
+            header,
+            config,
+            palette,
+            fonts,
+        );
+        *slot = (*slot).max(width);
+    }
+}
+
+/// 不设宽度约束、关掉换行地塑形一次，读回实际排出来的行宽。
+#[allow(clippy::too_many_arguments)]
+fn natural_text_width(
+    font_system: &mut FontSystem,
+    spans: &[RichSpan],
+    kind: BlockKind,
+    force_bold: bool,
+    config: &NormalizedConfig,
+    palette: Palette,
+    fonts: &ResolvedFonts,
+) -> u32 {
+    if spans.is_empty() {
+        return 0;
+    }
+    let buffer = shape_rich_buffer(
+        font_system,
+        spans,
+        kind,
+        None,
+        Wrap::None,
+        force_bold,
+        Alignment::None,
+        config,
+        palette,
+        fonts,
+    );
+    buffer
+        .layout_runs()
+        .map(|run| run.line_w.ceil().max(0.0) as u32)
+        .max()
+        .unwrap_or(0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -354,6 +435,41 @@ pub(in crate::platforms::plugins::renderer) fn layout_rich_buffer(
     fonts: &ResolvedFonts,
 ) -> (Buffer, u32, Color) {
     let metrics = metrics_for(kind, InlineStyle::default(), config);
+    let buffer = shape_rich_buffer(
+        font_system,
+        spans,
+        kind,
+        Some(width),
+        Wrap::WordOrGlyph,
+        force_bold,
+        alignment,
+        config,
+        palette,
+        fonts,
+    );
+    let text_height = buffer
+        .layout_runs()
+        .map(|run| (run.line_top + run.line_height).ceil().max(1.0) as u32)
+        .max()
+        .unwrap_or_else(|| metrics.line_height.ceil().max(1.0) as u32);
+    (buffer, text_height, color(palette.text))
+}
+
+/// 塑形一段富文本。`width` 为 `None` 时不设宽度约束——量自然宽度用。
+#[allow(clippy::too_many_arguments)]
+fn shape_rich_buffer(
+    font_system: &mut FontSystem,
+    spans: &[RichSpan],
+    kind: BlockKind,
+    width: Option<u32>,
+    wrap: Wrap,
+    force_bold: bool,
+    alignment: Alignment,
+    config: &NormalizedConfig,
+    palette: Palette,
+    fonts: &ResolvedFonts,
+) -> Buffer {
+    let metrics = metrics_for(kind, InlineStyle::default(), config);
     let default_attrs = attrs_for(
         kind,
         InlineStyle {
@@ -390,8 +506,8 @@ pub(in crate::platforms::plugins::renderer) fn layout_rich_buffer(
         Alignment::None => None,
     };
     let mut buffer = Buffer::new(font_system, metrics);
-    buffer.set_size(Some(width.max(1) as f32), None);
-    buffer.set_wrap(Wrap::WordOrGlyph);
+    buffer.set_size(width.map(|width| width.max(1) as f32), None);
+    buffer.set_wrap(wrap);
     buffer.set_rich_text(
         rich_spans
             .iter()
@@ -401,12 +517,7 @@ pub(in crate::platforms::plugins::renderer) fn layout_rich_buffer(
         alignment,
     );
     buffer.shape_until_scroll(font_system, true);
-    let text_height = buffer
-        .layout_runs()
-        .map(|run| (run.line_top + run.line_height).ceil().max(1.0) as u32)
-        .max()
-        .unwrap_or_else(|| metrics.line_height.ceil().max(1.0) as u32);
-    (buffer, text_height, color(palette.text))
+    buffer
 }
 
 #[derive(Clone)]

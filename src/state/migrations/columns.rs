@@ -258,3 +258,38 @@ pub(in crate::state) fn apply_v31_queued_prompt_context_messages(conn: &Connecti
         "TEXT NOT NULL DEFAULT '[]'",
     )
 }
+
+/// v32: 赞助记账。一笔一行的追加型子表——总额/榜单一律现算,不另存一份
+/// 「档案」缓存:那种缓存要在每次增删改后重算,而重算漏一处就是长期对不上账
+/// (AGENTS §3.2)。
+///
+/// 金额存最小货币单位的整数(分),不用浮点:钱不能有舍入误差。
+/// `cny_minor` 是记账当刻按实时汇率折算的人民币值,和 `fx_rate` / `fx_source`
+/// 一起冻结在行里——排行榜要的是一个稳定的口径,不能今天拉一次汇率、明天再拉
+/// 一次,让历史名次自己晃。人民币记录的 cny_minor 就等于 amount_minor。
+pub(in crate::state) fn apply_v32_sponsor_records(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sponsor_records (
+            record_id    INTEGER PRIMARY KEY,
+            platform     TEXT NOT NULL DEFAULT '',
+            account_id   TEXT NOT NULL DEFAULT '',
+            sponsor_id   TEXT NOT NULL,
+            sponsor_name TEXT NOT NULL DEFAULT '',
+            amount_minor INTEGER NOT NULL,
+            currency     TEXT NOT NULL,
+            cny_minor    INTEGER NOT NULL,
+            fx_rate      REAL NOT NULL DEFAULT 0,
+            fx_source    TEXT NOT NULL DEFAULT '',
+            note         TEXT NOT NULL DEFAULT '',
+            recorded_by  TEXT NOT NULL DEFAULT '',
+            sponsored_at TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sponsor_records_sponsor
+            ON sponsor_records(sponsor_id, sponsored_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sponsor_records_time
+            ON sponsor_records(sponsored_at DESC);",
+    )?;
+    Ok(())
+}
