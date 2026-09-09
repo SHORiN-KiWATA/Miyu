@@ -8145,6 +8145,143 @@ body.miyu-paused *::after {
 .con-rail-item { transition: background-color .16s ease, color .16s ease, transform .12s ease; }
 .con-rail-item:active { transform: scale(.98); }
 
+/* ── 记账面板(09-09) ────────────────────────────────────────
+ * 只用别名层变量,跟着主题与 matugen 走。金额同时靠符号与颜色区分方向——
+ * 只用红绿的话,色觉差异的人看到的是两列一样的灰。
+ */
+.dash-led-block { margin-bottom: 6px; }
+.dash-led-block .dash-section { margin-top: 0; }
+
+/* 金额列:主金额一行,外币原值一行小字。整列右对齐、等宽,便于竖着比大小。 */
+.dash-led-amount { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; min-width: 0; }
+.dash-led-money { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-ui); white-space: nowrap; }
+.dash-led-money.is-expense { color: var(--danger); }
+.dash-led-money.is-income { color: var(--md-ext-color-online, var(--online)); }
+.dash-led-money.is-transfer { color: var(--text-soft); }
+.dash-led-origin { color: var(--text-faint); font-size: var(--fs-micro); white-space: nowrap; }
+
+/* 分类占比条:第三列放金额,比通用 hbar 的 48px 宽一些才装得下带小数的钱。 */
+.dash-led-hbar { grid-template-columns: minmax(96px, 1fr) minmax(0, 2.4fr) 84px; }
+.dash-led-hbar .dash-cell-mono { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 预算行:名称 / 进度条 / 用量 / 删除。 */
+.dash-led-budget { grid-template-columns: minmax(72px, 1fr) minmax(0, 2fr) auto auto; margin-bottom: 8px; }
+.dash-led-budget .dash-cell-mono { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dash-meter-fill.is-ok { background: var(--md-ext-color-online, var(--online)); }
+.dash-meter-fill.is-near { background: var(--gold); }
+.dash-meter-fill.is-exceeded { background: var(--danger); }
+
+/* 图表区与下面的筛选条之间留一口气,否则折线紧贴分段按钮。 */
+.dash-led-block { margin-bottom: 16px; }
+
+/* 视图标签条:流水 / 账户 / 分类 / 预算 / 数据。 */
+.dash-led-tabs { margin: 0 0 16px; }
+
+/* 视图抬头:标题 + 一句说明 + 右侧的新建按钮。 */
+.dash-led-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.dash-led-head .dash-section { margin: 0 0 4px; }
+.dash-led-hint { margin: 0; max-width: 62ch; color: var(--text-soft); font-size: var(--fs-meta); line-height: 1.6; }
+
+/*
+ * 表单放大一档。原来 .dash-input 的字号写的是 var(--fs-body)——那个变量
+ * 根本不存在,声明整条作废,于是控件字号退回继承(09-09 用户反馈「字体太小」
+ * 的直接原因)。这里显式给足:标签用 UI 档,输入用正文档,高度 40px 保证
+ * 手机上点得准。
+ */
+.dash-led-form .dash-field { gap: 7px; margin-bottom: 16px; }
+.dash-led-form .dash-field-label { font-size: var(--fs-ui); color: var(--text); }
+.dash-led-form .dash-field-hint { font-size: var(--fs-meta); }
+.dash-led-form .dash-input,
+.dash-led-form .dash-select {
+  height: 40px;
+  padding: 0 12px;
+  font-size: var(--fs-chat);
+}
+.dash-led-form input[type="file"].dash-input { height: auto; padding: 9px 12px; }
+.dash-led-form .con-segmented button { padding: 8px 16px; font-size: var(--fs-ui); }
+.dash-led-currency { flex: 0 0 116px; }
+
+/* 就地展开的新建表单,免去一层抽屉。 */
+.dash-led-inline-form {
+  width: min(420px, 100%);
+  margin-bottom: 16px;
+  padding: 14px 16px 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-1);
+}
+
+/* 自制的文件选择器:原生控件的英文标签盖不住,只好藏起来重做一个。 */
+.dash-led-file { display: flex; align-items: center; gap: 10px; }
+.dash-led-filename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font-size: var(--fs-meta);
+}
+
+/* 账户 / 账本卡片。 */
+.dash-led-cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+.dash-led-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-1);
+}
+.dash-led-card.is-current { border-color: var(--accent); }
+.dash-led-card-name { font-size: var(--fs-ui); }
+.dash-led-card-value {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-ui);
+}
+.dash-led-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* 区块内部的行距:说明、按钮、表单各自留白,否则按钮会压到说明上。 */
+.dash-led-block > .dash-led-hint { margin-bottom: 12px; }
+.dash-led-block > .dash-actions { margin-top: 4px; }
+.dash-led-block > .dash-led-form { max-width: 480px; margin-top: 14px; }
+
+/*
+ * 两块图各自成卡片。不给容器的话,左边占比条最右那列金额会紧贴右边的
+ * 折线,读起来像是折线的纵轴刻度(09-09 桌面走查实测)。
+ */
+.dash-led-charts { gap: 16px; margin-bottom: 14px; }
+.dash-led-chart {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 16px 14px;
+}
+.dash-led-chart .dash-section { margin: 0 0 10px; }
+.dash-led-chart .dash-sparkline { height: 84px; }
+
+@media (max-width: 640px) {
+  /*
+   * 窄屏收起备注列。四列在 390px 下挤不开,金额会被裁成「−128.」——
+   * 钱看不全比看不见备注严重得多(09-09 手机走查实测)。备注点开行还在。
+   * 列模板是 D.table 用 element.style 设的,这里必须 !important 才盖得住。
+   */
+  .dash-led-table { --dash-cols: 62px minmax(0, 1fr) minmax(96px, auto) !important; }
+  .dash-led-table .dash-row > *:nth-child(3) { display: none; }
+  .dash-led-hbar { grid-template-columns: minmax(72px, 1fr) minmax(0, 1.6fr) 72px; }
+  .dash-led-budget { grid-template-columns: minmax(56px, 1fr) minmax(0, 1.2fr) auto auto; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .con-panel > .con-inner, .dash-card, .dash-table, .dash-tree-pane, .dash-main-pane, .u-card, .dash-inline-card,
   .dash-row > span, .dash-meme, .dash-timeline-item, .dash-drawer-overlay, .dash-drawer, .dash-confirm[open],

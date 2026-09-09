@@ -404,6 +404,39 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
             axum::routing::delete(dash_scripts_delete),
         )
         .route("/api/dash/scripts/register", post(dash_scripts_register))
+        .route("/api/dash/ledger/overview", get(dash_ledger_overview))
+        .route(
+            "/api/dash/ledger/entries",
+            get(dash_ledger_entries).post(dash_ledger_create_entry),
+        )
+        .route(
+            "/api/dash/ledger/entries/{id}",
+            axum::routing::patch(dash_ledger_update_entry).delete(dash_ledger_delete_entry),
+        )
+        .route(
+            "/api/dash/ledger/entries/{id}/restore",
+            post(dash_ledger_restore_entry),
+        )
+        .route("/api/dash/ledger/books", post(dash_ledger_create_book))
+        .route(
+            "/api/dash/ledger/accounts",
+            post(dash_ledger_create_account),
+        )
+        .route(
+            "/api/dash/ledger/categories",
+            post(dash_ledger_create_category),
+        )
+        .route("/api/dash/ledger/budgets", post(dash_ledger_set_budget))
+        .route(
+            "/api/dash/ledger/budgets/{id}",
+            axum::routing::delete(dash_ledger_delete_budget),
+        )
+        .route(
+            "/api/dash/ledger/backfill-rates",
+            post(dash_ledger_backfill_rates),
+        )
+        .route("/api/dash/ledger/export", get(dash_ledger_export))
+        .route("/api/dash/ledger/import", post(dash_ledger_import))
         .route("/api/dash/memes/libraries", get(dash_memes_libraries))
         .route(
             "/api/dash/memes/items",

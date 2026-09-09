@@ -171,6 +171,11 @@ static DASH_SCRIPTS: &[(&str, &str)] = &[
         include_str!("../../web/dash-affection.js"),
     ),
     ("dash-scripts.js", include_str!("../../web/dash-scripts.js")),
+    ("dash-ledger.js", include_str!("../../web/dash-ledger.js")),
+    (
+        "dash-ledger-manage.js",
+        include_str!("../../web/dash-ledger-manage.js"),
+    ),
     // 设置页(09-04 重做):字段模式表 + 渲染层,走同一条静态表。
     (
         "settings-schema.js",
