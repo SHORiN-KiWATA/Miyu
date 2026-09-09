@@ -54,6 +54,82 @@ fn turn(seq: i64, user: &str, calls: Vec<ToolFlowCall>) -> Turn {
     }
 }
 
+/// 中转线(claude-code / codex / agy)的工具活动折成 remote 轮。
+fn remote_turn(seq: i64, user: &str, calls: Vec<ToolFlowCall>) -> Turn {
+    let mut turn = turn(seq, user, calls);
+    for round in &mut turn.tool_flow {
+        round.remote = true;
+    }
+    turn
+}
+
+/// 中转轮按契约不进回放视图,它碰过的文件只在落库 footprint 里。折叠区
+/// 只有 remote 轮时,回灌候选得从 footprint 来;尾巴 footprint 里读过的照样跳过。
+/// 改前:候选恒空(09-10 活库 42 个 remote 轮 restored=[])。
+#[test]
+fn remote_only_fold_restores_from_stored_footprint() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("edited.rs"), "fn edited() {}\n").unwrap();
+    std::fs::write(work.join("seen.rs"), "fn seen() {}\n").unwrap();
+    let policy = policy(temp.path(), &work);
+
+    let fold = [remote_turn(
+        1,
+        "one",
+        vec![call(
+            "Edit",
+            r#"{"file_path":"edited.rs","old_string":"a","new_string":"b"}"#,
+        )],
+    )];
+    let tail = [remote_turn(
+        2,
+        "two",
+        vec![call("Read", r#"{"file_path":"seen.rs"}"#)],
+    )];
+    let fold_refs: Vec<&Turn> = fold.iter().collect();
+    let tail_refs: Vec<&Turn> = tail.iter().collect();
+
+    let empty = build_compact_extras(
+        &policy,
+        "s1",
+        &fold_refs,
+        &tail_refs,
+        &FoldFootprints::default(),
+        None,
+        None,
+    );
+    assert!(
+        empty.restored.is_empty(),
+        "remote rounds stay out of the replay view; without footprints nothing is restorable"
+    );
+
+    let mut footprints = FoldFootprints::default();
+    footprints.fold.modified.insert("edited.rs".to_string());
+    footprints.fold.read.insert("seen.rs".to_string());
+    footprints.tail.read.insert("seen.rs".to_string());
+    let extras = build_compact_extras(
+        &policy,
+        "s1",
+        &fold_refs,
+        &tail_refs,
+        &footprints,
+        None,
+        None,
+    );
+    let names: Vec<String> = extras
+        .restored
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
+    assert_eq!(
+        names,
+        vec![work.join("edited.rs").display().to_string()],
+        "edited.rs comes from the fold footprint; seen.rs is skipped because the tail read it"
+    );
+}
+
 fn policy(dir: &Path, workdir: &Path) -> CompactExtrasPolicy {
     CompactExtrasPolicy {
         restore_files: 5,
@@ -179,7 +255,15 @@ fn restore_applies_per_file_and_total_caps() {
         ],
     )];
     let refs: Vec<&Turn> = turns.iter().collect();
-    let extras = build_compact_extras(&policy, "s1", &refs, &[], None, None);
+    let extras = build_compact_extras(
+        &policy,
+        "s1",
+        &refs,
+        &[],
+        &FoldFootprints::default(),
+        None,
+        None,
+    );
 
     let by_name = |needle: &str| {
         extras
@@ -230,7 +314,15 @@ fn restore_skips_tail_reads_excluded_root_and_missing() {
     let fold_refs: Vec<&Turn> = fold.iter().collect();
     let tail_refs: Vec<&Turn> = tail.iter().collect();
 
-    let extras = build_compact_extras(&policy, "s1", &fold_refs, &tail_refs, None, None);
+    let extras = build_compact_extras(
+        &policy,
+        "s1",
+        &fold_refs,
+        &tail_refs,
+        &FoldFootprints::default(),
+        None,
+        None,
+    );
     let paths: Vec<&str> = extras
         .restored
         .iter()
@@ -253,7 +345,15 @@ fn restore_is_off_when_the_file_budget_is_zero() {
 
     let fold = vec![turn(1, "one", vec![call("read", &args("a.rs"))])];
     let refs: Vec<&Turn> = fold.iter().collect();
-    let extras = build_compact_extras(&policy, "s1", &refs, &[], None, None);
+    let extras = build_compact_extras(
+        &policy,
+        "s1",
+        &refs,
+        &[],
+        &FoldFootprints::default(),
+        None,
+        None,
+    );
     assert!(extras.is_empty());
     assert!(extras.render().is_empty());
 }
@@ -323,6 +423,7 @@ fn export_transcript_writes_previous_summary_and_turns() {
         "quiz",
         &refs,
         &[],
+        &FoldFootprints::default(),
         None,
         Some("## Standing Facts\n- 代号 HOSHIZORA-7"),
     );
@@ -349,7 +450,15 @@ fn transcript_chain_keeps_the_previous_paths_newest_first() {
         transcripts: (1..=5).map(|i| format!("/old/fold-{i}.md")).collect(),
         ..Default::default()
     };
-    let extras = build_compact_extras(&policy, "s1", &refs, &[], Some(&previous), None);
+    let extras = build_compact_extras(
+        &policy,
+        "s1",
+        &refs,
+        &[],
+        &FoldFootprints::default(),
+        Some(&previous),
+        None,
+    );
 
     assert_eq!(extras.transcripts.len(), 5, "chain is capped");
     assert!(extras.transcripts[0].contains("compact/session/fold-"));

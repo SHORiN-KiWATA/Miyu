@@ -123,6 +123,38 @@ fn tool_footprint_reads_edit_patch_headers() {
     assert!(fp.modified.contains("old.rs"));
 }
 
+/// 中转线的工具名不是 Miyu 的:claude 原生 Read/Edit/Write 用 `file_path`,
+/// agy 的 view_file/write_to_file 走归一化后的 `path`,codex 的 file_change
+/// 折成 `edit` + `paths` 数组。09-10 取证:活库 42 个 remote 轮 footprint 全空。
+#[test]
+fn tool_footprint_recognizes_relay_native_tools() {
+    let fp = tool_call_footprint("Read", r#"{"file_path":"/repo/a.rs"}"#).unwrap();
+    assert!(fp.read.contains("/repo/a.rs"));
+    for name in ["Edit", "Write", "MultiEdit"] {
+        let fp = tool_call_footprint(name, r#"{"file_path":"/repo/b.rs","old_string":"x"}"#)
+            .unwrap_or_else(|| panic!("{name} must produce a footprint"));
+        assert!(fp.modified.contains("/repo/b.rs"), "{name}");
+    }
+    let fp = tool_call_footprint("NotebookEdit", r#"{"notebook_path":"nb.ipynb"}"#).unwrap();
+    assert!(fp.modified.contains("nb.ipynb"));
+
+    let fp = tool_call_footprint("view_file", r#"{"path":"/repo/c.rs"}"#).unwrap();
+    assert!(fp.read.contains("/repo/c.rs"));
+    let fp = tool_call_footprint("write_to_file", r#"{"path":"/repo/d.rs"}"#).unwrap();
+    assert!(fp.modified.contains("/repo/d.rs"));
+
+    let fp = tool_call_footprint(
+        "edit",
+        r#"{"path":"src/one.rs","paths":["src/one.rs","src/two.rs"]}"#,
+    )
+    .unwrap();
+    assert!(fp.modified.contains("src/one.rs"));
+    assert!(
+        fp.modified.contains("src/two.rs"),
+        "codex file_change lists every path"
+    );
+}
+
 #[test]
 fn tool_footprint_skips_patch_domain_prefixes() {
     // kb:/artifact: 不是文件系统路径，别把它们塞进 modified。

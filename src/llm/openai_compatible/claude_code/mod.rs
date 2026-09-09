@@ -26,10 +26,6 @@ pub(in crate::llm::openai_compatible) struct ClaudeCodeRuntime {
     pub(in crate::llm::openai_compatible) miyu_tools: String,
     /// 原生工具开启时的 --permission-mode(无头模式没有交互审批)。
     pub(in crate::llm::openai_compatible) permission_mode: String,
-    /// 每个 (provider\tmodel) 的 --autocompact 阈值:取 Miyu 的有效窗口值
-    /// (显式配置→目录→默认 168k),夹到 CLI 接受的 100k–1M。claude 在这个
-    /// 尺寸自压缩,会话 id 不变、续传不断——窗口语义单一来源是 Miyu 配置。
-    pub(in crate::llm::openai_compatible) autocompact: HashMap<String, u64>,
     pub(in crate::llm::openai_compatible) idle_timeout: Duration,
     pub(in crate::llm::openai_compatible) prefer_subscription: bool,
 }
@@ -47,7 +43,6 @@ impl ClaudeCodeRuntime {
             native_tools: plugin.native_tools.clone(),
             miyu_tools: plugin.miyu_tools.clone(),
             permission_mode: plugin.permission_mode.clone(),
-            autocompact: HashMap::new(),
             idle_timeout: Duration::from_secs(plugin.idle_timeout_seconds.max(30)),
             prefer_subscription: plugin.prefer_subscription,
         }
@@ -179,13 +174,10 @@ impl OpenAiCompatibleClient {
         .collect();
         args.push("--model".into());
         args.push(model.to_string());
-        if let Some(window) = runtime
-            .autocompact
-            .get(&format!("{}\t{}", self.provider.id, model))
-        {
-            args.push("--autocompact".into());
-            args.push(window.to_string());
-        }
+        // 不传 --autocompact(09-10 用户裁定):压缩统一由 Miyu 做。此前把
+        // Miyu 窗口透传给 claude 自压缩,但 Miyu 的 0.8 线在默认 168k 下比
+        // claude 的 W−33k 线早 600 tok 到,先压的总是 Miyu;Miyu 一压哈希链
+        // 断、CLI 会话重开,claude 那次自压缩从没跑过。两套并存只剩歧义。
         // 思考档:Miyu 的 thinking-variant 选择映射到 CLI 的 --effort。
         if let Some((_, variant)) = self.selected_reasoning_variant() {
             if let crate::models_cache::ReasoningSetting::Effort(effort) = variant.setting {

@@ -495,27 +495,7 @@ pub(in crate::llm::openai_compatible) fn claude_code_runtime(
     {
         return None;
     }
-    let mut runtime = ClaudeCodeRuntime::from_config(config);
-    for endpoint in endpoints {
-        if !provider_uses_claude_code(&endpoint.provider) {
-            continue;
-        }
-        let provider_id = &endpoint.provider.id;
-        let model = &endpoint.provider.default_model;
-        // 与上下文测算同源的有效窗口(显式配置→目录→默认),夹到 CLI 的
-        // 100k–1M 后透传给 claude 自压缩。
-        let window = config
-            .context_window_with_source(provider_id, model)
-            .ok()
-            .flatten()
-            .map(|(window, _)| window as u64)
-            .unwrap_or(168_000);
-        runtime.autocompact.insert(
-            format!("{provider_id}\t{model}"),
-            window.clamp(100_000, 1_000_000),
-        );
-    }
-    Some(Arc::new(runtime))
+    Some(Arc::new(ClaudeCodeRuntime::from_config(config)))
 }
 
 /// A client resolved from a tier pool plus the fallback facts a caller may
