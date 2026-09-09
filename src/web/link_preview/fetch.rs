@@ -13,8 +13,10 @@ use crate::tools::net_guard::resolve_public_remote_target;
 use anyhow::{bail, Context, Result};
 use reqwest::{Client, Url};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use super::html;
 
@@ -79,21 +81,53 @@ fn clip(text: &str, limit: usize) -> String {
     out
 }
 
+/// 按「host + 钉死的地址 + 预算」复用 Client。以前每一跳都新建一个:证书库重新
+/// 装、连接池从零起,b23.tv → bilibili.com 301 → 200 这一串光 TLS 握手就三次
+/// (09-09 实测每跳 ~0.2s)。同 host 的下一跳直接走已有连接。SSRF 闸照旧每跳
+/// 都过,缓存键里带着解析结果,地址变了就是另一个 Client。
+static CLIENTS: LazyLock<Mutex<HashMap<String, (Instant, Client)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const CLIENT_TTL: Duration = Duration::from_secs(120);
+const CLIENT_CACHE_CAP: usize = 32;
+
+fn cached_client(
+    resolution: &Option<(String, Vec<std::net::SocketAddr>)>,
+    budget: Duration,
+) -> Result<Client> {
+    let key = match resolution {
+        Some((host, addresses)) => format!("{host}|{addresses:?}|{}", budget.as_millis()),
+        None => format!("|{}", budget.as_millis()),
+    };
+    let now = Instant::now();
+    let mut clients = CLIENTS.lock().unwrap();
+    if let Some((at, client)) = clients.get(&key) {
+        if now.duration_since(*at) < CLIENT_TTL {
+            return Ok(client.clone());
+        }
+    }
+    let mut builder = Client::builder()
+        .timeout(budget)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy();
+    if let Some((host, addresses)) = resolution {
+        builder = builder.resolve_to_addrs(host, addresses);
+    }
+    let client = builder.build()?;
+    clients.retain(|_, (at, _)| now.duration_since(*at) < CLIENT_TTL);
+    if clients.len() >= CLIENT_CACHE_CAP {
+        clients.clear();
+    }
+    clients.insert(key, (now, client.clone()));
+    Ok(client)
+}
+
 /// 每一跳都重新过闸并把 DNS 结果钉死，重定向不交给 reqwest 自动跟——自动跟
 /// 意味着中途某一跳可以指向内网而没人再看一眼。
 async fn get(url: &Url, accept: &str, budget: Duration) -> Result<(reqwest::Response, Url)> {
     let mut current = url.clone();
     for _ in 0..=MAX_REDIRECTS {
         let resolution = resolve_public_remote_target(&current, budget).await?;
-        let mut builder = Client::builder()
-            .timeout(budget)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy();
-        if let Some((host, addresses)) = &resolution {
-            builder = builder.resolve_to_addrs(host, addresses);
-        }
-        let response = builder
-            .build()?
+        let response = cached_client(&resolution, budget)?
             .get(current.clone())
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .header(reqwest::header::ACCEPT, accept)
@@ -272,22 +306,31 @@ pub(super) async fn fetch(cache_dir: &Path, url: &Url) -> Result<Preview> {
         meta.site_name.clone()
     };
 
-    let image = match final_url.join(&meta.image) {
-        Ok(image_url) if !meta.image.trim().is_empty() => {
-            cache_remote_image(cache_dir, &image_url).await
-        }
-        _ => None,
-    };
+    let image_candidate = final_url
+        .join(&meta.image)
+        .ok()
+        .filter(|_| !meta.image.trim().is_empty());
     // favicon 没写就试默认位置；试不到就没有，前端画首字母占位。
     let icon_candidate = if meta.icon.trim().is_empty() {
         final_url.join("/favicon.ico").ok()
     } else {
         final_url.join(&meta.icon).ok()
     };
-    let icon = match icon_candidate {
-        Some(icon_url) => cache_remote_image(cache_dir, &icon_url).await,
-        None => None,
-    };
+    // 两张图互不相干,并行抓;以前串行,卡片要多等一整个缩略图的往返。
+    let (image, icon) = tokio::join!(
+        async {
+            match image_candidate {
+                Some(image_url) => cache_remote_image(cache_dir, &image_url).await,
+                None => None,
+            }
+        },
+        async {
+            match icon_candidate {
+                Some(icon_url) => cache_remote_image(cache_dir, &icon_url).await,
+                None => None,
+            }
+        }
+    );
 
     Ok(Preview {
         url: final_url.to_string(),

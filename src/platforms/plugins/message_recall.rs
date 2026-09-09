@@ -232,13 +232,15 @@ impl MessageRecallPlugin {
         };
         // 撤谁的、撤的什么,只有这里查得到:通用「工具开始」日志只有模型传的参数。
         let sender = sender_label(&info);
-        let preview = text_preview(&info.text, LOG_PREVIEW_CHARS);
+        let preview = content_preview(&info, LOG_PREVIEW_CHARS);
+        // 回灌给模型的内容:被撤的是群友可控的文本,过 safe_prompt_field。
+        let content = crate::platforms::plugins::real_context::safe_prompt_field(&preview);
         if !Self::belongs(&context, &info) {
             return failure_response(
                 "wrong_conversation",
                 false,
                 "目标消息不属于当前会话",
-                json!({ "message_id": id, "target_source": target.source.as_str() }),
+                json!({ "message_id": id, "target_source": target.source.as_str(), "content": content }),
             );
         }
         let own_message = info.sender_id == context.conversation.account_id;
@@ -284,6 +286,7 @@ impl MessageRecallPlugin {
                 id,
                 target.source,
                 if own_message { "miyu" } else { "group_member" },
+                &content,
             );
         }
         if own_message {
@@ -317,7 +320,8 @@ impl MessageRecallPlugin {
                 "sender_display_name": info.sender_display_name,
                 "target_kind": if own_message { "miyu" } else { "group_member" },
                 "reason": reason,
-                "target_source": target.source.as_str()
+                "target_source": target.source.as_str(),
+                "content": content
             }),
         )
     }
@@ -345,7 +349,7 @@ impl PlatformPlugin for MessageRecallPlugin {
         registry.register(
             ToolSpec::new(
                 "qq_withdraw_message",
-                "Recall QQ messages in the current conversation. Works on your own messages and, in a group where you are an admin, on other people's. If the current user message replies to a target, omit message_id and the trusted reply target is used. Otherwise pass message_id, or message_ids to withdraw several at once — ids come from the [msg=...] marker on each history line. Explicit ids in message_ids are used as given and are not overridden by the reply target. Never guess a recent message and never retry with another target after a failure.",
+                "Recall QQ messages in the current conversation. Works on your own messages and, in a group where you are an admin, on other people's. If the current user message replies to a target, omit message_id and the trusted reply target is used. Otherwise pass message_id, or message_ids to withdraw several at once — ids come from the [msg=...] marker on each history line. Explicit ids in message_ids are used as given and are not overridden by the reply target. Never guess a recent message and never retry with another target after a failure. The result reports the withdrawn message's content (media shown as placeholders such as [图片]).",
                 schema(),
                 move |args| {
                     let plugin = plugin.clone();
@@ -660,8 +664,17 @@ fn sender_label(info: &PlatformMessageInfo) -> String {
     }
 }
 
-/// 日志里的原文预览:压成一行、按字符截到 `limit`,超出加省略号。
-/// 只进日志不进提示词,不过 safe_prompt_field。
+/// 被撤消息的内容预览:正文压成一行,媒体按类型换成占位符([图片]/[语音]…),
+/// 按字符截到 `limit`,超出加省略号。进日志,也进工具结果(那里过 safe_prompt_field)。
+fn content_preview(info: &PlatformMessageInfo, limit: usize) -> String {
+    let mut parts: Vec<String> = info.media.iter().map(media_placeholder).collect();
+    if !info.text.trim().is_empty() {
+        parts.push(info.text.clone());
+    }
+    text_preview(&parts.join(" "), limit)
+}
+
+/// 压成一行、按字符截到 `limit`,超出加省略号。
 fn text_preview(text: &str, limit: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= limit {
@@ -670,6 +683,27 @@ fn text_preview(text: &str, limit: usize) -> String {
     let mut cut: String = flat.chars().take(limit).collect();
     cut.push('…');
     cut
+}
+
+fn media_placeholder(media: &crate::platform_types::PlatformInboundMedia) -> String {
+    use crate::platform_types::PlatformMediaKind;
+    let label = match media.kind {
+        PlatformMediaKind::Image => "图片",
+        PlatformMediaKind::Audio => "语音",
+        PlatformMediaKind::Video => "视频",
+        PlatformMediaKind::File => "文件",
+        PlatformMediaKind::Emoji => "表情",
+        PlatformMediaKind::Other => "附件",
+    };
+    match media
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) if media.kind == PlatformMediaKind::File => format!("[{label} {name}]"),
+        _ => format!("[{label}]"),
+    }
 }
 
 fn response(success: bool, message: &str, data: Value) -> Result<String> {
@@ -692,6 +726,7 @@ fn recall_failure_response(
     message_id: &str,
     source: TargetSource,
     target_kind: &str,
+    content: &str,
 ) -> Result<String> {
     let detail = error.to_string();
     let decode_failed = detail.contains("retcode=1200") && detail.contains("decode failed");
@@ -711,6 +746,7 @@ fn recall_failure_response(
             "message_id": message_id,
             "target_source": source.as_str(),
             "target_kind": target_kind,
+            "content": content,
             "detail": detail
         }),
     )
@@ -815,7 +851,7 @@ mod tests {
     fn napcat_decode_failure_is_non_retryable_and_truthful() {
         let error = anyhow::anyhow!("OneBot API delete_msg failed: retcode=1200, decode failed");
         let value: Value = serde_json::from_str(
-            &recall_failure_response(&error, "600025761", TargetSource::Reply, "group_member")
+            &recall_failure_response(&error, "600025761", TargetSource::Reply, "group_member", "")
                 .unwrap(),
         )
         .unwrap();
@@ -850,6 +886,36 @@ mod tests {
             "张三(123456)"
         );
         assert_eq!(sender_label(&info_with("123456", "   ", "x")), "123456");
+    }
+
+    /// 工具结果里的内容:媒体换成占位符,文件带名字,再接正文。
+    #[test]
+    fn content_preview_shows_media_as_placeholders() {
+        use crate::platform_types::{PlatformInboundMedia, PlatformMediaKind};
+        let mut info = info_with("1", "a", "看这个");
+        info.media = vec![
+            PlatformInboundMedia {
+                kind: PlatformMediaKind::Image,
+                id: None,
+                name: None,
+                url: None,
+            },
+            PlatformInboundMedia {
+                kind: PlatformMediaKind::File,
+                id: None,
+                name: Some("报告.pdf".into()),
+                url: None,
+            },
+        ];
+        assert_eq!(content_preview(&info, 80), "[图片] [文件 报告.pdf] 看这个");
+        let mut voice = info_with("1", "a", "");
+        voice.media = vec![PlatformInboundMedia {
+            kind: PlatformMediaKind::Audio,
+            id: None,
+            name: None,
+            url: None,
+        }];
+        assert_eq!(content_preview(&voice, 80), "[语音]");
     }
 
     /// 预览压成一行、按字符截断——按字节截会切坏 UTF-8。

@@ -658,17 +658,29 @@ fn write_committed_user_messages_from(
     }
     let mut stdout = io::stdout();
     let col = known_col.unwrap_or_else(|| cursor_col_or(0));
-    if col > 0 {
-        writeln!(stdout)?;
-    }
-    let cols = terminal_cols();
     write!(
         stdout,
         "{}",
-        committed_user_messages_text(messages, leading_gap, cols)
+        committed_user_messages_frame(messages, leading_gap, col, terminal_cols())
     )?;
     stdout.flush()?;
     Ok(())
+}
+
+/// 回显要写到终端的全部字节:光标不在行首就先换行,再接回显正文。
+/// 单独成函数是为了让提交路径能拿同一串字节去推算写完后的光标位置。
+fn committed_user_messages_frame(
+    messages: &[(&str, AgentMode)],
+    leading_gap: bool,
+    col: u16,
+    cols: usize,
+) -> String {
+    let mut frame = String::new();
+    if col > 0 {
+        frame.push('\n');
+    }
+    frame.push_str(&committed_user_messages_text(messages, leading_gap, cols));
+    frame
 }
 
 fn committed_user_messages_text(

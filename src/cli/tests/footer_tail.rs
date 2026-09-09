@@ -653,3 +653,22 @@ fn lifted_frame_falls_back_to_the_scroll_region_on_a_one_row_page() {
         format!("\x1b[1;1r{}a\nb\x1b[r", move_to(0, 0))
     );
 }
+
+/// 回显顶到页底后光标停在最后一行:提交路径靠它推算输出光标,不再问终端。
+#[test]
+fn cursor_after_frame_clamps_to_the_last_row_when_the_echo_scrolls() {
+    use crate::cli::repl::tail::cursor_after_frame;
+    // 40 行的屏,从第 36 行开始写 5 个换行:真终端会滚 1 行,光标停在第 39 行。
+    let echo = "\n┃\n┃ hello\n┃\n\n";
+    assert_eq!(
+        cursor_after_frame(echo.as_bytes(), (0, 36), 120, 40),
+        (0, 39)
+    );
+    // 没顶到页底就照实算。
+    assert_eq!(
+        cursor_after_frame(echo.as_bytes(), (0, 5), 120, 40),
+        (0, 10)
+    );
+    // 光标不在行首时先补的那个换行也要算进去。
+    assert_eq!(cursor_after_frame(b"\nab", (7, 3), 120, 40), (2, 4));
+}
