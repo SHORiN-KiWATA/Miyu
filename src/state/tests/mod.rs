@@ -11,4 +11,5 @@ mod queue;
 mod redo;
 mod sessions;
 mod shared;
+mod sponsors;
 mod turns;

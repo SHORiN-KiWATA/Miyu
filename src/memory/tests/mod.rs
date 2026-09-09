@@ -4,6 +4,7 @@ mod access;
 mod association;
 mod browse;
 mod diary;
+mod reset;
 mod semantic;
 mod shared;
 mod store;

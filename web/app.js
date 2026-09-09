@@ -94,6 +94,10 @@
     moon: [["path", { d: "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" }]],
     "image-search": [["rect", { x: "3", y: "3", width: "14", height: "14", rx: "2" }], ["circle", { cx: "11", cy: "9", r: "2" }], ["path", { d: "m3 15 4-4 5 5" }], ["circle", { cx: "18", cy: "18", r: "3" }], ["path", { d: "m20.2 20.2 1.8 1.8" }]],
     image: [["rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }], ["circle", { cx: "8.5", cy: "8.5", r: "1.5" }], ["path", { d: "m21 15-5-5L5 21" }]],
+    "file-video": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "m10 12.5 4 2.5-4 2.5z" }]],
+    "file-audio": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M15 12v5" }], ["path", { d: "M15 12l-4 1v5" }], ["circle", { cx: "9.5", cy: "18", r: "1.5" }], ["circle", { cx: "13.5", cy: "17", r: "1.5" }]],
+    "file-pdf": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 18v-5h1.5a1.5 1.5 0 0 1 0 3H8" }], ["path", { d: "M13 18v-5h1a2 2 0 0 1 0 5z" }], ["path", { d: "M18 13h-2v5" }], ["path", { d: "M16 15.5h1.5" }]],
+    "file-archive": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M9 6h1" }], ["path", { d: "M9 9h1" }], ["path", { d: "M9 12h1" }], ["rect", { x: "8", y: "15", width: "3", height: "4", rx: "1" }]],
     "file-code": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "m10 13-2 2 2 2" }], ["path", { d: "m14 13 2 2-2 2" }]],
     "file-markdown": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 16v-4l2 2 2-2v4" }], ["path", { d: "M15 12v4" }]],
     "file-json": [["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 12h1a1 1 0 0 1 0 2H8v2h1a1 1 0 0 1 0 2H8" }], ["path", { d: "M16 12h-1a1 1 0 0 0 0 2h1v2h-1" }]],
@@ -489,6 +493,9 @@
   function makeIconSlot(name, className = "") {
     const slot = document.createElement("span");
     slot.className = `icon-slot${className ? ` ${className}` : ""}`;
+    // 图标名留在 DOM 上:走查要断言「视频附件用的是视频图标」,不然只能比 SVG
+    // 路径字符串,那是一读就废的测试。
+    slot.dataset.icon = name;
     slot.setAttribute("aria-hidden", "true");
     slot.appendChild(createIcon(name));
     return slot;
@@ -3309,6 +3316,69 @@
     }
   }
 
+  // 裸链接自动成链。模型经常直接把 URL 写进正文而不套 [](),以前这些只是纯文本,
+  // 点不动。识别到句尾标点要吐回去:"见 https://a.com。" 里的句号不属于地址。
+  const BARE_URL_TAIL = "。，、；：！？…～\"'`,.;:!?’”»›|*_~";
+  const BARE_URL_PAIRS = { ")": "(", "]": "[", "}": "{", "》": "《", "」": "「", "』": "『", "】": "【" };
+
+  function trimUrlTail(raw) {
+    let value = raw;
+    while (value.length) {
+      const last = value[value.length - 1];
+      const opener = BARE_URL_PAIRS[last];
+      if (opener) {
+        // 括号只在成对时留下:GitHub/维基的地址本身就带括号。
+        const opens = value.split(opener).length - 1;
+        const closes = value.split(last).length - 1;
+        if (closes <= opens) break;
+        value = value.slice(0, -1);
+        continue;
+      }
+      if (BARE_URL_TAIL.includes(last)) {
+        value = value.slice(0, -1);
+        continue;
+      }
+      break;
+    }
+    return value;
+  }
+
+  function bareUrlAt(text, index) {
+    // 前一个字符是字母数字时不认:避开 "xhttps://" 这类粘连。
+    if (index > 0 && /[A-Za-z0-9]/.test(text[index - 1])) return null;
+    // 中日韩标点一个都不能进地址。只在末尾修剪不够:「…archlinux.org、AUR」里
+    // 顿号后面还跟着字母,末尾修剪碰不到它,整段会被 new URL() 当成域名的一部分
+    // punycode 掉(实测变成 xn--orgaur-kr3e)。汉字本身不排除——维基那种带中文
+    // 路径的地址是合法的。
+    const matched = /^https?:\/\/[^\s<>"'`\u00a0\u2000-\u206f\u3000-\u303f\uff00-\uffef]+/i.exec(
+      text.slice(index)
+    );
+    if (!matched) return null;
+    const raw = trimUrlTail(matched[0]);
+    if (!raw) return null;
+    const href = validHttpUrl(raw);
+    return href ? { raw, href } : null;
+  }
+
+  function insideAnchor(node) {
+    let cursor = node;
+    while (cursor) {
+      if (cursor.tagName === "A") return true;
+      cursor = cursor.parentElement;
+    }
+    return false;
+  }
+
+  function appendAutoLink(parent, raw, href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "auto-link";
+    link.textContent = raw;
+    parent.appendChild(link);
+  }
+
   function appendInline(parent, source, depth = 0) {
     const text = String(source || "");
     if (depth > 8) {
@@ -3406,6 +3476,29 @@
           }
         }
       }
+      // <https://…> 与裸链接。放在 ` 与 [](…) 之后:行内代码和 md 链接先被吃掉,
+      // 这里看不到它们的内容。已经在 <a> 里(md 链接的标签)就不再套一层。
+      if (text[index] === "<" && !insideAnchor(parent)) {
+        const end = text.indexOf(">", index + 1);
+        const href = end > index + 1 ? validHttpUrl(text.slice(index + 1, end)) : null;
+        if (href) {
+          flushPlain(index);
+          appendAutoLink(parent, text.slice(index + 1, end), href);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if ((text[index] === "h" || text[index] === "H") && !insideAnchor(parent)) {
+        const bare = bareUrlAt(text, index);
+        if (bare) {
+          flushPlain(index);
+          appendAutoLink(parent, bare.raw, bare.href);
+          index += bare.raw.length;
+          plainStart = index;
+          continue;
+        }
+      }
       if (text.startsWith("~~", index)) {
         const end = text.indexOf("~~", index + 2);
         if (end > index + 2 && text.slice(index + 2, end).trim()) {
@@ -3449,7 +3542,7 @@
     flushPlain(text.length);
   }
 
-  function codeBlock(language, codeText) {
+  function codeBlock(language, codeText, settled = true) {
     const wrapper = document.createElement("div");
     wrapper.className = "code-block";
     const toolbar = document.createElement("div");
@@ -3463,6 +3556,9 @@
     const code = document.createElement("code");
     if (language) code.className = `language-${language}`;
     code.textContent = codeText;
+    // 语法高亮。纯 DOM 上色,不认识的语言/分词出岔子一律保持这份纯文本
+    // (见 highlight.js);settled=false 表示围栏还没闭合,这一轮先不上色。
+    window.MiyuHighlight?.paint(code, language, codeText, settled);
     pre.appendChild(code);
     wrapper.append(toolbar, pre);
     return wrapper;
@@ -3684,9 +3780,11 @@
           codeLines.push(lines[index]);
           index += 1;
         }
-        if (index < lines.length) index += 1;
+        // 收尾围栏还没到 = 这块代码正流式写着,内容随时会变,先不上色。
+        const closed = index < lines.length;
+        if (closed) index += 1;
         const language = /^[\w.+-]{1,40}$/.test(fence[1] || "") ? fence[1] : "";
-        fragment.appendChild(codeBlock(language, codeLines.join("\n")));
+        fragment.appendChild(codeBlock(language, codeLines.join("\n"), closed));
         continue;
       }
       const video = videoSourceFor(line);
@@ -3793,6 +3891,11 @@
       fragment.appendChild(paragraph);
     }
     container.replaceChildren(fragment);
+    // 独占一行的链接升级成卡片。这里只是排队:流式期间每来一段都会重渲染,
+    // 真正的抓取要等最后一次渲染安顿下来(见 linkcards.js 的防抖)。
+    window.MiyuLinkCards?.scan(container);
+    // 没闭合的围栏这一轮空着,等这块正文不再变了再补上色(同样是防抖)。
+    window.MiyuHighlight?.settle(container);
   }
 
   /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。
@@ -3814,6 +3917,106 @@
     const node = createUserMessage(content, timestamp, attributes);
     if (node) parent.appendChild(node);
     return node;
+  }
+
+  /**
+   * 自己发出去的消息:只渲染代码块、行内代码和链接,别的一律原样。
+   *
+   * 不做完整 markdown 是有意的(09-09 用户拍板)。把 `*星号*` 变成斜体、`# 井号`
+   * 变成标题,等于把人原样打进去的字改掉了——而她收到的仍是原文,两边对不上。
+   * 代码块没有这个问题:``` 围栏本来就是「这段原样看」的意思;链接同理,地址
+   * 文字一个字都不变,只是变成可点的。
+   */
+  function renderUserText(container, source) {
+    const text = String(source || "");
+    const lines = text.split("\n");
+    const fragment = document.createDocumentFragment();
+    let buffer = [];
+    const flushText = () => {
+      if (!buffer.length) return;
+      const chunk = buffer.join("\n");
+      buffer = [];
+      // 围栏之间的空行不值得单独占一段。
+      if (!chunk.trim()) return;
+      const paragraph = document.createElement("p");
+      appendUserInline(paragraph, chunk);
+      fragment.appendChild(paragraph);
+    };
+    let index = 0;
+    while (index < lines.length) {
+      const fence = lines[index].match(/^\s*```\s*([\w.+-]*)\s*$/);
+      if (!fence) {
+        buffer.push(lines[index]);
+        index += 1;
+        continue;
+      }
+      flushText();
+      index += 1;
+      const body = [];
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        body.push(lines[index]);
+        index += 1;
+      }
+      // 收尾围栏可能没打,那也照样当代码块渲染——半截的围栏更该原样看。
+      index += 1;
+      fragment.appendChild(codeBlock(fence[1] || "", body.join("\n")));
+    }
+    flushText();
+    container.replaceChildren(fragment);
+  }
+
+  /** 行内:反引号、<url>、裸地址,其余原样。 */
+  function appendUserInline(parent, source) {
+    const text = String(source || "");
+    let index = 0;
+    let plainStart = 0;
+    const flushPlain = (end) => {
+      if (end > plainStart) parent.appendChild(document.createTextNode(text.slice(plainStart, end)));
+    };
+    while (index < text.length) {
+      if (text[index] === "\n") {
+        flushPlain(index);
+        parent.appendChild(document.createElement("br"));
+        index += 1;
+        plainStart = index;
+        continue;
+      }
+      if (text[index] === "`") {
+        const end = text.indexOf("`", index + 1);
+        if (end > index + 1) {
+          flushPlain(index);
+          const code = document.createElement("code");
+          code.textContent = text.slice(index + 1, end);
+          parent.appendChild(code);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if (text[index] === "<") {
+        const end = text.indexOf(">", index + 1);
+        const href = end > index + 1 ? validHttpUrl(text.slice(index + 1, end)) : null;
+        if (href) {
+          flushPlain(index);
+          appendAutoLink(parent, text.slice(index + 1, end), href);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if (text[index] === "h" || text[index] === "H") {
+        const bare = bareUrlAt(text, index);
+        if (bare) {
+          flushPlain(index);
+          appendAutoLink(parent, bare.raw, bare.href);
+          index += bare.raw.length;
+          plainStart = index;
+          continue;
+        }
+      }
+      index += 1;
+    }
+    flushPlain(text.length);
   }
 
   function createUserMessage(content, timestamp, attributes = {}) {
@@ -3867,10 +4070,8 @@
     if (attributes.inputId) article.dataset.inputId = attributes.inputId;
     const bubble = document.createElement("div");
     bubble.className = "user-bubble";
-    const paragraph = document.createElement("p");
     const textContent = String(content || "");
-    paragraph.textContent = textContent;
-    bubble.appendChild(paragraph);
+    renderUserText(bubble, textContent);
     bubble.hidden = !textContent.trim();
     const attachments = createUserAttachments(attributes.attachments);
     const actions = document.createElement("div");
@@ -3892,6 +4093,34 @@
     return article;
   }
 
+  /**
+   * 附件芯片的图标。全都画成 file-text 的话，一段视频和一份 md 长得一模一样,
+   * 扫一眼分不出哪个是哪个(09-09 用户实拍)。按 MIME 优先、拿不到再看扩展名。
+   */
+  const ATTACHMENT_EXTENSION_ICONS = {
+    md: "file-markdown", markdown: "file-markdown",
+    json: "file-json", jsonc: "file-json",
+    pdf: "file-pdf",
+    zip: "file-archive", tar: "file-archive", gz: "file-archive", xz: "file-archive",
+    zst: "file-archive", "7z": "file-archive", rar: "file-archive",
+    js: "file-code", mjs: "file-code", ts: "file-code", tsx: "file-code", jsx: "file-code",
+    py: "file-code", rs: "file-code", go: "file-code", c: "file-code", h: "file-code",
+    cpp: "file-code", hpp: "file-code", java: "file-code", rb: "file-code", php: "file-code",
+    sh: "file-code", bash: "file-code", zsh: "file-code", fish: "file-code", lua: "file-code",
+    toml: "file-code", yaml: "file-code", yml: "file-code", ini: "file-code", css: "file-code",
+    html: "file-code", xml: "file-code", sql: "file-code", nix: "file-code",
+  };
+
+  function attachmentIconName(attachment) {
+    const mime = String(attachment?.mime || "").toLowerCase();
+    if (attachment?.kind === "image" || mime.startsWith("image/")) return "image";
+    if (mime.startsWith("video/")) return "file-video";
+    if (mime.startsWith("audio/")) return "file-audio";
+    if (mime === "application/pdf") return "file-pdf";
+    const extension = String(attachment?.name || "").split(".").pop()?.toLowerCase() || "";
+    return ATTACHMENT_EXTENSION_ICONS[extension] || "file-text";
+  }
+
   function createUserAttachments(values) {
     const attachments = Array.isArray(values) ? values : [];
     if (!attachments.length) return null;
@@ -3908,6 +4137,14 @@
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.title = name;
+        // 会话里的图点开是放大预览，自己发的图没道理反而是「跳走一个新标签
+        // 页」。按住 Ctrl/⌘ 或中键仍然走链接原本的行为。
+        link.addEventListener("click", (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+          if (!window.MiyuLightbox) return;
+          event.preventDefault();
+          window.MiyuLightbox.open({ url, name });
+        });
         const image = document.createElement("img");
         image.src = url;
         image.alt = name;
@@ -3921,20 +4158,50 @@
         list.appendChild(link);
         continue;
       }
-      const link = document.createElement("a");
-      link.className = "user-attachment-file";
-      link.href = url;
-      link.setAttribute("download", "");
-      link.title = `下载 ${name}`;
-      link.appendChild(makeIconSlot("file-text"));
+      // 能预览的芯片：整块是「看看是什么」，右边箭头单独负责下载。不能预览的
+      // 二进制维持原样，整块就是下载链接。
+      const previewable = Boolean(window.MiyuPreview?.canPreview(attachment));
+      const chip = document.createElement(previewable ? "div" : "a");
+      chip.className = "user-attachment-file";
+      if (previewable) {
+        chip.classList.add("is-previewable");
+        chip.tabIndex = 0;
+        chip.setAttribute("role", "button");
+        chip.title = `预览 ${name}`;
+        const openPreview = () => window.MiyuPreview.open({ ...attachment, url, name });
+        chip.addEventListener("click", openPreview);
+        chip.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openPreview();
+        });
+      } else {
+        chip.href = url;
+        chip.setAttribute("download", "");
+        chip.title = `下载 ${name}`;
+      }
+      chip.appendChild(makeIconSlot(attachmentIconName(attachment)));
       const copy = document.createElement("span");
       const strong = document.createElement("strong");
       strong.textContent = name;
       const small = document.createElement("small");
       small.textContent = formatFileSize(attachment?.size);
       copy.append(strong, small);
-      link.append(copy, makeIconSlot("download"));
-      list.appendChild(link);
+      chip.appendChild(copy);
+      if (previewable) {
+        const download = document.createElement("a");
+        download.className = "user-attachment-download";
+        download.href = url;
+        download.setAttribute("download", "");
+        download.title = `下载 ${name}`;
+        download.setAttribute("aria-label", `下载 ${name}`);
+        download.addEventListener("click", (event) => event.stopPropagation());
+        download.appendChild(makeIconSlot("download"));
+        chip.appendChild(download);
+      } else {
+        chip.appendChild(makeIconSlot("download"));
+      }
+      list.appendChild(chip);
     }
     return list.childElementCount ? list : null;
   }
@@ -6061,6 +6328,8 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(call?.display_name || name || "工具");
+    // 名字被芯片截断时,悬浮还能看全(load_tools 一次点名几个工具就会超长)。
+    displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";
     realName.textContent = name;
@@ -6267,6 +6536,7 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(data?.display_name || data?.name || "工具");
+    displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";
     realName.textContent = String(data?.name || "");
@@ -9671,6 +9941,8 @@
     window.MiyuCommands?.load(apiRequest);
     // 灯箱自己不会画图标（图标集在这边），把工厂函数递过去。
     window.MiyuLightbox?.init({ makeIconSlot });
+    window.MiyuPreview?.init({ makeIconSlot, formatFileSize });
+    window.MiyuLinkCards?.init({ makeIconSlot });
     startBrailleTicker();
     // G2:页面不可见时给 body 挂 miyu-paused,CSS 据此暂停全部装饰动画。
     // 实测(Xvfb+Chrome)不挂这个时隐藏窗口的合成负载与可见时完全一样。

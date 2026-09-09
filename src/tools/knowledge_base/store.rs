@@ -21,18 +21,35 @@ pub struct EditResult {
     pub(in crate::tools::knowledge_base) semantic_refreshed: bool,
 }
 
+/// 知识库只收参考资料，不收 Miyu 自己的东西（技能文件、人格提示词、配置、
+/// 记忆库）。
+///
+/// 这道闸原先是拿 `skill` / `memory` / `prompt` / `config` / `记忆` / `配置`
+/// 这几个词去扫**整篇正文**。于是一篇讲内存管理的文档、任何出现过 config 的
+/// 教程、任何带「配置」二字的中文资料，统统进不来——闸门比它要拦的东西宽了
+/// 好几个数量级，而正经资料里出现这些词才是常态（09-09 用户报的就是这个：
+/// WebUI 手动上传和模型用 `kb` 写入都会被挡）。
+///
+/// 现在只认两样不会误伤的证据：落点路径是不是 Miyu 自己的资产目录，以及正文
+/// 是不是一份带明确标记的技能文件。正文里出现什么词一概不管。
 pub(in crate::tools) fn reject_non_kb_upload(
     content: &str,
     title: &str,
     file_name: &str,
 ) -> Result<()> {
-    let text = format!("{content}\n{title}\n{file_name}").to_ascii_lowercase();
-    let forbidden = [
-        "skill", "skills/", "skll", "记忆", "memory", "persona", "identity", "prompt", "配置",
-        "config",
-    ];
-    if forbidden.iter().any(|needle| text.contains(needle)) {
-        bail!("this content looks like a skill, memory, prompt, identity, or config request; do not upload it to the knowledge base")
+    let path = format!("{file_name}/{title}").to_ascii_lowercase();
+    let is_miyu_asset_path = path.split('/').any(|segment| {
+        matches!(
+            segment.trim(),
+            "skill.md" | "skills" | "persona" | "personas" | "config.toml" | "config.json"
+        )
+    }) || path.contains("memory.db")
+        || path.contains("conversation.db");
+    if is_miyu_asset_path {
+        bail!("that path is where Miyu keeps its own skills, persona, or config; the knowledge base only takes reference documents")
+    }
+    if crate::skills::is_generated_skill(content) {
+        bail!("this file is a skill definition; publish it with manage_skill instead of putting it in the knowledge base")
     }
     Ok(())
 }

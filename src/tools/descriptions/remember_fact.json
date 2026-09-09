@@ -1,7 +1,7 @@
 {
   "name": "remember_fact",
   "display_name": "记录记忆",
-  "description": "Remember a fact or useful knowledge long-term in Miyu's memory. For knowledge-base documents use the kb tool instead.",
+  "description": "Remember a fact or useful knowledge long-term in Miyu's memory.",
   "parameters": {
     "type": "object",
     "properties": {

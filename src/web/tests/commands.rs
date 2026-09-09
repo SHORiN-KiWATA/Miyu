@@ -44,11 +44,11 @@ async fn command_catalog_carries_what_the_menu_needs() {
     assert_eq!(actual, expected);
 }
 
-/// `/reset-memory` 走 WebUI 时必须真的清掉那份记忆，且 dev 与普通模式各清各的
-/// ——dev 的记忆挂在保留人格名下，钥匙不对就清的是另一份（与
+/// `/reset-all-memory` 走 WebUI 时必须真的清掉那份记忆，且 dev 与普通模式各清
+/// 各的——dev 的记忆挂在保留人格名下，钥匙不对就清的是另一份（与
 /// `IpcCommand::ResetMemory` 同一个坑）。
 #[tokio::test]
-async fn web_memory_reset_clears_the_mode_it_was_asked_for() {
+async fn web_memory_reset_all_clears_the_mode_it_was_asked_for() {
     let temp = tempfile::tempdir().unwrap();
     let paths = test_paths(temp.path());
     let state = DaemonState::for_test(paths.clone(), 8301).unwrap();
@@ -70,7 +70,7 @@ async fn web_memory_reset_clears_the_mode_it_was_asked_for() {
     assert!(recalled(&normal).contains("普通模式"));
     assert!(recalled(&dev).contains("开发模式"));
 
-    let response = reset_memory_http(
+    let response = reset_all_memory_http(
         axum::extract::State(state.clone()),
         HeaderMap::new(),
         axum::Json(serde_json::from_value(serde_json::json!({ "mode": "dev" })).unwrap()),
@@ -86,6 +86,57 @@ async fn web_memory_reset_clears_the_mode_it_was_asked_for() {
     assert!(
         recalled(&normal).contains("普通模式"),
         "只该清 dev，普通模式的记忆被误伤了"
+    );
+}
+
+/// `/reset-memory` 清的是**发命令的那个会话**。WebUI 能同时开好几个会话，
+/// daemon 的全局指针未必是它，所以请求里带的 session_id 必须说了算——不然
+/// 用户在 A 会话敲的命令会把 B 会话的记忆清掉。
+#[tokio::test]
+async fn web_memory_reset_clears_only_the_session_it_was_asked_for() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let state = DaemonState::for_test(paths.clone(), 8302).unwrap();
+    let config = state.manager.lock().unwrap().config.clone();
+
+    let store = crate::memory::MemoryStore::new(&config, &paths);
+    store
+        .clone()
+        .with_session_id("session-a")
+        .remember_fact("A 会话记住 XMODIFIERS 这件事", "test")
+        .unwrap();
+    store
+        .clone()
+        .with_session_id("session-b")
+        .remember_fact("B 会话记住 XMODIFIERS 这件事", "test")
+        .unwrap();
+    let recalled = || {
+        store
+            .recall_memories("XMODIFIERS", 5, false)
+            .unwrap()
+            .to_string()
+    };
+    assert!(recalled().contains("A 会话"));
+    assert!(recalled().contains("B 会话"));
+
+    let response = reset_memory_http(
+        axum::extract::State(state.clone()),
+        HeaderMap::new(),
+        axum::Json(
+            serde_json::from_value(serde_json::json!({ "session_id": "session-a" })).unwrap(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.0["ok"], true);
+    assert!(response.0["text"]
+        .as_str()
+        .is_some_and(|text| !text.is_empty()));
+
+    assert!(!recalled().contains("A 会话"), "点名清 A，A 的记忆却还在");
+    assert!(
+        recalled().contains("B 会话"),
+        "只该清 A，B 会话的记忆被误伤了"
     );
 }
 

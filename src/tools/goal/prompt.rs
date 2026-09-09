@@ -13,9 +13,9 @@ use serde_json::json;
 fn end_calls(goal: &GoalRecord) -> String {
     format!(
         "· done, verified against the workspace rather than earlier rounds' claims →\n  \
-         update_goal {{\"goal_id\":{id},\"revision\":{rev},\"action\":\"complete\"}}\n\
+         goal {{\"action\":\"complete\",\"goal_id\":{id},\"revision\":{rev}}}\n\
          · blocked, incl. needing an answer from the user →\n  \
-         update_goal {{\"goal_id\":{id},\"revision\":{rev},\"action\":\"blocked\",\
+         goal {{\"action\":\"blocked\",\"goal_id\":{id},\"revision\":{rev},\
          \"blocked_reason\":\"…\"}}",
         id = json!(goal.goal_id),
         rev = goal.revision
@@ -40,7 +40,7 @@ fn end_calls(goal: &GoalRecord) -> String {
 /// 来历的祈使句就该被怀疑。所以两种形态都要讲清是谁下的、怎么来的。
 ///
 /// 「不调工具也不收尾就等于白开一轮」要明说：实测里模型会在得出结论后直接
-/// 停笔，忘了自己身处目标轮、收尾要靠 `update_goal`，于是驱动器只能再开一轮
+/// 停笔，忘了自己身处目标轮、收尾要靠 `goal`，于是驱动器只能再开一轮
 /// 让它对着自己的结论补作业。
 pub fn goal_round_prompt(goal: &GoalRecord, full: bool) -> String {
     let calls = end_calls(goal);
@@ -61,7 +61,7 @@ pub fn goal_round_prompt(goal: &GoalRecord, full: bool) -> String {
          while the session is idle; the objective may be unrelated to the messages above.\n\
          Objective: {}  ·  Round {} of {}\n\n\
          Make one concrete step of progress now. Never spend a round only reporting that you are \
-         waiting — end the goal instead. Ending your reply without calling tools or update_goal \
+         waiting — end the goal instead. Ending your reply without calling tools or goal \
          just starts another round, so once the objective is verifiably done, state the outcome \
          AND call complete. Both calls below are complete as written; do not read the goal or \
          load tools first.\n\

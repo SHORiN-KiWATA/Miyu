@@ -215,6 +215,64 @@ impl StateStore {
         )
     }
 
+    // ---- 赞助记账 ----
+    //
+    // 纯转发。真正的 SQL 在 `conversation_db/sponsors.rs`；这里只是让平台工具
+    // 和 dashboard 都从 StateStore 这一个门进去。
+
+    pub fn add_sponsor_record(
+        &self,
+        new: &crate::state::NewSponsorRecord,
+    ) -> Result<crate::state::SponsorRecord> {
+        self.conv_db.add_sponsor_record(new)
+    }
+
+    pub fn sponsor_record(&self, record_id: i64) -> Result<Option<crate::state::SponsorRecord>> {
+        self.conv_db.sponsor_record(record_id)
+    }
+
+    pub fn sponsor_records(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<crate::state::SponsorRecord>> {
+        self.conv_db.sponsor_records(limit, offset)
+    }
+
+    pub fn sponsor_records_for(
+        &self,
+        sponsor_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::state::SponsorRecord>> {
+        self.conv_db.sponsor_records_for(sponsor_id, limit)
+    }
+
+    pub fn update_sponsor_record(
+        &self,
+        record_id: i64,
+        note: Option<&str>,
+        sponsor_name: Option<&str>,
+    ) -> Result<Option<crate::state::SponsorRecord>> {
+        self.conv_db
+            .update_sponsor_record(record_id, note, sponsor_name)
+    }
+
+    pub fn delete_sponsor_record(&self, record_id: i64) -> Result<bool> {
+        self.conv_db.delete_sponsor_record(record_id)
+    }
+
+    pub fn sponsor_totals(
+        &self,
+        order: crate::state::SponsorOrder,
+        limit: usize,
+    ) -> Result<Vec<crate::state::SponsorTotal>> {
+        self.conv_db.sponsor_totals(order, limit)
+    }
+
+    pub fn sponsor_summary(&self) -> Result<crate::state::SponsorSummary> {
+        self.conv_db.sponsor_summary()
+    }
+
     // ---- 会话目标（goal）----
     //
     // 一律显式传 session_id 而不是用 `self.session()`：续轮驱动器在 daemon 的

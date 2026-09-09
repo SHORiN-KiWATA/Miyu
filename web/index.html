@@ -11,9 +11,15 @@
   <!-- matugen 生成的 MD3 token 覆盖;app.js 依据「配色方案」切换 link.disabled -->
   <link rel="stylesheet" href="/theme.css" id="matugenThemeLink">
   <script defer src="/vendor/katex/katex.min.js"></script>
+  <!-- 语法高亮:data-manual 必须留着,否则 Prism 会自己扫全页并用 innerHTML 重写
+       每个 code[class*=language-];我们只借它的分词器,DOM 由 highlight.js 亲手搭。 -->
+  <script defer src="/vendor/prism/prism.min.js" data-manual></script>
+  <script defer src="/highlight.js"></script>
   <!-- 命令层要先于 app.js 就位:app.js 初始化时就会调 MiyuCommands.load -->
   <script defer src="/commands.js"></script>
   <script defer src="/lightbox.js"></script>
+  <script defer src="/preview.js"></script>
+  <script defer src="/linkcards.js"></script>
   <script defer src="/todos.js"></script>
   <script defer src="/shared.js"></script>
   <script defer src="/dash/dashboards.js"></script>
@@ -24,6 +30,7 @@
   <script defer src="/dash/dash-groups.js"></script>
   <script defer src="/dash/dash-affection.js"></script>
   <script defer src="/dash/dash-scripts.js"></script>
+  <script defer src="/dash/dash-sponsor.js"></script>
   <script defer src="/dash/settings-schema.js"></script>
   <script defer src="/dash/settings.js"></script>
   <script defer src="/app.js"></script>
@@ -309,6 +316,10 @@
             <span class="icon-slot" data-icon="sparkles" aria-hidden="true"><span class="icon-fallback">♥</span></span>
             <span>好感·情绪</span>
           </button>
+          <button class="con-rail-item" type="button" data-console-panel="sponsors">
+            <span class="icon-slot" data-icon="dollar-sign" aria-hidden="true"><span class="icon-fallback">¥</span></span>
+            <span>赞助</span>
+          </button>
           <button class="con-rail-item" type="button" data-console-panel="scripts">
             <span class="icon-slot" data-icon="file-code" aria-hidden="true"><span class="icon-fallback">▶</span></span>
             <span>脚本</span>
@@ -405,6 +416,9 @@
         </div>
         <div class="con-panel" data-console-panel="affection" hidden>
           <div class="con-inner is-wide" id="dashAffectionRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="sponsors" hidden>
+          <div class="con-inner is-wide" id="dashSponsorsRoot"></div>
         </div>
         <div class="con-panel" data-console-panel="scripts" hidden>
           <div class="con-inner is-wide" id="dashScriptsRoot"></div>

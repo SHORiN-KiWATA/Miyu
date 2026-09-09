@@ -198,6 +198,13 @@ fn web_commands_are_a_subset_of_the_repl_table() {
     let names = web.iter().map(|spec| spec.name).collect::<Vec<_>>();
     assert_eq!(
         names,
-        ["/pop", "/compact", "/goal", "/reset", "/reset-memory"]
+        [
+            "/pop",
+            "/compact",
+            "/goal",
+            "/reset",
+            "/reset-memory",
+            "/reset-all-memory"
+        ]
     );
 }

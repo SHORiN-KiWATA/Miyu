@@ -70,7 +70,6 @@ pub(crate) struct MemeOrigin {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct LocalizedName {
     #[serde(default)]
     pub(crate) zh: String,

@@ -358,6 +358,31 @@ pub(crate) fn diary_ownership(batch: &OrganizationBatch, diary_ids: &[i64]) -> M
     }
 }
 
+/// 整理产物继承哪个会话的标记。和 `diary_ownership` 同一把尺子：只有全部
+/// 来源都指向同一个会话时才敢盖章，否则留空——盖错会让一次会话级重置删掉
+/// 别的会话的东西，那比少删一条严重得多。
+pub(crate) fn organized_session_id(batch: &OrganizationBatch, diary_ids: &[i64]) -> String {
+    let mut sessions = BTreeSet::<&str>::new();
+    for id in diary_ids {
+        let Some(diary) = batch.diaries.iter().find(|diary| diary.id == *id) else {
+            return String::new();
+        };
+        let session = diary.origin.session_id.trim();
+        if session.is_empty() {
+            return String::new();
+        }
+        sessions.insert(session);
+    }
+    match sessions.len() {
+        1 => sessions
+            .into_iter()
+            .next()
+            .expect("one session was checked")
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
 pub(crate) fn validate_organized_content(content: &str, max_chars: usize) -> Result<()> {
     let content = content.trim();
     if content.is_empty() || content.chars().count() > max_chars || content.contains('\0') {

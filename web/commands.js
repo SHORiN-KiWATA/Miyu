@@ -209,11 +209,22 @@ window.MiyuCommands = (() => {
         return done(text, /^(用法|\/goal |本会话)/.test(text) ? "error" : undefined);
       }
       if (spec.name === "/reset-memory") {
-        await ctx.apiRequest("/api/memory/reset", {
+        // session_id 必须带上：WebUI 同时开着好几个会话，daemon 的全局指针
+        // 未必是发命令的这一个，不带就会清到别的会话头上。
+        const response = await ctx.apiRequest("/api/memory/reset", {
+          method: "POST",
+          body: JSON.stringify({ mode: ctx.mode, session_id: ctx.sessionId }),
+        });
+        // 回执文案由服务端拼（和 REPL/QQ 同一份实现），前端原样贴出。
+        const text = (await response.json())?.text || "已清空本次会话记下的记忆";
+        return done(text);
+      }
+      if (spec.name === "/reset-all-memory") {
+        await ctx.apiRequest("/api/memory/reset-all", {
           method: "POST",
           body: JSON.stringify({ mode: ctx.mode }),
         });
-        return done("已清空长期记忆");
+        return done("已清空全部长期记忆");
       }
       if (spec.name === "/pop") {
         // /pop 全程不在对话流里留任何东西（回显和回执都不留）：

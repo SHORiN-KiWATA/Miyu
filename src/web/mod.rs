@@ -29,6 +29,7 @@ mod dashboards;
 mod dto;
 mod event_map;
 mod goal_driver;
+mod link_preview;
 mod persona;
 mod prompt_files;
 mod providers_api;
@@ -63,6 +64,7 @@ use dashboards::memes::*;
 use dashboards::memory::*;
 use dashboards::qq::*;
 use dashboards::scripts::*;
+use dashboards::sponsor::*;
 use dto::*;
 use event_map::*;
 use goal_driver::*;
@@ -142,13 +144,20 @@ const APP_JS: &str = include_str!("../../web/app.js");
 // 斜杠命令层单独一个文件:app.js 已经 9500 行,再往里长就找不到东西了。
 const COMMANDS_JS: &str = include_str!("../../web/commands.js");
 const LIGHTBOX_JS: &str = include_str!("../../web/lightbox.js");
+const PREVIEW_JS: &str = include_str!("../../web/preview.js");
+const LINKCARDS_JS: &str = include_str!("../../web/linkcards.js");
 const TODOS_JS: &str = include_str!("../../web/todos.js");
+// 代码块语法高亮:只用 Prism 的分词器,上色的 DOM 由这个文件亲手搭。
+const HIGHLIGHT_JS: &str = include_str!("../../web/highlight.js");
 // 文件分享面板:独立文件,与 artifact 演示区无关。
 const SHARED_JS: &str = include_str!("../../web/shared.js");
 // 插件 dashboard 脚本走 assets.rs 的 DASH_SCRIPTS 静态表,加面板只改那一行。
 // KaTeX 0.18.4(vendored):公式渲染;字体只带 woff2(css 里 woff2 列首,
 // 现代浏览器不会去请求 woff/ttf 回退项)。
 const KATEX_JS: &str = include_str!("../../web/vendor/katex/katex.min.js");
+// PrismJS 1.29.0(vendored,MIT):core + 18 门常用语言,47KB。头部注释里写了
+// 拼装顺序,换版本照那个顺序重拼即可。
+const PRISM_JS: &str = include_str!("../../web/vendor/prism/prism.min.js");
 const KATEX_CSS: &str = include_str!("../../web/vendor/katex/katex.min.css");
 static KATEX_FONTS: &[(&str, &[u8])] = &[
     (

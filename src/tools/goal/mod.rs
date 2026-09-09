@@ -1,4 +1,4 @@
-//! 同会话长任务目标：面向模型的三件套工具。
+//! 同会话长任务目标：面向模型的单一 `goal` 工具。
 //!
 //! 目标本身的真源在 SQLite（`state::conversation_db::goals`）。围绕它分四块：
 //!
@@ -109,81 +109,36 @@ fn require_human(origin: &TurnOrigin, verb: &str) -> Result<()> {
     bail!("goal {verb} requires a direct human turn (this turn was started automatically)");
 }
 
+/// 工具名。目标是会话自身的状态，域内聚合成一个名字（AGENTS §2.2）——原先
+/// 拆成 get_goal / create_goal / update_goal 三个，三份描述里有两份的正文是在
+/// 教模型怎么用另外一份。
+pub const GOAL_TOOL: &str = "goal";
+
 pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
-    let get_paths = paths.clone();
     registry.register(
         ToolSpec::new(
-            "get_goal",
-            "Read the current same-session goal: exact id/revision for compare-and-set, objective, phase, rounds used/limit, blocker when present, and whether autonomous continuation is armed. Call this before update_goal.",
-            super::registry::empty_parameters(),
-            move |_args| {
-                let paths = get_paths.clone();
-                async move {
-                    let session = session_for_call()?;
-                    let goal = store(&paths)?.goal(&session)?;
-                    Ok(render_goal(goal.as_ref(), &session))
-                }
-            },
-        )
-        .with_always_loaded(false),
-    );
-
-    let create_paths = paths.clone();
-    registry.register(
-        ToolSpec::new(
-            "create_goal",
-            "Create one persisted same-session completion goal when the current direct human request is a long-running objective that should continue across autonomous goal rounds. Infer that intent from any language; do not use this for trivial single-turn work. Rejected on automatic turns.",
+            GOAL_TOOL,
+            "Read or steer this session's long-task goal. action=get returns the goal plus the goal_id and revision every other action needs. action=create starts one for a genuinely long objective, never for single-turn work. action=edit|pause|resume|complete|blocked act on the current goal and need goal_id and revision copied from a get. create, edit, pause and resume only run on a turn a human started. complete and blocked also run inside the goal's own automatic round, where blocked needs blocked_reason and is refused before the minimum consecutive round count.",
             json!({
                 "type": "object",
                 "properties": {
-                    "objective": {"type": "string", "description": "The concrete completion objective inferred from the direct human request."},
-                    "max_goal_rounds": {"type": "integer", "description": "Optional positive limit on automatic continuation rounds."}
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "create", "edit", "pause", "resume", "complete", "blocked"],
+                        "description": "Defaults to get when omitted."
+                    },
+                    "goal_id": {"type": "string", "description": "Exact id returned by action get. Required by every action except get and create."},
+                    "revision": {"type": "integer", "description": "Exact positive revision returned by action get. Required by every action except get and create."},
+                    "objective": {"type": "string", "description": "The concrete objective. Required with create, optional with edit."},
+                    "max_goal_rounds": {"type": "integer", "description": "Optional positive limit on automatic continuation rounds. Valid with create and edit."},
+                    "blocked_reason": {"type": "string", "description": "Concrete blocking condition. Required with blocked."}
                 },
-                "required": ["objective"],
+                "required": ["action"],
                 "additionalProperties": false
             }),
             move |args: Value| {
-                let paths = create_paths.clone();
-                async move {
-                    let session = session_for_call()?;
-                    require_human(&workspace::current_turn_origin(), "create")?;
-                    let objective = args
-                        .get("objective")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let max_rounds =
-                        meaningful_rounds(args.get("max_goal_rounds").and_then(Value::as_i64));
-                    let goal = store(&paths)?.create_goal(&session, objective, max_rounds)?;
-                    set_armed(&session, true);
-                    Ok(render_goal(Some(&goal), &session))
-                }
-            },
-        )
-        .writes()
-        .with_always_loaded(false),
-    );
-
-    let update_paths = paths;
-    registry.register(
-        ToolSpec::new(
-            "update_goal",
-            "Update the exact current goal revision (call get_goal first and copy its goal_id/revision). Actions: edit | pause | resume | complete | blocked. edit/pause/resume require a direct human turn; during the current autonomous goal round, complete and blocked are also allowed. blocked needs blocked_reason and is mechanically rejected before the configured minimum consecutive rounds.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "goal_id": {"type": "string", "description": "Exact id returned by get_goal."},
-                    "revision": {"type": "integer", "description": "Exact positive revision returned by get_goal."},
-                    "action": {"type": "string", "enum": ["edit", "pause", "resume", "complete", "blocked"]},
-                    "objective": {"type": "string", "description": "Replacement objective; only with action edit."},
-                    "max_goal_rounds": {"type": "integer", "description": "Replacement round cap; only with action edit."},
-                    "blocked_reason": {"type": "string", "description": "Concrete blocking condition; required with action blocked."}
-                },
-                "required": ["goal_id", "revision", "action"],
-                "additionalProperties": false
-            }),
-            move |args: Value| {
-                let paths = update_paths.clone();
-                async move { update_goal(&paths, args).await }
+                let paths = paths.clone();
+                async move { run_goal_action(&paths, args).await }
             },
         )
         .writes()
@@ -191,10 +146,32 @@ pub fn register(registry: &mut ToolRegistry, paths: MiyuPaths) {
     );
 }
 
-async fn update_goal(paths: &MiyuPaths, args: Value) -> Result<String> {
+async fn run_goal_action(paths: &MiyuPaths, args: Value) -> Result<String> {
     let session = session_for_call()?;
     let origin = workspace::current_turn_origin();
     let store = store(paths)?;
+    // 省略 action 按读处理：get 是唯一无副作用的动作，猜错了也只是多读一次。
+    let action = meaningful_text(args.get("action").and_then(Value::as_str)).unwrap_or("get");
+    let objective = meaningful_text(args.get("objective").and_then(Value::as_str));
+    let max_rounds = meaningful_rounds(args.get("max_goal_rounds").and_then(Value::as_i64));
+    let blocked_reason = meaningful_text(args.get("blocked_reason").and_then(Value::as_str));
+
+    if action == "get" {
+        let goal = store.goal(&session)?;
+        return Ok(render_goal(goal.as_ref(), &session));
+    }
+
+    if action == "create" {
+        require_human(&origin, "create")?;
+        let Some(objective) = objective else {
+            bail!("objective is required with action create");
+        };
+        let goal = store.create_goal(&session, objective, max_rounds)?;
+        set_armed(&session, true);
+        return Ok(render_goal(Some(&goal), &session));
+    }
+
+    // 余下动作全是对既有目标的 CAS 写入，凭证缺一不可。
     let goal_id = args
         .get("goal_id")
         .and_then(Value::as_str)
@@ -203,15 +180,10 @@ async fn update_goal(paths: &MiyuPaths, args: Value) -> Result<String> {
         .to_string();
     let revision = args.get("revision").and_then(Value::as_i64).unwrap_or(0);
     if goal_id.is_empty() || revision < 1 {
-        bail!("goal_id must be non-empty and revision must be a positive integer (call get_goal)");
+        bail!(
+            "action {action} needs goal_id and a positive revision (call this tool with action get)"
+        );
     }
-    let action = args
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let objective = meaningful_text(args.get("objective").and_then(Value::as_str));
-    let max_rounds = meaningful_rounds(args.get("max_goal_rounds").and_then(Value::as_i64));
-    let blocked_reason = meaningful_text(args.get("blocked_reason").and_then(Value::as_str));
 
     match action {
         "edit" => {

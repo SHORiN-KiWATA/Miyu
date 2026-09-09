@@ -19,7 +19,8 @@
     q: "",
     loadSeq: 0,
     selecting: false,
-    selected: new Set()
+    selected: new Set(),
+    galleryObserver: null
   };
   const ui = {};
 
@@ -101,8 +102,9 @@
     ui.selectButton = toolbar.lastChild;
     ui.hint = D.el("p.dash-search-hint", { hidden: true });
     ui.bulk = D.el("div");
-    ui.gallery = D.el("div.dash-gallery");
+    ui.gallery = D.el("div.dash-gallery.is-masonry");
     root.append(head, ui.cards, toolbar, ui.tags, ui.hint, ui.bulk, ui.gallery);
+    watchGalleryWidth();
     reloadAll();
   }
 
@@ -208,10 +210,11 @@
       const refs = state.refs.get(item.id);
       const picked = state.selected.has(item.id);
       const activate = () => { if (state.selecting) toggleSelected(item, card); else openDetail(item); };
+      const thumbImage = D.el("img", { src: imageUrl(item), alt: item.name.zh, loading: "lazy", decoding: "async" });
       const card = D.el("figure.dash-meme", { tabindex: "0", onclick: activate, onkeydown: (event) => { if (event.key === "Enter" || (state.selecting && event.key === " ")) { event.preventDefault(); activate(); } } },
         D.el("div.dash-meme-thumb", null,
           state.selecting ? D.el("span.dash-meme-check", { "aria-hidden": "true" }, D.icon("check")) : null,
-          D.el("img", { src: imageUrl(item), alt: item.name.zh, loading: "lazy", decoding: "async" }),
+          thumbImage,
           item.animated ? D.el("span.dash-meme-badge", { text: "GIF" }) : null,
           refs?.outbound ? D.el("span.dash-meme-badge.is-count", { text: `↑${refs.outbound}` }) : null),
         D.el("figcaption.dash-meme-cap", null, D.el("span.dash-meme-name", { text: item.name.zh }), stateChip(item)));
@@ -219,7 +222,65 @@
       card.classList.toggle("is-selectable", state.selecting);
       card.classList.toggle("is-selected", picked);
       ui.gallery.append(card);
+      fitThumb(card, thumbImage);
     }
+    relayout();
+  }
+
+  /* ── 瀑布流 ──────────────────────────────────────────
+     表情包的长宽比什么都有。整齐的方格网格意味着两件事同时发生:高的图被塞
+     进方框里、四周留白,而它又把整行的行高顶起来——同一行的方图只填得满三
+     分之一。这里改成每张按自己的比例占位,行高互不牵连。
+
+     做法是「1px 行高 + 按实际高度算跨行数」这套瀑布流:网格列还是自动填充,
+     所以从左到右的顺序保持不变(搜索命中的前三张仍然在最前面,CSS 多列布局
+     做不到这点)。 */
+
+  /** 极端比例要收一收:1:5 的长条会把一整列拉成走廊。
+      0.55 ≈ 9:16,常见的竖图正好不被裁,再瘦才开始留边。 */
+  const THUMB_MIN_RATIO = 0.55;
+  const THUMB_MAX_RATIO = 1.9;
+
+  function applyRatio(card, image) {
+    const thumb = card.firstElementChild;
+    if (!thumb || !image.naturalWidth || !image.naturalHeight) return;
+    const ratio = Math.min(Math.max(image.naturalWidth / image.naturalHeight, THUMB_MIN_RATIO), THUMB_MAX_RATIO);
+    thumb.style.aspectRatio = String(ratio);
+    layoutCard(card);
+  }
+
+  function fitThumb(card, image) {
+    if (image.complete) applyRatio(card, image);
+    else image.addEventListener("load", () => applyRatio(card, image), { once: true });
+    // 加载失败就按方图占位,别留一个 1px 高的空档。
+    image.addEventListener("error", () => layoutCard(card), { once: true });
+  }
+
+  function layoutCard(card) {
+    if (!card.isConnected) return;
+    const height = Math.ceil(card.getBoundingClientRect().height);
+    if (height <= 0) return;
+    // 行单位是 1px,所以跨行数就是像素高;竖直间距靠卡片自己的下外边距,
+    // 读实际计算值而不是写死——窄屏那套间距不一样。
+    const gap = Math.ceil(parseFloat(getComputedStyle(card).marginBottom) || 0);
+    card.style.gridRowEnd = `span ${height + gap}`;
+  }
+
+  function relayout() {
+    for (const card of ui.gallery.querySelectorAll(".dash-meme")) layoutCard(card);
+  }
+
+  /** 面板宽度一变(侧栏折叠、窗口缩放),列宽跟着变,所有卡片都要重算。 */
+  function watchGalleryWidth() {
+    if (!window.ResizeObserver || state.galleryObserver) return;
+    let width = 0;
+    state.galleryObserver = new ResizeObserver((entries) => {
+      const next = Math.round(entries[0]?.contentRect?.width || 0);
+      if (next === width) return;
+      width = next;
+      relayout();
+    });
+    state.galleryObserver.observe(ui.gallery);
   }
 
   /* ── 选择模式 / 批量 ────────────────────────────────── */

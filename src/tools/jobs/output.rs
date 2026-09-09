@@ -169,7 +169,7 @@ pub(in crate::tools::jobs) fn job_detail_json(job: &JobEntry, offset: u64, budge
         "status": job.state.label(),
         "running": !job.state.is_terminal(),
         "command": truncate_command(&job.command),
-        // 完整翻阅走 read_file 读这个路径,不在这里重造一套分页。
+        // 完整翻阅走 read 读这个路径,不在这里重造一套分页。
         "log_path": job.log_path.display().to_string(),
         "runtime_seconds": job.finished.unwrap_or_else(Instant::now)
             .duration_since(job.started).as_secs(),

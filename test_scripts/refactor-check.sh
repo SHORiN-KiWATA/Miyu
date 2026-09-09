@@ -20,7 +20,7 @@ cd "$(git rev-parse --show-toplevel)"
 step() { printf '\n\033[1m── %s ──\033[0m\n' "$1"; }
 
 step "格式"
-python3 scripts/fmt_no_regress.py
+python3 test_scripts/fmt_no_regress.py
 
 step "编译"
 cargo check --all-targets
@@ -28,7 +28,7 @@ cargo check --all-targets
 step "测试"
 # 数「跑了多少个」而不是「过了多少个」：只数 passed 的话，一个用例失败会被
 # 误判成「用例消失」，把两类完全不同的问题混在一个数字里。失败单独判。
-before=$(git show HEAD:scripts/.test-count 2>/dev/null || echo 0)
+before=$(git show HEAD:test_scripts/.test-count 2>/dev/null || echo 0)
 #  + 用例失败会让脚本在这里就断掉，判定逻辑根本跑不到——先收下退出
 # 码，由下面的逻辑决定放不放行。
 # --no-fail-fast:某个 target 失败之后其余 target 照跑。不加的话一个用例
@@ -36,7 +36,7 @@ before=$(git show HEAD:scripts/.test-count 2>/dev/null || echo 0)
 output=$(cargo test --no-fail-fast 2>&1 | tee /dev/stderr || true)
 now=$(printf '%s\n' "$output" | awk '/^test result:/ {sum += $4 + $6} END {print sum+0}')
 failed=$(printf '%s\n' "$output" | awk '/^test result:/ {sum += $6} END {print sum+0}')
-echo "$now" > scripts/.test-count
+echo "$now" > test_scripts/.test-count
 if [ "$before" -gt 0 ] && [ "$now" -lt "$before" ]; then
   echo "✗ 用例数从 $before 降到 $now——搬测试时漏了一整个 mod？"
   exit 1
@@ -55,12 +55,12 @@ fi
 echo "用例数 $now（基线 $before）"
 
 step "模型面语言"
-bash scripts/check-model-english.sh
+bash test_scripts/check-model-english.sh
 
 step "文件规模"
-python3 scripts/refactor_size_report.py --check
+python3 test_scripts/refactor_size_report.py --check
 
 step "依赖方向"
-python3 scripts/arch_dep_check.py
+python3 test_scripts/arch_dep_check.py
 
 printf '\n\033[32m安全网全绿\033[0m\n'

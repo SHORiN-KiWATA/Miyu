@@ -2,6 +2,7 @@
 
 use super::shared::*;
 use crate::platforms::*;
+use serde_json::{json, Value};
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 #[test]
@@ -47,6 +48,44 @@ fn host_tools_follow_admin_and_private_whitelist_policy() {
 
     context.conversation.kind = ConversationKind::Group;
     assert!(!context.host_tools_allowed());
+}
+
+#[tokio::test]
+async fn sponsor_writes_need_an_admin_but_refuse_softly() {
+    let (_temp, mut context, _adapter) = test_turn_context(false);
+    context.is_admin = false;
+    let store = context.state_store.clone();
+    let mut registry = crate::tools::ToolRegistry::new();
+    register_platform_tools(&mut registry, Arc::new(context));
+    let sponsor = registry.get("sponsor").expect("赞助工具在平台会话里注册");
+    assert_eq!(sponsor.permission, crate::tools::ToolPermission::Writes);
+
+    // 非管理员记账:要的是一句能转述的说明,不是 Err——报错会被模型当成工具
+    // 故障,它会换个参数一直重试。
+    let refused = registry
+        .call(
+            "sponsor",
+            &json!({ "action": "add", "sponsor_id": "42", "amount": 10 }).to_string(),
+        )
+        .await
+        .expect("软拒绝不该是 Err");
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["ok"], json!(false));
+    assert_eq!(refused["refused"], json!(true));
+    assert_eq!(
+        store.sponsor_summary().unwrap().record_count,
+        0,
+        "被拒的调用不许落库"
+    );
+
+    // 看是开放的:群友问「榜上有谁」不该被挡。
+    let listed = registry
+        .call("sponsor", &json!({ "action": "list" }).to_string())
+        .await
+        .expect("非管理员也能看榜");
+    let listed: Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed["ok"], json!(true));
+    assert_eq!(listed["leaderboard"], json!([]));
 }
 
 #[test]

@@ -60,16 +60,28 @@ impl KnowledgeBase {
         self.list_existing()
     }
 
+    /// 落盘位置一律由 `name` 现算，**不读库里那一列绝对路径**。
+    ///
+    /// `files.path` 存的是导入当刻的绝对路径，而数据目录是会搬家的：
+    /// `~/.local/share/miyu` → `~/.miyu/data` 那次老布局迁移把文件搬了、却没有
+    /// 重写这一列。于是库里 6426 条记录全指着一个不存在的旧根，重建语义索引时
+    /// 每个文件都是 `No such file or directory`，而面板上文件明明还在
+    /// （09-09 用户实机，日志逐行可查）。
+    ///
+    /// `name` 是主键、也是相对 `files/` 的路径，永远跟着当前根走。那一列因此是
+    /// 冗余的，留着只为不动 schema。
     pub(in crate::tools::knowledge_base) fn list_existing(&self) -> Result<Vec<FileRecord>> {
         let conn = self.meta_conn()?;
         let mut stmt =
-            conn.prepare("SELECT name, path, size_bytes, content_sha256 FROM files ORDER BY name")?;
+            conn.prepare("SELECT name, size_bytes, content_sha256 FROM files ORDER BY name")?;
+        let files_dir = self.files_dir.clone();
         let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
             Ok(FileRecord {
-                name: row.get(0)?,
-                path: row.get(1)?,
-                size_bytes: row.get(2)?,
-                content_sha256: row.get(3)?,
+                path: files_dir.join(&name).display().to_string(),
+                name,
+                size_bytes: row.get(1)?,
+                content_sha256: row.get(2)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -402,12 +414,17 @@ impl KnowledgeBase {
     pub(in crate::tools) fn safe_file_path(&self, rel: &str) -> Result<PathBuf> {
         let rel = normalize_relative_path(rel)?;
         let path = self.files_dir.join(&rel);
+        let parent = path.parent().unwrap_or(&self.files_dir);
+        // 两个目录都建好之后再取真实路径。基准目录还不存在时 canonicalize 会
+        // 失败、退回未解析的原始路径,而 parent 那边解析成功——于是路径里只要
+        // 有一层符号链接,两边就对不上,第一次往新库写文件必然报「逃出目录」。
+        // macOS 的 /tmp→/private/tmp、/var→/private/var 是现成的踩法。
+        std::fs::create_dir_all(&self.files_dir)?;
+        std::fs::create_dir_all(parent)?;
         let base = self
             .files_dir
             .canonicalize()
             .unwrap_or_else(|_| self.files_dir.clone());
-        let parent = path.parent().unwrap_or(&self.files_dir);
-        std::fs::create_dir_all(parent)?;
         let resolved_parent = parent.canonicalize()?;
         if !resolved_parent.starts_with(&base) {
             bail!("knowledge base path escapes files dir")

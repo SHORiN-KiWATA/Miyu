@@ -20,6 +20,7 @@ impl MemoryStore {
         }
         self.init()?;
         let fallback = self.writer_ownership();
+        let session_id = self.write_session_id();
         let mut conn = self.state_conn()?;
         let tx = conn.transaction()?;
         for turn in turns {
@@ -41,8 +42,8 @@ impl MemoryStore {
             tx.execute(
                 "INSERT OR IGNORE INTO evicted_turns (
                     source_id, timestamp, role, content, created_at,
-                    visibility, owner_principal, owner_display_name
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    visibility, owner_principal, owner_display_name, origin_session_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     turn.source_id,
                     turn.timestamp,
@@ -52,6 +53,7 @@ impl MemoryStore {
                     visibility,
                     owner_principal,
                     owner_display_name,
+                    session_id,
                 ],
             )?;
         }
@@ -72,6 +74,31 @@ impl MemoryStore {
         self.state_conn()?
             .execute("DELETE FROM evicted_turns", [])?;
         Ok(())
+    }
+
+    /// 只清一个会话的归档回合。返回删掉的行数。
+    ///
+    /// 向量表同样没有触发器,得跟着删——`evicted_embeddings` 的主键就是
+    /// `evicted_turns.id`,留下来只会被下一个自增 id 认领。
+    pub(crate) fn clear_session_evicted_context(&self, session_id: &str) -> Result<usize> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            bail!("session-scoped evicted-context reset needs a session id");
+        }
+        self.init()?;
+        let mut conn = self.state_conn()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM evicted_embeddings
+              WHERE id IN (SELECT id FROM evicted_turns WHERE origin_session_id=?1)",
+            params![session_id],
+        )?;
+        let removed = tx.execute(
+            "DELETE FROM evicted_turns WHERE origin_session_id=?1",
+            params![session_id],
+        )?;
+        tx.commit()?;
+        Ok(removed)
     }
 
     #[allow(dead_code)]

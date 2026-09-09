@@ -23,6 +23,19 @@ pub(in crate::web) struct AttachmentQuery {
     pub(in crate::web) session_id: String,
 }
 
+/// `?inline=1` 让 PDF 直接在 iframe 里预览，而不是触发一次下载。
+#[derive(Deserialize, Default)]
+pub(in crate::web) struct AttachmentViewQuery {
+    #[serde(default)]
+    pub(in crate::web) inline: Option<String>,
+}
+
+impl AttachmentViewQuery {
+    fn wants_inline(&self) -> bool {
+        matches!(self.inline.as_deref(), Some("1") | Some("true"))
+    }
+}
+
 #[derive(Deserialize)]
 pub(in crate::web) struct MediaQuery {
     pub(in crate::web) path: String,
@@ -270,6 +283,7 @@ pub(in crate::web) async fn spool_body_to_file(
 pub(in crate::web) async fn user_attachment(
     State(state): State<DaemonState>,
     headers: HeaderMap,
+    Query(view): Query<AttachmentViewQuery>,
     Path(attachment_id): Path<String>,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
@@ -281,7 +295,8 @@ pub(in crate::web) async fn user_attachment(
     else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "attachment not found"));
     };
-    let (inline, content_type) = attachment_delivery(&attachment.attachment);
+    let (inline, content_type) =
+        attachment_delivery_for(&attachment.attachment, view.wants_inline());
     if let Some(path) = attachment.path.as_deref() {
         let disposition = attachment_content_disposition(&attachment.attachment.file_name, inline)?;
         return stream_file_response(
@@ -590,15 +605,29 @@ fn binary_attachment_mime(extension: &str) -> Option<&'static str> {
 /// 下载时怎么交付:图片与音视频内联(浏览器直接看/播),其它一律附件
 /// 下载并抹成 octet-stream,不给 HTML 之类的类型在同源下执行的机会。
 pub(in crate::web) fn attachment_delivery(attachment: &UserAttachment) -> (bool, &str) {
+    attachment_delivery_for(attachment, false)
+}
+
+/// `viewing` 为真时额外放行 PDF 内联——WebUI 的预览面板要把它塞进 iframe，
+/// 而 `Content-Disposition: attachment` 会让 iframe 变成一次下载。
+///
+/// 放行名单只加 PDF。HTML / SVG 一类**永远**不内联：同源下内联就等于给用户
+/// 上传的内容一个执行环境。
+pub(in crate::web) fn attachment_delivery_for(
+    attachment: &UserAttachment,
+    viewing: bool,
+) -> (bool, &str) {
     let mime = attachment.mime.as_str();
     let inline = attachment.kind == USER_ATTACHMENT_KIND_IMAGE
         || mime.starts_with("video/")
         || mime.starts_with("audio/");
     if inline {
-        (true, mime)
-    } else {
-        (false, "application/octet-stream")
+        return (true, mime);
     }
+    if viewing && mime == "application/pdf" {
+        return (true, mime);
+    }
+    (false, "application/octet-stream")
 }
 
 pub(in crate::web) fn attachment_content_disposition(

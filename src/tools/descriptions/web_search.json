@@ -1,7 +1,7 @@
 {
   "name": "web_search",
   "display_name": "网络搜索",
-  "description": "Search the web.",
+  "description": "Search the web. When your reply draws on the results, end it with the sources you used, one per line, as `title (url)`.",
   "parameters": {
     "type": "object",
     "properties": {
