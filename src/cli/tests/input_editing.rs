@@ -674,6 +674,42 @@ fn short_paste_is_not_summarized() {
     assert!(!should_summarize_pasted_text("short paste"));
 }
 
+/// 括号粘贴里的换行是 `\r`:行数要按真实行数算,内容不能粘成一行。
+#[test]
+fn carriage_return_paste_counts_lines_and_keeps_them() {
+    let mut input = String::new();
+    let mut cursor = 0;
+    let mut pasted_texts = Vec::new();
+
+    insert_pasted_text_at_cursor(
+        &mut input,
+        &mut cursor,
+        "alpha\rbeta\r\ngamma".to_string(),
+        &mut pasted_texts,
+    );
+
+    assert!(
+        input == "[Pasted 1: ~3 lines]" || input == "[粘贴 1: ~3 行]",
+        "unexpected placeholder: {input}"
+    );
+    assert_eq!(
+        pasted_texts[0].as_ref().map(|p| p.text.as_str()),
+        Some("alpha\nbeta\ngamma")
+    );
+}
+
+/// 单行粘贴按输入框折行后的行数判定,不再看死的字符数。
+#[test]
+fn single_line_paste_folds_only_when_it_fills_three_input_rows() {
+    let text = "字".repeat(100);
+    // 140 列:100 个宽字符占 200 列,折成 2 行,不折叠。
+    assert!(!should_summarize_pasted_text_for_cols(&text, 140));
+    // 60 列:折成 4 行,折叠。
+    assert!(should_summarize_pasted_text_for_cols(&text, 60));
+    // 两行短文本怎么都不折叠。
+    assert!(!should_summarize_pasted_text_for_cols("a\nb", 20));
+}
+
 #[test]
 fn insert_pasted_text_summarizes_long_clipboard_text() {
     let mut input = "前后".to_string();

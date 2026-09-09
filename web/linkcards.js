@@ -26,8 +26,10 @@ window.MiyuLinkCards = (() => {
   /** 最多试这么多条。抓失败的不该白占一个卡片名额——09-09 用户那条 bilibili
       抓挂了,结果排在它后面的维基链接连试都没试。 */
   const MAX_CANDIDATES = 6;
-  /** 最后一次渲染之后等这么久才抓。流式重渲染每次都会把它推后。 */
-  const SETTLE_MS = 700;
+  /** 最后一次渲染之后等这么久才抓。流式重渲染每次都会把它推后。
+      700 让每张卡片先白等 0.7s(09-09 用户嫌 B 站卡片慢),250 足够跳过
+      流式重渲染的抖动。 */
+  const SETTLE_MS = 250;
 
   /** url → Promise<preview|null>。同一地址整页只问一次。 */
   const lookups = new Map();
@@ -157,22 +159,25 @@ window.MiyuLinkCards = (() => {
     if (!targets.length) return;
     // 先打标记再等结果:这一批的重复渲染不该再排一次队。
     for (const target of targets) target.paragraph.dataset.linkCard = "pending";
-    const previews = await Promise.all(targets.map((target) => previewFor(target.href)));
-    // 名额按「真的做出卡片」来数,按文档顺序先到先得。
+    // 逐个落卡,谁先回来谁先画;以前 Promise.all 让一条慢链接拖住整批。
+    // 名额按「真的做出卡片」来数,按抵达顺序先到先得。
     let made = 0;
-    targets.forEach((target, index) => {
-      const preview = previews[index];
-      // 段落可能在等待期间被重渲染换掉了,那就别动。
-      if (!target.paragraph.isConnected) return;
-      if (!preview || made >= MAX_CARDS_PER_MESSAGE) {
-        target.paragraph.dataset.linkCard = "none";
-        return;
-      }
-      made += 1;
-      target.paragraph.dataset.linkCard = "done";
-      target.paragraph.classList.add("has-link-card");
-      target.paragraph.replaceChildren(buildCard(preview, target.href));
-    });
+    await Promise.all(
+      targets.map((target) =>
+        previewFor(target.href).then((preview) => {
+          // 段落可能在等待期间被重渲染换掉了,那就别动。
+          if (!target.paragraph.isConnected) return;
+          if (!preview || made >= MAX_CARDS_PER_MESSAGE) {
+            target.paragraph.dataset.linkCard = "none";
+            return;
+          }
+          made += 1;
+          target.paragraph.dataset.linkCard = "done";
+          target.paragraph.classList.add("has-link-card");
+          target.paragraph.replaceChildren(buildCard(preview, target.href));
+        }),
+      ),
+    );
   }
 
   /**

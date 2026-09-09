@@ -15,7 +15,7 @@ pub(in crate::cli) fn read_live_repl_input(
     // 这个 REPL 的会话：唤醒回合按它认领，输入历史也按它刷新。
     repl_session: Option<&str>,
 ) -> Result<LiveReplOutcome> {
-    let mut raw = if std::mem::take(&mut live.raw_mode_handoff) {
+    let _raw_mode = if std::mem::take(&mut live.raw_mode_handoff) {
         LiveRawMode::adopt()
     } else {
         LiveRawMode::start()?
@@ -59,11 +59,9 @@ pub(in crate::cli) fn read_live_repl_input(
                         live.editor.cursor = live.editor.input.chars().count();
                         if let Some(submission) = live.editor.submit() {
                             let mode = live.mode();
-                            synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
-                                live.commit_submission_render(&submission)
+                            synchronized_terminal_update(CursorAfterUpdate::Shown, || {
+                                live.commit_submission(&submission)
                             })?;
-                            live.commit_submission_finalize();
-                            raw.keep_cursor_hidden();
                             return Ok(LiveReplOutcome::Submit(
                                 mode,
                                 submission.content,
@@ -203,13 +201,11 @@ pub(in crate::cli) fn read_live_repl_input(
                         continue;
                     }
                     let mode = live.mode();
-                    synchronized_terminal_update(CursorAfterUpdate::Hidden, || {
-                        live.commit_submission_render(&submission)
+                    // 回显和活动区重画在一个同步块里完成:光标不在左下角
+                    // 落脚,kitty 的 cursor_trail 就没有东西可画(见 commit_submission)。
+                    synchronized_terminal_update(CursorAfterUpdate::Shown, || {
+                        live.commit_submission(&submission)
                     })?;
-                    // 光标位置查询在同步块外做:块内等终端应答会撑破 kitty
-                    // 的同步超时,半成品帧(光标在屏幕底部)被提前提交。
-                    live.commit_submission_finalize();
-                    raw.keep_cursor_hidden();
                     return Ok(LiveReplOutcome::Submit(
                         mode,
                         submission.content,

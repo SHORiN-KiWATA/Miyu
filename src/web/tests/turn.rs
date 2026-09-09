@@ -266,6 +266,48 @@ fn dropped_ipc_turn_detaches_without_cancelling_the_run() {
         manager,
         run_id: "run_test".to_string(),
         finished: false,
+        one_shot: false,
+        questions: None,
+    });
+    assert!(!*cancel_rx.borrow());
+}
+
+/// 一次性客户端(shellhook/单次)断线是例外:它回不来了,挂着的问题要被
+/// 撤掉、回合要被取消,否则那一轮永远 running、下一轮看不见它(09-09 失忆根因)。
+#[test]
+fn dropped_one_shot_ipc_turn_cancels_the_run_and_its_question() {
+    let (manager, cancel_rx) = manager_with_run("run_test");
+    let broker = QuestionBroker::new();
+    let (responder, mut response) = oneshot::channel();
+    let question_id = broker.insert("run_test", sample_question(), responder);
+    drop(IpcRunGuard {
+        manager,
+        run_id: "run_test".to_string(),
+        finished: false,
+        one_shot: true,
+        questions: Some(broker.clone()),
+    });
+    assert!(
+        *cancel_rx.borrow(),
+        "one-shot disconnect must cancel the run"
+    );
+    assert!(matches!(
+        response.try_recv().unwrap(),
+        QuestionResponse::Cancelled
+    ));
+    assert!(!broker.pending.lock().unwrap().contains_key(&question_id));
+}
+
+/// 正常收尾(finished)的一次性回合断线不取消:回合已经跑完了。
+#[test]
+fn finished_one_shot_ipc_turn_does_not_cancel() {
+    let (manager, cancel_rx) = manager_with_run("run_test");
+    drop(IpcRunGuard {
+        manager,
+        run_id: "run_test".to_string(),
+        finished: true,
+        one_shot: true,
+        questions: None,
     });
     assert!(!*cancel_rx.borrow());
 }

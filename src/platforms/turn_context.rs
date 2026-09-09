@@ -79,7 +79,7 @@ pub(crate) struct PlatformTurnContext {
     /// 本回合已投递的回复文本(归一化 bigram 集)。文字版幂等闸(08-22 复读
     /// 取证):端点故障日模型会把"发送回复"重演成同义变体,digest 拦不住,
     /// 按近似度拦。仅回合内生效——跨回合相似回复可能是正当的再次回答。
-    pub(crate) delivered_reply_texts: Mutex<Vec<std::collections::HashSet<(char, char)>>>,
+    pub(crate) delivered_reply_texts: Mutex<Vec<DeliveredReplyText>>,
     /// Lazy file refs for queued follow-up prompts, keyed by prompt id.
     pub(crate) queued_files: Mutex<BTreeMap<String, Vec<PlatformContextFileRef>>>,
     pub(crate) reply_rate_available: AtomicBool,
@@ -623,19 +623,13 @@ impl PlatformTurnContext {
     }
 
     pub(crate) fn is_duplicate_reply_text(&self, text: &str) -> bool {
+        if self.repeats_delivered_reply_text(text) {
+            return true;
+        }
         let grams = reply_text_bigrams(text);
-        // 短文本(问候/单句确认)天然高相似,不设闸。
+        // 短文本(问候/单句确认)天然高相似,近似闸不管它们。
         if grams.len() < 16 {
             return false;
-        }
-        if self
-            .delivered_reply_texts
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|prev| bigram_jaccard(&grams, prev) >= 0.66)
-        {
-            return true;
         }
         // 跨回合支路(08-25 并发重复答题取证):同会话 2 分钟内投过的近似
         // 内容拒发,阈值 0.75 比回合内更严。
@@ -645,16 +639,38 @@ impl PlatformTurnContext {
         )
     }
 
+    /// 本回合内已经由工具发出去的文本,最终回复再发一遍就是复读(09-09 生图后
+    /// 「画好了,拿去当壁纸吧」发了两次):归一化后逐字相同直接算重复,短句也算;
+    /// 长文本再看 bigram 近似。只看本回合,跨回合那条更严的闸不在这里。
+    pub(crate) fn repeats_delivered_reply_text(&self, text: &str) -> bool {
+        let normalized = reply_text_normalized(text);
+        if normalized.is_empty() {
+            return false;
+        }
+        let grams = reply_text_bigrams(text);
+        let delivered = self.delivered_reply_texts.lock().unwrap();
+        delivered.iter().any(|prev| {
+            prev.normalized == normalized
+                || (grams.len() >= 16 && bigram_jaccard(&grams, &prev.grams) >= 0.66)
+        })
+    }
+
     pub(crate) fn record_delivered_reply_text(&self, text: &str) {
         crate::platforms::activity::record_recent_conversation_reply(
             &self.conversation.scope_key(),
             text,
         );
-        let grams = reply_text_bigrams(text);
-        if grams.is_empty() {
+        let normalized = reply_text_normalized(text);
+        if normalized.is_empty() {
             return;
         }
-        self.delivered_reply_texts.lock().unwrap().push(grams);
+        self.delivered_reply_texts
+            .lock()
+            .unwrap()
+            .push(DeliveredReplyText {
+                grams: reply_text_bigrams(text),
+                normalized,
+            });
     }
 
     pub(crate) fn record_delivered_images(&self, receipt: &SendReceipt) {
@@ -935,14 +951,24 @@ pub(crate) fn register_platform_tools(
     context.plugins.register_tools(registry, context.clone());
 }
 
+/// 本回合已投递的一条文本:归一化原文(逐字比对用)与 bigram 集(近似比对用)。
+pub(crate) struct DeliveredReplyText {
+    pub(crate) normalized: String,
+    pub(crate) grams: std::collections::HashSet<(char, char)>,
+}
+
+/// 去标点空白、小写后的文本。
+pub(crate) fn reply_text_normalized(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// 归一化(去标点空白、小写)后的字符 bigram 集。同义改写变体的用词高度
 /// 重叠,bigram Jaccard 是廉价且够用的近似度。
 pub(crate) fn reply_text_bigrams(text: &str) -> std::collections::HashSet<(char, char)> {
-    let normalized: Vec<char> = text
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
+    let normalized: Vec<char> = reply_text_normalized(text).chars().collect();
     normalized
         .windows(2)
         .map(|pair| (pair[0], pair[1]))

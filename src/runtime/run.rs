@@ -179,6 +179,10 @@ pub(crate) struct IpcRunGuard {
     pub(crate) manager: Arc<Mutex<ManagerState>>,
     pub(crate) run_id: String,
     pub(crate) finished: bool,
+    /// 阅后即焚的一次性客户端(单次 `miyu "…"`/shellhook):它断线就再也
+    /// 回不来了,挂着的问题永远没人答,回合会卡死在 running。
+    pub(crate) one_shot: bool,
+    pub(crate) questions: Option<crate::runtime::questions::QuestionBroker>,
 }
 
 impl IpcRunGuard {
@@ -194,7 +198,28 @@ impl Drop for IpcRunGuard {
         // 现在 run 由 actor 跑到终态,finish_run 在完成路径里自行清理,
         // 断线客户端留下的只是一个没人看的事件流。guard 保留为挂点
         // (显式取消仍走 IpcCommand::Cancel)。
-        let _ = self.finished;
+        //
+        // 例外:一次性客户端。它不会重连,挂着的问题没人答、回合永远
+        // running、下一轮的历史里看不见它(09-09 shellhook 失忆根因)。
+        // 断线即取消,回合按 interrupted 落库,下一轮照常看到。
+        if self.finished || !self.one_shot {
+            return;
+        }
+        let cancelled = {
+            let manager = self.manager.lock().unwrap();
+            manager.active_runs.get(&self.run_id).map(|run| {
+                run.request_cancel();
+            })
+        };
+        if cancelled.is_some() {
+            if let Some(questions) = self.questions.as_ref() {
+                questions.cancel_run(&self.run_id);
+            }
+            tracing::info!(
+                run_id = %self.run_id,
+                "one-shot client disconnected; its run was cancelled"
+            );
+        }
     }
 }
 

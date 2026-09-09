@@ -281,7 +281,22 @@ pub(in crate::platforms::onebot) async fn deliver_dispatch(
                 image_count,
             );
             // 零宽空格之类的"看起来是空"也算空,别发空气泡。
-            if !crate::platforms::visibly_blank(&reply_text) {
+            if crate::platforms::visibly_blank(&reply_text) {
+            } else if context.repeats_delivered_reply_text(&reply_text) {
+                // 工具(send_message_to_user)本回合已经把这句话发出去了,最终
+                // 回复再发就是用户看到的"重复发送"。图片闸在上面同样处理。
+                tracing::info!(
+                    target: "miyu::qq",
+                    "{}",
+                    t(
+                        "suppressed a OneBot final reply already delivered by a tool this turn",
+                        "已抑制本回合工具已投递过的 OneBot 最终回复文本",
+                    )
+                );
+                if segments.is_empty() {
+                    outcome.final_reply_already_sent = true;
+                }
+            } else {
                 segments.insert(0, OutboundSegment::Markdown(reply_text));
             }
             if segments.is_empty() {

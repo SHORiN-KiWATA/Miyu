@@ -806,3 +806,52 @@ fn a_reply_right_after_my_own_message_still_quotes() {
     assert!(after_own.quote, "应当引用");
     assert!(!after_own.mention, "艾特的判据不变,不该被顺带打开");
 }
+
+/// 09-09 生图复读:工具已把「画好了,拿去当壁纸吧。」发出去,最终回复再来一句
+/// 逐字相同的(标点不同也算)必须被拦;没发过的短句照常放行。
+#[test]
+fn final_reply_repeating_a_tool_send_is_caught_even_when_short() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let context = PlatformTurnContext::new(
+        PlatformConversation {
+            platform: "onebot".to_string(),
+            account_id: "10000".to_string(),
+            kind: ConversationKind::Group,
+            conversation_id: "130515298".to_string(),
+        },
+        "20000".to_string(),
+        "tester".to_string(),
+        false,
+        AppConfig::default(),
+        paths.clone(),
+        StateStore::new(&paths).unwrap(),
+        Arc::new(CountingAdapter {
+            calls: AtomicUsize::new(0),
+            fail_first: false,
+            messages: Mutex::new(Vec::new()),
+            group_members: Vec::new(),
+        }),
+        Arc::new(plugins::PlatformPluginRegistry::new(Vec::new())),
+    );
+
+    let sent = "画好了，拿去当壁纸吧。";
+    assert!(!context.repeats_delivered_reply_text(sent));
+    context.record_delivered_reply_text(sent);
+    assert!(
+        context.repeats_delivered_reply_text(sent),
+        "逐字相同必须命中"
+    );
+    assert!(
+        context.repeats_delivered_reply_text("画好了！拿去当壁纸吧"),
+        "只差标点也算同一句"
+    );
+    assert!(
+        !context.repeats_delivered_reply_text("好，收到。"),
+        "没发过的短句不拦"
+    );
+    assert!(
+        context.is_duplicate_reply_text(sent),
+        "工具侧的闸也要认逐字相同的短句"
+    );
+}

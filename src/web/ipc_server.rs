@@ -787,6 +787,23 @@ pub(in crate::web) async fn switch_session_via_actor_reserved(
     }
 }
 
+/// 等到回合流连接的对端挂断(EOF 或读错误)才返回。回合流上客户端在
+/// StartTurn 之后不再发东西(取消/排队都走新连接),读到的字节只丢弃。
+async fn client_hung_up(stream: &tokio::net::UnixStream) {
+    let mut scratch = [0u8; 256];
+    loop {
+        if stream.readable().await.is_err() {
+            return;
+        }
+        match stream.try_read(&mut scratch) {
+            Ok(0) => return,
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(_) => return,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::web) async fn handle_ipc_turn(
     state: &DaemonState,
@@ -862,6 +879,8 @@ pub(in crate::web) async fn handle_ipc_turn(
         return Ok(());
     }
 
+    // REPL 常驻连接不带 origin_tty;带的只有阅后即焚的单次/shellhook 触发。
+    let one_shot = origin_tty.is_some();
     let after = state.events.latest_id();
     let mut subscription = state.events.subscribe_after(after);
     if state
@@ -894,6 +913,8 @@ pub(in crate::web) async fn handle_ipc_turn(
         manager: state.manager.clone(),
         run_id: run_id.clone(),
         finished: false,
+        one_shot,
+        questions: Some(state.questions.clone()),
     };
     ipc::send(
         stream,
@@ -909,7 +930,15 @@ pub(in crate::web) async fn handle_ipc_turn(
         let record = if let Some(record) = subscription.pending.pop_front() {
             record
         } else {
-            match subscription.receiver.recv().await {
+            // 只等事件会看不见客户端断线:问题面板挂着时没有任何事件,这里
+            // 永远不写,也就永远不知道对面已经没了(09-09 shellhook 失忆
+            // 取证:客户端被杀后 guard 根本没掉落)。同时盯着连接的挂断。
+            let received = tokio::select! {
+                biased;
+                result = subscription.receiver.recv() => result,
+                _ = client_hung_up(stream) => break,
+            };
+            match received {
                 Ok(record) => record,
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     subscription.pending = state.events.replay_after(last_id);

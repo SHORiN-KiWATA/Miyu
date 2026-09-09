@@ -130,6 +130,8 @@ pub(crate) async fn run_platform_turn(
         manager: state.manager.clone(),
         run_id: run_id.clone(),
         finished: false,
+        one_shot: false,
+        questions: None,
     };
 
     let deadline = tokio::time::Instant::now() + PLATFORM_TURN_TIMEOUT;

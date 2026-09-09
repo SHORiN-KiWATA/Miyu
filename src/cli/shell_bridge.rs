@@ -118,6 +118,7 @@ pub(in crate::cli) fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
             Ok(())
         }
         Ok(crate::clipboard::ClipboardContent::Text(text)) => {
+            let text = normalize_pasted_newlines(&text);
             if should_summarize_pasted_text(&text) {
                 let index = shell_pasted_text_index(&paths.cache_dir, &text)?;
                 let placeholder = pasted_text_placeholder(index, pasted_text_line_count(&text));

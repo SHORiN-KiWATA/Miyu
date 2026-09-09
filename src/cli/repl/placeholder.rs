@@ -11,7 +11,9 @@ use crate::cli::*;
 
 pub(in crate::cli) const REPL_PASTE_PLACEHOLDER_MIN_LINES: usize = 3;
 
-pub(in crate::cli) const REPL_PASTE_PLACEHOLDER_MIN_CHARS: usize = 150;
+/// 单行(或两行)粘贴在输入框里折行后占到这么多行才折成占位符。以前是
+/// 「>150 字符」的死数,中文一行多半就超了,用户粘一句话也被折掉(09-09)。
+pub(in crate::cli) const REPL_PASTE_PLACEHOLDER_MIN_ROWS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub(in crate::cli) struct PastedText {
@@ -74,10 +76,27 @@ pub(in crate::cli) fn extract_image_placeholders(
     (clean, images)
 }
 
+/// 终端把粘贴里的换行送成 `\r`(括号粘贴模式下 kitty/foot 等都这样),而行数
+/// 只数 `\n`、控制字符过滤又会把 `\r` 删掉——多行粘贴显示「~1 行」还粘成一行。
+/// 判定和存储前先统一成 `\n`。
+pub(in crate::cli) fn normalize_pasted_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 pub(in crate::cli) fn should_summarize_pasted_text(text: &str) -> bool {
-    !text.is_empty()
-        && (pasted_text_line_count(text) >= REPL_PASTE_PLACEHOLDER_MIN_LINES
-            || text.chars().count() > REPL_PASTE_PLACEHOLDER_MIN_CHARS)
+    should_summarize_pasted_text_for_cols(text, terminal_cols())
+}
+
+/// 折不折成占位符:行数够多,或者按输入框宽度折行后占的行数够多。
+pub(in crate::cli) fn should_summarize_pasted_text_for_cols(text: &str, cols: usize) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if pasted_text_line_count(text) >= REPL_PASTE_PLACEHOLDER_MIN_LINES {
+        return true;
+    }
+    let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+    repl_wrapped_input_rows_for_cols("  ", &lines, cols).len() >= REPL_PASTE_PLACEHOLDER_MIN_ROWS
 }
 
 pub(in crate::cli) fn pasted_text_line_count(text: &str) -> usize {
@@ -106,7 +125,7 @@ pub(in crate::cli) fn insert_pasted_text_at_cursor(
     text: String,
     pasted_texts: &mut Vec<Option<PastedText>>,
 ) -> usize {
-    let text = strip_terminal_control_sequences(&text);
+    let text = strip_terminal_control_sequences(&normalize_pasted_newlines(&text));
     if should_summarize_pasted_text(&text) {
         let index = pasted_texts.len() + 1;
         let placeholder = pasted_text_placeholder(index, pasted_text_line_count(&text));

@@ -97,6 +97,21 @@ pub(in crate::cli) fn cursor_position_or(fallback: (u16, u16)) -> (u16, u16) {
     cursor::position().unwrap_or(fallback)
 }
 
+/// 从 `start` 起把 `frame` 写进终端后光标停在哪。追踪器不知道页高,顶到页底
+/// 之后终端是滚动而不是继续往下,所以行号封在最后一行。
+pub(in crate::cli) fn cursor_after_frame(
+    frame: &[u8],
+    start: (u16, u16),
+    columns: u16,
+    terminal_rows: u16,
+) -> (u16, u16) {
+    let layout = terminal_frame_layout(frame, start, columns, None);
+    (
+        layout.cursor.0,
+        layout.cursor.1.min(terminal_rows.saturating_sub(1)),
+    )
+}
+
 pub(in crate::cli) fn cursor_row_or(fallback: u16) -> u16 {
     cursor_position_or((0, fallback)).1
 }
@@ -727,7 +742,6 @@ impl LiveReplTail {
 }
 
 pub(in crate::cli) struct LiveRawMode {
-    pub(in crate::cli) show_cursor_on_drop: bool,
     pub(in crate::cli) restore_terminal_on_drop: bool,
     pub(in crate::cli) keyboard_enhancement: KeyboardEnhancementState,
 }
@@ -750,7 +764,6 @@ impl LiveRawMode {
         // send the events, and the editor stays on its "focused" default.
         let _ = execute!(stdout, EnableFocusChange);
         Ok(Self {
-            show_cursor_on_drop: true,
             restore_terminal_on_drop: true,
             keyboard_enhancement: KeyboardEnhancementState::enable(&mut stdout),
         })
@@ -764,14 +777,9 @@ impl LiveRawMode {
     /// - 会在最终 Drop 时恢复终端的守卫对象
     pub(in crate::cli) fn adopt() -> Self {
         Self {
-            show_cursor_on_drop: true,
             restore_terminal_on_drop: true,
             keyboard_enhancement: KeyboardEnhancementState::assume_active(),
         }
-    }
-
-    pub(in crate::cli) fn keep_cursor_hidden(&mut self) {
-        self.show_cursor_on_drop = false;
     }
 
     pub(in crate::cli) fn handoff(&mut self) {
@@ -797,11 +805,7 @@ impl Drop for LiveRawMode {
             return;
         }
         let mut stdout = io::stdout();
-        if self.show_cursor_on_drop {
-            let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange, Show);
-        } else {
-            let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange);
-        }
+        let _ = execute!(stdout, DisableBracketedPaste, DisableFocusChange, Show);
         // 1. 先 Pop 键盘增强协议
         // 2. 再退出 raw mode
         self.keyboard_enhancement.disable(&mut stdout);

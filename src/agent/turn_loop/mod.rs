@@ -17,6 +17,9 @@ mod stream;
 
 use repeat_gate::{ToolRepeatGate, REPEAT_FUSE_THRESHOLD, REPEAT_SKIP_THRESHOLD};
 
+/// 回合内问题最多等这么久(与 web/bridge_question.rs 的桥问题同档)。
+const QUESTION_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 use crate::agent::*;
 
 impl Agent {
@@ -750,7 +753,16 @@ impl Agent {
                         request: request.clone(),
                         responder: response_tx,
                     })?;
-                    let response = response_rx.await.unwrap_or(QuestionResponse::Cancelled);
+                    // 没人回答也得有个头:一次性客户端(shellhook)断线后没人能再
+                    // 应答,回合会永远卡在 running,被历史组装跳过——用户看到的
+                    // 是"上一轮失忆"(09-09)。超时当无人应答,回合正常收尾。
+                    let response =
+                        match tokio::time::timeout(QUESTION_WAIT_LIMIT, response_rx).await {
+                            Ok(response) => response.unwrap_or(QuestionResponse::Cancelled),
+                            Err(_) => QuestionResponse::Unavailable(
+                                "nobody answered within the time limit".to_string(),
+                            ),
+                        };
                     let output = match response {
                         QuestionResponse::Answered(answers) => {
                             let exchange = QuestionExchange::new(request, answers)?;
