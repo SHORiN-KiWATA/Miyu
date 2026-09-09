@@ -16,7 +16,7 @@ mod deepseek_status;
 mod default_tools;
 pub(crate) use default_tools::TOOL_SUMMARY_PREFIX;
 mod diagnostics;
-mod exchange_rate;
+pub(crate) mod exchange_rate;
 mod fcitx_wiki;
 pub mod goal;
 mod hash_codec;
@@ -25,6 +25,7 @@ mod http_response;
 mod image_generation;
 pub mod jobs;
 pub mod knowledge_base;
+mod ledger;
 mod load_tools;
 mod man;
 mod mcp;
@@ -312,6 +313,8 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "load_skill" => t("Load skill", "加载技能"),
         "manage_skill" => t("Manage skills", "管理技能"),
         "load_tools" => t("Load", "加载"),
+        "ledger" => t("Ledger", "记账"),
+        "manage_ledger" => t("Manage ledger", "账本管理"),
         "manage_script" => t("Manage scripts", "管理脚本"),
         "todowrite" => t("Todo list", "任务列表"),
         "goal" => t("Long-task goal", "长任务目标"),
@@ -338,6 +341,7 @@ fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
         "gaming" => t("Gaming tools", "游戏工具组"),
         "images" => t("Image tools", "图片工具组"),
         "knowledge" => t("Knowledge base tools", "知识库工具组"),
+        "ledger" => t("Ledger tools", "记账工具组"),
         "knowledge-admin" => t("Knowledge base management", "知识库管理工具组"),
         "linux-docs" => t("Linux documentation", "Linux 文档工具组"),
         "memory" => t("Memory tools", "记忆工具组"),
@@ -498,6 +502,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     // 子代理拿的是这一刻的快照,指路句也得按它自己的工具面补。
     cross_hints::apply(&mut task_tools);
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
+    // 记账只进这张表(以及 WebUI 走的同一张)。受限平台注册表里没有它——
+    // 注册位置就是权限边界:QQ 群里的模型上下文里连工具名都不存在。
+    ledger::register(&mut registry, config.clone(), paths.clone());
     scripts::register(&mut registry, config, paths);
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());

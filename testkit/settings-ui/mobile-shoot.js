@@ -110,7 +110,7 @@ async function fullShot(page, name) {
   await shot(page, "10-console-usage");
   await fullShot(page, "10-console-usage");
 
-  const panels = ["memory", "kb", "memes", "qq", "groups", "affection"];
+  const panels = ["memory", "kb", "memes", "qq", "groups", "affection", "scripts", "ledger", "sponsors"];
   let n = 11;
   for (const p of panels) {
     // rail 在手机上可能藏起来,先看看能不能直接点

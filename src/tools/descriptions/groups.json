@@ -11,6 +11,7 @@
   "images": { "display_name": "图片工具组", "summary": "Image generation, search, analysis, and terminal display." },
   "knowledge": { "display_name": "知识库工具组", "summary": "Search and read the local knowledge base." },
   "knowledge-admin": { "display_name": "知识库管理工具组", "summary": "Knowledge base writing, editing, and deletion." },
+  "ledger": { "display_name": "记账工具组", "summary": "Personal ledger: record entries, browse them, and manage books and budgets." },
   "linux-docs": { "display_name": "Linux 文档工具组", "summary": "Search and read online man pages." },
   "memory": { "display_name": "记忆工具组", "summary": "Long-term memory read/write and recall of past events." },
   "memes": { "display_name": "表情包工具组", "summary": "Meme sticker search, sending, and management." },

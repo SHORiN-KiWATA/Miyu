@@ -33,13 +33,28 @@ async fn get_exchange_rate(args: Value, config: ExchangeRatePluginConfig) -> Res
     if base.is_empty() || target.is_empty() {
         bail!("base and target are required");
     }
+    let (rate, _source) = fetch_rate(&base, &target, &config).await?;
+    Ok(format!("{base} 到 {target} 的汇率是: {rate}"))
+}
+
+/// 取一对币种的汇率，返回汇率与数据源标识。
+///
+/// 从工具处理函数里抽出来，因为账本记外币账时也要它——那条路上需要的是
+/// 数字而不是给模型看的句子，而且**换算必须在 Rust 里做**：让模型自己乘
+/// 汇率是在给一个概率模型派确定性工作。
+///
+/// 两个源的取舍不变：配了 key 就先问付费源，它的任何失败（网络 / 401 /
+/// 解析）都不终止流程，掉到免费源兜底。
+pub(crate) async fn fetch_rate(
+    base: &str,
+    target: &str,
+    config: &ExchangeRatePluginConfig,
+) -> Result<(f64, &'static str)> {
     if !config.api_key.trim().is_empty() {
         let url = format!(
             "https://v6.exchangerate-api.com/v6/{}/latest/{base}",
             config.api_key.trim()
         );
-        // 付费 API 的任何失败(网络/401/解析)都不终止请求:免费 fallback
-        // 兜底。此前 `?` 直接上抛,fallback 分支实际是死代码。
         let data = async {
             http_response::shared_client()
                 .get(url)
@@ -54,10 +69,10 @@ async fn get_exchange_rate(args: Value, config: ExchangeRatePluginConfig) -> Res
             if data.get("result").and_then(Value::as_str) == Some("success") {
                 if let Some(rate) = data
                     .get("conversion_rates")
-                    .and_then(|rates| rates.get(&target))
+                    .and_then(|rates| rates.get(target))
                     .and_then(Value::as_f64)
                 {
-                    return Ok(format!("{base} 到 {target} 的汇率是: {rate}"));
+                    return Ok((rate, "exchangerate-api"));
                 }
             }
         }
@@ -75,10 +90,10 @@ async fn get_exchange_rate(args: Value, config: ExchangeRatePluginConfig) -> Res
         .await?;
     let rate = data
         .get("rates")
-        .and_then(|rates| rates.get(&target))
+        .and_then(|rates| rates.get(target))
         .and_then(Value::as_f64)
         .ok_or_else(|| anyhow::anyhow!("target currency not found: {target}"))?;
-    Ok(format!("{base} 到 {target} 的汇率是: {rate}"))
+    Ok((rate, "er-api"))
 }
 
 fn currency_code(value: &str) -> String {

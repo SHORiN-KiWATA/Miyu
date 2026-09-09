@@ -30,6 +30,8 @@
   <script defer src="/dash/dash-groups.js"></script>
   <script defer src="/dash/dash-affection.js"></script>
   <script defer src="/dash/dash-scripts.js"></script>
+  <script defer src="/dash/dash-ledger.js"></script>
+  <script defer src="/dash/dash-ledger-manage.js"></script>
   <script defer src="/dash/dash-sponsor.js"></script>
   <script defer src="/dash/settings-schema.js"></script>
   <script defer src="/dash/settings.js"></script>
@@ -324,6 +326,10 @@
             <span class="icon-slot" data-icon="file-code" aria-hidden="true"><span class="icon-fallback">▶</span></span>
             <span>脚本</span>
           </button>
+          <button class="con-rail-item" type="button" data-console-panel="ledger">
+            <span class="icon-slot" data-icon="wallet" aria-hidden="true"><span class="icon-fallback">¥</span></span>
+            <span>记账</span>
+          </button>
           <button class="con-rail-item" type="button" data-console-panel="settings">
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span>设置</span>
@@ -422,6 +428,9 @@
         </div>
         <div class="con-panel" data-console-panel="scripts" hidden>
           <div class="con-inner is-wide" id="dashScriptsRoot"></div>
+        </div>
+        <div class="con-panel" data-console-panel="ledger" hidden>
+          <div class="con-inner is-wide" id="dashLedgerRoot"></div>
         </div>
         <div class="con-panel" data-console-panel="settings" hidden>
         <div class="settings-layout">

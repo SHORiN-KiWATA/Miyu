@@ -1,0 +1,61 @@
+{
+  "name": "manage_ledger",
+  "display_name": "账本管理",
+  "description": "Manage ledger books, accounts, categories and budgets.\nA book holds its own accounts, categories and budgets, and every total is reported in the book's currency. New books start with a set of default categories. Budgets are monthly limits in the book's currency; spending in a sub-category counts towards its parent. Entries themselves are recorded with ledger. Display details such as account type, opening balance and category icons are set in the dashboard.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create_book",
+          "create_account",
+          "create_category",
+          "set_budget",
+          "delete_budget",
+          "list"
+        ],
+        "description": "What to create, or list to see what exists."
+      },
+      "what": {
+        "type": "string",
+        "enum": ["books", "accounts", "categories", "budgets"],
+        "description": "For action=list: which of them to list. Books by default."
+      },
+      "name": {
+        "type": "string",
+        "description": "For create_book, create_account and create_category: the name."
+      },
+      "currency": {
+        "type": "string",
+        "description": "For create_book: the ISO code every total in the book is reported in. For create_account: only when the account holds another currency."
+      },
+      "direction": {
+        "type": "string",
+        "enum": ["expense", "income"],
+        "description": "For create_category: which tree it belongs to. Expense by default."
+      },
+      "amount": {
+        "type": "string",
+        "description": "For set_budget: the monthly limit in the book's currency."
+      },
+      "category": {
+        "type": "string",
+        "description": "For set_budget: limit this one category instead of the whole book."
+      },
+      "book": {
+        "type": "string",
+        "description": "Which book. Only needed when more than one exists."
+      },
+      "id": {
+        "type": "string",
+        "description": "For delete_budget: the budget id."
+      }
+    },
+    "required": ["action"]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": ["ledger"]
+}

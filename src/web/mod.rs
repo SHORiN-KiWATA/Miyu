@@ -60,6 +60,7 @@ use commands_api::*;
 use config_api::*;
 use dashboards::affection::*;
 use dashboards::kb::*;
+use dashboards::ledger::*;
 use dashboards::memes::*;
 use dashboards::memory::*;
 use dashboards::qq::*;
