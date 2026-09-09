@@ -196,3 +196,116 @@ fn horizontal_rule_uses_terminal_width_fallback() {
     assert!(output.ends_with("\x1b[0m"));
     assert!(visible_width(&output) >= 16);
 }
+
+// ── 链接 ──────────────────────────────────────────────────────────
+// 09-09：模型给参考资料写的是纯文本 `标题 (地址)`，正文里的地址也是裸写的。
+// 修之前这两样一点颜色都没有：只有 `[x](y)` 和 `<url>` 被认出来。
+
+#[test]
+fn colors_bare_urls_in_prose() {
+    let output = render_inline("见 https://example.com/a 那篇");
+    assert!(
+        output.contains(&format!("{URL_STYLE}https://example.com/a{RESET}")),
+        "{output}"
+    );
+}
+
+#[test]
+fn bare_url_stops_before_sentence_punctuation() {
+    let output = render_inline("见 https://example.com。");
+    assert!(
+        output.contains(&format!("{URL_STYLE}https://example.com{RESET}。")),
+        "{output}"
+    );
+}
+
+#[test]
+fn bare_url_stops_before_cjk_punctuation_inside() {
+    // 顿号后面还跟着字母，只在末尾修剪碰不到它。
+    let output = render_inline("archlinux.org 见 https://a.org、AUR");
+    assert!(
+        output.contains(&format!("{URL_STYLE}https://a.org{RESET}、AUR")),
+        "{output}"
+    );
+}
+
+#[test]
+fn bare_url_keeps_balanced_parens() {
+    let output = render_inline("https://en.wikipedia.org/wiki/Foo_(bar)");
+    assert!(
+        output.contains(&format!(
+            "{URL_STYLE}https://en.wikipedia.org/wiki/Foo_(bar){RESET}"
+        )),
+        "{output}"
+    );
+}
+
+#[test]
+fn does_not_link_glued_scheme() {
+    let output = render_inline("xhttps://example.com");
+    assert!(!output.contains(URL_STYLE), "{output}");
+}
+
+#[test]
+fn title_url_line_colors_the_title_too() {
+    let output = render_markdown_line("Efficient LLM Collaboration (https://arxiv.org/abs/2506)");
+    assert!(
+        output.contains(&format!(
+            "{LINK_LABEL_STYLE}Efficient LLM Collaboration{RESET}"
+        )),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("{URL_STYLE}https://arxiv.org/abs/2506{RESET}")),
+        "{output}"
+    );
+}
+
+#[test]
+fn title_url_line_works_inside_list_items() {
+    let output = render_markdown_line("- 计划式协作 (https://arxiv.org/abs/2506)");
+    assert!(
+        output.contains(&format!("{LINK_LABEL_STYLE}计划式协作{RESET}")),
+        "{output}"
+    );
+}
+
+#[test]
+fn title_url_line_ignores_prose_parentheses() {
+    let output = render_markdown_line("这句话 (只是个注解)");
+    assert!(!output.contains(LINK_LABEL_STYLE), "{output}");
+}
+
+#[test]
+fn file_scheme_links_are_recognized() {
+    let output = render_inline("[bilibili-summary](file:///home/u/.miyu/mcp-servers/bili)");
+    assert!(
+        output.contains(&format!("{LINK_LABEL_STYLE}bilibili-summary{RESET}")),
+        "{output}"
+    );
+    assert!(
+        output.contains("file:///home/u/.miyu/mcp-servers/bili"),
+        "{output}"
+    );
+    assert!(!output.contains("]("), "markdown 原文不该漏出来: {output}");
+}
+
+#[test]
+fn osc8_wraps_body_in_hyperlink_escape() {
+    assert_eq!(
+        osc8("https://a.com", "文本"),
+        "\x1b]8;;https://a.com\x1b\\文本\x1b]8;;\x1b\\"
+    );
+}
+
+#[test]
+fn title_url_line_leaves_markdown_links_alone() {
+    // `[label](url)` 独占一行时,结尾也是 `)`——按「标题 (地址)」处理的话整条
+    // Markdown 会被当成标题原样漏出来(09-09 走查抓到)。
+    let output = render_markdown_line("[GitHub 上的 Miyu](https://github.com/x/y)");
+    assert!(!output.contains("]("), "{output}");
+    assert!(
+        output.contains(&format!("{LINK_LABEL_STYLE}GitHub 上的 Miyu{RESET}")),
+        "{output}"
+    );
+}

@@ -317,7 +317,10 @@ pub(crate) fn render_markdown_line(line: &str) -> String {
         .or_else(|| trimmed.strip_prefix("* "))
         .or_else(|| trimmed.strip_prefix("+ "))
     {
-        return format!("{indent}{TERTIARY_STYLE}-{RESET} {}", render_inline(rest));
+        return format!(
+            "{indent}{TERTIARY_STYLE}-{RESET} {}",
+            render_line_body(rest)
+        );
     }
     let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
     if digits > 0
@@ -328,13 +331,19 @@ pub(crate) fn render_markdown_line(line: &str) -> String {
         let rest = &trimmed[digits + 2..];
         return format!(
             "{indent}{TERTIARY_STYLE}{marker}{RESET} {}",
-            render_inline(rest)
+            render_line_body(rest)
         );
     }
     if is_horizontal_rule(trimmed) {
         return horizontal_rule();
     }
-    render_inline(line)
+    render_line_body(line)
+}
+
+/// 行的正文部分。先看整行是不是「标题 (地址)」——命中就整行成链，
+/// 否则退回逐字符的行内解析。
+pub(crate) fn render_line_body(text: &str) -> String {
+    render_title_url_line(text).unwrap_or_else(|| render_inline(text))
 }
 
 pub(crate) fn parse_blockquote(line: &str) -> Option<(usize, &str)> {
@@ -484,13 +493,15 @@ pub(crate) fn render_inline(text: &str) -> String {
             if let Some(label_end) = find_marker(&chars, index + 1, ']') {
                 if chars.get(label_end + 1) == Some(&'(') {
                     if let Some(url_end) = find_marker(&chars, label_end + 2, ')') {
-                        output.push_str(LINK_LABEL_STYLE);
-                        output.extend(chars[index + 1..label_end].iter());
-                        output.push_str(RESET);
-                        output.push(' ');
-                        output.push_str(&render_url_wrapped(
-                            &chars[label_end + 2..url_end].iter().collect::<String>(),
-                        ));
+                        let label = chars[index + 1..label_end].iter().collect::<String>();
+                        let url = chars[label_end + 2..url_end].iter().collect::<String>();
+                        // 标签不再往下解析：整段要挂同一个 OSC 8，里面再嵌一层
+                        // 链接转义只会互相打架，而标签里出现 Markdown 的情况罕见。
+                        let inner = format!(
+                            "{LINK_LABEL_STYLE}{label}{RESET} {}",
+                            render_url_wrapped(&url)
+                        );
+                        output.push_str(&hyperlink(url.trim(), &inner));
                         index = url_end + 1;
                         continue;
                     }
@@ -500,10 +511,9 @@ pub(crate) fn render_inline(text: &str) -> String {
         if chars[index] == '<' {
             if let Some(end) = find_marker(&chars, index + 1, '>') {
                 let value = chars[index + 1..end].iter().collect::<String>();
-                if value.starts_with("http://") || value.starts_with("https://") {
-                    output.push_str("\x1b[4m");
-                    output.push_str(&render_url_wrapped(&value));
-                    output.push_str(RESET);
+                if scheme_len(&value).is_some() {
+                    let inner = format!("\x1b[4m{}{RESET}", render_url_wrapped(&value));
+                    output.push_str(&hyperlink(&value, &inner));
                     index = end + 1;
                     continue;
                 }
@@ -512,6 +522,14 @@ pub(crate) fn render_inline(text: &str) -> String {
                     index = end + 1;
                     continue;
                 }
+            }
+        }
+        // 裸地址。放在行内代码与 [](…) 之后：那两样先被吃掉，这里看不到它们的内容。
+        if matches!(chars[index], 'h' | 'H' | 'f' | 'F') {
+            if let Some(url) = bare_url_at(&chars, index) {
+                output.push_str(&render_bare_url(&url));
+                index += url.chars().count();
+                continue;
             }
         }
         output.push(chars[index]);

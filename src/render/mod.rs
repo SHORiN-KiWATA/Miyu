@@ -1,5 +1,6 @@
 mod code;
 mod command;
+mod link;
 mod markdown;
 pub(crate) mod math;
 mod patch;
@@ -10,6 +11,7 @@ mod tool_display;
 mod usage;
 pub(crate) use code::*;
 pub(crate) use command::*;
+pub(crate) use link::*;
 pub(crate) use markdown::*;
 pub(crate) use patch::*;
 pub(crate) use stream::*;
