@@ -5616,6 +5616,11 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr);
   min-height: 0;
+  /* 和 .con-inner 一样居中：导航 168 + 内容左右各 26 内边距 + .st-root 960 = 1180，
+     正好让内容列填满而不留白；导航和内容整块一起居中，footer 保持通栏。 */
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
 }
 
 .settings-nav {
