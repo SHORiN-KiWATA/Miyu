@@ -117,15 +117,19 @@ body[data-theme="linen"] {
    * 堆分不清的色更好读。error 是三套色板下都必定是红的那个角色,给关键字;
    * online 明确「不跟壁纸走」的固定绿,给字符串;剩下的交给 primary/tertiary。
    */
-  --tok-c: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 74%, var(--code-bg));
-  --tok-p: color-mix(in srgb, var(--code-ink) 55%, var(--code-bg));
-  --tok-o: color-mix(in srgb, var(--code-ink) 78%, var(--code-bg));
-  --tok-k: color-mix(in srgb, var(--md-sys-color-error) 84%, var(--code-ink));
-  --tok-s: color-mix(in srgb, var(--md-ext-color-online) 84%, var(--code-ink));
-  --tok-n: color-mix(in srgb, var(--md-sys-color-secondary) 62%, var(--md-sys-color-error));
-  --tok-f: color-mix(in srgb, var(--md-sys-color-primary) 88%, var(--code-ink));
-  --tok-t: color-mix(in srgb, var(--md-sys-color-tertiary) 84%, var(--code-ink));
-  --tok-y: color-mix(in srgb, var(--md-sys-color-primary) 50%, var(--code-ink));
+  /* 语法高亮用固定的标准色板(One Dark),不从主题变量派生。
+     派生版能跟着壁纸配色走,但代价是每换一张壁纸就换一套「关键字是什么颜色」——
+     而看代码的人对紫关键字/绿字符串/橙数字/蓝函数是有肌肉记忆的,那点主题一致性
+     不值得拿它去换(用户 09-09 裁定)。深浅两套各一份,见 linen 那块。 */
+  --tok-c: #7f848e;
+  --tok-p: #abb2bf;
+  --tok-o: #56b6c2;
+  --tok-k: #c678dd;
+  --tok-s: #98c379;
+  --tok-n: #d19a66;
+  --tok-f: #61afef;
+  --tok-t: #e5c07b;
+  --tok-y: #e06c75;
 }
 
 body[data-theme="linen"] {
@@ -160,18 +164,25 @@ body[data-theme="linen"] {
   --md-sys-color-outline-variant: #e3d8c1;
   --md-ext-color-online: #3e8e5c;
 
-  /* 语法高亮:同一个 color-mix 在暗底上够亮、换到浅底就不够深了。字符串那档
-     实测只有 3.52:1(绿字压在奶油底上),往墨色多兑一些。别的 token 本来就够。 */
-  --tok-s: color-mix(in srgb, var(--md-ext-color-online) 46%, var(--code-ink));
-  /* 注释与标点在浅底上也偏淡(实测 2.45:1)。它们本来就该退到后面,但 2.5:1
-     是「眯着眼找」的程度,提到 3.5 上下。 */
-  --tok-c: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 96%, var(--code-ink));
-  --tok-p: color-mix(in srgb, var(--code-ink) 72%, var(--code-bg));
+  /* 语法高亮的浅色一套(One Light)。注释比原版的 #a0a1a7 压暗了一档——那个值
+     在浅底上只有 2.6:1,是「眯着眼找」的程度;注释该退到后面,但不该看不见。 */
+  --tok-c: #8b8c93;
+  --tok-p: #383a42;
+  --tok-o: #0184bc;
+  --tok-k: #a626a4;
+  --tok-s: #48934a;
+  --tok-n: #986801;
+  --tok-f: #3a6fe0;
+  --tok-t: #a97601;
+  --tok-y: #d3453b;
 
   /* 亮色下少数别名的映射不同:用户气泡用实心主色,代码块改暖纸浅底 */
   --user-bg: var(--md-sys-color-primary);
   --user-text: var(--md-sys-color-on-primary);
-  --code-bg: color-mix(in srgb, var(--md-sys-color-surface-container-high) 96%, var(--md-sys-color-on-surface));
+  /* 代码底提到近白。标准色板(One Light)是照着近白底调的,压在原来那层偏暖的
+     奶油底上会吃掉约一档对比度——绿字符串掉到 2.5:1。硬把色板压暗能补回来,
+     但数字和类型那两档本来就靠明度区分,一压就撞成同一个色。改底比改色板对。 */
+  --code-bg: color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 82%, #ffffff);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 85%, var(--md-sys-color-surface));
   --hl: color-mix(in srgb, var(--md-sys-color-primary) 78%, var(--md-sys-color-on-surface));
   --bubble-shadow: 0 1px 4px rgba(83, 64, 30, 0.07);
