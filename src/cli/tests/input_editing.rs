@@ -44,11 +44,17 @@ fn every_tool_image_gets_a_size_not_just_memes() {
 fn repl_history_is_capped() {
     let mut history = Vec::new();
     for i in 0..(REPL_HISTORY_LIMIT + 100) {
-        push_history_capped(&mut history, &format!("entry-{i}"));
+        push_history_capped(&mut history, ReplHistoryEntry::plain(&format!("entry-{i}")));
     }
     assert_eq!(history.len(), REPL_HISTORY_LIMIT);
-    assert_eq!(history.first().map(String::as_str), Some("entry-100"));
-    assert_eq!(history.last().map(String::as_str), Some("entry-599"));
+    assert_eq!(
+        history.first().map(|e| e.display.as_str()),
+        Some("entry-100")
+    );
+    assert_eq!(
+        history.last().map(|e| e.display.as_str()),
+        Some("entry-599")
+    );
 }
 
 #[test]
@@ -355,8 +361,84 @@ fn live_editor_restores_clear_screen_and_double_escape_controls() {
         LiveEditorAction::Submit(_)
     ));
     assert!(editor.history.is_empty());
-    editor.record_history("ordinary prompt");
-    assert_eq!(editor.history, ["ordinary prompt"]);
+    editor.record_history(ReplHistoryEntry::plain("ordinary prompt"));
+    assert_eq!(editor.history, [ReplHistoryEntry::plain("ordinary prompt")]);
+}
+
+/// 上键回忆带粘贴占位符的提交:输入框里还是 `[粘贴 1: ~3 行]`,载荷跟着
+/// 回来,再提交时照常展开成全文。以前历史存的是展开全文,回来是一堆裸行。
+#[test]
+fn recalled_history_keeps_the_paste_placeholder_alive() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = pop_test_paths(temp.path());
+    let mut editor = LiveReplEditor::new(AgentMode::Normal, Vec::new());
+    editor
+        .handle_event(
+            Event::Paste("alpha\nbeta\ngamma".to_string()),
+            &paths,
+            false,
+        )
+        .unwrap();
+    let placeholder = editor.input.clone();
+    assert!(
+        placeholder.starts_with("[粘贴 1") || placeholder.starts_with("[Pasted 1"),
+        "{placeholder}"
+    );
+    let submission = editor.submit().unwrap();
+    assert_eq!(submission.content, "alpha\nbeta\ngamma");
+    assert_eq!(submission.display_content, placeholder);
+    let entry = ReplHistoryEntry::from_submission(&submission);
+    assert_eq!(
+        entry.pasted_texts,
+        vec![Some("alpha\nbeta\ngamma".to_string())]
+    );
+    editor.record_history(entry);
+    assert!(editor.input.is_empty());
+
+    editor
+        .handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            &paths,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        editor.input, placeholder,
+        "回忆回来的是占位符,不是三行裸文本"
+    );
+    assert_eq!(editor.raw_pasted_lines, 0);
+    let again = editor.submit().unwrap();
+    assert_eq!(again.content, "alpha\nbeta\ngamma", "载荷跟着占位符回来了");
+}
+
+/// 历史文件:带载荷的条目落成结构体行,老的裸字符串行照旧读得懂;对话
+/// 记录里的展开全文和文件里的占位符条目认作同一条,带载荷的胜出。
+#[test]
+fn history_file_round_trips_placeholder_payloads_and_reads_old_lines() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = state_only_paths(temp.path());
+    std::fs::create_dir_all(paths.state_dir.join("repl-history")).unwrap();
+    std::fs::write(
+        paths.state_dir.join("repl-history").join("sess_a.jsonl"),
+        "\"老格式的一行\"\n",
+    )
+    .unwrap();
+    let entry = ReplHistoryEntry {
+        display: "看看这个 [粘贴 1: ~3 行] 对吗".to_string(),
+        pasted_texts: vec![Some("alpha\nbeta\ngamma".to_string())],
+        images: Vec::new(),
+    };
+    persist_repl_history_entry(&paths, "sess_a", &entry);
+
+    let mut history = vec![ReplHistoryEntry::plain("看看这个 alpha\nbeta\ngamma 对吗")];
+    assert!(refresh_repl_input_history(&mut history, &paths, "sess_a"));
+    assert_eq!(
+        history,
+        vec![entry.clone(), ReplHistoryEntry::plain("老格式的一行")],
+        "展开全文那条被文件里带载荷的同一条顶替,位置不变"
+    );
+    assert_eq!(history[0].expanded(), "看看这个 alpha\nbeta\ngamma 对吗");
+    assert!(!refresh_repl_input_history(&mut history, &paths, "sess_a"));
 }
 
 #[test]
@@ -453,7 +535,10 @@ fn wrapped_input_rows_keep_prefix_outside_content_width() {
 
 #[test]
 fn history_browsing_requires_empty_or_clean_history_input() {
-    let history = vec!["first".to_string(), "second".to_string()];
+    let history = vec![
+        ReplHistoryEntry::plain("first"),
+        ReplHistoryEntry::plain("second"),
+    ];
 
     assert!(repl_should_browse_history("", &history, None));
     assert!(repl_should_browse_history("second", &history, Some(1)));
@@ -813,9 +898,13 @@ fn repl_history_loads_user_messages_from_state() {
     state.start_turn("turn_2", "second", 999999).unwrap();
 
     assert_eq!(
-        load_repl_input_history(&state, &paths).unwrap(),
+        history_displays(&load_repl_input_history(&state, &paths).unwrap()),
         vec!["first".to_string(), "second".to_string()]
     );
+}
+
+fn history_displays(history: &[ReplHistoryEntry]) -> Vec<String> {
+    history.iter().map(|entry| entry.display.clone()).collect()
 }
 
 /// 两个 REPL 同时开着时，后敲的内容要能被先开的那个翻出来。
@@ -829,11 +918,19 @@ fn a_second_repl_sees_what_the_first_one_just_typed() {
     let paths = state_only_paths(temp.path());
 
     // REPL#2 先开：拿到一份当时的快照。
-    let mut second_repl_history = vec!["老条目".to_string()];
+    let mut second_repl_history = vec![ReplHistoryEntry::plain("老条目")];
 
     // REPL#1 后敲了两条（提交前就落盘，与生产路径一致）。
-    persist_repl_history_entry(&paths, "sess_a", "cargo test --all");
-    persist_repl_history_entry(&paths, "sess_a", "看一下 tokio 的文档");
+    persist_repl_history_entry(
+        &paths,
+        "sess_a",
+        &ReplHistoryEntry::plain("cargo test --all"),
+    );
+    persist_repl_history_entry(
+        &paths,
+        "sess_a",
+        &ReplHistoryEntry::plain("看一下 tokio 的文档"),
+    );
 
     // REPL#2 按上键 → 现读一次。
     assert!(refresh_repl_input_history(
@@ -842,7 +939,7 @@ fn a_second_repl_sees_what_the_first_one_just_typed() {
         "sess_a"
     ));
     assert_eq!(
-        second_repl_history,
+        history_displays(&second_repl_history),
         vec![
             "老条目".to_string(),
             "cargo test --all".to_string(),
@@ -866,16 +963,16 @@ fn repl_history_does_not_leak_across_sessions() {
     let temp = tempfile::tempdir().unwrap();
     let paths = state_only_paths(temp.path());
 
-    persist_repl_history_entry(&paths, "sess_a", "只属于 A");
-    persist_repl_history_entry(&paths, "sess_b", "只属于 B");
+    persist_repl_history_entry(&paths, "sess_a", &ReplHistoryEntry::plain("只属于 A"));
+    persist_repl_history_entry(&paths, "sess_b", &ReplHistoryEntry::plain("只属于 B"));
 
     let mut a = Vec::new();
     refresh_repl_input_history(&mut a, &paths, "sess_a");
-    assert_eq!(a, vec!["只属于 A".to_string()]);
+    assert_eq!(history_displays(&a), vec!["只属于 A".to_string()]);
 
     let mut b = Vec::new();
     refresh_repl_input_history(&mut b, &paths, "sess_b");
-    assert_eq!(b, vec!["只属于 B".to_string()]);
+    assert_eq!(history_displays(&b), vec!["只属于 B".to_string()]);
 }
 
 /// 分会话之前的全局文件仍然读得到——直接丢掉用户会觉得「历史没了」。
@@ -890,11 +987,15 @@ fn legacy_global_history_is_still_reachable() {
         "\"分会话之前敲的\"\n",
     )
     .unwrap();
-    persist_repl_history_entry(&paths, "default", "分会话之后敲的");
+    persist_repl_history_entry(
+        &paths,
+        "default",
+        &ReplHistoryEntry::plain("分会话之后敲的"),
+    );
 
     let state = StateStore::new(&paths).unwrap();
     assert_eq!(
-        load_repl_input_history(&state, &paths).unwrap(),
+        history_displays(&load_repl_input_history(&state, &paths).unwrap()),
         vec!["分会话之前敲的".to_string(), "分会话之后敲的".to_string()]
     );
 }

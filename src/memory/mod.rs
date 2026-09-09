@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 
 mod association;
 pub mod browse;
+mod dedup;
 mod evicted;
 mod recall;
 mod schema;

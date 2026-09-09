@@ -36,6 +36,7 @@ pub(in crate::cli) async fn handle_live_post_turn_overflow(
                 let frame = render::token_usage_output(
                     &turn_meter(
                         TurnTokens::from_usage(Some(usage)),
+                        GenerationSpeed::default(),
                         agent.effective_context_tokens()?,
                         agent.context_window(),
                         cumulative_display,
@@ -60,11 +61,13 @@ pub(in crate::cli) fn handle_live_agent_event(
             live.queue_stream_chunk(chunk);
             return Ok(());
         }
-        AgentEvent::RoundUsage { round, turn, .. } => {
+        AgentEvent::RoundUsage {
+            round, turn, speed, ..
+        } => {
             // 一次模型请求刚结束:立即刷新 footer 计量,不等整个回合。
             // prompt+completion 即该请求结束时的上下文实际占用。
             let context_tokens = round.prompt_tokens.saturating_add(round.completion_tokens);
-            return live.refresh_round_usage(context_tokens, turn);
+            return live.refresh_round_usage(context_tokens, turn, speed);
         }
         event => event,
     };
@@ -217,7 +220,7 @@ pub(in crate::cli) async fn run_live_agent_turn(
                         LiveEditorAction::EmptySubmit => {}
                         LiveEditorAction::Submit(submission) => {
                             let prompt = persist_queued_submission(state, &submission)?;
-                            live.editor.record_history(&submission.content);
+                            live.editor.record_history(ReplHistoryEntry::from_submission(&submission));
                             if live.external_output_active {
                                 live.append_queued(prompt);
                             } else {

@@ -21,6 +21,8 @@
  */
 window.MiyuLinkCards = (() => {
   let makeIconSlot = null;
+  /** 卡片落地会改变正文高度,通知宿主重新跟随滚动(app.js 的 contentAdded)。 */
+  let contentAdded = null;
 
   const MAX_CARDS_PER_MESSAGE = 3;
   /** 最多试这么多条。抓失败的不该白占一个卡片名额——09-09 用户那条 bilibili
@@ -175,6 +177,9 @@ window.MiyuLinkCards = (() => {
           target.paragraph.dataset.linkCard = "done";
           target.paragraph.classList.add("has-link-card");
           target.paragraph.replaceChildren(buildCard(preview, target.href));
+          // 卡片比原来的那行文字高,不通知滚动的话视图会停在原地等下一段
+          // delta 才跳过去。
+          contentAdded?.(target.paragraph);
         }),
       ),
     );
@@ -198,6 +203,7 @@ window.MiyuLinkCards = (() => {
   return {
     init(deps) {
       makeIconSlot = deps?.makeIconSlot || null;
+      contentAdded = deps?.contentAdded || null;
     },
     scan,
   };

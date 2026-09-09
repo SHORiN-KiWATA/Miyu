@@ -19,11 +19,24 @@ pub struct ClipboardImage {
     pub mime: String,
     pub data: Vec<u8>,
     data_url: OnceCell<String>,
+    /// 粘贴时落到缓存目录的文件;上键历史靠它把 `[Image N]` 重新接回图片。
+    cache_path: OnceCell<PathBuf>,
 }
 
 pub enum PastedImage {
     Binary(ClipboardImage),
     Path(String),
+}
+
+impl PastedImage {
+    /// 能写进上键历史的落地路径:内联图取它粘贴时的缓存文件,路径图就是
+    /// 路径本身。没落盘的内联图返回 None,回忆时那个占位符就接不回来。
+    pub fn history_path(&self) -> Option<String> {
+        match self {
+            PastedImage::Binary(image) => image.cache_path().map(|path| path.display().to_string()),
+            PastedImage::Path(path) => Some(path.clone()),
+        }
+    }
 }
 
 impl ClipboardImage {
@@ -32,7 +45,12 @@ impl ClipboardImage {
             mime,
             data,
             data_url: OnceCell::new(),
+            cache_path: OnceCell::new(),
         }
+    }
+
+    pub fn cache_path(&self) -> Option<&Path> {
+        self.cache_path.get().map(PathBuf::as_path)
     }
 
     pub fn data_url(&self) -> &str {
@@ -45,7 +63,9 @@ impl ClipboardImage {
     }
 
     pub fn write_temp_file(&self, cache_dir: &std::path::Path, _index: usize) -> Result<PathBuf> {
-        self.write_cache_file(cache_dir, Path::new("clipboard_images"))
+        let path = self.write_cache_file(cache_dir, Path::new("clipboard_images"))?;
+        let _ = self.cache_path.set(path.clone());
+        Ok(path)
     }
 
     pub fn write_cache_file(&self, cache_dir: &Path, relative_dir: &Path) -> Result<PathBuf> {

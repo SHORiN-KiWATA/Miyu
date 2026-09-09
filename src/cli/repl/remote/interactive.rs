@@ -104,7 +104,7 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
         // Keep the poll thread's session filter in step with /new & /session.
         *jobs_shared.repl_session.lock().unwrap() = Some(active_session_id.clone());
         live_repl.set_footer(footer.clone());
-        let (next_mode, input, images) = match read_live_repl_input(
+        let (next_mode, input, images, history_entry) = match read_live_repl_input(
             &mut live_repl,
             paths,
             &jobs_feed,
@@ -160,7 +160,9 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                 }
                 continue;
             }
-            LiveReplOutcome::Submit(next_mode, input, images) => (next_mode, input, images),
+            LiveReplOutcome::Submit(next_mode, input, images, entry) => {
+                (next_mode, input, images, entry)
+            }
         };
         mode = next_mode;
         let input = input.trim();
@@ -174,8 +176,10 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
         if let Some(command) = slash_command {
             // 命令也进上方向键历史：`/goal 长长的目标` 打错一个字重敲一遍，
             // 和重敲一条消息一样冤。落盘历史仍只收消息（命令是操作不是对话）。
-            push_history_capped(&mut history, input);
-            live_repl.editor.record_history(input);
+            push_history_capped(&mut history, ReplHistoryEntry::plain(input));
+            live_repl
+                .editor
+                .record_history(ReplHistoryEntry::plain(input));
             let spec = repl_command_spec(command);
             if spec.arg_hint.is_empty() && !command_args.trim().is_empty() {
                 repl_note(
@@ -1041,9 +1045,9 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
         if input.is_empty() {
             continue;
         }
-        push_history_capped(&mut history, input);
-        live_repl.editor.record_history(input);
-        persist_repl_history_entry(paths, &active_session_id, input);
+        push_history_capped(&mut history, history_entry.clone());
+        live_repl.editor.record_history(history_entry.clone());
+        persist_repl_history_entry(paths, &active_session_id, &history_entry);
         match try_run_remote_chat(
             paths,
             Some(&mut live_repl),

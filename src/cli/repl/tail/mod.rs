@@ -551,7 +551,7 @@ pub(in crate::cli) fn max_live_tail_start(terminal_rows: u16, tail_rows: u16) ->
 impl LiveReplTail {
     pub(in crate::cli) fn new(
         mode: AgentMode,
-        history: Vec<String>,
+        history: Vec<ReplHistoryEntry>,
         queued: Vec<QueuedPrompt>,
         footer: ReplFooterStatus,
     ) -> Result<Self> {
@@ -621,12 +621,13 @@ impl LiveReplTail {
         &mut self,
         context_tokens: u64,
         turn: TurnTokens,
+        speed: GenerationSpeed,
     ) -> Result<()> {
         let base = self
             .round_base_footer
             .get_or_insert_with(|| Box::new(self.footer.clone()));
         let mut display = (**base).clone();
-        display.apply_round_usage(context_tokens, turn);
+        display.apply_round_usage(context_tokens, turn, speed);
         // 基线快照拍于回合开始(转轮未起),别让计量刷新把转轮拍灭。
         display.running_spinner = self.footer.running_spinner;
         self.footer = display;

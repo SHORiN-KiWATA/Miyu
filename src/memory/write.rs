@@ -433,18 +433,33 @@ impl MemoryStore {
             .filter(|memory| memory.kind == "knowledge")
             .map(|memory| (memory.id, memory))
             .collect::<BTreeMap<_, _>>();
-        for action in &output.knowledge {
-            validate_knowledge_action(action, &diary_ids, &candidate_fact_ids)?;
-            validate_knowledge_visibility(batch, action)?;
-            validate_knowledge_update_scope(batch, action, &candidate_facts)?;
-        }
+        // 校验失败只丢这一条,不丢整批:以前一条坏项目让整批 bail,批次永远
+        // 待处理、每 5 分钟重发一次(08-16 评审记过的「毒批次」)。
+        let mut output = output;
+        output.knowledge.retain(|action| {
+            let verdict = validate_knowledge_action(action, &diary_ids, &candidate_fact_ids)
+                .and_then(|_| validate_knowledge_visibility(batch, action))
+                .and_then(|_| validate_knowledge_update_scope(batch, action, &candidate_facts));
+            if let Err(error) = &verdict {
+                tracing::warn!(error = %error, content = %action.content, "{}", crate::i18n::text("dropping one organized knowledge item", "丢弃一条不合规的整理知识点"));
+            }
+            verdict.is_ok()
+        });
+        output.long_diaries.retain(|diary| {
+            let verdict = validate_long_diary(batch, diary, &diary_ids);
+            if let Err(error) = &verdict {
+                tracing::warn!(error = %error, content = %diary.content, "{}", crate::i18n::text("dropping one organized long diary", "丢弃一条不合规的整理长期日记"));
+            }
+            verdict.is_ok()
+        });
         let mut promoted_ids = BTreeSet::new();
         for diary in &output.long_diaries {
-            validate_long_diary(batch, diary, &diary_ids)?;
             promoted_ids.extend(diary.diary_ids.iter().copied());
         }
         if !forced_ids.is_subset(&promoted_ids) {
-            bail!("memory organizer did not promote every required diary");
+            // 模型没给被点名的日记写长期日记:记一笔,但这批照常落地并清掉
+            // 待晋升标记,否则它会被无限次重新选中。
+            tracing::warn!(missing = ?forced_ids.difference(&promoted_ids).collect::<Vec<_>>(), "{}", crate::i18n::text("memory organizer did not promote every required diary", "记忆整理器没有晋升全部被点名的日记"));
         }
 
         let mut conn = self.data_conn_existing()?;
@@ -597,7 +612,7 @@ impl MemoryStore {
         for diary in &batch.diaries {
             tx.execute(
                 "UPDATE episodes SET consolidated_at=COALESCE(consolidated_at, ?1),
-                    promotion_pending=CASE WHEN ?2 THEN 0 ELSE promotion_pending END,
+                    promotion_pending=0,
                     promoted_at=CASE WHEN ?2 THEN COALESCE(promoted_at, ?1) ELSE promoted_at END
                  WHERE id=?3 AND retention='short_term'",
                 params![timestamp, promoted_ids.contains(&diary.id), diary.id],
@@ -605,6 +620,24 @@ impl MemoryStore {
         }
         tx.commit()?;
         self.cleanup_expired_short_diaries()?;
+        Ok(())
+    }
+
+    /// 放弃一批整理不动的日记(模型连续几次都给不出能解析的结果):标成已
+    /// 整理、清掉待晋升,让整理器往前走,不再每次唤醒都拿它们烧模型。
+    pub(crate) fn skip_organization_batch(&self, batch: &OrganizationBatch) -> Result<()> {
+        if !self.data_db.is_file() {
+            return Ok(());
+        }
+        let conn = self.data_conn_existing()?;
+        let timestamp = now();
+        for diary in &batch.diaries {
+            conn.execute(
+                "UPDATE episodes SET consolidated_at=COALESCE(consolidated_at, ?1), promotion_pending=0
+                 WHERE id=?2 AND retention='short_term'",
+                params![timestamp, diary.id],
+            )?;
+        }
         Ok(())
     }
 

@@ -7,6 +7,14 @@
   const MAX_ATTACHMENTS = 12;
   const COMMAND_OUTPUT_PREVIEW_ROWS = 8;
   const NEAR_BOTTOM_PX = 120;
+  // 常驻任务面板的宽度闸,与 styles.css 里 `.main-stage.is-wide` 的判据一致。
+  const STAGE_WIDE_PX = 1360;
+  // smooth 滚动的兜底:动画期间 scroll 事件由 programmaticScroll 守卫吃掉,
+  // 万一条数不够(或压根没滚动)也不能让守卫永久卡住。
+  const PROGRAMMATIC_SCROLL_MS = 600;
+  // auto 滚动的兜底:视口已经在底时 scrollTo 不会派发 scroll 事件,守卫没有
+  // 那条「回执」可吃,得靠超时解除,否则用户下一次滚动的第一条事件会被吞掉。
+  const PROGRAMMATIC_SCROLL_AUTO_MS = 150;
   // Mirrors the CSS --ui-scale custom property; mobile drops it to 1 via a
   // media query, so read it at runtime instead of hardcoding.
   let UI_SCALE = 1.1;
@@ -421,7 +429,6 @@
     resyncing: false,
     nearBottom: true,
     followOutput: true,
-    scrollRequestId: 0,
     programmaticScroll: false,
     settingsOpener: null,
     consolePanel: "usage",
@@ -1243,8 +1250,20 @@
     return `（C${Math.min(100, Math.round((hit / total) * 100))}%）`;
   }
 
-  function formatUsageMeta({ turnTotal, turnPrompt, turnCached, estimated, cumulative, cumulativePrompt, cumulativeCached }) {
+  // 输出速度:回合层测的「首块到末块」时长与对应 completion tokens,两者
+  // 任一为零就是没测到,不显示——和缓存率同一条规矩。
+  function formatGenerationSpeed(tokens, millis) {
+    const count = asFiniteNumber(tokens, 0);
+    const duration = asFiniteNumber(millis, 0);
+    if (count <= 0 || duration <= 0) return "";
+    const rate = (count * 1000) / duration;
+    return `每秒 ${rate >= 10 ? formatInteger(Math.round(rate)) : rate.toFixed(1)} tok`;
+  }
+
+  function formatUsageMeta({ turnTotal, turnPrompt, turnCached, estimated, cumulative, cumulativePrompt, cumulativeCached, generationTokens, generationMs }) {
     const parts = [];
+    const speed = formatGenerationSpeed(generationTokens, generationMs);
+    if (speed) parts.push(speed);
     if (asFiniteNumber(turnTotal) > 0) {
       parts.push(`本轮${estimated ? "约 " : " "}${formatTokens(turnTotal)}${cacheSuffix(turnCached, turnPrompt)}`);
     }
@@ -3140,9 +3159,22 @@
 
   function suspendOutputFollowing() {
     state.followOutput = false;
-    state.scrollRequestId += 1;
     elements.jumpBottomButton.hidden = false;
   }
+
+  /// 同一帧里的多次滚动请求合并成一个 rAF。
+  ///
+  /// 以前每次调用都 `++scrollRequestId`,后一次会把前一次已排队的 rAF 作废;
+  /// 流稳定时渲染回调与滚动回调挤在同一帧里,前一个请求被后一个作废、后一个
+  /// 又被下一条 delta 作废,滚动被连续饿死,某一帧放过去就整段下跳。现在排队
+  /// 的是「这一帧要不要滚」这件事本身,重复请求只是把 smooth 抬上去。
+  let scrollFrame = 0;
+  let scrollFrameSmooth = false;
+  let scrollFrameForce = false;
+  let programmaticScrollTimer = 0;
+  // smooth 动画会连发多条 scroll 事件,守卫不能只吃第一条——否则第二条就被
+  // 当成用户上滚,把「回到底部」的动画中途关掉跟随。
+  let programmaticScrollSmooth = false;
 
   function scrollToBottom({ force = false, smooth = false } = {}) {
     if (!force && !state.followOutput) {
@@ -3150,16 +3182,31 @@
       return;
     }
     if (force) state.followOutput = true;
-    const requestId = ++state.scrollRequestId;
-    window.requestAnimationFrame(() => {
-      if (!force && (!state.followOutput || requestId !== state.scrollRequestId)) return;
+    scrollFrameSmooth = scrollFrameSmooth || smooth;
+    // 已排队的非 force 请求不能把后来的 force 吞掉(点「回到底部」时若同一帧
+    // 里正好有一条跟随请求在排队,它记的 force 是 false)。
+    scrollFrameForce = scrollFrameForce || force;
+    if (scrollFrame) return;
+    scrollFrame = window.requestAnimationFrame(() => {
+      const smoothNow = scrollFrameSmooth;
+      const forceNow = scrollFrameForce;
+      scrollFrame = 0;
+      scrollFrameSmooth = false;
+      scrollFrameForce = false;
+      if (!forceNow && !state.followOutput) return;
       state.programmaticScroll = true;
-      elements.chatScroll.scrollTo({ top: elements.chatScroll.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      programmaticScrollSmooth = smoothNow;
+      elements.chatScroll.scrollTo({ top: elements.chatScroll.scrollHeight, behavior: smoothNow ? "smooth" : "auto" });
       state.nearBottom = true;
       elements.jumpBottomButton.hidden = true;
-      window.setTimeout(() => {
+      // 守卫由紧随其后的 scroll 事件解除。两种情况没有那条事件可吃:smooth
+      // 期间事件被守卫吃掉、动画停下后没有下一条;auto 时视口本来就在底,
+      // scrollTo 没动就不派发。两边都补兜底超时,只是长短不同。
+      window.clearTimeout(programmaticScrollTimer);
+      programmaticScrollTimer = window.setTimeout(() => {
         state.programmaticScroll = false;
-      }, smooth ? 300 : 0);
+        programmaticScrollSmooth = false;
+      }, smoothNow ? PROGRAMMATIC_SCROLL_MS : PROGRAMMATIC_SCROLL_AUTO_MS);
     });
   }
 
@@ -4417,6 +4464,10 @@
     const split = state.artifactOpen && !state.artifactMaximized && layoutViewportWidth() > 760 && roomForConversation >= 320;
     elements.mainStage.classList.toggle("artifact-split", split);
     elements.mainStage.classList.toggle("artifact-maximized", state.artifactOpen && state.artifactMaximized);
+    // 常驻任务面板的宽度闸。原先靠 .main-stage 上的容器查询,而容器查询容器会
+    // 让 WebKit 在后代 replaceChildren 时归零 scrollTop(见 styles.css 注释),
+    // 改成这里挂类,量的是同一个宽度。
+    elements.mainStage.classList.toggle("is-wide", elements.mainStage.clientWidth >= STAGE_WIDE_PX);
     syncSidebarSpace();
   }
 
@@ -7870,7 +7921,9 @@
         turnTotal: asFiniteNumber(data?.turn_total),
         turnPrompt: data?.turn_prompt,
         turnCached: data?.turn_cache_read,
-        estimated: data?.estimated
+        estimated: data?.estimated,
+        generationTokens: data?.turn_generation_tokens,
+        generationMs: data?.turn_generation_ms
       });
       if (usage) live.meta.textContent = usage;
     }
@@ -7916,7 +7969,9 @@
           estimated: data?.usage_estimated,
           cumulative: data?.cumulative_tokens,
           cumulativePrompt: data?.cumulative_prompt_tokens,
-          cumulativeCached: data?.cumulative_cache_read_tokens
+          cumulativeCached: data?.cumulative_cache_read_tokens,
+          generationTokens: data?.usage?.generation_tokens,
+          generationMs: data?.usage?.generation_ms
         });
         live.meta.textContent = usage || "已完成";
       }
@@ -10043,8 +10098,17 @@
     elements.retryBootstrapButton.addEventListener("click", loadBootstrap);
     elements.resetConfirmButton.addEventListener("click", resetConversation);
     elements.chatScroll.addEventListener("scroll", () => {
+      // 程序滚动的守卫由这条事件自己解除:以前用 setTimeout(0) 清,而 scroll
+      // 事件要等到下一帧才派发,处理器等于裸跑,把一次跟随当成用户上滚关掉,
+      // 下一帧又认为到底重新打开——来回翻转就是抖动的第二半。
+      const programmatic = state.programmaticScroll;
+      // 非 smooth:这一条事件就是那次滚动的回执,吃完即解除。
+      if (programmatic && !programmaticScrollSmooth) {
+        state.programmaticScroll = false;
+        window.clearTimeout(programmaticScrollTimer);
+      }
       state.nearBottom = isNearBottom();
-      if (state.programmaticScroll) return;
+      if (programmatic) return;
       if (!state.followOutput && isAtBottom()) {
         state.followOutput = true;
         elements.jumpBottomButton.hidden = true;
@@ -10115,7 +10179,10 @@
     // 灯箱自己不会画图标（图标集在这边），把工厂函数递过去。
     window.MiyuLightbox?.init({ makeIconSlot });
     window.MiyuPreview?.init({ makeIconSlot, formatFileSize });
-    window.MiyuLinkCards?.init({ makeIconSlot });
+    window.MiyuLinkCards?.init({ makeIconSlot, contentAdded });
+    // 高亮和链接卡片的 settle 通道会在流停下来之后才改正文高度,那时已经没有
+    // 下一条 delta 来触发滚动了,得让它们自己叫一声。
+    window.MiyuHighlight?.init({ contentAdded });
     startBrailleTicker();
     // G2:页面不可见时给 body 挂 miyu-paused,CSS 据此暂停全部装饰动画。
     // 实测(Xvfb+Chrome)不挂这个时隐藏窗口的合成负载与可见时完全一样。

@@ -29,6 +29,38 @@ pub struct TokenMeter {
     pub cumulative_tokens: Option<u64>,
     pub cumulative_prompt_tokens: u64,
     pub cumulative_cached_tokens: u64,
+    /// 输出速度(最近一个回合的样本,见 `Usage::generation_ms`)。两者任一
+    /// 为零就不显示——没测到的速度不能渲染成 0 tok/s。
+    pub generation_tokens: u64,
+    pub generation_ms: u64,
+}
+
+impl TokenMeter {
+    pub fn generation_speed(&self) -> GenerationSpeed {
+        GenerationSpeed {
+            tokens: self.generation_tokens,
+            millis: self.generation_ms,
+        }
+    }
+
+    pub fn with_generation_speed(self, speed: GenerationSpeed) -> Self {
+        Self {
+            generation_tokens: speed.tokens,
+            generation_ms: speed.millis,
+            ..self
+        }
+    }
+}
+
+/// `361 tok/s`;十以下保留一位小数,免得慢模型显示成一串 `0 tok/s`。
+pub(crate) fn format_tokens_per_second(speed: GenerationSpeed) -> Option<String> {
+    speed.tokens_per_second().map(|rate| {
+        if rate >= 10.0 {
+            format!("{} tok/s", rate.round() as u64)
+        } else {
+            format!("{rate:.1} tok/s")
+        }
+    })
 }
 
 /// `None` when there is nothing honest to report: a provider that never said
@@ -63,10 +95,14 @@ pub(crate) fn token_usage_output(meter: &TokenMeter, estimated: bool) -> String 
 }
 
 pub(crate) fn format_token_usage_inline(meter: &TokenMeter) -> String {
-    format_token_usage_inline_opts(meter, true)
+    format_token_usage_inline_opts(meter, true, true)
 }
 
-pub(crate) fn format_token_usage_inline_opts(meter: &TokenMeter, show_percent: bool) -> String {
+pub(crate) fn format_token_usage_inline_opts(
+    meter: &TokenMeter,
+    show_percent: bool,
+    show_speed: bool,
+) -> String {
     let context_window = meter.context_window.map(|value| value as u64);
     let context = context_window
         .map(|value| {
@@ -110,6 +146,13 @@ pub(crate) fn format_token_usage_inline_opts(meter: &TokenMeter, show_percent: b
                 meter.cumulative_prompt_tokens
             ),
         ));
+    }
+    // 速度紧跟本轮用量之后、上下文表之前:footer 里没有本轮用量,它就打头。
+    let speed = show_speed
+        .then(|| format_tokens_per_second(meter.generation_speed()))
+        .flatten();
+    if let Some(speed) = speed {
+        session = format!("{speed} · {session}");
     }
     if meter.turn_tokens == 0 {
         session

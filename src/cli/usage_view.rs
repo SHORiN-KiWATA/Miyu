@@ -170,6 +170,7 @@ pub(in crate::cli) fn print_chat_token_usage(
     if enabled && result.usage.is_some() {
         let meter = turn_meter(
             TurnTokens::from_usage(result.usage.as_ref()),
+            GenerationSpeed::from_usage(result.usage.as_ref()),
             session_token_total,
             context_window,
             cumulative,

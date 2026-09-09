@@ -211,11 +211,22 @@ fn organizer_can_publish_general_facts_but_cannot_update_another_principal() {
         }],
         long_diaries: Vec::new(),
     };
-    assert!(MemoryStore::new(&config, &paths)
+    // 不合规的项目单条丢弃、整批照常落地(以前整批 bail 会让批次无限重试)。
+    MemoryStore::new(&config, &paths)
         .apply_organized_batch(&batch, cross_user_update)
-        .unwrap_err()
-        .to_string()
-        .contains("different principal"));
+        .unwrap();
+    let store = MemoryStore::new(&config, &paths);
+    let conn = store.data_conn().unwrap();
+    let bob_content: String = conn
+        .query_row("SELECT content FROM facts WHERE id=?1", [bob_fact], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        bob_content, "Linux 隔离主题是 Bob 的私人偏好",
+        "跨主体的 update 必须被丢掉"
+    );
+    drop(conn);
 
     let leaky_public_fact = OrganizedOutput {
         knowledge: vec![KnowledgeAction {
@@ -233,11 +244,19 @@ fn organizer_can_publish_general_facts_but_cannot_update_another_principal() {
         }],
         long_diaries: Vec::new(),
     };
-    assert!(MemoryStore::new(&config, &paths)
+    MemoryStore::new(&config, &paths)
         .apply_organized_batch(&batch, leaky_public_fact)
-        .unwrap_err()
-        .to_string()
-        .contains("source identity marker"));
+        .unwrap();
+    let conn = store.data_conn().unwrap();
+    let leaked: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM facts WHERE content='Alice 使用 Linux 的私人经历'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0, "带私人身份标记的 public 事实必须被丢掉");
+    drop(conn);
 
     MemoryStore::new(&config, &paths)
         .apply_organized_batch(

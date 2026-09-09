@@ -47,7 +47,8 @@ use crate::config::{AppConfig, PromptAudience};
 use crate::host_info::xml_attr_escape;
 use crate::llm::{
     ChatContent, ChatContentPart, ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind,
-    ImageUrlContent, OpenAiCompatibleClient, ToolCall, ToolCallFunction, TurnTokens, Usage,
+    GenerationSpeed, ImageUrlContent, OpenAiCompatibleClient, ToolCall, ToolCallFunction,
+    TurnTokens, Usage,
 };
 use crate::memory::{
     EvictedTurn, MemoryAccess, MemoryOrganizerHandle, MemoryOrigin, MemoryResetSummary, MemoryStore,
@@ -166,6 +167,8 @@ pub enum AgentEvent {
     RoundUsage {
         round: Box<Usage>,
         turn: TurnTokens,
+        /// 回合至今的输出速度样本(见 `Usage::generation_ms`)。
+        speed: GenerationSpeed,
         estimated: bool,
         /// 刚结束这次请求实际应答的端点,供日志/前端标注(08-24 需求)。
         provider_id: Option<String>,
@@ -596,10 +599,30 @@ struct UsageAccumulator {
     cache_reported: bool,
     has_usage: bool,
     estimated: bool,
+    generation_tokens: u64,
+    generation_ms: u64,
 }
 
 impl UsageAccumulator {
-    fn add_result(&mut self, result: &ChatResult, request_messages: &[ChatMessage]) {
+    /// 一次模型请求的用量入账,返回这次请求贡献的 completion tokens
+    /// (中转线的结果帧是整轮累计,所以用入账前后的差值而不是直接读)。
+    fn add_result(&mut self, result: &ChatResult, request_messages: &[ChatMessage]) -> u64 {
+        let before = self.completion_tokens;
+        self.add_result_inner(result, request_messages);
+        self.completion_tokens.saturating_sub(before)
+    }
+
+    /// 一次请求的输出速度样本:只在用量是供应商真报的、且流里至少有两个
+    /// 块(测得出时长)时入账。
+    fn add_generation_sample(&mut self, tokens: u64, millis: u64, estimated: bool) {
+        if estimated || tokens == 0 || millis == 0 {
+            return;
+        }
+        self.generation_tokens = self.generation_tokens.saturating_add(tokens);
+        self.generation_ms = self.generation_ms.saturating_add(millis);
+    }
+
+    fn add_result_inner(&mut self, result: &ChatResult, request_messages: &[ChatMessage]) {
         if let Some(usage) = &result.usage {
             self.add_usage(usage, false);
             return;
@@ -646,8 +669,17 @@ impl UsageAccumulator {
             cache_write_tokens: self.cache_write_tokens,
             reasoning_tokens: self.reasoning_tokens,
             cache_reported: self.cache_reported,
+            generation_tokens: self.generation_tokens,
+            generation_ms: self.generation_ms,
             ..Usage::default()
         })
+    }
+
+    fn generation_speed(&self) -> GenerationSpeed {
+        GenerationSpeed {
+            tokens: self.generation_tokens,
+            millis: self.generation_ms,
+        }
     }
 }
 

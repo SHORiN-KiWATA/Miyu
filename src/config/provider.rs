@@ -190,8 +190,11 @@ impl AuxRole {
     /// fresh install behaves exactly as before.
     pub fn default_tier(&self) -> ModelTier {
         match self {
-            Self::SessionTitle | Self::MemoryOrganizer => ModelTier::Lite,
-            Self::DeepResearch => ModelTier::Standard,
+            Self::SessionTitle => ModelTier::Lite,
+            // 整理器要在几十条已有记忆里判断重复、矛盾、归属和可见性,是记忆
+            // 系统里最吃判断力的一步;放最便宜的池产出的是通用知识大杂烩(09-10
+            // 真实库取证:123 条里六成是技术问答全文)。
+            Self::MemoryOrganizer | Self::DeepResearch => ModelTier::Standard,
         }
     }
 

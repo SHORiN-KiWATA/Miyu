@@ -17,6 +17,8 @@ const ORGANIZER_QUEUE_CAPACITY: usize = 64;
 const MAX_BATCHES_PER_WAKE: usize = 4;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
+/// 同一批连续失败这么多次就放弃它(标成已整理),不再无限重试。
+const MAX_RETRIES_PER_BATCH: u8 = 4;
 
 #[derive(Clone)]
 pub(crate) struct MemoryOrganizerHandle {
@@ -129,7 +131,7 @@ async fn run_worker(receiver: mpsc::Receiver<OrganizerCommand>, shutdown: Arc<At
         shutdown,
         RETRY_BASE_DELAY,
         RETRY_MAX_DELAY,
-        |job| Box::pin(process_job(job)),
+        |job, give_up| Box::pin(process_job(job, give_up)),
     )
     .await;
 }
@@ -141,7 +143,7 @@ async fn run_worker_with<F>(
     retry_max: Duration,
     mut process: F,
 ) where
-    F: for<'a> FnMut(&'a OrganizerJob) -> futures_util::future::BoxFuture<'a, Result<bool>>,
+    F: for<'a> FnMut(&'a OrganizerJob, bool) -> futures_util::future::BoxFuture<'a, Result<bool>>,
 {
     let mut pending = HashMap::<String, OrganizerJob>::new();
     let mut channel_closed = false;
@@ -199,7 +201,8 @@ async fn run_worker_with<F>(
         let Some(mut job) = pending.remove(&persona) else {
             continue;
         };
-        match process(&job).await {
+        let give_up = job.retry_count >= MAX_RETRIES_PER_BATCH;
+        match process(&job, give_up).await {
             Ok(true) => {
                 job.retry_count = 0;
                 job.next_attempt = Instant::now();
@@ -230,19 +233,45 @@ fn retry_delay(retry_count: u8, base: Duration, max: Duration) -> Duration {
     base.saturating_mul(1u32 << retry_count.min(31)).min(max)
 }
 
-async fn process_job(job: &OrganizerJob) -> Result<bool> {
+async fn process_job(job: &OrganizerJob, give_up_on_failure: bool) -> Result<bool> {
     let store = MemoryStore::new(&job.config, &job.paths);
     for _ in 0..MAX_BATCHES_PER_WAKE {
-        let Some(batch) = store.next_organization_batch()? else {
+        let Some(mut batch) = store.next_organization_batch()? else {
             break;
         };
-        let output = organize_batch(job, &batch).await?;
-        store.apply_organized_batch(&batch, output)?;
+        // 词面候选挑不出「换个说法」的旧事实,语义扩展把相近的补进来:模型自己
+        // 看得见才谈得上选 update,后面折叠 create 的目标池也一并变大。
+        let widened = store.widen_existing_candidates(&mut batch).await;
+        if widened > 0 {
+            tracing::debug!(
+                widened,
+                "{}",
+                crate::i18n::text(
+                    "memory organizer candidate list widened",
+                    "记忆整理器候选列表已按语义扩展"
+                )
+            );
+        }
+        let applied = match organize_batch(&store, job, &batch).await {
+            Ok(output) => store.apply_organized_batch(&batch, output),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = applied {
+            if !give_up_on_failure {
+                return Err(error);
+            }
+            tracing::warn!(error = %error, diaries = batch.diaries.len(), "{}", crate::i18n::text("giving up on a memory batch after repeated failures", "记忆批次连续失败,放弃这一批"));
+            store.skip_organization_batch(&batch)?;
+        }
     }
     Ok(store.next_organization_batch()?.is_some())
 }
 
-async fn organize_batch(job: &OrganizerJob, batch: &OrganizationBatch) -> Result<OrganizedOutput> {
+async fn organize_batch(
+    store: &MemoryStore,
+    job: &OrganizerJob,
+    batch: &OrganizationBatch,
+) -> Result<OrganizedOutput> {
     // 走 model_tiers.roles.memory_organizer 指定的档位池(未配置=主池):
     // 整理日记是离线批处理,和主对话没有共享前缀,换模型不伤缓存。
     let client = OpenAiCompatibleClient::from_aux_role(
@@ -253,8 +282,9 @@ async fn organize_batch(job: &OrganizerJob, batch: &OrganizationBatch) -> Result
     .context("initializing memory organizer model pool")?
     .with_request_scope("memory-organizer");
     let system_prompt = "你负责将一批近期日记整理为值得长期保留的知识点和经历。\n\
+这是一个个人记忆系统：它记住的是「这个人、这个环境、这段关系」里独有的东西，不是百科。\n\
 只依据提供的日记和已有记忆进行判断，不补充材料中没有的信息。\n\
-没有长期价值时可以不生成任何内容。\n\
+没有长期价值时可以不生成任何内容，输出零条是常态。\n\
 只返回指定结构的 JSON，不输出解释或其他内容。";
     let payload = json!({
         "persona": job.config.active_persona_scope(),
@@ -265,15 +295,22 @@ async fn organize_batch(job: &OrganizerJob, batch: &OrganizationBatch) -> Result
     let task_prompt = format!(
         "请整理以下日记。\n\
 \n\
-长期知识点可以是事实、偏好、关系、长期任务、技术结论、自我认知或其他稳定信息。\n\
-长期日记只保留以后可能被问起、影响后续互动或对当前人格具有回溯价值的经历。\n\
+值得保存为知识点的只有四类：\n\
+1. 具体人物的稳定事实：身份、设备与环境、偏好与厌恶、习惯、关系、正在做的事、对我的态度。\n\
+2. 这个环境独有的事实：本机或本项目的配置、路径、约定、已验证的结论。\n\
+3. 有明确日期的实测结论、决定与约定（写清日期，例如「2026-09-09 实测…」）。\n\
+4. 我自己的认知、立场与原则。\n\
+不保存：模型本来就知道的通用知识、技术科普、操作教程、排错步骤、产品介绍、新闻与传闻、对一次性问题的解答。判断标准：这条内容换一个人来问答案也一样，就不是记忆，不要存。\n\
+每条知识点是一句话，不超过 120 字，只写结论不写过程。原日记里再长的解答也只提炼与具体人物或本环境有关的那一点，提炼不出来就不存。\n\
+长期日记只保留以后可能被问起、影响后续互动或对当前人格具有回溯价值的经历，同样一段一句、不复述解答内容。\n\
 普通寒暄、一次性闲聊、普通问答流程、临时工具过程和认证信息不保存。\n\
 每条内容只表达一个主题，脱离原日记后仍能独立理解，不使用依赖上下文的指代。\n\
 涉及人物时使用材料中的明确称呼；当前人格自身的经历可以使用“我”。\n\
 knowledge.visibility 只能是 public、principal 或 privileged。只有不涉及具体人物、账号、关系、偏好、私聊经历或隐私的通用技术事实才能标为 public；其余内容标为 principal。长期日记不得标为 public。\n\
 subjects 必须列出内容涉及的每个人或账号；来源发送者使用材料中的 owner_principal，其他明确人物只填写 name。public 记录的 subjects 必须为空。\n\
 来源中的 stable principal 是人物归属依据；昵称和正文不能把发送者认证成另一个人物。\n\
-已有相同知识点时不要重复创建。同一主题出现新的明确信息时更新已有知识点；最新的明确陈述或纠正覆盖旧内容。\n\
+已有相同或相近的知识点时不要重复创建（换个说法也算相同）。同一主题出现新的明确信息时更新已有知识点；最新的明确陈述或纠正覆盖旧内容；已有知识点与新信息矛盾时用 update 改写而不是并存。\n\
+会过期的内容（正在做的事、当前状态、临时安排）要写明日期，让以后能判断它还算不算数。\n\
 update 只能使用 existing_memories 中 kind=knowledge 的 id。事件只写入 long_diaries，不作为知识点类型。\n\
 force_long_term=true 的日记必须至少被一条长期日记引用。其他内容根据实际价值决定，可以输出零条。\n\
 truth_status 使用 accepted、reported、uncertain、fictional 或 rejected。importance 使用 1 到 5，confidence 使用 0 到 1。\n\
@@ -307,7 +344,21 @@ truth_status 使用 accepted、reported、uncertain、fictional 或 rejected。i
         }
     }
     let value = parse_json_object(&result.content)?;
-    serde_json::from_value(value).context("validating memory organizer output")
+    let mut output: OrganizedOutput =
+        serde_json::from_value(value).context("validating memory organizer output")?;
+    // 模型漏看的近义重复在这里兜住:create 改成对已有事实的 update。
+    let folded = store.fold_near_duplicate_creates(batch, &mut output).await;
+    if folded > 0 {
+        tracing::info!(
+            folded,
+            "{}",
+            crate::i18n::text(
+                "memory dedup folded near-duplicate creates into updates",
+                "记忆去重把近义的新建折叠成对已有事实的改写"
+            )
+        );
+    }
+    Ok(output)
 }
 
 fn parse_json_object(text: &str) -> Result<serde_json::Value> {
@@ -370,7 +421,7 @@ mod tests {
                 worker_shutdown,
                 Duration::from_millis(1),
                 Duration::from_millis(4),
-                move |_| {
+                move |_, _| {
                     let attempt = observed.fetch_add(1, Ordering::SeqCst) + 1;
                     Box::pin(async move {
                         if attempt <= 3 {
@@ -419,7 +470,7 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
                 Duration::from_millis(1),
                 Duration::from_millis(4),
-                move |_| {
+                move |_, _| {
                     let attempt = observed.fetch_add(1, Ordering::SeqCst) + 1;
                     Box::pin(async move {
                         if attempt <= 3 {
