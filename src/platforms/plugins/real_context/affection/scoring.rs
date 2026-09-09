@@ -13,19 +13,30 @@ pub(crate) struct AffectionLevel<'a> {
     pub(crate) prompt: &'a str,
 }
 
+/// 档位的规范名是英文 slug——模型面、判官、面板键都用它。
+///
+/// 中文档位名（「中立」「好友」）是可以直接念出口的成品词：她拿到工具结果
+/// 就照着播报「当前好感度是中立」。08-29 那次「没被艾特不接」是同一族——
+/// 一个现成的中文判据摆在那儿，她就会拿它立规矩。英文 slug 要念出来得先
+/// 翻译一道，而翻译天然逼她改写成自己的话。
+pub(crate) fn level_display(level: &str) -> &str {
+    match level {
+        "estranged" => "刻意疏远",
+        "cold" => "冷漠",
+        "neutral" => "中立",
+        "acquainted" => "认识",
+        "friend" => "好友",
+        "trusted" => "信任",
+        "close" => "亲近",
+        other => other,
+    }
+}
+
 pub(crate) fn localized_level<'a>(level: &'a str, locale: Locale) -> &'a str {
     if locale == Locale::Zh {
-        return level;
-    }
-    match level {
-        "刻意疏远" => "estranged",
-        "冷漠" => "cold",
-        "中立" => "neutral",
-        "认识" => "acquainted",
-        "好友" => "friend",
-        "信任" => "trusted",
-        "亲近" => "close",
-        _ => level,
+        level_display(level)
+    } else {
+        level
     }
 }
 
@@ -45,37 +56,37 @@ pub(crate) fn level_for_score<'a>(
     let score = clamp_score(settings, score, user_id);
     if score < -25.0 {
         AffectionLevel {
-            name: "刻意疏远",
+            name: "estranged",
             prompt: &settings.affection_prompt_estranged,
         }
     } else if score < 0.0 {
         AffectionLevel {
-            name: "冷漠",
+            name: "cold",
             prompt: &settings.affection_prompt_cold,
         }
     } else if score < 25.0 {
         AffectionLevel {
-            name: "中立",
+            name: "neutral",
             prompt: &settings.affection_prompt_neutral,
         }
     } else if score < 60.0 {
         AffectionLevel {
-            name: "认识",
+            name: "acquainted",
             prompt: &settings.affection_prompt_known,
         }
     } else if score < 85.0 {
         AffectionLevel {
-            name: "好友",
+            name: "friend",
             prompt: &settings.affection_prompt_friend,
         }
     } else if score < 95.0 {
         AffectionLevel {
-            name: "信任",
+            name: "trusted",
             prompt: &settings.affection_prompt_trusted,
         }
     } else {
         AffectionLevel {
-            name: "亲近",
+            name: "close",
             prompt: &settings.affection_prompt_close,
         }
     }

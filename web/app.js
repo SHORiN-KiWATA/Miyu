@@ -9905,6 +9905,8 @@
     new ResizeObserver(syncArtifactLayout).observe(elements.mainStage);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncAppHeight, { passive: true });
+      // iOS 只把可视视口平移、不改尺寸时不发 resize,只发 scroll。
+      window.visualViewport.addEventListener("scroll", syncAppHeight, { passive: true });
       syncAppHeight();
     }
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -9914,6 +9916,10 @@
     const viewport = window.visualViewport;
     if (!viewport) return;
     document.documentElement.style.setProperty("--app-height", `${Math.round(viewport.height * viewport.scale / UI_SCALE)}px`);
+    // 外壳缩到可视视口之后文档已经没得可滚,但 Safari 在键盘弹出的瞬间已经
+    // 先滚过一次了,那段偏移要收回来,否则页面停在外壳底部的空白上。捏合放大
+    // 时用户是在自己平移视口,这时不能抢方向盘。
+    if (viewport.scale <= 1.01 && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
   }
 
   function initialize() {

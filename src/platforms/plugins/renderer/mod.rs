@@ -2,11 +2,13 @@ mod fonts;
 mod layout;
 mod markdown;
 mod paint;
+mod table_width;
 mod worker;
 use fonts::*;
 use layout::*;
 use markdown::*;
 use paint::*;
+use table_width::*;
 // main 要判断自己是不是被当成渲染子进程拉起来的
 use worker::*;
 pub(crate) use worker::{renderer_worker_requested, run_renderer_worker};

@@ -80,7 +80,12 @@ impl Palette {
                 text: [48, 46, 41, 255],
                 heading: [37, 34, 29, 255],
                 muted: [104, 98, 88, 255],
-                link: [112, 82, 43, 255],
+                // 深青蓝。原来是 [112, 82, 43] 暖棕,和 strong 的橙棕同色相
+                // ——而加粗只能靠变色呈现(字体资产只带 Regular),于是链接和
+                // 加粗在图里长得一样。链接要的是「另一类东西」而不是「更强
+                // 调」,所以离开暖色系;dark / light 两个主题的链接本来就是
+                // 蓝的,这下三个主题同一个语义。
+                link: [45, 95, 125, 255],
                 strong: [153, 88, 28, 255],
                 code_background: [225, 219, 208, 255],
                 code_text: [42, 39, 34, 255],
@@ -91,6 +96,24 @@ impl Palette {
                 border: [211, 201, 184, 255],
                 rule: [211, 201, 184, 255],
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::Palette;
+
+    /// 加粗、标题、链接都只能靠颜色区分(字体资产只带 Regular 字重),所以
+    /// 「链接色不得撞上强调色」是这套调色板的硬约束,不是审美偏好。
+    #[test]
+    fn links_never_share_a_colour_with_emphasis() {
+        for theme in ["paper", "light", "dark", "unknown-falls-back-to-paper"] {
+            let palette = Palette::for_theme(theme);
+            assert_ne!(palette.link, palette.strong, "theme {theme}");
+            assert_ne!(palette.link, palette.heading, "theme {theme}");
+            assert_ne!(palette.link, palette.text, "theme {theme}");
+            assert_ne!(palette.link, palette.muted, "theme {theme}");
         }
     }
 }

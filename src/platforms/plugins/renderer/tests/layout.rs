@@ -113,6 +113,58 @@ fn table_continuation_repeats_header_and_never_splits_rows() {
 }
 
 #[test]
+fn table_columns_follow_content_instead_of_splitting_ids() {
+    // 赞助榜的形状:两列只装一个字符的序号,一列九到十位的 QQ 号。等分时每列
+    // 正文宽只有 960/5 - 28 = 164 px,十位号码约 190 px,cosmic-text 找不到可断
+    // 的词就回落到逐字切,于是 "3058704216" 被劈成两行——而序号列那 164 px
+    // 大半是空的。
+    let markdown = concat!(
+        "| 排名 | 赞助人 | QQ | 金额 | 笔数 |\n",
+        "| --- | --- | ---: | ---: | ---: |\n",
+        "| 1 | 沐风 | 596113920 | ¥49.00 | 1 |\n",
+        "| 2 | RyanZ | 3058704216 | ¥30.00 | 3 |\n",
+    );
+    let config = NormalizedConfig::new(&RenderConfig::default());
+    let mut renderer = RendererState::new().unwrap();
+    let fonts = renderer.resolve_config_fonts(&config, false).unwrap();
+    let layouts = layout_blocks(
+        &mut renderer.font_system,
+        collect_blocks(markdown),
+        &config,
+        Palette::for_theme("paper"),
+        &fonts,
+    )
+    .unwrap();
+    let table = layouts[0].table.as_ref().unwrap();
+    let widths = table.rows[0]
+        .cells
+        .iter()
+        .map(|cell| cell.width)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        widths.iter().sum::<u32>(),
+        COLUMN_WIDTH,
+        "列宽之和必须正好是表格宽度,画最右那根竖线就是靠它: {widths:?}"
+    );
+    assert!(
+        widths[1] > widths[0] && widths[2] > widths[0],
+        "赞助人列和 QQ 列应当比序号列宽: {widths:?}"
+    );
+    assert!(
+        widths[4] < widths[3],
+        "只装一位数的笔数列不该比金额列还宽: {widths:?}"
+    );
+    for row in table.rows.iter().skip(1) {
+        assert_eq!(
+            row.cells[2].buffer.layout_runs().count(),
+            1,
+            "QQ 号必须整串排在一行,列宽 {:?}",
+            widths
+        );
+    }
+}
+
+#[test]
 fn rendered_table_has_grid_header_and_zebra_backgrounds() {
     let markdown = "| A | B |\n| --- | --- |\n| one | two |\n| three | four |\n";
     let raw_config = RenderConfig::default();
