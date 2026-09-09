@@ -91,7 +91,7 @@ use crate::runtime::{
     EventRecord, IpcRunGuard, LoginFailure, ManagerState, PlatformPersonaResetError,
     PromptDocument, PromptDocuments, QuestionBroker, RedoWebPrompt, RunInfo, RunOperation,
     SafeQueuedPrompt, SafeUserAttachment, ThinkingVariantUpdate, TurnEngineState,
-    TurnResourceCache, TurnUpdateMode, TurnUpdateRequest, WebAuth,
+    TurnResourceCache, TurnUpdateMode, TurnUpdateReceipt, TurnUpdateRequest, WebAuth,
 };
 use crate::state::{
     ArtifactAsset, ImageAsset, PlatformPluginScopeKey, QueuedPrompt, StateStore, Turn,

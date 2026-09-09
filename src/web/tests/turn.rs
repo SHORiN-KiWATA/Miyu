@@ -85,6 +85,105 @@ fn light_admin_reservation_allows_running_turns_and_serializes_mutations() {
     release_admin(&manager);
 }
 
+/// 把一条「跑着的轮」塞进 manager，返回它的 store（队列目标从这里来）。
+fn state_with_running_run(
+    state: &DaemonState,
+    run_id: &str,
+    turn_id: &str,
+    audience: PromptAudience,
+    turn_origin: crate::tools::workspace::TurnOrigin,
+) -> (StateStore, tokio::sync::watch::Receiver<bool>) {
+    let session_id = state.state_store.session_id();
+    let store = state.state_store.pinned_for_turn(&session_id);
+    store
+        .start_turn(turn_id, turn_id, std::process::id())
+        .unwrap();
+    let (cancel, cancel_rx) = tokio::sync::watch::channel(false);
+    state.manager.lock().unwrap().active_runs.insert(
+        run_id.to_string(),
+        RunInfo {
+            session_id,
+            mode: AgentMode::Normal,
+            audience,
+            cancel,
+            turn_id: Some(turn_id.to_string()),
+            queue_target: Some(store.queue_target(turn_id)),
+            supersede: Arc::new(crate::agent::TurnSupersedeSignal::default()),
+            platform_followup: None,
+            operation: RunOperation::Create,
+            job_wake: true,
+            turn_origin,
+            job_wake_label: None,
+        },
+    );
+    (store, cancel_rx)
+}
+
+/// 目标续轮是机器自己开的 `Owner` 轮，WebUI 发的消息要排得进去——修复前排队
+/// 请求写死 `External`，被 `enqueue_turn_update` 的 audience 校验挡成 409，
+/// 前端弹「这条没发出去：会话刚开始新的一轮」。
+#[test]
+fn webui_followups_queue_into_a_running_goal_round() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let session_id = state.state_store.session_id();
+    let (store, _cancel_rx) = state_with_running_run(
+        &state,
+        "run-goal",
+        "turn-goal",
+        PromptAudience::Owner,
+        crate::tools::workspace::TurnOrigin::GoalRound {
+            goal_id: "g".into(),
+            revision: 1,
+            round: 1,
+        },
+    );
+
+    let receipt = queue_into_running_session(&state, &session_id, "插一句", "插一句", &[])
+        .expect("queueing into a goal round must not be a 409")
+        .expect("the goal round is queueable");
+    assert_eq!(receipt.run_id, "run-goal");
+    assert_eq!(receipt.turn_id, "turn-goal");
+    assert_eq!(store.load_queued_prompts().unwrap().len(), 1);
+
+    let manager = state.manager.lock().unwrap();
+    assert_eq!(
+        web_followup_audience(manager.active_runs.get("run-goal").unwrap()),
+        PromptAudience::Owner
+    );
+}
+
+/// 反面：REPL 起的轮（`Owner` + `Human`）WebUI 仍旧排不进去，`create_turn`
+/// 顺着 `Ok(None)` 走到起新轮那条路，在 `session_has_runs` 上拿 409「Miyu is
+/// busy」。跨端隔离不能被上一条顺手拆掉。
+#[test]
+fn webui_followups_still_stay_out_of_repl_turns() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = DaemonState::for_test(test_paths(temp.path()), 8300).unwrap();
+    let session_id = state.state_store.session_id();
+    let (store, _cancel_rx) = state_with_running_run(
+        &state,
+        "run-repl",
+        "turn-repl",
+        PromptAudience::Owner,
+        crate::tools::workspace::TurnOrigin::Human,
+    );
+
+    assert!(
+        queue_into_running_session(&state, &session_id, "插一句", "插一句", &[])
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.load_queued_prompts().unwrap().is_empty());
+
+    let manager = state.manager.lock().unwrap();
+    assert_eq!(
+        web_followup_audience(manager.active_runs.get("run-repl").unwrap()),
+        PromptAudience::External
+    );
+    assert!(manager.session_has_runs(&session_id));
+}
+
 #[test]
 fn turn_updates_are_routed_to_the_exact_run_and_turn() {
     let temp = tempfile::tempdir().unwrap();
