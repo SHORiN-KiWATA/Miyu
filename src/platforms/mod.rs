@@ -29,6 +29,8 @@ pub(crate) mod commands;
 pub(crate) mod file_reader;
 pub(crate) mod onebot;
 pub(crate) mod plugins;
+mod sponsor_fx;
+mod sponsor_tool;
 mod tool;
 // 平台层的纯数据类型下沉到 crate::platform_types：tools / memory / agent 都
 // 要用它们（图片引用、主体身份、会话标识），但不该为此依赖整个平台运行时。
