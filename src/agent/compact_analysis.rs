@@ -17,22 +17,36 @@ const CLOSE_TAG: &str = "</analysis>";
 /// 摘要本身挤没。
 pub(in crate::agent) const ANALYSIS_MIN_CAP: u32 = 6000;
 
+/// 分析段**默认关**（09-09 实况事故后改的）。
+///
+/// 它的成本是实打实的：模型要把整段对话先走一遍写草稿，再写摘要，输出量
+/// 直接翻倍；而草稿被流式过滤器整段吞掉，用户在那段时间里屏幕上一个字都
+/// 没有。收益则始终没测出来——25 轮 fixture 上开与关同为 19/20。
+/// 真正的账单出现在长会话 + 慢模型上：148k 上下文的会话配 opus，草稿写完
+/// 就已经把墙钟预算吃掉大半，摘要被超时砍在半路，整次压缩白跑。
+/// 想开：`MIYU_COMPACT_ANALYSIS=1`。
+fn analysis_enabled(summary_cap: u32) -> bool {
+    if summary_cap < ANALYSIS_MIN_CAP {
+        return false;
+    }
+    std::env::var("MIYU_COMPACT_ANALYSIS")
+        .map(|value| matches!(value.trim(), "1" | "true" | "on"))
+        .unwrap_or(false)
+}
+
 pub(in crate::agent) const ANALYSIS_STEP: &str = "Work in two phases. First, inside an <analysis> block, walk the conversation in order and note for each part what the user asked, what was done, the decisions, the errors and fixes, and every user correction; check the notes for gaps before moving on. Second, after the block, write the summary. The analysis block is discarded and never shown, so the summary must stand on its own.";
 
 pub(in crate::agent) const ANALYSIS_SKIP: &str =
     "Write the summary directly, without an analysis block.";
 
 /// 组装摘要系统提示词。`MIYU_COMPACT_PROMPT_FILE` 换整份底稿、
-/// `MIYU_COMPACT_ANALYSIS=0` 强制关分析段，两个都是测具用的实验开关。
+/// `MIYU_COMPACT_ANALYSIS=1` 打开分析段，两个都是实验开关。
 pub(in crate::agent) fn compact_system_prompt(base: &str, summary_cap: u32) -> String {
     let base = std::env::var("MIYU_COMPACT_PROMPT_FILE")
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .unwrap_or_else(|| base.to_string());
-    let forced_off = std::env::var("MIYU_COMPACT_ANALYSIS")
-        .map(|value| value.trim() == "0")
-        .unwrap_or(false);
-    let step = if summary_cap >= ANALYSIS_MIN_CAP && !forced_off {
+    let step = if analysis_enabled(summary_cap) {
         ANALYSIS_STEP
     } else {
         ANALYSIS_SKIP

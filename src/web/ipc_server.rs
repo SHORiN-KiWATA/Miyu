@@ -830,7 +830,7 @@ pub(in crate::web) async fn handle_ipc_turn(
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let busy = {
         let mut manager = state.manager.lock().unwrap();
-        if manager.admin_busy {
+        if manager.admin_blocks_session(&session_id) {
             true
         } else {
             manager.active_runs.insert(

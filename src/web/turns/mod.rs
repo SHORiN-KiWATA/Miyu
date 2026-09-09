@@ -153,7 +153,7 @@ pub(in crate::web) async fn redo_turn(
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     {
         let mut manager = state.manager.lock().unwrap();
-        if manager.admin_busy || manager.session_has_runs(&session_id) {
+        if manager.admin_blocks_session(&session_id) || manager.session_has_runs(&session_id) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Miyu is busy in this conversation",
@@ -348,7 +348,7 @@ pub(in crate::web) async fn create_turn(
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     {
         let mut manager = state.manager.lock().unwrap();
-        if manager.admin_busy || manager.session_has_runs(&session_id) {
+        if manager.admin_blocks_session(&session_id) || manager.session_has_runs(&session_id) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Miyu is busy in this conversation",

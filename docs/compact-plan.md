@@ -197,9 +197,22 @@ QQ 群聊文字历史（独立历史）：**也走 LLM 摘要**（用户已定�
 | ② 压后文件回灌 | v33 `turns.compact_extras`：压完把折叠区里最近碰过的文件从盘上重读，渲染成 `"N: line"` 挂在 checkpoint 之后。默认 5 文件／单文件 4000 tok／总 24000 tok，再受 `window/8` 封顶；超限只留路径（照样占名额）。尾巴读过的、MIYU 根目录下的、不存在的、二进制的全跳过。`src/agent/compact_extras.rs` |
 | ③ 折叠原文回查 | 折叠掉的轮次（连同被取代的上一份摘要）写成 `state/compact/<会话>/fold-<ms>.md`，路径进 `<compact-transcript>` 块，链式保留最近 5 份。有 read 工具时才提示「可以读回来」。转录只写不清，与 spill 同规矩。 |
 | ④ 摘要结构升级 | `prompts/compact.md` 九节：新增「所有用户消息逐条」「错误与纠正」「当前工作」，Next Move 绑定用户最后一次明确请求。User Requests 最新 15 条逐条保留、更早的可并行——防跨压缩无限膨胀。摘要输出帽 8192→16384。 |
-| ⑤ 分析再摘要 | 输出帽 ≥6000 tok 时提示词要求先写 `<analysis>` 草稿再落摘要；草稿落库前剥掉（`strip_analysis_block`）、流式里滤掉（`AnalysisChunkFilter`，标签被切在两个 chunk 中间也认）。未闭合的草稿判为空摘要，走既有重试／机械兜底。`src/agent/compact_analysis.rs`。**实测（n=1）无召回收益**：开(V2) 与强制关(V3) 同为 19/20，关掉反而更短更快。**09-09 用户裁定：保持默认开**——n=1 测不出差异不等于没差异，而这个 25 轮、事实密集的 fixture 对「先梳理再落笔」本来就不敏感；它针对的是几百轮、连压多次的长会话。想关随时 `MIYU_COMPACT_ANALYSIS=0`。 |
+| ⑤ 分析再摘要 | 输出帽 ≥6000 tok 时提示词要求先写 `<analysis>` 草稿再落摘要；草稿落库前剥掉（`strip_analysis_block`）、流式里滤掉（`AnalysisChunkFilter`，标签被切在两个 chunk 中间也认）。未闭合的草稿判为空摘要，走既有重试／机械兜底。`src/agent/compact_analysis.rs`。**已改为默认关**（`MIYU_COMPACT_ANALYSIS=1` 才开）。先是实测无收益（开/关同为 19/20），随后 09-09 实况坐实它有真实成本：148k 上下文的会话配 opus，草稿吃掉大半墙钟预算、摘要被超时砍断，且草稿被流式过滤器整段吞掉——用户看到的是几分钟空白。 |
 | ⑥ 顺手修 | `add_usage` 只累加了供应商原始缓存字段，漏了归一化后的 `cache_read_tokens`——而落库读的正是它。fork 摘要实测 96.6% 命中（26911 prompt / 25984 cached）落库仍记 0，压缩越多整体命中率被拉得越低。 |
-| 实验开关 | `MIYU_COMPACT_PROMPT_FILE`（换摘要提示词底稿）、`MIYU_COMPACT_ANALYSIS=0`（强制关分析段），供 A/B 测具隔离变量用。 |
+| 实验开关 | `MIYU_COMPACT_PROMPT_FILE`（换摘要提示词底稿）、`MIYU_COMPACT_ANALYSIS=1`（打开分析段，默认关），供 A/B 测具隔离变量用。 |
+
+**09-09 当日回归与修复**（v3 上线后当天在实况撞出来的，四条一起修）：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 手动 `miyu compact` 长时间零输出 | 分析段草稿被 `AnalysisChunkFilter` 整段吞掉，草稿写多久屏幕就空白多久 | 分析段改默认关 |
+| 压缩超时、什么都没落库 | 输出帽 8192→16384 + 分析段 + `User Requests` 首次压缩**无上限**（那句限制只写在「已有摘要」分支里），三者叠加把输出推到上万 token；而 `SUMMARY_TIMEOUT` 是写死的 90s | 帽退回 8192（实测输出只有 3394–6083，提帽零收益）；`User Requests` 上限写进提示词主体（最新 20 条逐条，更早的最多 5 行合并）；超时改成 `90s + 帽/40`（满帽≈294s），且 fork 超时后不再走隔离路径重试——同一个模型要同样长的输出、还没缓存可吃，只会更慢 |
+| 压缩期间**所有**会话卡死（排队） | `ActorCommand::Compact` 在 actor 主循环里同步 await，而 `StartTurn` 是 `spawn_local` 的；压缩几分钟 = actor 几分钟收不了命令 | Compact 也 spawn 出去；代价是当前会话也走独立 agent（`&mut` 借用跨不了 spawn），多一次装配换回并发 |
+| 压缩期间**所有**会话卡死（拒绝） | `admin_busy` 是**全局布尔**，而回合入口五处闸门全查它。`reserve_admin_for_session` 的文档写着「只有目标会话要空闲，其它会话的回合照常跑」，实现却只置全局位——第二句从来没兑现 | `ManagerState` 加 `admin_session: Option<String>` 记预约的作用域：全局预约（改配置/换模型）仍挡所有人，会话级预约（压缩/pop/undo/清空）只挡自己。新增 `admin_blocks_session()`，回合入口五处闸门改用它。`release_admin` 签名不动，37 处释放点零改动 |
+
+回归测具：`testkit/compact-concurrency/`——桩 LLM 只对摘要请求睡 25 秒，在会话 A 上发起压缩、3 秒后去会话 B 发一句，量 B 的往返。修好了 B 是 0.1s，修之前 B 直接被拒（`code=1`，`admin_busy`）或干等 25 秒（actor 排队）。两层各自退回都会让它报红。
+
+教训：A/B 测具当时用的是 deepseek-v4-flash + 25 轮会话，输出 3394–6083 tok、耗时 21.9–36.0s，离 90s 超时线还有一大截——**快模型 + 短会话恰好绕开了这个 bug**。验收模型和会话规模必须贴近实况（慢模型 + 长上下文）。
 
 ## 五、决策点（全部已定，2026-08-06）
 

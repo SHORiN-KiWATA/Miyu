@@ -812,6 +812,7 @@ pub(in crate::web) fn reserve_admin(
         return Err(ApiError::new(StatusCode::CONFLICT, ipc::ADMIN_BUSY_MESSAGE));
     }
     manager.admin_busy = true;
+    manager.admin_session = None;
     Ok(())
 }
 
@@ -827,6 +828,9 @@ pub(in crate::web) fn reserve_admin_for_session(
         return Err(ApiError::new(StatusCode::CONFLICT, ipc::ADMIN_BUSY_MESSAGE));
     }
     manager.admin_busy = true;
+    // 预约限定到这个会话:压缩/pop/undo 重写的是它自己的消息数组,别的
+    // 会话该照常开回合。以前这里只置全局位,压一个会话等于停掉整台机器。
+    manager.admin_session = Some(session_id.to_string());
     Ok(())
 }
 
@@ -840,6 +844,7 @@ pub(in crate::web) fn reserve_admin_light(
         return Err(ApiError::new(StatusCode::CONFLICT, ipc::ADMIN_BUSY_MESSAGE));
     }
     manager.admin_busy = true;
+    manager.admin_session = None;
     Ok(())
 }
 

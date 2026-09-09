@@ -46,6 +46,7 @@ pub(super) fn manager_with_run(
             },
         )]),
         admin_busy: false,
+        admin_session: None,
         context: ContextSnapshot {
             tokens: 0,
             window: None,

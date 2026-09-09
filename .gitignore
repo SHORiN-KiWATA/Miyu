@@ -21,6 +21,7 @@ testkit/embedding/home/
 
 # testkit/compact-quality 的实测产物（报告在验收时贴出来，不进仓库）
 testkit/compact-quality/out/
+testkit/compact-concurrency/out/
 testkit/embedding/out-*.txt
 testkit/embedding/kbsrc/
 

@@ -80,6 +80,13 @@ pub(crate) struct ManagerState {
     /// this replaces the old single `active_run_id`.
     pub(crate) active_runs: HashMap<String, RunInfo>,
     pub(crate) admin_busy: bool,
+    /// 本次 admin 预约限定的会话。`None` = 全局预约（改配置/换模型这类，
+    /// 必须挡住所有人）；`Some(id)` = 只挡这一个会话。
+    ///
+    /// 压缩/pop/undo/清空重写的是**单个会话**的消息数组，危险只对那个会话
+    /// 成立。以前它们和全局操作共用一个布尔，于是压一个会话就把所有会话的
+    /// 新回合全拒了（09-09 实况：一次 compact 期间所有会话报 busy）。
+    pub(crate) admin_session: Option<String>,
     pub(crate) context: ContextSnapshot,
     pub(crate) persona_session_ids: HashMap<String, String>,
     /// 每当有 run 从 `active_runs` 移除时通知一次。等「某个/某些 run 结束」
@@ -95,6 +102,16 @@ impl ManagerState {
             .iter()
             .find(|(_, info)| &*info.session_id == session_id)
             .map(|(run_id, _)| run_id)
+    }
+
+    /// 当前的 admin 预约是否挡住这个会话：全局预约挡所有人，会话级预约
+    /// 只挡它自己。
+    pub(crate) fn admin_blocks_session(&self, session_id: &str) -> bool {
+        self.admin_busy
+            && self
+                .admin_session
+                .as_deref()
+                .is_none_or(|scoped| scoped == session_id)
     }
 
     pub(crate) fn session_has_runs(&self, session_id: &str) -> bool {
@@ -201,5 +218,7 @@ pub(crate) fn finish_run(
 
 // ── release_admin ──
 pub(crate) fn release_admin(manager: &Arc<Mutex<ManagerState>>) {
-    manager.lock().unwrap().admin_busy = false;
+    let mut manager = manager.lock().unwrap();
+    manager.admin_busy = false;
+    manager.admin_session = None;
 }

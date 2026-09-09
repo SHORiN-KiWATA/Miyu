@@ -21,7 +21,7 @@ Summary structure (keep every section, in this order; write "(none)" when a sect
 Everything the user stated that still governs the work: names, paths, versions, preferences, workflow rules, and hard "never do X" rules, in their own words. Prefer over- to under-including.
 
 ## User Requests
-Every real user message in the folded history, in order, condensed to one line each. Keep the exact wording of requests, corrections, and refusals; mark corrections ("no, do X instead") explicitly. When a previous summary already lists older requests, keep its lines and append the new ones; only requests older than the newest 15 may be merged into one recap line each.
+The newest 20 user messages in the folded history, in order, one line each, keeping the exact wording of requests, corrections, and refusals; mark corrections ("no, do X instead") explicitly. Everything older is compressed into at most 5 "Earlier: ..." lines grouped by topic, never one line per message. This cap applies to the whole section, whether or not a previous summary already lists older requests.
 
 ## Task Goal
 What the user is trying to accomplish, and how the goal changed over time if it did.

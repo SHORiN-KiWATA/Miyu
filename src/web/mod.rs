@@ -297,6 +297,7 @@ impl DaemonState {
             config: config.clone(),
             active_runs: HashMap::new(),
             admin_busy: false,
+            admin_session: None,
             context,
             persona_session_ids: HashMap::new(),
             runs_changed: Arc::new(tokio::sync::Notify::new()),
