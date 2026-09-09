@@ -52,6 +52,9 @@ pub(in crate::agent) fn mode_system_prompt(
 /// 它逐字不变,却随每个 `<associative-memory>` 块重发一次:实测终端长会话
 /// 42 块共 2,142 字符(占该块总量 6.5%),QQ 群会话 240 块共 28,410 字符
 /// (占 31.8%)。放进 system 说一次,块里只留会变的部分。
+///
+/// Dev 会话一个字都不发:`dev_scoped()` 把记忆整套关掉(09-09),
+/// `memory_enabled` 在那条路上恒为假。
 pub(in crate::agent) fn with_memory_preamble(
     mut system_prompt: String,
     memory_enabled: bool,

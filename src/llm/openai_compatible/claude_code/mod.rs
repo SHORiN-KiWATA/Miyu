@@ -248,13 +248,20 @@ const RELAY_MIYU_TOOLS_NOTE: &str = "\n<relay-environment-tools>\nThe mcp__miyu_
 /// 活在单次进程里,中转每轮一进程、轮末即杀,活不过回合;Miyu 的 job 走
 /// daemon 常驻 + 完成唤醒开新轮,才是这套架构下唯一能跟进的后台。
 ///
-/// `read` / `edit` **不剔**,尽管它们看着就是原生 Read/Edit 的同义词:08-21
-/// 三域合并之后这两件已经不只管文件,`read` 认 `kb:`(知识库)与
-/// `artifact:`(WebUI 工作区)前缀、`edit` 对应地改这两处,原生工具够不着这
-/// 两个域。名单里原来写的是它们改名前的 `read_file` / `apply_patch`,改名那
-/// 天起就没匹配上任何工具——所以"两件重复工具一直挂在桥上"是既成事实,而
-/// 不是回归;这里删掉死名字并留下判断,免得下一个人照着旧名字"修好"它,
-/// 反手把 kb:/artifact: 从中转这条线上摘掉。
+/// `read` **不剔**:它不只管文件,还认 `kb:`(知识库)与 `artifact:`(WebUI
+/// 工作区)前缀,原生 Read 够不着这两个域。名单里原来写的是改名前的
+/// `read_file` / `apply_patch`,改名那天起就没匹配上任何工具——所以"重复
+/// 工具一直挂在桥上"是既成事实而不是回归。
+///
+/// `edit` 09-09 起**剔**。此前留它的两条理由现在都不成立:
+/// 一、"edit 也改 kb:/artifact:"——三域早已拆成 edit/kb/artifact 三件独立
+/// 工具,`edit_filesystem` 见到带前缀的补丁直接报错指路,它的域与原生
+/// Edit/Write 完全重合;
+/// 二、"留着才有 diff 渲染"——diff 卡片走 progress 侧信道
+/// (`ToolProgressEvent::Message("__patch_preview__…")`),而桥的 progress 只
+/// 转发 Image/Artifact/PrepareForExternalOutput(`web::bridge_progress`),
+/// Message 当场丢弃;结果回程还要过 `shape_remote_output` 压成一行。中转
+/// 线上这件工具本来就没有 diff,剔掉零功能损失。
 const BRIDGE_DUPLICATE_TOOLS: &[&str] = &[
     "run_command",
     "web_search",
@@ -262,6 +269,7 @@ const BRIDGE_DUPLICATE_TOOLS: &[&str] = &[
     "glob",
     "grep",
     "todowrite",
+    "edit",
 ];
 
 /// Miyu 工具经 MCP stdio 桥挂给 claude:`miyu mcp-serve` 打回 daemon,与

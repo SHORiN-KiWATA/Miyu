@@ -468,7 +468,46 @@ fn dev_mode_uses_one_line_prompt_and_skips_persona_family() {
         "dev 系统提示词应为内置默认一行: {system}"
     );
     assert!(!system.contains("<current-user-profile>"), "dev 无用户身份");
+    // 09-09:记忆整套退场,连 `<associative-memory>` 前言都不该出现。
+    assert!(
+        !system.contains("<associative-memory>"),
+        "dev 不带记忆,前言不该进 system: {system}"
+    );
     // 第一条对话消息直接是历史,没有预设对话对。
     assert_eq!(messages[1].role, "user");
     assert_eq!(chat_message_text(&messages[1]).unwrap(), "历史问题");
+}
+
+/// `load_tools` 在 full 档里是死重量:模型看不见它就不会调,而它每轮都占
+/// 着目录。留它的唯一理由是「历史里已有调用记录时不能变成未知工具」——
+/// 所以判据是本会话到底调没调过,而不是档位本身。
+#[test]
+fn dev_load_tools_registers_only_after_the_session_used_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let config = AppConfig::default();
+    let state = StateStore::new(&paths).unwrap();
+    state.init_files().unwrap();
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let tools = crate::tools::build_tool_registry(&config, &paths, AgentMode::Dev, false).unwrap();
+    assert!(tools.contains("load_tools"), "底座表里本来就有 load_tools");
+    let mut agent =
+        Agent::new(config, &paths, state.clone(), client, tools, AgentMode::Dev).unwrap();
+
+    agent.prepare_for_turn().unwrap();
+    assert!(
+        !agent.tools.lock().unwrap().contains("load_tools"),
+        "full 档 + 全新会话:不该带 load_tools"
+    );
+
+    // 会话里出现过加载记录(从需加载档切过来的会话就是这个形状)。
+    state
+        .add_session_loaded_tools(&["web_search".to_string()], None)
+        .unwrap();
+    agent.prepare_for_turn().unwrap();
+    assert!(
+        agent.tools.lock().unwrap().contains("load_tools"),
+        "历史里调用过就必须放回来,否则模型照着历史撞未知工具"
+    );
 }
