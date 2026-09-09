@@ -321,18 +321,30 @@ impl KnowledgeBase {
         init_semantic_db(&semantic)?;
         let model = embedder.model_id().to_string();
         let mut indexed = 0usize;
-        progress.begin_pass(files.len());
-        for record in files {
-            progress.start_file(&record.name);
-            let current: i64 = semantic.query_row(
-                "SELECT COUNT(*) FROM semantic_chunks WHERE file_name=?1 AND content_sha256=?2 AND model=?3 AND embedding IS NOT NULL",
-                params![record.name, record.content_sha256, model],
-                |row| row.get(0),
+        // 已经建好的一次查完,而不是每个文件问一次:一趟要走全库,而全库里
+        // 绝大多数文件是「上次就建好了、这次直接跳过」的。
+        let already: std::collections::HashSet<(String, String)> = {
+            let mut stmt = semantic.prepare(
+                "SELECT DISTINCT file_name, content_sha256 FROM semantic_chunks \
+                 WHERE model = ?1 AND embedding IS NOT NULL",
             )?;
-            if current > 0 {
-                progress.end_file(0);
+            let rows = stmt.query_map(params![model], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let needs_work = |record: &FileRecord| {
+            !already.contains(&(record.name.clone(), record.content_sha256.clone()))
+        };
+        // 分母是「这趟真要嵌的文件数」，不是全库文件数。传 200 个新文件进来时
+        // 分母写 6707 的话，进度条会从 0 一路爬到 97% 都还没开始干活，然后在
+        // 最后 3% 里跑完全部工作——用户看到的就是「2%」而实际只剩两百个
+        // （09-09 实拍）。跳过的那些照样计入 skipped，只是不占分母。
+        progress.begin_pass(files.iter().filter(|record| needs_work(record)).count());
+        for record in files {
+            if !needs_work(&record) {
+                progress.skip_file();
                 continue;
             }
+            progress.start_file(&record.name);
             let content = match std::fs::read_to_string(&record.path) {
                 Ok(content) => content,
                 Err(error) => {
@@ -550,6 +562,67 @@ fn reindex_log_tail(path: &Path) -> String {
 /// 每个文件都落一次盘太浪费（6000 个文件 = 6000 次 rename），完全不落又等于
 /// 没有进度：250ms 一帧是「人眼看得出在动」和「别把时间花在写自己身上」之间
 /// 的折中，收尾那一帧强制写。
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    fn progress(total: usize) -> ReindexProgress {
+        let temp = tempfile::tempdir().unwrap();
+        let mut progress = ReindexProgress {
+            path: temp.path().join("progress.json"),
+            started_at: 0.0,
+            model: "test".to_string(),
+            total: 0,
+            done: 0,
+            indexed: 0,
+            skipped: 0,
+            failed: 0,
+            current: String::new(),
+            last_file_error: String::new(),
+            last_flush: std::time::Instant::now(),
+        };
+        // temp 掉了也无所谓:flush 写不进去只是没有进度文件,计数照样对。
+        progress.begin_pass(total);
+        progress
+    }
+
+    /// 09-09 用户实拍:传 200 个新文件进来,卡片显示「195/6707 · 2%」。
+    ///
+    /// 分母写成全库文件数的话,进度条会从 0 一路爬到 97% 都还没开始干活,
+    /// 然后在最后 3% 里跑完全部工作。分母必须是「这趟真要嵌的文件数」;
+    /// 上次就建好的那些照样计入 skipped,但不占分母、也不推进 done。
+    #[test]
+    fn skipped_files_stay_out_of_the_denominator() {
+        let mut progress = progress(200);
+        for _ in 0..6_507 {
+            progress.skip_file();
+        }
+        assert_eq!(progress.total, 200, "分母是这趟的工作量");
+        assert_eq!(progress.done, 0, "跳过的文件不推进进度");
+        assert_eq!(progress.skipped, 6_507);
+
+        for _ in 0..195 {
+            progress.end_file(3);
+        }
+        assert_eq!(progress.done, 195);
+        assert_eq!(progress.total, 200);
+        // 195/200 = 97%,而不是 195/6707 = 2%。
+        assert_eq!(progress.done * 100 / progress.total, 97);
+        assert_eq!(progress.indexed, 195 * 3);
+    }
+
+    #[test]
+    fn a_failed_file_still_counts_as_processed() {
+        let mut progress = progress(3);
+        progress.end_file(2);
+        progress.fail_file("boom");
+        assert_eq!(
+            (progress.done, progress.failed, progress.indexed),
+            (2, 1, 2)
+        );
+    }
+}
+
 pub(in crate::tools::knowledge_base) struct ReindexProgress {
     path: PathBuf,
     started_at: f64,
@@ -600,13 +673,14 @@ impl ReindexProgress {
         self.flush("running", "", false);
     }
 
+    /// 上次就建好、这趟不用动的文件。**不进分母**——它不是这趟的工作量。
+    fn skip_file(&mut self) {
+        self.skipped += 1;
+    }
+
     fn end_file(&mut self, chunks: usize) {
         self.done += 1;
-        if chunks == 0 {
-            self.skipped += 1;
-        } else {
-            self.indexed += chunks;
-        }
+        self.indexed += chunks;
         self.flush("running", "", false);
     }
 

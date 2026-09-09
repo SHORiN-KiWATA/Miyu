@@ -134,7 +134,8 @@ window.MiyuDash = (() => {
       const card = el("div.dash-card", null,
         el("span.dash-card-label", { text: item.label }),
         value,
-        item.hint ? el("span.dash-card-hint", { text: item.hint }) : null);
+        // 小字封两行、超出打省略号(见 .dash-card-hint),全文靠 title 找回来。
+        item.hint ? el("span.dash-card-hint", { text: item.hint, title: item.hint }) : null);
       card.style.setProperty("--i", String(index));
       grid.append(card);
     });

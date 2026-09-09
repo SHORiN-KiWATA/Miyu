@@ -104,6 +104,30 @@ ATTACHMENT_ICON_PROBE = """
 }
 """
 
+CARD_HINT_PROBE = """
+() => {
+  const host = document.createElement('div');
+  host.id = 'cardProbe';
+  host.style.cssText = 'position:fixed;left:0;top:0;width:200px;z-index:9999';
+  host.innerHTML = '<div class="dash-cards"><div class="dash-card">' +
+    '<span class="dash-card-label">重建</span>' +
+    '<strong class="dash-card-value">2%</strong>' +
+    '<span class="dash-card-hint">195/6707 个文件 · ' +
+    'How-to_verify_GPG_key_of_official_.ISO_images_en.md</span></div></div>';
+  document.body.appendChild(host);
+  const card = host.querySelector('.dash-card');
+  const hint = host.querySelector('.dash-card-hint');
+  const cardBox = card.getBoundingClientRect();
+  const hintBox = hint.getBoundingClientRect();
+  // 量的是**文字**有没有超出盒子:文字溢出不会撑大元素的 border box,
+  // 比 rect 的右边缘永远看不出问题(第一版探针就这么白测了一轮)。
+  const out = { overflow: hint.scrollWidth - hint.clientWidth,
+                card: Math.round(cardBox.width), hint: hint.scrollWidth };
+  host.remove();
+  return out;
+}
+"""
+
 REASONING_PROBE = """
 () => {
   const title = document.querySelector('.assistant-content .reasoning-title');
@@ -275,6 +299,13 @@ def main():
         else:
             check("已思考标题没被挤掉", reasoning["clipped"] is False,
                   f"可见 {reasoning['width']}px / 内容 {reasoning['scrollWidth']}px：{reasoning['text']!r}")
+
+        # ── 统计卡小字不许画出卡片 ──────────────────────────
+        # 一个超长文件名就比卡片还宽,默认断行规则不肯在词中间断,整段会画到
+        # 边框外面(09-09 用户实拍「重建」卡)。
+        spill = page.evaluate(CARD_HINT_PROBE)
+        check("统计卡的小字没有画出卡片", spill["overflow"] <= 1,
+              f"文字超出 {spill['overflow']}px（盒子 {spill['card']}px / 文字 {spill['hint']}px）")
 
         # ── 第十四项：表情包瀑布流 ──────────────────────────
         try:

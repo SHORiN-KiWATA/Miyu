@@ -1485,16 +1485,35 @@ body[data-theme="graphite"] .session-unread-dot {
      (那是给浅色正文准备的,叠在紫底上会糊)。 */
   margin: 0;
   border-radius: 6px;
-  background: rgb(0 0 0 / 26%);
+  /* 用气泡自己的前景色兑出来,而不是写死一层黑:亮色主题的气泡是实心主色配
+     浅字,暗色主题反过来,写死黑色只在其中一边成立。 */
+  background: color-mix(in srgb, var(--user-text) 14%, transparent);
   color: inherit;
   white-space: normal;
 }
 
+/* 代码块内部的字色必须显式改掉。`.code-block pre` 自带
+   `color: var(--code-ink)`——那是给浅色代码底准备的深色墨,而这里的底是气泡
+   压出来的暗层,深底深字直接看不清(09-09 用户实拍浅色主题)。选择器也得比
+   `.code-block pre` 更具体,`.code-block { color: inherit }` 够不着里面。 */
+.user-bubble .code-block pre,
+.user-bubble .code-block pre code {
+  color: var(--user-text);
+}
+
 .user-bubble .code-block .code-toolbar {
-  border-bottom: 1px solid rgb(255 255 255 / 12%);
+  border-bottom: 1px solid color-mix(in srgb, var(--user-text) 16%, transparent);
   background: transparent;
-  color: inherit;
-  opacity: 0.75;
+  color: color-mix(in srgb, var(--user-text) 62%, transparent);
+}
+
+.user-bubble .code-copy-button {
+  color: color-mix(in srgb, var(--user-text) 70%, transparent);
+}
+
+.user-bubble .code-copy-button:hover {
+  background: color-mix(in srgb, var(--user-text) 18%, transparent);
+  color: var(--user-text);
 }
 
 .user-bubble .code-block pre {
@@ -1504,7 +1523,7 @@ body[data-theme="graphite"] .session-unread-dot {
 .user-bubble > p > code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgb(0 0 0 / 22%);
+  background: color-mix(in srgb, var(--user-text) 16%, transparent);
   font-family: var(--font-mono);
   font-size: 0.9em;
 }
@@ -8036,7 +8055,18 @@ body.miyu-paused *::after {
 }
 .dash-card-label { color: var(--text-soft); font-size: var(--fs-meta); letter-spacing: .04em; }
 .dash-card-value { font-family: var(--serif); font-size: 24px; font-weight: 600; line-height: 1.1; }
-.dash-card-hint { color: var(--text-faint); font-size: var(--fs-micro); }
+/* 长文件名会撑破卡片:`How-to_verify_GPG_key_of_official_.ISO_images_en.md` 这种
+   一个词就比卡片还宽,默认的断行规则不肯在词中间断,于是整段画到边框外面
+   (09-09 用户实拍)。允许任意位置断行,再封两行、超出打省略号;全文挂 title。 */
+.dash-card-hint {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 
 .dash-table-wrap { overflow-x: auto; }
 .dash-table {
