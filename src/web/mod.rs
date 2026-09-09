@@ -29,6 +29,7 @@ mod dashboards;
 mod dto;
 mod event_map;
 mod goal_driver;
+mod link_preview;
 mod persona;
 mod prompt_files;
 mod providers_api;
@@ -63,6 +64,7 @@ use dashboards::memes::*;
 use dashboards::memory::*;
 use dashboards::qq::*;
 use dashboards::scripts::*;
+use dashboards::sponsor::*;
 use dto::*;
 use event_map::*;
 use goal_driver::*;
@@ -142,6 +144,8 @@ const APP_JS: &str = include_str!("../../web/app.js");
 // 斜杠命令层单独一个文件:app.js 已经 9500 行,再往里长就找不到东西了。
 const COMMANDS_JS: &str = include_str!("../../web/commands.js");
 const LIGHTBOX_JS: &str = include_str!("../../web/lightbox.js");
+const PREVIEW_JS: &str = include_str!("../../web/preview.js");
+const LINKCARDS_JS: &str = include_str!("../../web/linkcards.js");
 const TODOS_JS: &str = include_str!("../../web/todos.js");
 // 文件分享面板:独立文件,与 artifact 演示区无关。
 const SHARED_JS: &str = include_str!("../../web/shared.js");

@@ -1,7 +1,8 @@
 //! 下载、校验与落盘。
 //!
 //! 图片 URL 来自搜索引擎，等于来自任意站点，所以 SSRF 防护是硬要求：
-//! `is_safe_remote_url` + `resolve_public_remote_target` + `is_public_ip` 三层，
+//! `is_safe_remote_url` + `resolve_public_remote_target` 两层（实现在
+//! `crate::tools::net_guard`，链接卡片那条出站线共用同一份），
 //! **解析之后再查 IP**——只看域名挡不住指向内网的 DNS 记录。
 //!
 //! 解码前先读头部拿尺寸（`detect_image_dimensions`）：一张声称 60000×60000 的
@@ -583,90 +584,6 @@ pub(in crate::tools::web_images) fn image_headers(referer: &str) -> reqwest::hea
         }
     }
     headers
-}
-
-pub(in crate::tools::web_images) fn is_safe_remote_url(url: &Url) -> bool {
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return false;
-    }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
-        return false;
-    }
-    match host.parse::<IpAddr>() {
-        Ok(ip) => is_public_ip(ip),
-        Err(_) => true,
-    }
-}
-
-pub(in crate::tools::web_images) async fn resolve_public_remote_target(
-    url: &Url,
-    timeout: Duration,
-) -> Result<Option<(String, Vec<SocketAddr>)>> {
-    if !is_safe_remote_url(url) {
-        bail!("image URL is not a safe public URL")
-    }
-    let host = url.host_str().context("image URL has no host")?;
-    if host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse::<IpAddr>()
-        .is_ok()
-    {
-        return Ok(None);
-    }
-    let port = url
-        .port_or_known_default()
-        .context("image URL has no port")?;
-    let addresses = tokio::time::timeout(timeout, tokio::net::lookup_host((host, port)))
-        .await
-        .context("image DNS resolution timed out")??
-        .collect::<Vec<_>>();
-    if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
-        bail!("image host resolves to a non-public address")
-    }
-    Ok(Some((host.to_string(), addresses)))
-}
-
-pub(in crate::tools::web_images) fn is_public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [first, second, _, _] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || first == 0
-                || (first == 100 && (64..=127).contains(&second))
-                || (first == 198 && matches!(second, 18 | 19))
-                || first >= 240)
-        }
-        IpAddr::V6(ip) => {
-            if let Some(mapped) = ip.to_ipv4_mapped() {
-                return is_public_ip(IpAddr::V4(mapped));
-            }
-            let segments = ip.segments();
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
-        }
-    }
 }
 
 pub(in crate::tools::web_images) fn detect_image_mime(

@@ -3309,6 +3309,69 @@
     }
   }
 
+  // 裸链接自动成链。模型经常直接把 URL 写进正文而不套 [](),以前这些只是纯文本,
+  // 点不动。识别到句尾标点要吐回去:"见 https://a.com。" 里的句号不属于地址。
+  const BARE_URL_TAIL = "。，、；：！？…～\"'`,.;:!?’”»›|*_~";
+  const BARE_URL_PAIRS = { ")": "(", "]": "[", "}": "{", "》": "《", "」": "「", "』": "『", "】": "【" };
+
+  function trimUrlTail(raw) {
+    let value = raw;
+    while (value.length) {
+      const last = value[value.length - 1];
+      const opener = BARE_URL_PAIRS[last];
+      if (opener) {
+        // 括号只在成对时留下:GitHub/维基的地址本身就带括号。
+        const opens = value.split(opener).length - 1;
+        const closes = value.split(last).length - 1;
+        if (closes <= opens) break;
+        value = value.slice(0, -1);
+        continue;
+      }
+      if (BARE_URL_TAIL.includes(last)) {
+        value = value.slice(0, -1);
+        continue;
+      }
+      break;
+    }
+    return value;
+  }
+
+  function bareUrlAt(text, index) {
+    // 前一个字符是字母数字时不认:避开 "xhttps://" 这类粘连。
+    if (index > 0 && /[A-Za-z0-9]/.test(text[index - 1])) return null;
+    // 中日韩标点一个都不能进地址。只在末尾修剪不够:「…archlinux.org、AUR」里
+    // 顿号后面还跟着字母,末尾修剪碰不到它,整段会被 new URL() 当成域名的一部分
+    // punycode 掉(实测变成 xn--orgaur-kr3e)。汉字本身不排除——维基那种带中文
+    // 路径的地址是合法的。
+    const matched = /^https?:\/\/[^\s<>"'`\u00a0\u2000-\u206f\u3000-\u303f\uff00-\uffef]+/i.exec(
+      text.slice(index)
+    );
+    if (!matched) return null;
+    const raw = trimUrlTail(matched[0]);
+    if (!raw) return null;
+    const href = validHttpUrl(raw);
+    return href ? { raw, href } : null;
+  }
+
+  function insideAnchor(node) {
+    let cursor = node;
+    while (cursor) {
+      if (cursor.tagName === "A") return true;
+      cursor = cursor.parentElement;
+    }
+    return false;
+  }
+
+  function appendAutoLink(parent, raw, href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "auto-link";
+    link.textContent = raw;
+    parent.appendChild(link);
+  }
+
   function appendInline(parent, source, depth = 0) {
     const text = String(source || "");
     if (depth > 8) {
@@ -3404,6 +3467,29 @@
             plainStart = index;
             continue;
           }
+        }
+      }
+      // <https://…> 与裸链接。放在 ` 与 [](…) 之后:行内代码和 md 链接先被吃掉,
+      // 这里看不到它们的内容。已经在 <a> 里(md 链接的标签)就不再套一层。
+      if (text[index] === "<" && !insideAnchor(parent)) {
+        const end = text.indexOf(">", index + 1);
+        const href = end > index + 1 ? validHttpUrl(text.slice(index + 1, end)) : null;
+        if (href) {
+          flushPlain(index);
+          appendAutoLink(parent, text.slice(index + 1, end), href);
+          index = end + 1;
+          plainStart = index;
+          continue;
+        }
+      }
+      if ((text[index] === "h" || text[index] === "H") && !insideAnchor(parent)) {
+        const bare = bareUrlAt(text, index);
+        if (bare) {
+          flushPlain(index);
+          appendAutoLink(parent, bare.raw, bare.href);
+          index += bare.raw.length;
+          plainStart = index;
+          continue;
         }
       }
       if (text.startsWith("~~", index)) {
@@ -3793,6 +3879,9 @@
       fragment.appendChild(paragraph);
     }
     container.replaceChildren(fragment);
+    // 独占一行的链接升级成卡片。这里只是排队:流式期间每来一段都会重渲染,
+    // 真正的抓取要等最后一次渲染安顿下来(见 linkcards.js 的防抖)。
+    window.MiyuLinkCards?.scan(container);
   }
 
   /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。
@@ -3908,6 +3997,14 @@
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.title = name;
+        // 会话里的图点开是放大预览，自己发的图没道理反而是「跳走一个新标签
+        // 页」。按住 Ctrl/⌘ 或中键仍然走链接原本的行为。
+        link.addEventListener("click", (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+          if (!window.MiyuLightbox) return;
+          event.preventDefault();
+          window.MiyuLightbox.open({ url, name });
+        });
         const image = document.createElement("img");
         image.src = url;
         image.alt = name;
@@ -3921,20 +4018,50 @@
         list.appendChild(link);
         continue;
       }
-      const link = document.createElement("a");
-      link.className = "user-attachment-file";
-      link.href = url;
-      link.setAttribute("download", "");
-      link.title = `下载 ${name}`;
-      link.appendChild(makeIconSlot("file-text"));
+      // 能预览的芯片：整块是「看看是什么」，右边箭头单独负责下载。不能预览的
+      // 二进制维持原样，整块就是下载链接。
+      const previewable = Boolean(window.MiyuPreview?.canPreview(attachment));
+      const chip = document.createElement(previewable ? "div" : "a");
+      chip.className = "user-attachment-file";
+      if (previewable) {
+        chip.classList.add("is-previewable");
+        chip.tabIndex = 0;
+        chip.setAttribute("role", "button");
+        chip.title = `预览 ${name}`;
+        const openPreview = () => window.MiyuPreview.open({ ...attachment, url, name });
+        chip.addEventListener("click", openPreview);
+        chip.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openPreview();
+        });
+      } else {
+        chip.href = url;
+        chip.setAttribute("download", "");
+        chip.title = `下载 ${name}`;
+      }
+      chip.appendChild(makeIconSlot("file-text"));
       const copy = document.createElement("span");
       const strong = document.createElement("strong");
       strong.textContent = name;
       const small = document.createElement("small");
       small.textContent = formatFileSize(attachment?.size);
       copy.append(strong, small);
-      link.append(copy, makeIconSlot("download"));
-      list.appendChild(link);
+      chip.appendChild(copy);
+      if (previewable) {
+        const download = document.createElement("a");
+        download.className = "user-attachment-download";
+        download.href = url;
+        download.setAttribute("download", "");
+        download.title = `下载 ${name}`;
+        download.setAttribute("aria-label", `下载 ${name}`);
+        download.addEventListener("click", (event) => event.stopPropagation());
+        download.appendChild(makeIconSlot("download"));
+        chip.appendChild(download);
+      } else {
+        chip.appendChild(makeIconSlot("download"));
+      }
+      list.appendChild(chip);
     }
     return list.childElementCount ? list : null;
   }
@@ -6061,6 +6188,8 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(call?.display_name || name || "工具");
+    // 名字被芯片截断时,悬浮还能看全(load_tools 一次点名几个工具就会超长)。
+    displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";
     realName.textContent = name;
@@ -6267,6 +6396,7 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(data?.display_name || data?.name || "工具");
+    displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";
     realName.textContent = String(data?.name || "");
@@ -9671,6 +9801,8 @@
     window.MiyuCommands?.load(apiRequest);
     // 灯箱自己不会画图标（图标集在这边），把工厂函数递过去。
     window.MiyuLightbox?.init({ makeIconSlot });
+    window.MiyuPreview?.init({ makeIconSlot, formatFileSize });
+    window.MiyuLinkCards?.init({ makeIconSlot });
     startBrailleTicker();
     // G2:页面不可见时给 body 挂 miyu-paused,CSS 据此暂停全部装饰动画。
     // 实测(Xvfb+Chrome)不挂这个时隐藏窗口的合成负载与可见时完全一样。

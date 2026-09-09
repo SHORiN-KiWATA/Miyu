@@ -74,6 +74,14 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 concat!("src=\"/lightbox.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
+                "src=\"/preview.js\"",
+                concat!("src=\"/preview.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
+                "src=\"/linkcards.js\"",
+                concat!("src=\"/linkcards.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
                 "src=\"/todos.js\"",
                 concat!("src=\"/todos.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
@@ -140,6 +148,22 @@ pub(in crate::web) async fn lightbox_js_asset(headers: HeaderMap) -> Response {
     )
 }
 
+pub(in crate::web) async fn preview_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        PREVIEW_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn linkcards_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        LINKCARDS_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(in crate::web) async fn todos_js_asset(headers: HeaderMap) -> Response {
     embedded_asset(
         &headers,
@@ -171,6 +195,7 @@ static DASH_SCRIPTS: &[(&str, &str)] = &[
         include_str!("../../web/dash-affection.js"),
     ),
     ("dash-scripts.js", include_str!("../../web/dash-scripts.js")),
+    ("dash-sponsor.js", include_str!("../../web/dash-sponsor.js")),
     // 设置页(09-04 重做):字段模式表 + 渲染层,走同一条静态表。
     (
         "settings-schema.js",

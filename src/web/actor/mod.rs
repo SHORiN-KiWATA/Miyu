@@ -554,7 +554,8 @@ pub(in crate::web) fn reset_actor_persona_state(
         for session_id in &cleared_sessions {
             crate::llm::forget_relay_sessions(session_id);
         }
-        MemoryStore::new(reset_config, paths).reset_all(true)?;
+        // 同 run_wipe:技能/脚本文件不归 wipe 管。
+        MemoryStore::new(reset_config, paths).reset_all(false)?;
         if persona != daemon_config.active_persona_scope() {
             return Ok(manager.lock().unwrap().context);
         }

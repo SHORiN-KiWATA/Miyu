@@ -2,8 +2,9 @@
  * 知识库面板(09-04)。
  *
  * 统计卡 + 内置库卡 → 搜索条(内容 / 文件名)→ 左目录树 / 右预览或搜索结果。
- * 上传(文件或整个文件夹)在前端按扩展名与大小预检,逐个 POST;删除、语义重建、
- * 内置库更新走各自接口,重建与更新都有轮询状态。数据来自 /api/dash/kb/*。
+ * 上传(拖放、选文件、选文件夹三个入口共用一条流水线)在前端按扩展名、大小、
+ * UTF-8 预检,逐个 POST;删除、语义重建、内置库更新走各自接口,重建与更新都有
+ * 轮询状态。数据来自 /api/dash/kb/*。
  */
 (() => {
   const D = window.MiyuDash;
@@ -18,7 +19,7 @@
     q: "",
     selected: "",
     collapsed: new Set(),
-    uploadLog: [],
+    uploading: false,
     reindexTimer: null,
     updateTimer: null,
     loadSeq: 0
@@ -38,15 +39,16 @@
   function mount(root) {
     root.textContent = "";
     ui.stamp = D.el("small", { text: "" });
-    ui.fileInput = D.el("input", { type: "file", multiple: true, hidden: true, onchange: () => queueUploads(Array.from(ui.fileInput.files), false) });
-    ui.dirInput = D.el("input", { type: "file", hidden: true, onchange: () => queueUploads(Array.from(ui.dirInput.files), true) });
+    // 三个入口(选文件 / 选文件夹 / 拖放)都归一成 { file, name },后面只有一条流水线。
+    ui.fileInput = D.el("input", { type: "file", multiple: true, hidden: true, onchange: () => queueUploads(Array.from(ui.fileInput.files).map((file) => ({ file, name: file.name }))) });
+    ui.dirInput = D.el("input", { type: "file", multiple: true, hidden: true, onchange: () => queueUploads(Array.from(ui.dirInput.files).map((file) => ({ file, name: file.webkitRelativePath || file.name }))) });
     ui.dirInput.setAttribute("webkitdirectory", "");
     const head = D.el("div.con-head", null,
       D.el("h2", { text: "知识库" }),
       D.iconButton("refresh-cw", "刷新", () => reloadAll()),
       ui.stamp,
       D.el("span.dash-scope", null,
-        D.el("button.dash-button.is-primary", { type: "button", onclick: () => ui.fileInput.click() }, D.icon("plus"), "上传文件"),
+        D.el("button.dash-button.is-primary", { type: "button", title: "也可以直接把文件拖到这个页面上", onclick: () => ui.fileInput.click() }, D.icon("plus"), "上传文件"),
         D.el("button.dash-button", { type: "button", onclick: () => ui.dirInput.click() }, D.icon("archive"), "上传文件夹"),
         ui.fileInput, ui.dirInput));
 
@@ -63,7 +65,49 @@
     ui.main = D.el("div.dash-main-pane");
     ui.uploadLog = D.el("div.dash-upload-log", { hidden: true });
     root.append(head, ui.cards, ui.defaultCard, toolbar, ui.uploadLog, D.el("div.dash-split", null, ui.tree, ui.main));
+    wireDrop(root);
     reloadAll();
+  }
+
+  /* 投放区取整个知识库面板(root 的 .con-panel 外壳),不是右边的文件树:库空时
+     文件树只剩一行「还没有文件」,而那正是最想把文件拖进来的时刻——把最小的
+     目标留给最常见的动作说不过去。面板外壳还铺满整个正文区,拖到哪都算数。
+     共享文件面板(shared.js)也是「整面板可投放」,这里沿用同一套语言。 */
+  function wireDrop(root) {
+    const host = root.parentElement || root;
+    host.classList.add("dash-drop-host");
+    ui.veil = D.el("div.dash-drop-veil", { hidden: true },
+      D.el("div.dash-drop-label", null, D.icon("plus"), "松开即上传到知识库"));
+    host.append(ui.veil);
+    // 拖的是文字/链接时既不显示指示层也不 preventDefault,事件照常冒泡出去。
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
+    // 计数而不是布尔:进入子元素会先给父元素发 dragleave,只看布尔会一路闪。
+    let depth = 0;
+    const show = (on) => { ui.veil.hidden = !on; host.classList.toggle("is-dropping", on); };
+    host.addEventListener("dragenter", (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      depth += 1;
+      show(true);
+    });
+    host.addEventListener("dragover", (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    });
+    host.addEventListener("dragleave", (event) => {
+      if (!hasFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) show(false);
+    });
+    host.addEventListener("drop", async (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      depth = 0;
+      show(false);
+      const dropped = await collectDropped(event.dataTransfer);
+      await queueUploads(dropped.items, dropped.notes);
+    });
   }
 
   async function reloadAll() {
@@ -162,7 +206,7 @@
     const o = state.overview;
     ui.tree.textContent = "";
     if (!o.files.length) {
-      ui.tree.append(D.el("p.dash-empty", { text: "库里还没有文件。上传文本、Markdown 或配置文件开始。" }));
+      ui.tree.append(D.el("p.dash-empty", { text: "库里还没有文件。把文本、Markdown 或配置文件拖到这个页面上,或者用右上角的按钮选。" }));
       return;
     }
     const tree = buildTree(o.files);
@@ -306,56 +350,161 @@
   }
 
   /* ── 上传 ─────────────────────────────────────────────── */
-  function allowed(file) {
-    const o = state.overview;
-    if (!o) return { ok: true };
-    const name = file.name.toLowerCase();
-    const exts = (o.allowed_extensions || "").split(",").map((s) => s.trim()).filter(Boolean);
-    const names = (o.allowed_filenames || "").split(",").map((s) => s.trim()).filter(Boolean);
-    const dot = name.lastIndexOf(".");
-    const ext = dot >= 0 ? name.slice(dot) : "";
-    if (!(exts.includes(ext) || names.includes(name))) return { ok: false, reason: "类型不允许" };
-    if (file.size > o.max_file_size_kb * 1024) return { ok: false, reason: `超过 ${o.max_file_size_kb} KB` };
-    if (file.size === 0) return { ok: false, reason: "空文件" };
-    return { ok: true };
+
+  // 一眼就不是文本的扩展名单独给一句人话,别让用户对着「类型不允许」猜。
+  const BINARY_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif", ".tiff", ".heic",
+    ".pdf", ".zip", ".gz", ".xz", ".bz2", ".zst", ".tar", ".7z", ".rar", ".mp3", ".wav", ".flac", ".ogg", ".opus",
+    ".m4a", ".mp4", ".mkv", ".mov", ".webm", ".woff", ".woff2", ".ttf", ".otf", ".exe", ".dll", ".so", ".dylib",
+    ".bin", ".img", ".iso", ".o", ".a", ".class", ".jar", ".wasm", ".db", ".sqlite", ".sqlite3", ".pyc",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".psd", ".blend"]);
+  const MAX_DROP_FILES = 200;   // 再多基本是误拖了整个家目录
+  const MAX_DROP_DEPTH = 3;     // 目录递归层数
+
+  function csvList(value) {
+    return (value || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   }
 
-  async function queueUploads(files, keepPaths) {
-    if (!files.length) return;
+  function extOf(base) {
+    const dot = base.lastIndexOf(".");
+    return dot > 0 ? base.slice(dot) : "";   // 点在开头是 .env 这类整名,不算扩展名
+  }
+
+  /* 前端预检,判据抄的是 Rust 侧 validate_file(大小 / 扩展名或整名 / UTF-8),
+     只为省掉一趟明知会被 400 回来的网络。overview 没载入时全放行,由服务端说了算。 */
+  function precheck(name, file) {
+    if (file.size === 0) return "空文件";
+    const o = state.overview;
+    if (!o) return "";
+    if (file.size > o.max_file_size_kb * 1024) return `超过 ${o.max_file_size_kb} KB`;
+    const base = name.split("/").pop().toLowerCase();
+    const ext = extOf(base);
+    if (csvList(o.allowed_extensions).includes(ext) || csvList(o.allowed_filenames).includes(base)) return "";
+    if (BINARY_EXTS.has(ext) || /^(image|video|audio)\//.test(file.type)) return "不是文本文件";
+    return `类型不允许(${ext || "无扩展名"})`;
+  }
+
+  function isUtf8Text(buffer) {
+    try { new TextDecoder("utf-8", { fatal: true }).decode(buffer); return true; } catch (_) { return false; }
+  }
+
+  /* 拖进来的可能是目录。DataTransfer 在事件回调返回后就作废,所以 entry 必须在
+     drop 的同步段里全部取出来,异步遍历只能吃这份快照。 */
+  function transferSnapshot(transfer) {
+    const items = Array.from(transfer?.items || []).filter((item) => item.kind === "file");
+    return { entries: items.map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null)), files: Array.from(transfer?.files || []) };
+  }
+
+  async function collectDropped(transfer) {
+    const { entries, files } = transferSnapshot(transfer);
+    const items = [];
+    const notes = [];
+    if (!entries.some(Boolean)) {
+      // 拿不到 entry(老内核)时只能要平铺的 files,目录在这条路上本就看不见。
+      for (const file of files.slice(0, MAX_DROP_FILES)) items.push({ file, name: file.name });
+      if (files.length > MAX_DROP_FILES) notes.push(`一次最多 ${MAX_DROP_FILES} 个文件,其余忽略`);
+      return { items, notes };
+    }
+    let tooDeep = 0;
+    const walk = async (entry, prefix, depth) => {
+      if (!entry || items.length >= MAX_DROP_FILES) return;
+      if (entry.isFile) {
+        const file = await new Promise((resolve) => entry.file(resolve, () => resolve(null)));
+        if (file) items.push({ file, name: prefix ? `${prefix}/${file.name}` : file.name });
+        return;
+      }
+      if (!entry.isDirectory) return;
+      if (depth >= MAX_DROP_DEPTH) { tooDeep += 1; return; }
+      const reader = entry.createReader();
+      const next = prefix ? `${prefix}/${entry.name}` : entry.name;
+      // readEntries 每次最多给 100 条,要一直读到空数组才算读完一层。
+      for (;;) {
+        const batch = await new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+        if (!batch.length) break;
+        for (const child of batch) await walk(child, next, depth + 1);
+        if (items.length >= MAX_DROP_FILES) break;
+      }
+    };
+    for (const entry of entries) await walk(entry, "", 0);
+    if (tooDeep) notes.push(`目录只展开 ${MAX_DROP_DEPTH} 层,更深的 ${tooDeep} 个目录没有进来`);
+    if (items.length >= MAX_DROP_FILES) notes.push(`一次最多 ${MAX_DROP_FILES} 个文件,其余忽略`);
+    return { items, notes };
+  }
+
+  function resetLog() {
+    ui.uploadHead = D.el("strong", { text: "上传记录" });
+    ui.uploadList = D.el("ul.dash-upload-list");
+    ui.uploadLog.replaceChildren(
+      D.el("div.dash-upload-head", null, ui.uploadHead, D.el("span.dash-actions-gap"), D.iconButton("x", "收起", () => { ui.uploadLog.hidden = true; })),
+      ui.uploadList);
+    ui.uploadLog.hidden = false;
+  }
+
+  /* 一个文件一行,返回就地改这行结果的函数——等待中 / 上传中 / 结果共用一个 chip。 */
+  function logRow(name, text, cls) {
+    const chip = D.el(`span.dash-chip${cls ? `.${cls}` : ""}`, { text });
+    ui.uploadList.append(D.el("li", null, D.el("span.dash-cell-mono", { text: name, title: name }), chip));
+    ui.uploadList.scrollTop = ui.uploadList.scrollHeight;
+    return (nextText, nextCls) => {
+      chip.textContent = nextText;
+      chip.title = nextText;
+      chip.className = `dash-chip${nextCls ? ` ${nextCls}` : ""}`;
+      ui.uploadList.scrollTop = ui.uploadList.scrollHeight;
+    };
+  }
+
+  /* items 是 [{ file, name }];串行上传,一个失败不影响后面的。 */
+  async function queueUploads(items, notes = []) {
     ui.fileInput.value = "";
     ui.dirInput.value = "";
-    state.uploadLog = [];
-    ui.uploadLog.hidden = false;
-    let done = 0, skipped = 0, failed = 0;
-    for (const file of files) {
-      const name = keepPaths && file.webkitRelativePath ? file.webkitRelativePath : file.name;
-      const check = allowed(file);
-      if (!check.ok) { skipped += 1; logUpload(name, `跳过:${check.reason}`, "is-muted"); continue; }
-      try {
-        const buffer = await file.arrayBuffer();
-        const response = await fetch(`/api/dash/kb/files?name=${encodeURIComponent(name)}`, { method: "POST", body: buffer, headers: { "content-type": "application/octet-stream" } });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        done += 1;
-        logUpload(name, "已入库", "is-active");
-      } catch (error) {
-        failed += 1;
-        logUpload(name, `失败:${error.message}`, "is-danger");
+    if (!items.length && !notes.length) return;   // 空投放:什么也不做,也不报错
+    if (state.uploading) { D.toast("上一批还在传,等它完", "error"); return; }
+    state.uploading = true;
+    resetLog();
+    for (const note of notes) logRow("—", note, "is-muted");
+    // 同名文件服务端是覆盖写,所以「已存在」按上传前的库快照 + 本批已传过的名字判。
+    const known = new Set((state.overview?.files || []).map((file) => file.name));
+    let stored = 0, replaced = 0, skipped = 0, rejected = 0, failed = 0;
+    try {
+      const rows = items.map((item) => ({ item, update: logRow(item.name, "等待中", "is-muted") }));
+      for (const [index, row] of rows.entries()) {
+        const { file, name } = row.item;
+        ui.uploadHead.textContent = `上传记录(${index + 1}/${rows.length})`;
+        const reason = precheck(name, file);
+        if (reason) { skipped += 1; row.update(`跳过:${reason}`, "is-muted"); continue; }
+        row.update("上传中…", "");
+        try {
+          const buffer = await file.arrayBuffer();
+          if (!isUtf8Text(buffer)) { skipped += 1; row.update("跳过:不是 UTF-8 文本", "is-muted"); continue; }
+          const response = await fetch(`/api/dash/kb/files?name=${encodeURIComponent(name)}`, { method: "POST", body: buffer, headers: { "content-type": "application/octet-stream" } });
+          const payload = await response.json().catch(() => null);
+          const message = payload?.error?.message || "";
+          // 400 是服务端那三道闸(路径 / 类型 / 「这是 Miyu 自己的东西」)判的,理由原样给人看。
+          if (response.status === 400) { rejected += 1; row.update(`被拒:${message || "服务端不收这个文件"}`, "is-danger"); continue; }
+          if (!response.ok) { failed += 1; row.update(`失败:HTTP ${response.status}${message ? ` ${message}` : ""}`, "is-danger"); continue; }
+          const saved = payload?.name || name;
+          if (known.has(saved)) { replaced += 1; row.update("已存在:已覆盖", "is-warn"); } else { stored += 1; row.update("成功", "is-active"); }
+          known.add(saved);
+        } catch (error) {
+          failed += 1;
+          row.update(`失败:${error.message}`, "is-danger");
+        }
       }
+      ui.uploadHead.textContent = `上传记录(${rows.length})`;
+    } finally {
+      state.uploading = false;
     }
-    D.toast(`上传完成:${done} 成功 · ${skipped} 跳过 · ${failed} 失败`, failed ? "error" : undefined);
-    if (done) {
+    const parts = [];
+    if (stored) parts.push(`入库 ${stored} 个`);
+    if (replaced) parts.push(`覆盖 ${replaced} 个`);
+    if (skipped) parts.push(`跳过 ${skipped} 个`);
+    if (rejected) parts.push(`被拒 ${rejected} 个`);
+    if (failed) parts.push(`失败 ${failed} 个`);
+    D.toast(parts.join(" · ") || "没有文件入库", rejected || failed ? "error" : undefined);
+    if (stored || replaced) {
       // 逐文件导入不触发重建;整批完了起一次。失败(嵌入未配置)不算错。
       try { await D.api("/api/dash/kb/reindex", { method: "POST" }); } catch (_) { /* 未配置嵌入 */ }
     }
     await loadOverview();
-  }
-
-  function logUpload(name, text, cls) {
-    state.uploadLog.push({ name, text, cls });
-    ui.uploadLog.replaceChildren(
-      D.el("div.dash-upload-head", null, D.el("strong", { text: `上传记录(${state.uploadLog.length})` }), D.el("span.dash-actions-gap"), D.iconButton("x", "收起", () => { ui.uploadLog.hidden = true; })),
-      D.el("ul.dash-upload-list", null, state.uploadLog.slice(-40).map((entry) => D.el("li", null, D.el("span.dash-cell-mono", { text: entry.name }), D.el(`span.dash-chip.${entry.cls}`, { text: entry.text })))));
   }
 
   /* ── 删除 / 重建 / 更新 ─────────────────────────────── */
