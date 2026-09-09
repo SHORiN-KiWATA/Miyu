@@ -75,7 +75,13 @@ impl ReplFooterStatus {
     ) {
         if result.usage.is_some() {
             let turn = TurnTokens::from_usage(result.usage.as_ref());
-            self.set_token_usage_with_cache(turn, session_tokens, context_window, cumulative);
+            self.set_token_usage_with_cache(
+                turn,
+                GenerationSpeed::from_usage(result.usage.as_ref()),
+                session_tokens,
+                context_window,
+                cumulative,
+            );
         }
     }
 
@@ -91,6 +97,7 @@ impl ReplFooterStatus {
                 total: turn_tokens,
                 ..TurnTokens::default()
             },
+            GenerationSpeed::default(),
             session_tokens,
             context_window,
             cumulative,
@@ -100,6 +107,7 @@ impl ReplFooterStatus {
     pub(in crate::cli) fn set_token_usage_with_cache(
         &mut self,
         turn: TurnTokens,
+        speed: GenerationSpeed,
         session_tokens: u64,
         context_window: Option<usize>,
         cumulative: TurnTokens,
@@ -111,7 +119,8 @@ impl ReplFooterStatus {
             session_tokens,
             context_window,
             ..meter_cumulative(cumulative)
-        };
+        }
+        .with_generation_speed(speed);
     }
 
     pub(in crate::cli) fn update_session_tokens(&mut self, session_tokens: u64) {
@@ -120,11 +129,18 @@ impl ReplFooterStatus {
 
     /// 回合中途的逐请求刷新:在(回合前的)基线上叠加回合累计。必须作用
     /// 在基线快照的克隆上,同一回合内可重复调用而不重复相加。
-    pub(in crate::cli) fn apply_round_usage(&mut self, context_tokens: u64, turn: TurnTokens) {
+    pub(in crate::cli) fn apply_round_usage(
+        &mut self,
+        context_tokens: u64,
+        turn: TurnTokens,
+        speed: GenerationSpeed,
+    ) {
         let meter = &mut self.token_usage;
         meter.turn_tokens = turn.total;
         meter.turn_prompt_tokens = turn.prompt;
         meter.turn_cached_tokens = turn.cache_read;
+        meter.generation_tokens = speed.tokens;
+        meter.generation_ms = speed.millis;
         if context_tokens > 0 {
             meter.session_tokens = context_tokens;
         }
@@ -195,15 +211,21 @@ pub(in crate::cli) fn repl_footer_line(
         turn_tokens: 0,
         ..footer.token_usage
     };
-    // Narrow terminals: drop the cumulative total first, then the percent,
-    // so the core context meter survives as long as possible.
+    // Narrow terminals: drop the output speed first, then the cumulative
+    // total, then the percent, so the core context meter survives as long
+    // as possible.
     let mut right_plain = String::new();
-    for (with_cumulative, with_percent) in [(true, true), (false, true), (false, false)] {
+    for (with_speed, with_cumulative, with_percent) in [
+        (true, true, true),
+        (false, true, true),
+        (false, false, true),
+        (false, false, false),
+    ] {
         let meter = render::TokenMeter {
             cumulative_tokens: usage.cumulative_tokens.filter(|_| with_cumulative),
             ..usage
         };
-        right_plain = render::format_token_usage_inline_opts(&meter, with_percent);
+        right_plain = render::format_token_usage_inline_opts(&meter, with_percent, with_speed);
         let left_room = cols
             .saturating_sub(bar_width)
             .saturating_sub(visible_width(&right_plain));
@@ -351,6 +373,7 @@ pub(in crate::cli) fn primary_footer_text(text: &str) -> String {
 
 pub(in crate::cli) fn turn_meter(
     turn: TurnTokens,
+    speed: GenerationSpeed,
     session_tokens: u64,
     context_window: Option<usize>,
     cumulative: TurnTokens,
@@ -363,6 +386,7 @@ pub(in crate::cli) fn turn_meter(
         context_window,
         ..meter_cumulative(cumulative)
     }
+    .with_generation_speed(speed)
 }
 
 /// The footer/status display must reflect the session's pinned model pool,

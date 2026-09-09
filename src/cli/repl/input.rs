@@ -62,10 +62,12 @@ pub(in crate::cli) fn read_live_repl_input(
                             synchronized_terminal_update(CursorAfterUpdate::Shown, || {
                                 live.commit_submission(&submission)
                             })?;
+                            let entry = ReplHistoryEntry::from_submission(&submission);
                             return Ok(LiveReplOutcome::Submit(
                                 mode,
                                 submission.content,
                                 submission.images,
+                                entry,
                             ));
                         }
                     }
@@ -206,10 +208,12 @@ pub(in crate::cli) fn read_live_repl_input(
                     synchronized_terminal_update(CursorAfterUpdate::Shown, || {
                         live.commit_submission(&submission)
                     })?;
+                    let entry = ReplHistoryEntry::from_submission(&submission);
                     return Ok(LiveReplOutcome::Submit(
                         mode,
                         submission.content,
                         submission.images,
+                        entry,
                     ));
                 }
                 // Ctrl+C rung 3: the draft was empty and no reply is running, but
@@ -233,7 +237,7 @@ pub(in crate::cli) fn read_repl_input(
     paths: &MiyuPaths,
     mode: AgentMode,
     prefill: Option<String>,
-    history: &[String],
+    history: &[ReplHistoryEntry],
     footer: &ReplFooterStatus,
     show_shortcut_hint: bool,
 ) -> Result<
@@ -423,12 +427,15 @@ pub(in crate::cli) fn read_repl_input(
                             history_index = history.len();
                         }
                         history_index = history_index.saturating_sub(1);
-                        input = history.get(history_index).cloned().unwrap_or_default();
-                        cursor = input.chars().count();
+                        restore_history_entry(
+                            &history.get(history_index).cloned().unwrap_or_default(),
+                            &mut input,
+                            &mut cursor,
+                            &mut pasted_images,
+                            &mut pasted_texts,
+                            &mut raw_pasted_lines,
+                        );
                         history_clean_index = Some(history_index);
-                        raw_pasted_lines = 0;
-                        pasted_images.clear();
-                        pasted_texts.clear();
                     } else {
                         cursor = repl_move_cursor_vertical(&plain_prefix, &input, cursor, -1);
                     }
@@ -446,18 +453,24 @@ pub(in crate::cli) fn read_repl_input(
                     if repl_history_is_clean(&input, history, history_clean_index) {
                         if history_index + 1 < history.len() {
                             history_index += 1;
-                            input = history.get(history_index).cloned().unwrap_or_default();
-                            cursor = input.chars().count();
+                            restore_history_entry(
+                                &history.get(history_index).cloned().unwrap_or_default(),
+                                &mut input,
+                                &mut cursor,
+                                &mut pasted_images,
+                                &mut pasted_texts,
+                                &mut raw_pasted_lines,
+                            );
                             history_clean_index = Some(history_index);
                         } else {
                             history_index = history.len();
                             input.clear();
                             cursor = 0;
                             history_clean_index = None;
+                            raw_pasted_lines = 0;
+                            pasted_images.clear();
+                            pasted_texts.clear();
                         }
-                        raw_pasted_lines = 0;
-                        pasted_images.clear();
-                        pasted_texts.clear();
                     } else {
                         cursor = repl_move_cursor_vertical(&plain_prefix, &input, cursor, 1);
                     }

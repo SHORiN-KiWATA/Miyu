@@ -8,6 +8,24 @@
 
 use crate::memory::*;
 
+/// 排序里的权重。词面分是几十到两百量级(见 `score_text`),这几项是同一批
+/// 候选之间的微调:决定「两条都命中同样的词时先给谁」,不该翻盘。
+///
+/// `strength` 是衰减后的近期热度,`importance` 是写库时给的档,`confidence`
+/// 是整理器对这条事实的把握。`accepted` 只比 `reported` 高一点点——它表示
+/// 已经核实过,不是「更重要」。
+const STRENGTH_WEIGHT: f32 = 5.0;
+const CONFIDENCE_WEIGHT: f32 = 4.0;
+const TRUTH_ACCEPTED_BONUS: f32 = 3.0;
+const TRUTH_REPORTED_BONUS: f32 = 1.0;
+const TRUTH_UNCERTAIN_PENALTY: f32 = -2.0;
+const TRUTH_FICTIONAL_PENALTY: f32 = -4.0;
+/// 过度召回降权。`strength` 与 `recall_count` 都被 reinforce 抬高,一条反复
+/// 霸屏的长事实(09-10 真实库:华硕 s2idle 那条被召回 238 次)会靠这两项自我
+/// 强化;用对数饱和的惩罚把它按回同一起跑线。对数让前几次召回几乎无感,
+/// 惩罚只在「远超同侪」时才显形。
+const RECALL_FATIGUE_WEIGHT: f32 = 1.0;
+
 impl MemoryStore {
     pub fn recall_memories(
         &self,
@@ -360,7 +378,7 @@ impl MemoryStore {
             "SELECT id, content, source, status, created_at, strength,
                      COALESCE(importance, 3), {}, COALESCE(source_episode_ids, '[]'),
                      visibility, owner_principal, owner_display_name, subjects,
-                     {}
+                     {}, {}
              FROM {table} {}{} ORDER BY updated_at DESC LIMIT 5000",
             if kind == MemoryKind::Diary {
                 "retention"
@@ -374,6 +392,7 @@ impl MemoryStore {
             } else {
                 "''"
             },
+            ranking_columns(kind),
             status_filter,
             access_filter,
         );
@@ -384,17 +403,15 @@ impl MemoryStore {
         };
         let mut hits = Vec::new();
         while let Some(row) = rows.next()? {
-            let (mut hit, status, strength, importance) = map_hit_row(row, kind)?;
-            if !include_forgotten && status == "forgotten" {
+            let (mut hit, ranking) = map_hit_row(row, kind)?;
+            if !include_forgotten && ranking.status == "forgotten" {
                 continue;
             }
             let lexical_score = score_text(&hit.content, &normalized_query, &tokens);
             if lexical_score <= 0.0 {
                 continue;
             }
-            hit.score = lexical_score
-                + strength.clamp(0.0, 1.0) as f32 * 5.0
-                + importance.clamp(1, 5) as f32;
+            hit.score = lexical_score + ranking.score_bonus();
             hits.push(hit);
         }
         hits.sort_by(|a, b| {
@@ -452,7 +469,7 @@ impl MemoryStore {
             "SELECT id, content, source, status, created_at, strength,
                      COALESCE(importance, 3), {}, COALESCE(source_episode_ids, '[]'),
                      visibility, owner_principal, owner_display_name, subjects,
-                     {}
+                     {}, {}
              FROM {table} WHERE {status_filter}{access_filter} AND id IN ({placeholders})",
             if kind == MemoryKind::Diary {
                 "retention"
@@ -464,6 +481,7 @@ impl MemoryStore {
             } else {
                 "''"
             },
+            ranking_columns(kind),
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(ids.len() + 1);
@@ -474,7 +492,7 @@ impl MemoryStore {
         let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
         let mut by_id = std::collections::HashMap::new();
         while let Some(row) = rows.next()? {
-            let (hit, _, _, _) = map_hit_row(row, kind)?;
+            let (hit, _) = map_hit_row(row, kind)?;
             by_id.insert(hit.id, hit);
         }
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
@@ -485,12 +503,56 @@ impl MemoryStore {
     }
 }
 
-/// The fixed 14-column row shape shared by every hit query; returns the hit
+/// The ranking columns appended to the fixed row shape by both hit queries.
+/// `episodes` has no `truth_status` column, so diaries read a constant.
+fn ranking_columns(kind: MemoryKind) -> &'static str {
+    match kind {
+        MemoryKind::Fact => {
+            "COALESCE(confidence, 1.0), COALESCE(truth_status, 'reported'), COALESCE(recall_count, 0)"
+        }
+        MemoryKind::Diary => "COALESCE(confidence, 1.0), 'reported', COALESCE(recall_count, 0)",
+    }
+}
+
+/// The columns only the lexical scorer needs, split out of the fixed row shape.
+pub(crate) struct HitRanking {
+    status: String,
+    strength: f64,
+    importance: i64,
+    confidence: f64,
+    truth_status: String,
+    recall_count: i64,
+}
+
+impl HitRanking {
+    /// The part of a hit's score that does not come from the query: decayed
+    /// heat, declared importance, the organizer's confidence, how well-founded
+    /// the claim is, and a fatigue penalty for rows that keep winning.
+    fn score_bonus(&self) -> f32 {
+        self.strength.clamp(0.0, 1.0) as f32 * STRENGTH_WEIGHT
+            + self.importance.clamp(1, 5) as f32
+            + self.confidence.clamp(0.0, 1.0) as f32 * CONFIDENCE_WEIGHT
+            + truth_bonus(&self.truth_status)
+            - (self.recall_count.max(0) as f32).ln_1p() * RECALL_FATIGUE_WEIGHT
+    }
+}
+
+fn truth_bonus(truth_status: &str) -> f32 {
+    match truth_status {
+        "accepted" => TRUTH_ACCEPTED_BONUS,
+        "uncertain" => TRUTH_UNCERTAIN_PENALTY,
+        "fictional" => TRUTH_FICTIONAL_PENALTY,
+        // reported 与(已被 SQL 滤掉的)rejected 走默认。
+        _ => TRUTH_REPORTED_BONUS,
+    }
+}
+
+/// The fixed 17-column row shape shared by every hit query; returns the hit
 /// (score 0) plus the columns that only the lexical scorer needs.
 pub(crate) fn map_hit_row(
     row: &rusqlite::Row<'_>,
     kind: MemoryKind,
-) -> rusqlite::Result<(MemoryHit, String, f64, i64)> {
+) -> rusqlite::Result<(MemoryHit, HitRanking)> {
     let id = row.get::<_, i64>(0)?;
     let content = row.get::<_, String>(1)?;
     let source = row.get::<_, String>(2)?;
@@ -505,6 +567,9 @@ pub(crate) fn map_hit_row(
     let owner_display_name = row.get::<_, String>(11)?;
     let subjects = row.get::<_, String>(12)?;
     let origin_session_id = row.get::<_, String>(13)?;
+    let confidence = row.get::<_, f64>(14)?;
+    let truth_status = row.get::<_, String>(15)?;
+    let recall_count = row.get::<_, i64>(16)?;
     Ok((
         MemoryHit {
             id,
@@ -521,9 +586,14 @@ pub(crate) fn map_hit_row(
             subjects,
             source_episode_ids: serde_json::from_str(&source_episode_ids).unwrap_or_default(),
         },
-        status,
-        strength,
-        importance,
+        HitRanking {
+            status,
+            strength,
+            importance,
+            confidence,
+            truth_status,
+            recall_count,
+        },
     ))
 }
 

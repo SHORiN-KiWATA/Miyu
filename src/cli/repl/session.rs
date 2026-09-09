@@ -210,7 +210,7 @@ pub(in crate::cli) async fn apply_repl_session_switch(
     config: &AppConfig,
     state: &ipc::SessionState,
     active_session_id: &mut String,
-    history: &mut Vec<String>,
+    history: &mut Vec<ReplHistoryEntry>,
     live_repl: &mut LiveReplTail,
     footer: &mut ReplFooterStatus,
     cumulative_tokens: &mut TurnTokens,

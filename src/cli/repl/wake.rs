@@ -183,7 +183,7 @@ pub(in crate::cli) async fn follow_wake_run(
                             )
                             .await
                             {
-                                live.editor.record_history(&submission.content);
+                                live.editor.record_history(ReplHistoryEntry::from_submission(&submission));
                                 synchronized_terminal_update(
                                     CursorAfterUpdate::Preserve,
                                     || live.enqueue(prompt),
@@ -406,6 +406,10 @@ pub(in crate::cli) async fn follow_wake_run(
                         total: ipc_u64(&data, "turn_total"),
                         prompt: ipc_u64(&data, "turn_prompt"),
                         cache_read: ipc_u64(&data, "turn_cache_read"),
+                    },
+                    GenerationSpeed {
+                        tokens: ipc_u64(&data, "turn_generation_tokens"),
+                        millis: ipc_u64(&data, "turn_generation_ms"),
                     },
                 )?;
             }

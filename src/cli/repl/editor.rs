@@ -19,24 +19,22 @@ use crate::cli::*;
 pub(in crate::cli) fn load_repl_input_history(
     state: &StateStore,
     paths: &MiyuPaths,
-) -> Result<Vec<String>> {
+) -> Result<Vec<ReplHistoryEntry>> {
     let session_id = state.session_id();
-    let mut merged: Vec<String> = read_repl_history_file(&legacy_repl_history_file(paths));
+    let mut merged: Vec<ReplHistoryEntry> =
+        read_repl_history_file(&legacy_repl_history_file(paths));
     let conversation = state
         .load_conversation()?
         .into_iter()
         .filter(|entry| entry.role == "user" && !entry.content.trim().is_empty())
         .map(|entry| strip_terminal_control_sequences(&entry.content))
         .filter(|content| !content.trim().is_empty());
-    for entry in conversation {
-        if !merged.contains(&entry) {
-            merged.push(entry);
-        }
+    for content in conversation {
+        merge_history_entry(&mut merged, ReplHistoryEntry::plain(&content));
     }
+    // 历史文件的条目带占位符载荷,和对话记录里同一次提交(展开全文)合成一条。
     for entry in load_persistent_repl_history(paths, &session_id) {
-        if !merged.contains(&entry) {
-            merged.push(entry);
-        }
+        merge_history_entry(&mut merged, entry);
     }
     Ok(merged)
 }
@@ -50,25 +48,39 @@ pub(in crate::cli) fn load_repl_input_history(
 ///
 /// 只在「从空输入框开始翻」时调用：翻到一半重载会让 `history_index` 错位。
 pub(in crate::cli) fn refresh_repl_input_history(
-    history: &mut Vec<String>,
+    history: &mut Vec<ReplHistoryEntry>,
     paths: &MiyuPaths,
     session_id: &str,
 ) -> bool {
     let mut added = false;
     for entry in load_persistent_repl_history(paths, session_id) {
-        if !history.contains(&entry) {
-            push_history_capped(history, &entry);
-            added = true;
-        }
+        added |= merge_history_entry(history, entry);
     }
     added
+}
+
+/// 把一条历史放回输入框:占位符照旧是占位符,载荷跟着回来。
+pub(in crate::cli) fn restore_history_entry(
+    entry: &ReplHistoryEntry,
+    input: &mut String,
+    cursor: &mut usize,
+    pasted_images: &mut Vec<Option<crate::clipboard::PastedImage>>,
+    pasted_texts: &mut Vec<Option<PastedText>>,
+    raw_pasted_lines: &mut usize,
+) {
+    *input = entry.display.clone();
+    *cursor = input.chars().count();
+    *pasted_images = entry.pasted_images();
+    *pasted_texts = entry.pasted_texts();
+    // 载荷都在占位符后面,输入框里没有生粘贴的行。
+    *raw_pasted_lines = 0;
 }
 
 pub(in crate::cli) struct LiveReplEditor {
     pub(in crate::cli) mode: AgentMode,
     pub(in crate::cli) input: String,
     pub(in crate::cli) cursor: usize,
-    pub(in crate::cli) history: Vec<String>,
+    pub(in crate::cli) history: Vec<ReplHistoryEntry>,
     pub(in crate::cli) history_index: usize,
     pub(in crate::cli) history_clean_index: Option<usize>,
     /// 当前缓冲区里由**生粘贴**带进来的行数(折成占位符的不算)。输入区的
@@ -95,7 +107,7 @@ pub(in crate::cli) enum LiveEditorAction {
 }
 
 impl LiveReplEditor {
-    pub(in crate::cli) fn new(mode: AgentMode, history: Vec<String>) -> Self {
+    pub(in crate::cli) fn new(mode: AgentMode, history: Vec<ReplHistoryEntry>) -> Self {
         let history_index = history.len();
         Self {
             mode,
@@ -131,21 +143,35 @@ impl LiveReplEditor {
         }
         let display_content = display_content.trim().to_string();
         let images = std::mem::take(&mut self.pasted_images);
+        let pasted_texts = std::mem::take(&mut self.pasted_texts);
         self.input.clear();
         self.cursor = 0;
         self.history_clean_index = None;
         self.raw_pasted_lines = 0;
-        self.pasted_texts.clear();
         Some(LiveSubmission {
             content,
             display_content,
             images,
+            pasted_texts,
         })
     }
 
-    pub(in crate::cli) fn record_history(&mut self, content: &str) {
-        push_history_capped(&mut self.history, content);
+    pub(in crate::cli) fn record_history(&mut self, entry: ReplHistoryEntry) {
+        push_history_capped(&mut self.history, entry);
         self.history_index = self.history.len();
+    }
+
+    fn recall_history_entry(&mut self, index: usize) {
+        let entry = self.history.get(index).cloned().unwrap_or_default();
+        restore_history_entry(
+            &entry,
+            &mut self.input,
+            &mut self.cursor,
+            &mut self.pasted_images,
+            &mut self.pasted_texts,
+            &mut self.raw_pasted_lines,
+        );
+        self.history_clean_index = Some(index);
     }
 
     pub(in crate::cli) fn handle_event(
@@ -258,16 +284,7 @@ impl LiveReplEditor {
                             self.history_index = self.history.len();
                         }
                         self.history_index = self.history_index.saturating_sub(1);
-                        self.input = self
-                            .history
-                            .get(self.history_index)
-                            .cloned()
-                            .unwrap_or_default();
-                        self.cursor = self.input.chars().count();
-                        self.history_clean_index = Some(self.history_index);
-                        self.raw_pasted_lines = 0;
-                        self.pasted_images.clear();
-                        self.pasted_texts.clear();
+                        self.recall_history_entry(self.history_index);
                     } else {
                         self.cursor = repl_move_cursor_vertical("  ", &self.input, self.cursor, -1);
                     }
@@ -276,22 +293,16 @@ impl LiveReplEditor {
                     if repl_history_is_clean(&self.input, &self.history, self.history_clean_index) {
                         if self.history_index + 1 < self.history.len() {
                             self.history_index += 1;
-                            self.input = self
-                                .history
-                                .get(self.history_index)
-                                .cloned()
-                                .unwrap_or_default();
-                            self.cursor = self.input.chars().count();
-                            self.history_clean_index = Some(self.history_index);
+                            self.recall_history_entry(self.history_index);
                         } else {
                             self.history_index = self.history.len();
                             self.input.clear();
                             self.cursor = 0;
                             self.history_clean_index = None;
+                            self.raw_pasted_lines = 0;
+                            self.pasted_images.clear();
+                            self.pasted_texts.clear();
                         }
-                        self.raw_pasted_lines = 0;
-                        self.pasted_images.clear();
-                        self.pasted_texts.clear();
                     } else {
                         self.cursor = repl_move_cursor_vertical("  ", &self.input, self.cursor, 1);
                     }

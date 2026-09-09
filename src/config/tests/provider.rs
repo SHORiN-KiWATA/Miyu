@@ -452,7 +452,7 @@ fn aux_roles_default_per_role_and_accept_global_and_old_aliases() {
     );
     assert_eq!(
         config.model_tiers.role_tier(AuxRole::MemoryOrganizer),
-        Some(ModelTier::Lite)
+        Some(ModelTier::Standard)
     );
     assert_eq!(
         config.model_tiers.role_tier(AuxRole::DeepResearch),

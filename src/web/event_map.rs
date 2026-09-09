@@ -423,6 +423,7 @@ impl RunEventMapper {
             AgentEvent::RoundUsage {
                 round,
                 turn,
+                speed,
                 estimated,
                 provider_id,
                 model,
@@ -443,6 +444,8 @@ impl RunEventMapper {
                         "turn_total": turn.total,
                         "turn_prompt": turn.prompt,
                         "turn_cache_read": turn.cache_read,
+                        "turn_generation_tokens": speed.tokens,
+                        "turn_generation_ms": speed.millis,
                         "estimated": estimated,
                         "provider_id": provider_id,
                         "model": model,

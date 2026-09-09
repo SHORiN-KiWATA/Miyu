@@ -317,6 +317,44 @@ pub struct Usage {
     /// hit-rate stats do not treat DeepSeek cold requests as unsupported.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub cache_reported: bool,
+    /// 输出速度的分子/分母,由回合层测得而非供应商上报:`generation_ms`
+    /// 是每次模型请求「首个流式块到最后一个流式块」的墙钟毫秒数在回合内
+    /// 累加(不含首字等待、不含工具执行),`generation_tokens` 是那些被计时
+    /// 请求的 completion tokens。只有一个块或用量是估算的请求不计入,
+    /// 所以两者为零就表示「测不出来」而不是「0 tok/s」。
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub generation_tokens: u64,
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub generation_ms: u64,
+}
+
+/// 输出速度计量:tokens / millis。`Usage` 里那两个字段的读数视图。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GenerationSpeed {
+    pub tokens: u64,
+    pub millis: u64,
+}
+
+impl GenerationSpeed {
+    pub fn from_usage(usage: Option<&Usage>) -> Self {
+        usage
+            .map(|usage| Self {
+                tokens: usage.generation_tokens,
+                millis: usage.generation_ms,
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn add(&mut self, other: GenerationSpeed) {
+        self.tokens = self.tokens.saturating_add(other.tokens);
+        self.millis = self.millis.saturating_add(other.millis);
+    }
+
+    /// `None` 表示没测到,和缓存命中率一样:没依据的数字不渲染。
+    pub fn tokens_per_second(&self) -> Option<f64> {
+        (self.tokens > 0 && self.millis > 0)
+            .then(|| self.tokens as f64 * 1000.0 / self.millis as f64)
+    }
 }
 
 impl Usage {

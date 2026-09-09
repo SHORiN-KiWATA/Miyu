@@ -5,6 +5,7 @@
 mod cli_args;
 mod daemon_log;
 mod footer_tail;
+mod hangup;
 mod input_editing;
 mod pop_menu;
 mod shared;

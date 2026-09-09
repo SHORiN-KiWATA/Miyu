@@ -51,10 +51,68 @@ fn a_cache_rate_divides_by_the_prompt_not_the_whole_turn() {
         cumulative_tokens: Some(380_000),
         cumulative_prompt_tokens: 248_000,
         cumulative_cached_tokens: 226_000,
+        ..Default::default()
     };
     assert_eq!(
         format_token_usage_inline(&meter),
         "24.8k(C93%) · 12k/200k(6.0%) · Σ380k(C91%)"
+    );
+}
+
+/// 输出速度跟在本轮用量后面、上下文表前面;没本轮用量(footer)时打头。
+/// 只测到分子或分母其中一个时不显示——和缓存率一样,没依据的数不渲染。
+#[test]
+fn the_output_speed_sits_between_the_turn_figure_and_the_context_meter() {
+    let meter = TokenMeter {
+        turn_tokens: 24_800,
+        turn_prompt_tokens: 12_000,
+        turn_cached_tokens: 11_200,
+        session_tokens: 26_000,
+        context_window: Some(1_000_000),
+        context_window_assumed: false,
+        cumulative_tokens: Some(249_200),
+        cumulative_prompt_tokens: 248_000,
+        cumulative_cached_tokens: 238_000,
+        generation_tokens: 12_800,
+        generation_ms: 35_457,
+    };
+    assert_eq!(
+        format_token_usage_inline(&meter),
+        "24.8k(C93%) · 361 tok/s · 26k/1M(2.6%) · Σ249.2k(C96%)"
+    );
+    assert_eq!(
+        format_token_usage_inline(&TokenMeter {
+            turn_tokens: 0,
+            ..meter
+        }),
+        "361 tok/s · 26k/1M(2.6%) · Σ249.2k(C96%)"
+    );
+    assert_eq!(
+        format_token_usage_inline_opts(&meter, true, false),
+        "24.8k(C93%) · 26k/1M(2.6%) · Σ249.2k(C96%)"
+    );
+    // 慢模型保留一位小数,免得显示成 0 tok/s。
+    assert_eq!(
+        format_tokens_per_second(GenerationSpeed {
+            tokens: 37,
+            millis: 10_000
+        })
+        .as_deref(),
+        Some("3.7 tok/s")
+    );
+    assert_eq!(
+        format_tokens_per_second(GenerationSpeed {
+            tokens: 0,
+            millis: 10_000
+        }),
+        None
+    );
+    assert_eq!(
+        format_tokens_per_second(GenerationSpeed {
+            tokens: 500,
+            millis: 0
+        }),
+        None
     );
 }
 

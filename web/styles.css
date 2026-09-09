@@ -907,7 +907,11 @@ body[data-theme="graphite"] .session-unread-dot {
   min-width: 0;
   min-height: 0;
   background: var(--app-bg);
-  container-type: inline-size;
+  /* 这里曾经是 container-type: inline-size，只为下面那条 @container 判断宽度。
+     WebKit 在容器查询容器的后代被 replaceChildren 时会把 .chat-scroll 的
+     scrollTop 同步归零（WebKitGTK 2.52 实测），于是流式渲染每帧都把视口拽回
+     顶部，滚动跟随自我作废——Safari 独有的气泡抖动。宽度判断改由 app.js 的
+     is-wide 类承担，见 syncArtifactLayout。 */
 }
 
 /* 顶栏没了,侧栏控制浮在正文左上角。正文有自己的左右留白,这两个按钮压在
@@ -2912,8 +2916,9 @@ body.has-lightbox {
 
 /* 常驻任务面板。
    正文固定 980px 居中,宽屏两侧本来就空着一大片。默认不显示——窄屏它会盖住
-   正文;`.main-stage` 是 container,按它的实际宽度而不是窗口宽度判断,这样
-   预览工作区展开、侧栏收起都能自动跟上。 */
+   正文;`.is-wide` 由 app.js 按 `.main-stage` 的实际宽度挂上,这样预览工作区
+   展开、侧栏收起都能自动跟上。这里不用容器查询:容器查询容器会让 WebKit 在
+   后代被 replaceChildren 时归零 scrollTop(见 .main-stage 的注释)。 */
 .stage-todos {
   position: absolute;
   z-index: 6;
@@ -2929,10 +2934,8 @@ body.has-lightbox {
   scrollbar-width: thin;
 }
 
-@container (min-width: 1360px) {
-  .stage-todos:not([hidden]) {
-    display: block;
-  }
+.main-stage.is-wide .stage-todos:not([hidden]) {
+  display: block;
 }
 
 /* artifact 分栏后正文缩到左半,而上面的 `right` 仍从整个舞台的中线量,面板

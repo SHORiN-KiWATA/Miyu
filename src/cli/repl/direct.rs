@@ -380,8 +380,8 @@ pub(in crate::cli) async fn run_direct_repl(
                     }
                     continue;
                 }
-                LiveReplOutcome::Submit(next_mode, input, images) => {
-                    Some((next_mode, input, images))
+                LiveReplOutcome::Submit(next_mode, input, images, entry) => {
+                    Some((next_mode, input, images, entry))
                 }
             };
             // The user moved on: finished background commands count as
@@ -401,11 +401,15 @@ pub(in crate::cli) async fn run_direct_repl(
                 &footer,
                 show_shortcut_hint,
             )?
+            .map(|(mode, input, images)| {
+                let entry = ReplHistoryEntry::plain(&input);
+                (mode, input, images, entry)
+            })
         };
-        let (input, pasted_images) = match next_input {
-            Some((new_mode, input, pasted_images)) => {
+        let (input, pasted_images, history_entry) = match next_input {
+            Some((new_mode, input, pasted_images, entry)) => {
                 mode = new_mode;
-                (input, pasted_images)
+                (input, pasted_images, entry)
             }
             None => break,
         };
@@ -715,10 +719,10 @@ pub(in crate::cli) async fn run_direct_repl(
         if input.is_empty() {
             continue;
         }
-        push_history_capped(&mut input_history, input);
-        persist_repl_history_entry(paths, &state.session_id(), input);
+        push_history_capped(&mut input_history, history_entry.clone());
+        persist_repl_history_entry(paths, &state.session_id(), &history_entry);
         if let Some(live) = live_repl.as_mut() {
-            live.editor.record_history(input);
+            live.editor.record_history(history_entry);
         }
         if agent.mode() != mode {
             let registry =
@@ -819,6 +823,7 @@ pub(in crate::cli) async fn run_direct_repl(
                         }
                         footer.set_token_usage_with_cache(
                             turn_tokens,
+                            GenerationSpeed::from_usage(result.usage.as_ref()),
                             agent.effective_context_tokens()?,
                             agent.context_window(),
                             cumulative_tokens,

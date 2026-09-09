@@ -10,10 +10,12 @@ use crate::memory::*;
 
 pub(crate) const MAX_ORGANIZED_ITEMS: usize = 20;
 
-pub(crate) fn load_existing_memory_candidates(
-    conn: &Connection,
+/// 本批次候选列表的可见性范围:来源日记涉及的人物 + 是否特权来源。
+///
+/// 抽出来是因为候选列表有两个来源(词面检索、语义扩展),两边必须用同一把尺。
+pub(crate) fn candidate_visibility_scope(
     source_diaries: &[ShortDiaryRecord],
-) -> Result<Vec<ExistingMemoryRecord>> {
+) -> (BTreeSet<String>, bool) {
     let mut allowed_principals = BTreeSet::new();
     let mut privileged_source = false;
     for diary in source_diaries {
@@ -24,12 +26,25 @@ pub(crate) fn load_existing_memory_candidates(
             None => privileged_source = true,
         }
     }
-    let query = source_diaries
+    (allowed_principals, privileged_source)
+}
+
+/// 词面检索候选用的查询文本:整批日记的正文拼在一起。
+pub(crate) fn candidate_query_text(source_diaries: &[ShortDiaryRecord]) -> String {
+    source_diaries
         .iter()
         .flat_map(|diary| [&diary.user_message, &diary.assistant_message])
         .map(String::as_str)
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+pub(crate) fn load_existing_memory_candidates(
+    conn: &Connection,
+    source_diaries: &[ShortDiaryRecord],
+) -> Result<Vec<ExistingMemoryRecord>> {
+    let (allowed_principals, privileged_source) = candidate_visibility_scope(source_diaries);
+    let query = candidate_query_text(source_diaries);
     let tokens = query_tokens_with_limit(&query, 256);
     let mut scored = Vec::<(f32, ExistingMemoryRecord)>::new();
     let mut facts = conn.prepare(
@@ -153,7 +168,7 @@ pub(crate) fn validate_knowledge_action(
     ) {
         bail!("invalid knowledge truth status");
     }
-    validate_organized_content(&action.content, 2_000)?;
+    validate_organized_content(&action.content, 300)?;
     validate_evidence_ids(&action.diary_ids, diary_ids)?;
     if !(1..=5).contains(&action.importance)
         || !action.confidence.is_finite()

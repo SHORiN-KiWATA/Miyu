@@ -5,7 +5,8 @@ use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::ipc::{self, Command as IpcCommand, Frame as IpcFrame, Request as IpcRequest};
 use crate::llm::{
-    ChatResult, ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions, TurnTokens, Usage,
+    ChatResult, ChatStreamChunk, GenerationSpeed, OpenAiCompatibleClient, ThinkingVariantOptions,
+    TurnTokens, Usage,
 };
 use crate::memory::{MemoryOrganizer, MemoryStore};
 use crate::paths::MiyuPaths;
@@ -550,14 +551,14 @@ fn legacy_repl_history_file(paths: &MiyuPaths) -> PathBuf {
     paths.state_dir.join("repl-history.jsonl")
 }
 
-fn read_repl_history_file(path: &std::path::Path) -> Vec<String> {
+fn read_repl_history_file(path: &std::path::Path) -> Vec<ReplHistoryEntry> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     content
         .lines()
-        .filter_map(|line| serde_json::from_str::<String>(line).ok())
-        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(ReplHistoryEntry::parse_line)
+        .filter(|entry| !entry.display.trim().is_empty())
         .collect()
 }
 
@@ -565,7 +566,7 @@ fn read_repl_history_file(path: &std::path::Path) -> Vec<String> {
 /// append-only file, capped on load. Conversation resets delete turns, so the
 /// file is the durable source; the turns-derived list only seeds sessions that
 /// predate it.
-fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<String> {
+fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<ReplHistoryEntry> {
     let path = repl_history_file(paths, session_id);
     let mut entries = read_repl_history_file(&path);
     if entries.len() > REPL_HISTORY_CAP {
@@ -573,7 +574,7 @@ fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<Stri
         // Opportunistic rewrite keeps the file from growing without bound.
         let rewritten = entries
             .iter()
-            .filter_map(|entry| serde_json::to_string(entry).ok())
+            .filter_map(ReplHistoryEntry::to_json_line)
             .collect::<Vec<_>>()
             .join("\n");
         let _ = std::fs::write(&path, rewritten + "\n");
@@ -584,20 +585,19 @@ fn load_persistent_repl_history(paths: &MiyuPaths, session_id: &str) -> Vec<Stri
 /// 会话内输入历史的容量上限:REPL 常开数天时防无界增长,超限丢最老。
 const REPL_HISTORY_LIMIT: usize = 500;
 
-fn push_history_capped(history: &mut Vec<String>, content: &str) {
-    history.push(content.to_string());
+fn push_history_capped(history: &mut Vec<ReplHistoryEntry>, entry: ReplHistoryEntry) {
+    history.push(entry);
     if history.len() > REPL_HISTORY_LIMIT {
         let excess = history.len() - REPL_HISTORY_LIMIT;
         history.drain(..excess);
     }
 }
 
-fn persist_repl_history_entry(paths: &MiyuPaths, session_id: &str, entry: &str) {
-    let entry = entry.trim();
-    if entry.is_empty() {
+fn persist_repl_history_entry(paths: &MiyuPaths, session_id: &str, entry: &ReplHistoryEntry) {
+    if entry.display.trim().is_empty() {
         return;
     }
-    let Ok(line) = serde_json::to_string(entry) else {
+    let Some(line) = entry.to_json_line() else {
         return;
     };
     let path = repl_history_file(paths, session_id);
@@ -618,6 +618,124 @@ struct LiveSubmission {
     content: String,
     display_content: String,
     images: Vec<Option<crate::clipboard::PastedImage>>,
+    /// 提交时输入框里的粘贴载荷(按占位符序号),给上键历史留着。
+    pasted_texts: Vec<Option<PastedText>>,
+}
+
+/// 上键历史里的一条。
+///
+/// 以前存的是展开后的全文:粘贴折成的 `[粘贴 1: ~40 行]` 一进历史就散成
+/// 四十行裸文本,上键回来把输入框撑满;`[Image 1]` 则相反,原样进历史却
+/// 丢了图。现在存**输入框里的样子**加载荷,回忆时占位符照旧是活的——退格
+/// 整块删、提交时照常展开、图片重新接回缓存文件。
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ReplHistoryEntry {
+    display: String,
+    /// 按 `[粘贴 N]` 的序号排;被整块删掉的占位符留 None,序号才对得上。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pasted_texts: Vec<Option<String>>,
+    /// 按 `[Image N]` 的序号排的缓存文件路径。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<Option<String>>,
+}
+
+impl ReplHistoryEntry {
+    fn plain(text: &str) -> Self {
+        Self {
+            display: text.to_string(),
+            ..Self::default()
+        }
+    }
+
+    fn from_submission(submission: &LiveSubmission) -> Self {
+        let pasted_texts = submission
+            .pasted_texts
+            .iter()
+            .map(|payload| payload.as_ref().map(|pasted| pasted.text.clone()))
+            .collect::<Vec<_>>();
+        let images = submission
+            .images
+            .iter()
+            .map(|image| image.as_ref().and_then(|image| image.history_path()))
+            .collect::<Vec<_>>();
+        Self {
+            display: submission.display_content.clone(),
+            pasted_texts: trim_trailing_none(pasted_texts),
+            images: trim_trailing_none(images),
+        }
+    }
+
+    fn has_payload(&self) -> bool {
+        !self.pasted_texts.is_empty() || !self.images.is_empty()
+    }
+
+    fn pasted_texts(&self) -> Vec<Option<PastedText>> {
+        self.pasted_texts
+            .iter()
+            .map(|text| text.as_ref().map(|text| PastedText { text: text.clone() }))
+            .collect()
+    }
+
+    /// 只接回还在的缓存文件:清理掉的图片留 None,占位符就成了普通文字。
+    fn pasted_images(&self) -> Vec<Option<crate::clipboard::PastedImage>> {
+        self.images
+            .iter()
+            .map(|path| {
+                path.as_ref()
+                    .filter(|path| std::path::Path::new(path).is_file())
+                    .map(|path| crate::clipboard::PastedImage::Path(path.clone()))
+            })
+            .collect()
+    }
+
+    /// 模型实际收到的样子;对话记录里的用户消息就是这个形态,合并去重用它。
+    fn expanded(&self) -> String {
+        if self.pasted_texts.is_empty() {
+            return self.display.clone();
+        }
+        expand_pasted_text_placeholders(&self.display, &self.pasted_texts())
+    }
+
+    /// 落盘一行:没载荷的照旧写成 JSON 字符串,老版本读得懂,文件也不膨胀。
+    fn to_json_line(&self) -> Option<String> {
+        if self.has_payload() {
+            serde_json::to_string(self).ok()
+        } else {
+            serde_json::to_string(&self.display).ok()
+        }
+    }
+
+    fn parse_line(line: &str) -> Option<Self> {
+        if let Ok(text) = serde_json::from_str::<String>(line) {
+            return Some(Self::plain(&text));
+        }
+        serde_json::from_str::<Self>(line).ok()
+    }
+}
+
+fn trim_trailing_none<T>(mut items: Vec<Option<T>>) -> Vec<Option<T>> {
+    while matches!(items.last(), Some(None)) {
+        items.pop();
+    }
+    items
+}
+
+/// 把一条历史并进列表:同一次提交可能同时来自对话记录(展开全文)和历史
+/// 文件(占位符+载荷),按展开后的文本认作同一条,带载荷的那份胜出并留在原位。
+/// 返回是否新增了条目。
+fn merge_history_entry(history: &mut Vec<ReplHistoryEntry>, entry: ReplHistoryEntry) -> bool {
+    let expanded = entry.expanded();
+    if let Some(position) = history
+        .iter()
+        .position(|existing| existing.expanded() == expanded)
+    {
+        if entry.has_payload() && !history[position].has_payload() {
+            history[position] = entry;
+        }
+        return false;
+    }
+    push_history_capped(history, entry);
+    true
 }
 
 struct LiveAgentInput<'a> {
@@ -919,8 +1037,50 @@ pub(crate) fn spawn_hangup_watchdog() {
 }
 
 fn terminal_hangup() -> bool {
+    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+    match hangup_watch_fd(stdin_is_tty, controlling_tty_fd()) {
+        Some(fd) => fd_hung_up(fd),
+        None => false,
+    }
+}
+
+/// 盯哪个 fd 判挂断:stdin 是终端就盯 stdin;stdin 被管道/重定向占用时盯
+/// **控制终端**——管道读到 EOF 是正常收尾,不是挂断。
+///
+/// shellhook 的 `printf '%s' "$buffer" | miyu --shell-intercept --stdin` 就是
+/// 这个形态:写端 printf 一退出,stdin 立刻常驻 POLLHUP。原先一律裸 poll
+/// stdin,于是问题面板一打开(它是 `spawn_hangup_watchdog` 的第一个调用点)
+/// 就按下 5 秒倒计时,到点 `exit(1)`,daemon 看到一次性客户端断线又把回合
+/// 取消——用户看到的是「面板开着没动,几秒后自己没了」(09-10 报)。
+///
+/// 拿不到控制终端(纯后台、cron)时返回 None:宁可不判挂断,也不误杀。
+fn hangup_watch_fd(
+    stdin_is_tty: bool,
+    controlling_tty: Option<libc::c_int>,
+) -> Option<libc::c_int> {
+    if stdin_is_tty {
+        return Some(libc::STDIN_FILENO);
+    }
+    controlling_tty
+}
+
+/// 控制终端 fd,进程内只开一次。它随进程存活,不关——看门狗每 500ms 用一次。
+fn controlling_tty_fd() -> Option<libc::c_int> {
+    use std::os::unix::io::IntoRawFd;
+    static FD: std::sync::OnceLock<Option<libc::c_int>> = std::sync::OnceLock::new();
+    *FD.get_or_init(|| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .ok()
+            .map(IntoRawFd::into_raw_fd)
+    })
+}
+
+fn fd_hung_up(fd: libc::c_int) -> bool {
     let mut pollfd = libc::pollfd {
-        fd: libc::STDIN_FILENO,
+        fd,
         events: 0,
         revents: 0,
     };
@@ -934,6 +1094,8 @@ enum LiveReplOutcome {
         AgentMode,
         String,
         Vec<Option<crate::clipboard::PastedImage>>,
+        /// 进上键历史的样子(占位符+载荷),不是展开后的全文。
+        ReplHistoryEntry,
     ),
     /// A daemon-initiated wake turn is running in this session; the caller
     /// should attach and render it live.
@@ -948,18 +1110,18 @@ enum LiveReplOutcome {
 
 fn repl_history_is_clean(
     input: &str,
-    history: &[String],
+    history: &[ReplHistoryEntry],
     history_clean_index: Option<usize>,
 ) -> bool {
     history_clean_index
         .and_then(|index| history.get(index))
-        .map(|entry| entry == input)
+        .map(|entry| entry.display == input)
         .unwrap_or(false)
 }
 
 fn repl_should_browse_history(
     input: &str,
-    history: &[String],
+    history: &[ReplHistoryEntry],
     history_clean_index: Option<usize>,
 ) -> bool {
     input.is_empty() || repl_history_is_clean(input, history, history_clean_index)

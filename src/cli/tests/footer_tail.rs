@@ -199,6 +199,41 @@ fn an_idle_tick_only_redraws_when_the_cumulative_actually_moved() {
     }));
 }
 
+/// footer 宽度不够时最先丢输出速度,再丢 Σ、再丢百分比。
+#[test]
+fn the_footer_drops_the_output_speed_before_the_cumulative_total() {
+    let config = AppConfig::default();
+    let mut footer = ReplFooterStatus::from_config(&config, 0, TurnTokens::default());
+    footer.set_token_usage_with_cache(
+        TurnTokens {
+            total: 21_224,
+            prompt: 16_139,
+            cache_read: 6_528,
+        },
+        GenerationSpeed {
+            tokens: 5_085,
+            millis: 14_086,
+        },
+        21_700,
+        Some(1_000_000),
+        TurnTokens {
+            total: 180_100,
+            prompt: 47_538,
+            cache_read: 11_392,
+        },
+    );
+
+    let wide = strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 100));
+    assert!(
+        wide.contains("361 tok/s · 21.7k/1M(2.2%) · Σ180.1k(C24%)"),
+        "{wide}"
+    );
+    let narrow =
+        strip_terminal_control_sequences(&repl_footer_line(AgentMode::Normal, &footer, 64));
+    assert!(!narrow.contains("tok/s"), "{narrow}");
+    assert!(narrow.contains("Σ180.1k(C24%)"), "{narrow}");
+}
+
 #[test]
 fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
     let config = AppConfig::default();
@@ -209,6 +244,7 @@ fn the_footer_leaves_the_per_turn_figure_to_the_token_line() {
             prompt: 16_139,
             cache_read: 6_528,
         },
+        GenerationSpeed::default(),
         21_700,
         Some(1_000_000),
         TurnTokens {

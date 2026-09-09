@@ -186,6 +186,7 @@ impl Agent {
                 self.last_request_snapshot = Some((request_messages.clone(), definitions.clone()));
             }
             let round_streamed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut round_timing = RoundTiming::default();
             let round = {
                 let streamed_flag = round_streamed.clone();
                 let llm_future = self.client.chat_stream_with_continuation(
@@ -221,6 +222,7 @@ impl Agent {
                             break Some(result);
                         }
                         Some((chunk, received_at)) = chunk_rx.recv() => {
+                            round_timing.observe(received_at);
                             if let Some(delta) = record_remote_tool_chunk(
                                 &chunk,
                                 &self.pending_remote_tool_calls,
@@ -400,6 +402,7 @@ impl Agent {
                 continue;
             };
             while let Ok((chunk, received_at)) = chunk_rx.try_recv() {
+                round_timing.observe(received_at);
                 if let Some(delta) =
                     record_remote_tool_chunk(&chunk, &self.pending_remote_tool_calls)
                 {
@@ -423,7 +426,12 @@ impl Agent {
                     text,
                 }))?;
             }
-            usage_accumulator.add_result(&result, messages);
+            let round_completion = usage_accumulator.add_result(&result, messages);
+            usage_accumulator.add_generation_sample(
+                round_completion,
+                round_timing.generation_ms(),
+                result.usage.is_none(),
+            );
             if let Some(turn_usage) = usage_accumulator.usage() {
                 // 上下文表读数优先取供应商标注的"最后一次请求"口径。
                 let round = result
@@ -443,6 +451,7 @@ impl Agent {
                 on_event(AgentEvent::RoundUsage {
                     round: Box::new(round),
                     turn: TurnTokens::from_usage(Some(&turn_usage)),
+                    speed: usage_accumulator.generation_speed(),
                     estimated: usage_accumulator.estimated,
                     provider_id: result.provider_id.clone(),
                     model: result.model.clone(),
@@ -1227,5 +1236,27 @@ pub(in crate::agent) fn record_remote_tool_chunk(
                 .flatten()
         }
         _ => None,
+    }
+}
+
+/// 一次模型请求的流式块到达时刻:首块到末块的间隔就是「生成时长」,
+/// 首字等待和工具执行都不在里面。只有一个块时长为零,视为测不到。
+#[derive(Default)]
+struct RoundTiming {
+    first: Option<Instant>,
+    last: Option<Instant>,
+}
+
+impl RoundTiming {
+    fn observe(&mut self, at: Instant) {
+        self.first = Some(self.first.map_or(at, |first| first.min(at)));
+        self.last = Some(self.last.map_or(at, |last| last.max(at)));
+    }
+
+    fn generation_ms(&self) -> u64 {
+        match (self.first, self.last) {
+            (Some(first), Some(last)) => last.saturating_duration_since(first).as_millis() as u64,
+            _ => 0,
+        }
     }
 }

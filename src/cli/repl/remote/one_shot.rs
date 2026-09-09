@@ -242,7 +242,7 @@ pub(in crate::cli) async fn try_run_remote_chat(
                                 &submission,
                             ).await {
                                 Ok(prompt) => {
-                                    live_tail.editor.record_history(&submission.content);
+                                    live_tail.editor.record_history(ReplHistoryEntry::from_submission(&submission));
                                     if live_tail.external_output_active {
                                         live_tail.append_queued(prompt);
                                     } else {
@@ -650,6 +650,10 @@ pub(in crate::cli) async fn try_run_remote_chat(
                             total: ipc_u64(&data, "turn_total"),
                             prompt: ipc_u64(&data, "turn_prompt"),
                             cache_read: ipc_u64(&data, "turn_cache_read"),
+                        },
+                        GenerationSpeed {
+                            tokens: ipc_u64(&data, "turn_generation_tokens"),
+                            millis: ipc_u64(&data, "turn_generation_ms"),
                         },
                     )?;
                 }
