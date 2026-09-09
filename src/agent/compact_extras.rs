@@ -11,17 +11,13 @@
 //! 转录文件与 spill 一样只写不清：删会话不删它，备份不含它。磁盘而已。
 
 use crate::agent::overflow::estimate_tokens;
-use crate::agent::tool_report::replay_rounds;
+use crate::agent::tool_report::{replay_rounds, tool_call_paths, PathAccess};
 use crate::state::Turn;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// 读类工具：它们的 path 参数就是「模型手里有过内容」的文件。
-const READ_TOOLS: &[&str] = &["read", "read_file"];
-/// 写类工具：改过的文件同样属于工作集，压后一并回灌最新盘上内容。
-const WRITE_TOOLS: &[&str] = &["write_file", "apply_patch", "edit_string"];
 /// 单条转录里每段正文的截断长度（工具输出与推理最容易失控）。
 const TRANSCRIPT_ITEM_MAX_CHARS: usize = 4000;
 /// 转录链最多回溯几份。再往前的折叠已被摘要吸收过两轮以上。
@@ -188,22 +184,6 @@ fn escape_attribute(value: &str) -> String {
     value.replace('&', "&amp;").replace('"', "&quot;")
 }
 
-/// 解析一次工具调用的 path 参数。stub 懒工具把真参数包在 `arguments` 壳里
-/// （同 `tool_call_footprint`），要先拆壳。
-fn call_path(name: &str, arguments: &str) -> Option<String> {
-    if !READ_TOOLS.contains(&name) && !WRITE_TOOLS.contains(&name) {
-        return None;
-    }
-    let mut args: serde_json::Value = serde_json::from_str(arguments).ok()?;
-    if let Some(inner) = args.get("arguments") {
-        if inner.is_object() {
-            args = inner.clone();
-        }
-    }
-    let path = args.get("path")?.as_str()?.trim();
-    (!path.is_empty()).then(|| path.to_string())
-}
-
 /// `~/` 展开、绝对路径原样、相对路径挂 workdir。不 canonicalize：符号链接下
 /// 解析出的真身路径和模型看到的路径对不上，反而更难认。
 fn resolve_path(raw: &str, workdir: &Path) -> PathBuf {
@@ -234,15 +214,14 @@ pub(in crate::agent) fn touched_files(
         let rounds = replay_rounds(&turn.tool_flow);
         for round in rounds.iter().rev() {
             for call in round.calls.iter().rev() {
-                if reads_only && !READ_TOOLS.contains(&call.name.as_str()) {
-                    continue;
-                }
-                let Some(raw) = call_path(&call.name, &call.arguments) else {
-                    continue;
-                };
-                let path = resolve_path(&raw, workdir);
-                if seen.insert(path.clone()) {
-                    ordered.push(path);
+                for (access, raw) in tool_call_paths(&call.name, &call.arguments) {
+                    if reads_only && access != PathAccess::Read {
+                        continue;
+                    }
+                    let path = resolve_path(&raw, workdir);
+                    if seen.insert(path.clone()) {
+                        ordered.push(path);
+                    }
                 }
             }
         }

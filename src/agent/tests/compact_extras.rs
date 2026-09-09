@@ -93,6 +93,40 @@ fn touched_files_orders_by_recency_and_dedups() {
 }
 
 #[test]
+fn touched_files_sees_edit_patch_headers() {
+    let workdir = PathBuf::from("/work");
+    let patch = "*** Begin Patch\n*** Add File: new.rs\n+x\n*** Update File: /abs/edited.rs\n@@ a\n-x\n+y\n*** Delete File: gone.rs\n*** End Patch";
+    let arguments = serde_json::json!({ "patchText": patch }).to_string();
+    let turns = [turn(1, "one", vec![call("edit", &arguments)])];
+    let refs: Vec<&Turn> = turns.iter().collect();
+
+    assert_eq!(
+        touched_files(&refs, &workdir, false),
+        vec![
+            PathBuf::from("/work/new.rs"),
+            PathBuf::from("/abs/edited.rs"),
+            PathBuf::from("/work/gone.rs"),
+        ]
+    );
+    // edit 是写类工具：只读过滤（尾巴跳过集）不该把它的路径算进去。
+    assert!(touched_files(&refs, &workdir, true).is_empty());
+}
+
+#[test]
+fn touched_files_skips_patch_domain_prefixes() {
+    let workdir = PathBuf::from("/work");
+    let patch = "*** Begin Patch\n*** Add File: kb:notes/a.md\n+x\n*** Add File: artifact:report.md\n+y\n*** Add File: real.rs\n+z\n*** End Patch";
+    let arguments = serde_json::json!({ "patchText": patch }).to_string();
+    let turns = [turn(1, "one", vec![call("edit", &arguments)])];
+    let refs: Vec<&Turn> = turns.iter().collect();
+
+    assert_eq!(
+        touched_files(&refs, &workdir, false),
+        vec![PathBuf::from("/work/real.rs")]
+    );
+}
+
+#[test]
 fn stub_shell_arguments_are_unwrapped() {
     let workdir = PathBuf::from("/work");
     let wrapped = serde_json::json!({ "arguments": { "path": "x.rs" } }).to_string();

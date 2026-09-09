@@ -708,6 +708,28 @@ pub(in crate::web) fn session_title_from_prompt(prompt: &str) -> String {
     title
 }
 
+/// 把目标会话钉的模型池套到 `config` 上。回合路与压缩路共用同一条规则，
+/// 否则摘要会被路由到全局池里的另一家供应商，拿不到该会话的前缀缓存。
+pub(in crate::web) fn apply_session_model_override_to(
+    config: &mut AppConfig,
+    store: &StateStore,
+    session_id: &str,
+) {
+    match store.session_model_override(session_id) {
+        Ok(Some(models)) => config.active_provider_models = Some(models),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(
+            error = %error,
+            session_id,
+            "{}",
+            t(
+                "loading the session model override failed",
+                "读取会话模型覆盖失败"
+            )
+        ),
+    }
+}
+
 pub(in crate::web) fn build_session_agent(
     config: &AppConfig,
     paths: &MiyuPaths,
