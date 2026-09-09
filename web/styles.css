@@ -225,11 +225,15 @@ textarea:disabled {
   display: none !important;
 }
 
+/* 高度跟着可视视口走,而不是 100dvh。iOS Safari 不认 viewport meta 里的
+   interactive-widget=resizes-content,软键盘弹出时 dvh 一动不动,外壳就比可见
+   区域高出一个键盘,浏览器为了把输入框顶进视野只能滚动文档——表现是整页上移。
+   --app-height 由 syncAppHeight() 写,JS 没跑起来时回落到 100dvh。 */
 .app-shell {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   width: 100%;
-  height: calc(100dvh / var(--ui-scale));
+  height: var(--app-height, calc(100dvh / var(--ui-scale)));
   zoom: var(--ui-scale);
 }
 
@@ -8415,7 +8419,10 @@ body.miyu-paused *::after {
 .st-drawer-title { display: grid; min-width: 0; gap: 2px; }
 .st-drawer-title strong { font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-drawer-title small { color: var(--text-faint); font-size: var(--fs-micro); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.st-tabs { position: relative; display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+/* flex: 0 0 auto 是必须的:抽屉是列向 flex,而这条 overflow-y: hidden 让本元素
+   的自动最小尺寸变成 0——不锁住 flex-shrink,标签页内容一长就把整条标签栏压
+   扁,里面 38px 高的按钮被自己的 overflow 从下面裁掉。 */
+.st-tabs { position: relative; display: flex; flex: 0 0 auto; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .st-tab { position: relative; flex: 0 0 auto; min-height: 38px; padding: 0 11px; border: 0; background: transparent; color: var(--text-soft); cursor: pointer; font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; transition: color .16s ease; }
 .st-tab:hover { color: var(--text); }
 .st-tab.is-active { color: var(--accent); }
