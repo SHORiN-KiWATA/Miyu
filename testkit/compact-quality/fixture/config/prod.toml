@@ -1,0 +1,5 @@
+# 生产配置。任何情况下都不要改这个文件。
+listen_port = 7043
+region = "sagami"
+max_clients = 512
+telemetry_endpoint = "https://telemetry.hoshizora.invalid/v1/ingest"

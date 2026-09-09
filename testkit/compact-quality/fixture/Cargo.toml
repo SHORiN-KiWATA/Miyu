@@ -1,0 +1,7 @@
+[package]
+name = "hoshizora"
+version = "2.9.4"
+edition = "2021"
+
+[dependencies]
+serde = "1"

@@ -1,0 +1,26 @@
+[
+  {"id": "codename", "group": "fact", "q": "这个项目的代号是什么？只回答代号。", "accept": ["HOSHIZORA-7", "HOSHIZORA7", "hoshizora-7"]},
+  {"id": "port", "group": "fact", "q": "生产配置里的监听端口是多少？只回答数字。", "accept": ["7043"]},
+  {"id": "forbidden", "group": "fact", "q": "我说过哪个文件绝对不许改？回答文件路径。", "accept": ["prod.toml"]},
+  {"id": "commit-lang", "group": "fact", "q": "我要求 git 提交信息用什么语言写？", "accept": ["中文", "chinese"]},
+  {"id": "version", "group": "fact", "q": "Cargo.toml 里的版本号是多少？只回答版本号。", "accept": ["2.9.4"]},
+  {"id": "diff-pref", "group": "fact", "q": "我对你展示 diff 有什么偏好？一句话。", "accept": ["只贴改动", "改动的那几行", "别整文件", "不要整个文件", "只贴改动的行", "只展示改动"]},
+
+  {"id": "dispatch-fn", "group": "file", "q": "src/relay.rs 里的调度函数叫什么名字？只回答函数名。", "accept": ["kagerou_dispatch"]},
+  {"id": "beacon-interval", "group": "file", "q": "src/beacon.rs 里心跳间隔常量的值是多少毫秒？只回答数字。", "accept": ["3700"]},
+  {"id": "deploy-tag", "group": "file", "q": "scripts/deploy.sh 里 DEPLOY_TAG 的值是什么？只回答值。", "accept": ["wisteria"]},
+  {"id": "region", "group": "file", "q": "生产配置里的 region 字段是什么值？只回答值。", "accept": ["sagami"]},
+  {"id": "lattice-struct", "group": "file", "q": "src/lattice.rs 里定义的那个结构体叫什么？只回答名字。", "accept": ["LatticeIndex"]},
+
+  {"id": "retry-where", "group": "decision", "q": "重试计数器最后决定放在哪个文件里？", "accept": ["relay.rs"]},
+  {"id": "retry-why", "group": "decision", "q": "为什么不给重试计数器新开一个文件？", "accept": ["文件已经够碎", "够碎", "碎片", "文件太多", "不想再加文件", "已经够多"]},
+  {"id": "correction", "group": "decision", "q": "我在这次会话里纠正过你哪一次决定？一句话说清楚。", "accept": ["retry.rs", "新开文件", "新建文件", "relay.rs"]},
+  {"id": "shard-constraint", "group": "decision", "q": "LATTICE_SHARDS 和 deploy.sh 里的哪个变量必须保持一致？", "accept": ["SHARD_PLAN"]},
+
+  {"id": "current-task", "group": "current", "q": "我最后交代你要做但让你先别动手的事情是什么？", "accept": ["beacon_health"]},
+  {"id": "current-gate", "group": "current", "q": "关于那件事，我说了什么前提条件？", "_note": "她会用第二人称复述（「等你说开始」），关键字表必须同时收下两种人称", "accept": ["等我说开始", "我说开始", "别写", "先别写", "等我", "等你", "别动手", "不许动", "开始"]},
+  {"id": "shard-value", "group": "current", "q": "LATTICE_SHARDS 和 SHARD_PLAN 最后被改成了多少？只回答数字。", "accept": ["16"]},
+
+  {"id": "error-what", "group": "error", "q": "这次会话里跑命令遇到过什么报错？", "accept": ["tomlli", "ModuleNotFound", "No module named"]},
+  {"id": "error-lesson", "group": "error", "q": "那个报错的教训是什么？一句话。", "accept": ["包名", "先确认", "确认再跑", "打错", "拼错"]}
+]
