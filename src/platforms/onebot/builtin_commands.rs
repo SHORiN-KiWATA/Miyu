@@ -120,8 +120,8 @@ pub(in crate::platforms::onebot) async fn execute_builtin_command(
             } else {
                 match reset_platform_persona_state(state, &context.config).await {
                     Ok(_) => t(
-                        "Memory, every conversation's contents, group-chat contexts and generated skills for the current persona have been erased.",
-                        "当前人格的记忆、全部会话内容、群聊上下文和自动技能已抹掉。",
+                        "Memory, every conversation's contents and group-chat contexts for the current persona have been erased. Skills and scripts were left alone.",
+                        "当前人格的记忆、全部会话内容、群聊上下文已抹掉；技能和脚本文件保留。",
                     )
                     .to_string(),
                     Err(PlatformPersonaResetError::Busy) => t(
@@ -151,10 +151,43 @@ pub(in crate::platforms::onebot) async fn execute_builtin_command(
             if !commands::is_allowed(&context.config.platforms, descriptor, context.is_admin) {
                 return None;
             }
-            // context.config 已按平台人格覆盖作用域化:清的就是这个会话所属
-            // 人格的记忆命名空间;会话历史与技能不动。
+            // 群/私聊里的"本会话"就是这条对话对应的那个会话 id。
+            match resolve_onebot_session(state, context, target, event) {
+                Err(error) => {
+                    tracing::warn!(target: "miyu::qq", error = %error, "{}", t("resolving the QQ session for the memory reset failed", "解析待清记忆的 QQ 会话失败"));
+                    t(
+                        "The memory reset could not be completed. Check the daemon logs for details.",
+                        "记忆清空未能完成，请查看 daemon 日志。",
+                    )
+                    .to_string()
+                }
+                Ok(session_id) => {
+                    // context.config 已按平台人格覆盖作用域化:清的就是这个
+                    // 会话所属人格的记忆命名空间;会话历史与技能不动。
+                    match crate::memory::MemoryStore::new(&context.config, &state.paths)
+                        .reset_session(&session_id)
+                    {
+                        Ok(summary) => summary.describe(),
+                        Err(error) => {
+                            tracing::warn!(target: "miyu::qq", %error, "{}", t("resetting platform session memory failed", "平台会话记忆清空失败"));
+                            t(
+                                "The memory reset could not be completed. Check the daemon logs for details.",
+                                "记忆清空未能完成，请查看 daemon 日志。",
+                            )
+                            .to_string()
+                        }
+                    }
+                }
+            }
+        }
+        commands::ParsedPlatformCommand::ResetAllMemory => {
+            let descriptor = commands::descriptor(commands::RESET_ALL_MEMORY_COMMAND_ID)
+                .expect("the reset-all-memory command descriptor is registered");
+            if !commands::is_allowed(&context.config.platforms, descriptor, context.is_admin) {
+                return None;
+            }
             match crate::memory::MemoryStore::new(&context.config, &state.paths).reset_all(false) {
-                Ok(()) => t("Long-term memory erased.", "长期记忆已清空。").to_string(),
+                Ok(()) => t("All long-term memory erased.", "全部长期记忆已清空。").to_string(),
                 Err(error) => {
                     tracing::warn!(target: "miyu::qq", %error, "{}", t("resetting platform memory failed", "平台记忆清空失败"));
                     t(

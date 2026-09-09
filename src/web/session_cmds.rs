@@ -60,9 +60,13 @@ pub(in crate::web) async fn handle_session_command(
                     .map(|path| path.display().to_string()),
             }))
         }
-        IpcCommand::ResetMemory { mode } => {
+        IpcCommand::ResetMemory {
+            mode,
+            scope,
+            session,
+        } => {
             // dev 记忆挂保留人格名下,与 Agent 构造同一把 dev_scoped 钥匙;
-            // 生成号在 reset_all 里自增,进行中的回合据此识别陈旧句柄。
+            // 生成号在两条重置路里都自增,进行中的回合据此识别陈旧句柄。
             let config = state.manager.lock().unwrap().config.clone();
             let config = if mode.as_deref() == Some("dev") {
                 config.dev_scoped()
@@ -70,10 +74,26 @@ pub(in crate::web) async fn handle_session_command(
                 config
             };
             let memory = crate::memory::MemoryStore::new(&config, &state.paths);
-            memory
-                .reset_all(false)
-                .map_err(|error| safe_error_message(&error))?;
-            Ok(json!({}))
+            match scope {
+                ipc::MemoryResetScope::All => {
+                    memory
+                        .reset_all(false)
+                        .map_err(|error| safe_error_message(&error))?;
+                    Ok(json!({}))
+                }
+                ipc::MemoryResetScope::Session => {
+                    // 客户端不指名就用 daemon 的当前指针:`miyu reset-memory`
+                    // 从终端发过来时,那正是 shellhook 会话。
+                    let session_id = match session {
+                        Some(target) => resolve_local_session_ref(state, &target)?.session_id,
+                        None => store.session_id().to_string(),
+                    };
+                    let summary = memory
+                        .reset_session(&session_id)
+                        .map_err(|error| safe_error_message(&error))?;
+                    Ok(json!({ "text": summary.describe(), "summary": summary }))
+                }
+            }
         }
         IpcCommand::ListSessions { mode } => {
             // dev 列表以 dev REPL 指针为"当前":全局指针指向普通会话,

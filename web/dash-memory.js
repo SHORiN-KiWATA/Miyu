@@ -4,7 +4,7 @@
  * 人格作用域 → 统计卡 → 事实 / 经历 / 归档回合三个标签 → 过滤条 → 表 → 分页。
  * 点行开抽屉:事实/经历可编辑(内容、状态、重要度、类型、真值、标签),
  * 事实带修订历史与来源经历;归档回合看全文。顶部动作:新增事实、清空待处理、
- * 清空归档、重置人格记忆。数据全部来自 /api/dash/memory/*。
+ * 清空归档、清空人格的全部记忆。数据全部来自 /api/dash/memory/*。
  */
 (() => {
   const D = window.MiyuDash;
@@ -65,7 +65,7 @@
       D.el("span.dash-actions-gap"),
       D.el("button.dash-button", { type: "button", onclick: clearPending }, D.icon("eraser"), "清空待处理事件"),
       D.el("button.dash-button", { type: "button", onclick: clearEvicted }, D.icon("archive"), "清空归档回合"),
-      D.el("button.dash-button.is-danger", { type: "button", onclick: resetPersona }, D.icon("rotate-ccw"), "重置此人格记忆"));
+      D.el("button.dash-button.is-danger", { type: "button", onclick: resetPersona }, D.icon("rotate-ccw"), "清空此人格全部记忆"));
 
     ui.tabs = D.segmented(Object.entries(TAB_LABEL).map(([value, label]) => ({ value, label })), state.tab, (value) => {
       state.tab = value; state.offset = 0; state.q = ""; ui.search.value = ""; state.selected.clear(); renderFilters(); loadItems();
@@ -505,15 +505,15 @@
 
   async function resetPersona() {
     const scope = state.persona;
-    const typed = window.prompt(`这会删除人格「${scope}」的全部事实、经历、待处理事件、修订记录与归档回合(技能不动),不可恢复。\n\n输入人格名 ${scope} 确认:`);
+    const typed = window.prompt(`这会删除人格「${scope}」的全部事实、经历、待处理事件、修订记录与归档回合(技能不动),不分会话、不可恢复。\n\n输入人格名 ${scope} 确认:`);
     if (typed === null) return;
     if (typed.trim() !== scope) { D.toast("人格名不匹配,已取消", "error"); return; }
     try {
       await D.api(`/api/dash/memory/reset?${personaQuery()}`, { method: "POST", body: { confirm: scope } });
-      D.toast("已重置");
+      D.toast("已清空全部记忆");
       await Promise.all([loadStats(), loadItems()]);
     } catch (error) {
-      D.toast(`重置失败:${error.message}`, "error");
+      D.toast(`清空失败:${error.message}`, "error");
     }
   }
 

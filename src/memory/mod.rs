@@ -48,9 +48,69 @@ pub struct MemoryStore {
     access: MemoryAccess,
     writer_principal: Option<String>,
     writer_display_name: String,
+    /// 写入时盖在行上的会话标记，`reset_session` 按它只清本会话产生的记忆。
+    /// 空串 = 这条写入路径不知道自己属于哪个会话（`miyu memory remember`、
+    /// 后台整理），那些行只能被 `reset_all` 清掉。
+    session_id: String,
     data_db: PathBuf,
     state_db: PathBuf,
     skills_dir: PathBuf,
+}
+
+/// 一次记忆重置删掉了什么，按表分。每个触发面都要把它讲给用户听，所以计数
+/// 留在存储层返回，而不是各面各自再查一遍。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct MemoryResetSummary {
+    pub facts: usize,
+    pub episodes: usize,
+    pub pending_events: usize,
+    pub evicted_turns: usize,
+}
+
+impl MemoryResetSummary {
+    pub fn total(&self) -> usize {
+        self.facts + self.episodes + self.pending_events + self.evicted_turns
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+
+    /// 给用户看的回执。文案只此一份：REPL、CLI、QQ、WebUI 都拿它，免得同一条
+    /// 命令在四个界面上说法不一样。为零的项不列——「事实 0、经历 0」是噪音。
+    pub fn describe(&self) -> String {
+        if self.is_empty() {
+            return crate::i18n::text(
+                "This conversation had not recorded any memory yet.",
+                "本次会话还没有记下什么，没有可清的记忆。",
+            )
+            .to_string();
+        }
+        let zh = crate::i18n::is_zh();
+        let mut parts = Vec::new();
+        for (count, en, zh_label) in [
+            (self.facts, "facts", "事实"),
+            (self.episodes, "episodes", "经历"),
+            (self.pending_events, "pending events", "待整理事件"),
+            (self.evicted_turns, "archived turns", "归档回合"),
+        ] {
+            if count > 0 {
+                parts.push(if zh {
+                    format!("{zh_label} {count}")
+                } else {
+                    format!("{count} {en}")
+                });
+            }
+        }
+        if zh {
+            format!("已清空本次会话记下的记忆：{}。", parts.join("、"))
+        } else {
+            format!(
+                "Erased the memory this conversation produced: {}.",
+                parts.join(", ")
+            )
+        }
+    }
 }
 
 /// Read authorization for one agent run. Storage remains persona-global; this
@@ -270,6 +330,7 @@ impl MemoryStore {
             access: MemoryAccess::Privileged,
             writer_principal: None,
             writer_display_name: String::new(),
+            session_id: String::new(),
             data_db: data_dir.join("memory.db"),
             state_db: state_dir.join("evicted_context.db"),
             skills_dir: config.active_persona_skills_dir(paths),
@@ -307,6 +368,27 @@ impl MemoryStore {
     ) -> Self {
         self.set_request_context(access, writer_principal, writer_display_name);
         self
+    }
+
+    pub(crate) fn set_session_id(&mut self, session_id: impl AsRef<str>) {
+        self.session_id = session_id.as_ref().trim().to_string();
+    }
+
+    pub(crate) fn with_session_id(mut self, session_id: impl AsRef<str>) -> Self {
+        self.set_session_id(session_id);
+        self
+    }
+
+    /// 写入时该盖哪个会话。显式设过就用显式的；没设就问回合的环境会话——
+    /// 工具面的 store 在 `tools::build_registry` 里构造，那条路上没有会话
+    /// 参数可加，而 `remember_fact` 恰恰跑在回合的 task-local 作用域里。
+    fn write_session_id(&self) -> String {
+        if !self.session_id.is_empty() {
+            return self.session_id.clone();
+        }
+        crate::tools::workspace::try_session()
+            .map(|session| session.trim().to_string())
+            .unwrap_or_default()
     }
 
     fn automatic_ownership(&self, origin: &MemoryOrigin) -> MemoryOwnership {

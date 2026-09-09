@@ -298,7 +298,8 @@ async fn wipe_clears_every_local_session_of_the_active_persona() {
         .load_turns()
         .unwrap()
         .is_empty());
-    assert!(!generated_skill.exists());
+    // wipe 只抹记忆和会话:技能是磁盘上的文件,得留着。
+    assert!(generated_skill.exists());
     assert!(!state.manager.lock().unwrap().admin_busy);
 
     state

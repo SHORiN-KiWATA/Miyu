@@ -160,8 +160,9 @@ impl MemoryStore {
         exclude: Option<&AssociationExclusion>,
     ) {
         if let Some(exclude) = exclude {
-            // facts 无 origin 列(origin_session_id 恒空串),天然不命中;
-            // 实际的自回声源=上一轮自动日记(episodes)。
+            // 只过滤 episodes:自回声源就是上一轮的自动日记。facts 09-09
+            // 起也有 origin_session_id(会话级重置要用),但手记的事实是
+            // 模型主动存的知识点,不该因为"这轮刚写过"就被挡在联想之外。
             episodes.retain(|hit| {
                 !(hit.origin_session_id == exclude.session_id && hit.timestamp >= exclude.since)
             });
@@ -366,7 +367,8 @@ impl MemoryStore {
             } else {
                 "NULL"
             },
-            // 自回声排除只针对自动日记;facts 表没有 origin 列。
+            // 自回声排除只针对自动日记,facts 恒喂空串(见
+            // apply_self_echo_exclusion 的注释)。
             if kind == MemoryKind::Diary {
                 "COALESCE(origin_session_id, '')"
             } else {

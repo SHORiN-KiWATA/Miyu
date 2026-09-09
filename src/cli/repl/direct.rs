@@ -658,9 +658,14 @@ pub(in crate::cli) async fn run_direct_repl(
             continue;
         }
         if command.eq_ignore_ascii_case("/reset-memory") {
-            // 不二次确认:只清长期记忆,会话历史/技能/知识库都不动。
+            // 不二次确认:只清本会话记下的那部分,会话历史/技能/知识库都不动。
+            println!("{}", agent.wipe_session_memory()?.describe());
+            continue;
+        }
+        if command.eq_ignore_ascii_case("/reset-all-memory") {
+            // 不二次确认:清的是长期记忆全量,会话历史/技能/知识库仍不动。
             agent.wipe_memory()?;
-            println!("{}", t("long-term memory erased", "长期记忆已清空"));
+            println!("{}", t("all long-term memory erased", "全部长期记忆已清空"));
             continue;
         }
         if command.eq_ignore_ascii_case("/reset") && command_args.trim().is_empty() {

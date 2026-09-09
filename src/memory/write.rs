@@ -32,8 +32,8 @@ impl MemoryStore {
         conn.execute(
             "INSERT INTO facts (
                 content, source, status, confidence, recall_count, created_at, updated_at,
-                visibility, owner_principal, owner_display_name, subjects
-             ) VALUES (?1, ?2, 'active', 1.0, 0, ?3, ?3, ?4, ?5, ?6, ?7)",
+                visibility, owner_principal, owner_display_name, subjects, origin_session_id
+             ) VALUES (?1, ?2, 'active', 1.0, 0, ?3, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 content.trim(),
                 source.trim(),
@@ -42,6 +42,7 @@ impl MemoryStore {
                 ownership.owner_principal,
                 ownership.owner_display_name,
                 subjects,
+                self.write_session_id(),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -57,8 +58,15 @@ impl MemoryStore {
         }
         self.init()?;
         self.data_conn()?.execute(
-            "INSERT INTO pending_events (user_message, assistant_message, created_at) VALUES (?1, ?2, ?3)",
-            params![user_message.trim(), assistant_message.trim(), now()],
+            "INSERT INTO pending_events (
+                user_message, assistant_message, created_at, origin_session_id
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                user_message.trim(),
+                assistant_message.trim(),
+                now(),
+                self.write_session_id(),
+            ],
         )?;
         Ok(())
     }
@@ -180,6 +188,54 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// 只清掉本会话产生的记忆。改动之前存下的旧行没有会话标记
+    /// (`origin_session_id` 为空串),不会被这里删掉——那些只能走 `reset_all`。
+    ///
+    /// 空 id 直接报错而不是当成"清空标记的行":那批正是全部历史遗留数据,
+    /// 静默清掉它们等于把 `reset_all` 伪装成会话级重置。
+    pub fn reset_session(&self, session_id: &str) -> Result<MemoryResetSummary> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            bail!("session-scoped memory reset needs a session id");
+        }
+        self.init()?;
+        let mut data = self.data_conn()?;
+        let tx = data.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE memory_meta SET generation=generation+1 WHERE id=1",
+            [],
+        )?;
+        // 向量按 (kind, id) 挂在行上,没有触发器跟着删。行走了它还在,而 id
+        // 是自增的,迟早被新行撞上并读回一段别人的语义。kind 字面量与
+        // `semantic::kind_name` 同源。
+        tx.execute(
+            "DELETE FROM memory_embeddings
+              WHERE (kind='fact' AND id IN (SELECT id FROM facts WHERE origin_session_id=?1))
+                 OR (kind='episode' AND id IN (SELECT id FROM episodes WHERE origin_session_id=?1))",
+            params![session_id],
+        )?;
+        let facts = tx.execute(
+            "DELETE FROM facts WHERE origin_session_id=?1",
+            params![session_id],
+        )?;
+        let episodes = tx.execute(
+            "DELETE FROM episodes WHERE origin_session_id=?1",
+            params![session_id],
+        )?;
+        let pending_events = tx.execute(
+            "DELETE FROM pending_events WHERE origin_session_id=?1",
+            params![session_id],
+        )?;
+        tx.commit()?;
+        let evicted_turns = self.clear_session_evicted_context(session_id)?;
+        Ok(MemoryResetSummary {
+            facts,
+            episodes,
+            pending_events,
+            evicted_turns,
+        })
+    }
+
     pub(crate) fn remove_auto_skills(&self) -> Result<()> {
         if !self.skills_dir.exists() {
             return Ok(());
@@ -205,7 +261,8 @@ impl MemoryStore {
         self.init()?;
         let conn = self.data_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, user_message, assistant_message, created_at FROM pending_events WHERE processed_at IS NULL ORDER BY id LIMIT 20",
+            "SELECT id, user_message, assistant_message, created_at, origin_session_id
+               FROM pending_events WHERE processed_at IS NULL ORDER BY id LIMIT 20",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -213,20 +270,31 @@ impl MemoryStore {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?;
         for row in rows {
-            let (id, user, assistant, created_at) = row?;
+            let (id, user, assistant, created_at, origin_session_id) = row?;
             let content = diary_content(&created_at, &user, &assistant);
             let expires_at = (Utc::now()
                 + ChronoDuration::days(self.config.short_diary_retention_days as i64))
             .to_rfc3339();
+            // 会话标记跟着待处理事件走,不取当前环境:消化是后台批处理,
+            // 此刻的"当前会话"跟这条事件的来源没有关系。
             conn.execute(
                 "INSERT INTO episodes (
                     content, source, status, recall_count, created_at, updated_at,
-                    retention, user_message, assistant_message, expires_at
-                 ) VALUES (?1, 'episode', 'active', 0, ?2, ?2, ?3, ?4, ?5, ?6)",
-                params![content, created_at, SHORT_TERM, user, assistant, expires_at],
+                    retention, user_message, assistant_message, expires_at, origin_session_id
+                 ) VALUES (?1, 'episode', 'active', 0, ?2, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    content,
+                    created_at,
+                    SHORT_TERM,
+                    user,
+                    assistant,
+                    expires_at,
+                    origin_session_id,
+                ],
             )?;
             conn.execute(
                 "UPDATE pending_events SET processed_at=?1 WHERE id=?2",
@@ -404,9 +472,10 @@ impl MemoryStore {
                                 content, source, status, confidence, strength, recall_count,
                                 created_at, updated_at, memory_type, truth_status, importance,
                                 tags, source_episode_ids,
-                                visibility, owner_principal, owner_display_name, subjects
+                                visibility, owner_principal, owner_display_name, subjects,
+                                origin_session_id
                              ) SELECT ?1, 'diary-organizer', 'active', ?2, 1.0, 0,
-                                      ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+                                      ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
                                WHERE NOT EXISTS (
                                     SELECT 1 FROM facts
                                      WHERE content=?1 AND truth_status!='rejected'
@@ -425,6 +494,7 @@ impl MemoryStore {
                                 ownership.owner_principal,
                                 ownership.owner_display_name,
                                 subjects,
+                                organized_session_id(batch, &action.diary_ids),
                             ],
                         )?;
                     }
@@ -502,9 +572,10 @@ impl MemoryStore {
                     content, source, status, strength, recall_count, created_at, updated_at,
                     retention, consolidated_at, importance, confidence, tags,
                     source_episode_ids, source_key,
-                    visibility, owner_principal, owner_display_name, subjects
+                    visibility, owner_principal, owner_display_name, subjects,
+                    origin_session_id
                  ) VALUES (?1, 'diary-organizer', 'active', 1.0, 0, ?2, ?2,
-                           ?3, ?2, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                           ?3, ?2, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     diary.content.trim(),
                     timestamp,
@@ -518,6 +589,7 @@ impl MemoryStore {
                     ownership.owner_principal,
                     ownership.owner_display_name,
                     subjects,
+                    organized_session_id(batch, &diary.diary_ids),
                 ],
             )?;
         }

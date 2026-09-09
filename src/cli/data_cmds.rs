@@ -30,6 +30,9 @@ pub enum MemoryCommand {
 pub struct MemoryResetArgs {
     #[arg(long)]
     pub include_skills: bool,
+    /// 只清这个会话记下的记忆(默认清当前人格的全部)
+    #[arg(long, value_name = "ID", conflicts_with = "include_skills")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -228,10 +231,13 @@ pub(in crate::cli) fn run_memory(paths: &MiyuPaths, args: MemoryArgs) -> Result<
     let store = MemoryStore::new(&config, paths);
     match args.command {
         MemoryCommand::Stats => println!("{}", store.stats()?),
-        MemoryCommand::Reset(args) => {
-            store.reset_all(args.include_skills)?;
-            println!("{}", t("cleared assistant memory", "已清空助手记忆"));
-        }
+        MemoryCommand::Reset(args) => match args.session.as_deref() {
+            Some(session_id) => println!("{}", store.reset_session(session_id)?.describe()),
+            None => {
+                store.reset_all(args.include_skills)?;
+                println!("{}", t("cleared assistant memory", "已清空助手记忆"));
+            }
+        },
         MemoryCommand::Search(args) => {
             let query = join_message(args.query);
             let limit = args.limit.unwrap_or(10);

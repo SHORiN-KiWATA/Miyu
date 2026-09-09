@@ -317,6 +317,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
         Some(Command::Memory(args)) => run_memory(&paths, args),
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::ResetMemoryCli) => run_reset_memory_command(&paths).await,
+        Some(Command::ResetAllMemoryCli) => run_reset_all_memory_command(&paths).await,
         Some(Command::Reset(args)) => {
             if let Some(target) = args.session.as_deref().or(session_arg.as_deref()) {
                 let entry = turn_request::resolve_managed_session(&paths, target).await?;

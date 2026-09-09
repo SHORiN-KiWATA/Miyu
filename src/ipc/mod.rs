@@ -409,6 +409,32 @@ mod tests {
         assert_eq!(value["state"]["cumulative_tokens"], 34);
     }
 
+    /// 老客户端的 `reset_memory` 帧里没有 `scope` 字段，而它当年的语义是
+    /// 全清。默认值必须落在 `All` 上——落在 `Session` 上就是升级 daemon 之后
+    /// 老命令悄悄改了行为。
+    #[test]
+    fn a_reset_memory_frame_without_a_scope_still_means_wipe_everything() {
+        let command: Command =
+            serde_json::from_value(serde_json::json!({ "command": "reset_memory", "mode": null }))
+                .unwrap();
+        let Command::ResetMemory { scope, session, .. } = command else {
+            panic!("expected a reset_memory command");
+        };
+        assert_eq!(scope, MemoryResetScope::All);
+        assert!(session.is_none());
+
+        let value = serde_json::to_value(Request::new(Command::ResetMemory {
+            mode: None,
+            scope: MemoryResetScope::Session,
+            session: Some(SessionRef::Id {
+                id: "sess_local".to_string(),
+            }),
+        }))
+        .unwrap();
+        assert_eq!(value["scope"], "session");
+        assert_eq!(value["session"]["id"], "sess_local");
+    }
+
     #[test]
     fn parses_protocol_version_from_daemon_rejection() {
         assert_eq!(

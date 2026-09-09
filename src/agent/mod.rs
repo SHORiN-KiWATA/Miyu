@@ -46,7 +46,9 @@ use crate::llm::{
     ChatContent, ChatContentPart, ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind,
     ImageUrlContent, OpenAiCompatibleClient, ToolCall, ToolCallFunction, TurnTokens, Usage,
 };
-use crate::memory::{EvictedTurn, MemoryAccess, MemoryOrganizerHandle, MemoryOrigin, MemoryStore};
+use crate::memory::{
+    EvictedTurn, MemoryAccess, MemoryOrganizerHandle, MemoryOrigin, MemoryResetSummary, MemoryStore,
+};
 use crate::paths::MiyuPaths;
 use crate::persona_hint;
 use crate::platforms::{PlatformContextFileRef, PlatformContextImageRef, PlatformTurnContext};
@@ -327,20 +329,26 @@ struct GroupTaskOutput {
 }
 
 impl Agent {
-    /// /reset-memory:清空本模式人格的长期记忆(会话历史/技能不动),
+    /// /reset-all-memory:清空本模式人格的长期记忆(会话历史/技能不动),
     /// 然后重建句柄。dev 作用域由构造期的 dev_scoped 配置自动继承。
     pub fn wipe_memory(&mut self) -> Result<()> {
         self.memory.reset_all(false)?;
         self.reset_memory()
     }
 
+    /// /reset-memory:只清本会话产生的那部分记忆。改动之前存下的旧行没有
+    /// 会话标记,只能走 `wipe_memory`。
+    pub fn wipe_session_memory(&mut self) -> Result<MemoryResetSummary> {
+        let summary = self.memory.reset_session(&self.memory_origin.session_id)?;
+        self.reset_memory()?;
+        Ok(summary)
+    }
+
     pub fn reset_memory(&mut self) -> Result<()> {
         let (access, writer_principal, writer_display_name) = self.memory.request_context();
-        self.memory = MemoryStore::new(&self.config, &self.paths).with_request_context(
-            access,
-            writer_principal,
-            writer_display_name,
-        );
+        self.memory = MemoryStore::new(&self.config, &self.paths)
+            .with_request_context(access, writer_principal, writer_display_name)
+            .with_session_id(&self.memory_origin.session_id);
         self.memory.init()?;
         (self.memory_database_id, self.memory_generation) = self.memory.identity()?;
         Ok(())

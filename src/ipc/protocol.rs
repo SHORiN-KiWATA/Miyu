@@ -36,6 +36,17 @@ pub struct SessionState {
     pub workspace: Option<String>,
 }
 
+/// 记忆重置的范围。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryResetScope {
+    /// 只清本会话产生的记忆。
+    Session,
+    /// 清这个人格的全部长期记忆。
+    #[default]
+    All,
+}
+
 /// Reference to a chat session in IPC commands.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -135,9 +146,17 @@ pub enum Command {
     /// 只清长期记忆(事实/日记/经历/待处理事件与外溢上下文存档),会话
     /// 历史与技能不动。`mode: "dev"` 清开发模式的独立记忆命名空间,
     /// 缺省清当前人格。不可逆,前端须先确认。
+    ///
+    /// `scope` 缺省 `All`:老客户端发不出这个字段,而它当年的语义就是全清,
+    /// 默认值必须与那个语义一致,否则升级 daemon 会静默改掉旧命令的行为。
     ResetMemory {
         #[serde(default)]
         mode: Option<String>,
+        #[serde(default)]
+        scope: MemoryResetScope,
+        /// 会话级重置清哪个会话;缺省用 daemon 当前指针指向的那个。
+        #[serde(default)]
+        session: Option<SessionRef>,
     },
     /// 出网请求录制开关(进程级,重启即关)。开着时每个 LLM 请求的完整
     /// 序列化体追加到 logs/requests-<日期>.jsonl,供审计注入内容。

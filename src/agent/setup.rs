@@ -70,10 +70,12 @@ impl Agent {
         } else {
             persona_hint::load_dialogs(&config, paths, &config.active_persona_scope())
         };
-        let memory = MemoryStore::new(&config, paths);
+        // 会话标记与 memory_origin 同源:日记记的和事实记的必须是同一个
+        // 会话,否则会话级重置只清得掉一半。
+        let memory_origin = MemoryOrigin::local(state.session_id().to_string());
+        let memory = MemoryStore::new(&config, paths).with_session_id(&memory_origin.session_id);
         memory.init()?;
         let (memory_database_id, memory_generation) = memory.identity()?;
-        let memory_origin = MemoryOrigin::local(state.session_id().to_string());
         let on_overflow = config.context.on_overflow.clone();
         Ok(Self {
             state,
@@ -304,6 +306,7 @@ impl Agent {
     }
 
     pub(crate) fn set_memory_origin(&mut self, origin: MemoryOrigin) {
+        self.memory.set_session_id(&origin.session_id);
         self.memory_origin = origin;
     }
 
@@ -473,11 +476,9 @@ impl Agent {
         self.trim_batch_ratio = self.config.context.trim_batch_ratio;
         self.on_overflow = self.config.context.on_overflow.clone();
         let (access, writer_principal, writer_display_name) = self.memory.request_context();
-        self.memory = MemoryStore::new(&self.config, &self.paths).with_request_context(
-            access,
-            writer_principal,
-            writer_display_name,
-        );
+        self.memory = MemoryStore::new(&self.config, &self.paths)
+            .with_request_context(access, writer_principal, writer_display_name)
+            .with_session_id(&self.memory_origin.session_id);
         self.memory.init()?;
         (self.memory_database_id, self.memory_generation) = self.memory.identity()?;
         self.refresh_preset_dialogs();
