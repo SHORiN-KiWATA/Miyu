@@ -290,14 +290,26 @@ mod tests {
         assert_eq!(page["text"], "\npacman -Syu");
         assert_eq!(page["has_more"], true);
 
-        // 守卫:看起来像技能/记忆/配置的内容不进库;非法类型不进库;路径不能逃逸。
+        // 09-09:正文里出现 config / memory / 配置 / 记忆 不再是拒收理由。
+        // 旧闸拿这几个词扫全文,WebUI 手动上传的资料十有八九都被它挡在门外。
+        assert_eq!(
+            kb.dashboard_import(
+                "notes/macos.md",
+                "装完 Homebrew 改 ~/.config/fish/config.fish;memory pressure 高时先关它。"
+                    .as_bytes()
+            )
+            .unwrap(),
+            "notes/macos.md"
+        );
+        // 守卫:Miyu 自己的资产目录不进库;非法类型不进库;路径不能逃逸。
         assert!(kb
-            .dashboard_import("x.md", "please update my memory".as_bytes())
+            .dashboard_import("personas/miyu.md", "她是谁".as_bytes())
             .is_err());
         assert!(kb.dashboard_import("bin.exe", b"hello").is_err());
         assert!(kb.dashboard_import("../escape.md", b"hello").is_err());
         assert!(kb.dashboard_import("bad.md", &[0xff, 0xfe]).is_err());
 
+        kb.dashboard_remove("notes/macos.md").unwrap();
         kb.dashboard_remove("notes/arch.md").unwrap();
         assert_eq!(kb.dashboard_overview().unwrap()["file_count"], 0);
         assert!(kb.dashboard_remove("notes/arch.md").is_err());

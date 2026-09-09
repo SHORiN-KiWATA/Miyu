@@ -402,12 +402,17 @@ impl KnowledgeBase {
     pub(in crate::tools) fn safe_file_path(&self, rel: &str) -> Result<PathBuf> {
         let rel = normalize_relative_path(rel)?;
         let path = self.files_dir.join(&rel);
+        let parent = path.parent().unwrap_or(&self.files_dir);
+        // 两个目录都建好之后再取真实路径。基准目录还不存在时 canonicalize 会
+        // 失败、退回未解析的原始路径,而 parent 那边解析成功——于是路径里只要
+        // 有一层符号链接,两边就对不上,第一次往新库写文件必然报「逃出目录」。
+        // macOS 的 /tmp→/private/tmp、/var→/private/var 是现成的踩法。
+        std::fs::create_dir_all(&self.files_dir)?;
+        std::fs::create_dir_all(parent)?;
         let base = self
             .files_dir
             .canonicalize()
             .unwrap_or_else(|_| self.files_dir.clone());
-        let parent = path.parent().unwrap_or(&self.files_dir);
-        std::fs::create_dir_all(parent)?;
         let resolved_parent = parent.canonicalize()?;
         if !resolved_parent.starts_with(&base) {
             bail!("knowledge base path escapes files dir")

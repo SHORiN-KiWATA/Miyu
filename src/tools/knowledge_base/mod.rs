@@ -221,6 +221,93 @@ mod tests {
     use super::*;
     use crate::paths::MiyuPaths;
 
+    #[test]
+    fn upload_guard_only_blocks_miyu_own_assets() {
+        // 正经资料照收。退回这个提交之前,这四篇全被挡在门外——正文里出现
+        // config / memory / 配置 / 记忆 就够了。
+        for (name, body) in [
+            ("arch/fcitx5.md", "编辑 ~/.config/fcitx5/config 之后重启。"),
+            ("linux/mm.md", "The kernel reclaims memory under pressure."),
+            ("notes/prompt-engineering.md", "写 prompt 的几条经验。"),
+            ("wiki/记忆宫殿.md", "记忆宫殿的用法。"),
+        ] {
+            reject_non_kb_upload(body, "", name)
+                .unwrap_or_else(|error| panic!("{name} should be accepted: {error}"));
+        }
+
+        // Miyu 自己的资产仍然挡下。
+        for name in [
+            "skills/my-skill/SKILL.md",
+            "personas/miyu/persona.md",
+            "config.toml",
+        ] {
+            assert!(
+                reject_non_kb_upload("正文", "", name).is_err(),
+                "{name} should be refused"
+            );
+        }
+        assert!(reject_non_kb_upload(
+            "---\nname: helper\ndescription: x\nmetadata:\n  miyu.generated: \"true\"\n---\n",
+            "",
+            "notes/helper.md"
+        )
+        .is_err());
+    }
+
+    /// 09-09 排查留桩：知识库不按人格分库，也不按人格改工具面。
+    ///
+    /// 用户转来的报告是「新人格使用创建知识库和加载知识库功能会报错」。同一份
+    /// 配置只改 `active_persona`，两侧必须拿到同一套知识库工具、同一个库根，
+    /// 写入与检索也走通——真正拦住那位用户的是 `reject_non_kb_upload` 的旧闸
+    /// （扫全文关键词），不是人格。09-01 那次「内置资源绑出厂人格」只门控了
+    /// 内置技能与内置脚本，这条断言把知识库钉在门外。
+    #[tokio::test]
+    async fn knowledge_base_is_not_scoped_by_persona() {
+        let mut roots = Vec::new();
+        for persona in ["", "自定义人格.md"] {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = test_paths(temp.path());
+            std::fs::create_dir_all(&paths.config_dir).unwrap();
+            let mut config = AppConfig::default();
+            config.plugins.knowledge_base.embedding_enabled = false;
+            config.prompt.active_persona = persona.to_string();
+
+            let registry = crate::tools::build_tool_registry(
+                &config,
+                &paths,
+                crate::agent::AgentMode::Normal,
+                false,
+            )
+            .unwrap_or_else(|error| panic!("registry build failed for {persona:?}: {error:#}"));
+            for tool in ["kb", "search_knowledge_base", "read"] {
+                assert!(registry.contains(tool), "{persona:?} lost {tool}");
+            }
+
+            registry
+                .call(
+                    "kb",
+                    "{\"patchText\":\"*** Begin Patch\\n*** Add File: kb:notes/a.md\\n+hello world\\n*** End Patch\\n\"}",
+                )
+                .await
+                .unwrap_or_else(|error| panic!("kb write failed for {persona:?}: {error:#}"));
+            let found = registry
+                .call("search_knowledge_base", "{\"query\":\"hello\"}")
+                .await
+                .unwrap_or_else(|error| panic!("search failed for {persona:?}: {error:#}"));
+            assert!(found.contains("notes/a.md"), "{persona:?}: {found}");
+
+            roots.push(
+                KnowledgeBase::new(config, paths.clone())
+                    .unwrap()
+                    .dashboard_root()
+                    .strip_prefix(temp.path())
+                    .unwrap()
+                    .to_path_buf(),
+            );
+        }
+        assert_eq!(roots[0], roots[1], "库根跟着人格走了");
+    }
+
     pub(super) fn test_paths(root: &Path) -> MiyuPaths {
         MiyuPaths {
             root_dir: root.to_path_buf(),
