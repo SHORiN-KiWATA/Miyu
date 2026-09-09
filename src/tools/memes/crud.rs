@@ -14,8 +14,10 @@ pub(crate) enum MemeCollectionOutcome {
     AlreadyExists { meme: MemeRef },
 }
 
+/// 这几个结构体刻意不加 `deny_unknown_fields`:多出来的字段既不会让判定变错,
+/// 却会让整次入库炸在解析上(`avoid` 就是这么撞出来的)。缺字段照样会被 serde
+/// 挡下,真正的把关在 validate_classification。
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct MemeClassification {
     pub(crate) save: bool,
     pub(crate) confidence: u8,
@@ -24,9 +26,7 @@ pub(crate) struct MemeClassification {
     pub(crate) name: LocalizedName,
     pub(crate) description: String,
     pub(crate) usage: String,
-    /// 已废弃, 只为兼容而保留: 本结构体是 deny_unknown_fields, 提示词虽然不再
-    /// 要求 avoid, 但描述模型仍可能习惯性吐出来 —— 没有这个字段接住, 整个入库
-    /// 会解析失败, 且是静默的。收下即丢, 不进 MemeItem。
+    /// 已废弃, 提示词早就不要它了, 但描述模型仍会习惯性吐出来。收下即丢。
     #[serde(default)]
     pub(crate) avoid: String,
     pub(crate) tags: Vec<String>,
@@ -36,7 +36,6 @@ pub(crate) struct MemeClassification {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct PositiveGates {
     pub(crate) chat_reaction: bool,
     pub(crate) emotion_or_meme: bool,
@@ -48,7 +47,6 @@ pub(crate) struct PositiveGates {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RiskGates {
     pub(crate) ordinary_photo: bool,
     pub(crate) informational_content: bool,
@@ -318,10 +316,46 @@ pub(crate) async fn classify_meme_image(
         )
     };
     let text = vision::analyze_local_image_with_prompt(config, paths, image, &prompt).await?;
-    let classification: MemeClassification = serde_json::from_str(text.trim())
-        .context("vision response was not the strict meme schema")?;
+    let classification = parse_meme_classification(&text)?;
     validate_classification(&classification)?;
     Ok(classification)
+}
+
+/// 识图模型十有八九会把 JSON 裹进 ```json 围栏,或者先说一句"好的,分析如下"
+/// —— 提示词里的 schema 示例本身就是围栏写法,等于在教它这么答。直解失败就
+/// 从正文里抠出第一个完整对象再试一次,和 memory organizer / affection 那几处
+/// 同构(全仓库只有这里漏了这层兜底)。
+///
+/// 报错必须带上 serde 的原话和响应开头:光一句"不是严格 schema"谁也定位不了
+/// 是围栏、是少字段、还是模型压根在拒答。
+pub(crate) fn parse_meme_classification(text: &str) -> Result<MemeClassification> {
+    let trimmed = text.trim();
+    let direct = match serde_json::from_str::<MemeClassification>(trimmed) {
+        Ok(classification) => return Ok(classification),
+        Err(error) => error,
+    };
+    let Some(extracted) = crate::json_extract::extract_json_object(trimmed) else {
+        bail!(
+            "vision response was not the strict meme schema ({direct}); response began: {}",
+            meme_response_excerpt(trimmed)
+        );
+    };
+    serde_json::from_str(extracted).map_err(|error| {
+        anyhow!(
+            "vision response was not the strict meme schema ({error}); response began: {}",
+            meme_response_excerpt(trimmed)
+        )
+    })
+}
+
+fn meme_response_excerpt(text: &str) -> String {
+    let excerpt: String = text.chars().take(200).collect();
+    let excerpt = excerpt.replace('\n', " ");
+    if text.chars().count() > 200 {
+        format!("{excerpt}…")
+    } else {
+        excerpt
+    }
 }
 
 pub(crate) async fn collect_meme_from_local_image(
