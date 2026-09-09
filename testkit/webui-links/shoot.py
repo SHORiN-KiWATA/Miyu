@@ -79,6 +79,31 @@ CARD_PROBE = """
 }))
 """
 
+USER_BUBBLE_PROBE = """
+() => {
+  const bubble = document.querySelector(".user-message .user-bubble");
+  if (!bubble) return { codeBlocks: -1, hasFence: true, inlineCodes: 0, links: [], codeText: "" };
+  return {
+    codeBlocks: bubble.querySelectorAll(".code-block").length,
+    hasFence: bubble.textContent.includes("```"),
+    inlineCodes: bubble.querySelectorAll("p > code").length,
+    links: Array.from(bubble.querySelectorAll("a")).map((a) => a.href),
+    codeText: bubble.querySelector(".code-block pre code")?.textContent || "",
+  };
+}
+"""
+
+ATTACHMENT_ICON_PROBE = """
+() => {
+  const out = {};
+  for (const chip of document.querySelectorAll(".user-attachment-file")) {
+    const name = chip.querySelector("strong")?.textContent || "?";
+    out[name] = chip.querySelector(".icon-slot")?.dataset.icon || "?";
+  }
+  return out;
+}
+"""
+
 REASONING_PROBE = """
 () => {
   const title = document.querySelector('.assistant-content .reasoning-title');
@@ -168,6 +193,27 @@ def main():
             " return b.scrollWidth - b.clientWidth; }")
         check("正文没有横向溢出", overflow <= 1, f"{overflow}px")
         shot(page, "02-linkcards")
+
+        # ── 自己发的消息：代码块 + 行内代码 + 可点链接 ─────────
+        mine = page.evaluate(USER_BUBBLE_PROBE)
+        check("自己发的代码块被渲染成代码块", mine["codeBlocks"] == 1,
+              f"{mine['codeBlocks']} 个；正文里还剩 ``` 字面量：{mine['hasFence']}")
+        check("正文里不再出现 ``` 字面量", mine["hasFence"] is False)
+        check("行内代码有独立节点", mine["inlineCodes"] >= 1, str(mine["inlineCodes"]))
+        check("自己发的链接可点", mine["links"] == ["https://wiki.archlinux.org/title/Fcitx5"],
+              str(mine["links"]))
+        check("代码块内容一字未改", mine["codeText"] == "miyu kb embed reindex --quiet",
+              repr(mine["codeText"]))
+        shot(page, "07-user-message")
+
+        # ── 附件图标按类型分 ────────────────────────────────
+        icons = page.evaluate(ATTACHMENT_ICON_PROBE)
+        check("文本附件和视频附件的图标不一样",
+              icons.get("todolist.md") != icons.get("clip.mp4"),
+              str(icons))
+        check("视频附件用视频图标", icons.get("clip.mp4") == "file-video", str(icons))
+        check("markdown 附件用 markdown 图标", icons.get("todolist.md") == "file-markdown",
+              str(icons))
 
         # ── 第六项：附件预览 ────────────────────────────────
         chip = page.query_selector(".user-attachment-file.is-previewable")

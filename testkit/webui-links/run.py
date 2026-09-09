@@ -215,7 +215,12 @@ def main():
 
         print("· 发一轮对话（桩模型，不花额度）")
         api("/api/turns", {
-            "content": "LINKTEST 随意发几个网站链接。",
+            "content": (
+                "LINKTEST 随意发几个网站链接。顺便看看我这段：\n\n"
+                "```sh\nmiyu kb embed reindex --quiet\n```\n\n"
+                "行内 `cargo fmt` 也该有底色，这个地址要能点："
+                "https://wiki.archlinux.org/title/Fcitx5"
+            ),
             "session_id": session_id,
             "attachment_ids": [a for a in (attachment, clip) if a],
         }, "POST")

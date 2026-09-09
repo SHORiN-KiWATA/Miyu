@@ -1474,6 +1474,48 @@ body[data-theme="graphite"] .session-unread-dot {
   line-height: 1.7;
 }
 
+/* 自己发的消息里只会出现三样东西:段落、代码块、链接。段落之间要有气口,
+   代码块贴着气泡边会闷。 */
+.user-bubble > * + * {
+  margin-top: 9px;
+}
+
+.user-bubble .code-block {
+  /* 气泡本身是强调色底,代码块得自己压出一层对比,不能用全局的 --code-bg
+     (那是给浅色正文准备的,叠在紫底上会糊)。 */
+  margin: 0;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 26%);
+  color: inherit;
+  white-space: normal;
+}
+
+.user-bubble .code-block .code-toolbar {
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.user-bubble .code-block pre {
+  max-height: 320px;
+}
+
+.user-bubble > p > code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 22%);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.user-bubble a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
 .revision-editor {
   display: grid;
   width: min(86%, 640px);
@@ -8224,8 +8266,37 @@ body.miyu-paused *::after {
   padding: 10px 16px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-1);
   font-size: var(--fs-ui);
 }
-.dash-inline-main { font-weight: 600; }
+.dash-inline-main { font-weight: 600; white-space: nowrap; }
 .dash-inline-card .dash-button { margin-left: auto; }
+/* 紧凑版:一行装下,中段文字截断而不是换行。整条换行之后按钮独占一行,看着
+   像一根进度条(09-09 用户反馈内置库那条「占地方太大」)。 */
+.dash-inline-card.is-tight {
+  flex-wrap: nowrap;
+  gap: 10px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+}
+.dash-inline-card.is-tight .dash-cell-muted {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-inline-card.is-tight .dash-chip {
+  /* 「上次失败:…」可以很长,给它一个上限,别把整行推歪。 */
+  max-width: 18em;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-inline-card.is-tight .dash-chip.is-builtin { flex: none; }
+.dash-button.is-slim { padding: 4px 10px; }
+@media (max-width: 700px) {
+  .dash-inline-card.is-tight { flex-wrap: wrap; }
+  .dash-inline-card.is-tight .dash-cell-muted { flex-basis: 100%; }
+}
 .dash-split { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.2fr); gap: 16px; align-items: start; }
 @media (max-width: 900px) { .dash-split { grid-template-columns: 1fr; } }
 .dash-tree-pane, .dash-main-pane {
@@ -8851,8 +8922,10 @@ body.miyu-paused *::after {
 }
 
 /* ── 批量选择(09-04):表情包选择模式、记忆/知识库勾选列、批量操作条 ── */
-.dash-bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, var(--surface-1)); box-shadow: var(--card-shadow); animation: dash-fade-up .22s ease-out both; }
-.dash-bulk-bar strong { font-size: var(--fs-ui); }
+.dash-bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, var(--surface-1)); box-shadow: var(--card-shadow); animation: dash-fade-up .22s ease-out both; }
+.dash-bulk-bar strong { flex: none; font-size: var(--fs-ui); }
+/* 按钮成组:窄了整组换行,不会散成三行。margin-left:auto 让宽容器里仍然右对齐。 */
+.dash-bulk-actions { display: flex; flex-wrap: wrap; align-items: center; margin-left: auto; gap: 8px; }
 .dash-bulk-spacer { flex: 1 1 auto; }
 .dash-row-check { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .dash-cell-check { justify-content: center; padding: 0 !important; }
@@ -8947,3 +9020,22 @@ body.miyu-paused *::after {
 /* 上传结果里的理由是服务端原话,可以很长(守卫那句拒绝有 100 多字符)。让它跟
    文件名争宽度而不是把整行撑出记录框;全文在 title 上。 */
 .dash-upload-list .dash-chip { flex: 0 1 auto; min-width: 0; max-width: 62%; overflow: hidden; text-overflow: ellipsis; }
+
+/* 重建卡的进度条:只在真跑着且知道总数时才出现,所以它不是常驻元素——
+   高度与 .todo-progress 对齐(3px + 圆角),颜色用 accent 而不是 text-soft,
+   因为它代表「正在发生的事」而不是「已完成比例的静态展示」。 */
+.dash-card-progress {
+  overflow: hidden;
+  height: 3px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.dash-card-progress > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms ease;
+}

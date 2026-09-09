@@ -21,6 +21,7 @@
     collapsed: new Set(),
     uploading: false,
     reindexTimer: null,
+    reindexMisses: 0,
     updateTimer: null,
     loadSeq: 0
   };
@@ -133,19 +134,49 @@
     }
   }
 
+  /* 重建卡的四态:陈旧锁 / 正在跑 / 上次失败 / 空闲。
+     以前只有前两态加一个「空闲」,失败和「跑完但一个都没嵌上」都长成空闲的样子。 */
+  function reindexCard(r) {
+    if (r.stale_lock) {
+      return { label: "重建", value: "锁陈旧", hint: `锁已 ${Math.round((r.lock_age_secs || 0) / 60)} 分钟` };
+    }
+    if (r.running) {
+      const value = r.total > 0 ? `${Math.min(100, Math.round((r.done / r.total) * 100))}%` : "进行中";
+      const where = r.current ? ` · ${r.current.split("/").pop()}` : "";
+      const hint = r.total > 0 ? `${r.done}/${r.total} 个文件${where}`
+        : (r.phase === "starting" ? "正在启动…" : "统计文件中…");
+      return { label: "重建", value, hint };
+    }
+    if (r.last_error) return { label: "重建", value: "上次失败", hint: `上次重建失败:${firstLine(r.last_error)}` };
+    if (r.failed > 0) return { label: "重建", value: "空闲", hint: `上次有 ${r.failed} 个文件没能嵌入:${firstLine(r.last_file_error || "")}` };
+    return { label: "重建", value: "空闲", hint: r.configured ? "可以重建" : "嵌入未配置,不会重建" };
+  }
+
+  function firstLine(text) {
+    const line = String(text || "").split("\n").find((part) => part.trim()) || "";
+    return line.length > 90 ? `${line.slice(0, 90)}…` : line;
+  }
+
   function renderCards() {
     const o = state.overview;
-    const embed = o.embedding_enabled ? (o.embedding_model ? `${o.embedding_provider_id} / ${o.embedding_model}` : "未配置模型") : "已关闭";
+    // 和重建卡用同一个判断(后端给的 embedding_configured),否则同一屏会自相矛盾。
+    const embed = !o.embedding_enabled ? "已关闭"
+      : o.embedding_configured ? `嵌入:${o.embedding_model_id}` : "嵌入:未配置模型";
     const r = o.reindex || {};
-    const reindexValue = r.running ? "进行中" : (r.stale_lock ? "锁陈旧" : "空闲");
     const cards = D.statCards([
       { label: "文件", value: o.file_count, hint: `内置 ${o.files.filter((f) => f.builtin).length} · 自有 ${o.files.filter((f) => !f.builtin).length}` },
       { label: "总大小", value: bytes(o.total_size_bytes), hint: `单文件上限 ${o.max_file_size_kb} KB` },
-      { label: "语义块", value: o.semantic_chunks, hint: `嵌入:${embed}` },
+      { label: "语义块", value: o.semantic_chunks, hint: embed },
       { label: "待重建", value: o.stale_files + o.unindexed_files, hint: `陈旧 ${o.stale_files} · 未索引 ${o.unindexed_files}` },
-      { label: "重建", value: reindexValue, hint: r.stale_lock ? `锁已 ${Math.round((r.lock_age_secs || 0) / 60)} 分钟` : (r.configured ? "嵌入已配置" : "嵌入未配置,不会重建") }
+      reindexCard(r)
     ]);
     const last = cards.lastElementChild;
+    // 进度条只在真跑着、且知道总数时出现;不知道总数就别画一根假的。
+    if (r.running && r.total > 0) {
+      const fill = D.el("i");
+      fill.style.width = `${Math.min(100, Math.round((r.done / r.total) * 100))}%`;
+      last.append(D.el("div.dash-card-progress", null, fill));
+    }
     const actions = D.el("div.dash-card-actions");
     if (r.stale_lock) {
       actions.append(D.el("button.dash-button", { type: "button", text: "清理陈旧锁", onclick: unlockReindex }));
@@ -155,6 +186,11 @@
       actions.append(button);
     }
     last.append(actions);
+    // 报错在卡片里必然被截断,完整原文挂 title(日志路径也在里面)。
+    const hint = last.querySelector(".dash-card-hint");
+    if (hint && (r.last_error || r.last_file_error)) {
+      hint.title = [r.last_error, r.last_file_error, r.log_path && `日志:${r.log_path}`].filter(Boolean).join("\n");
+    }
     ui.cards.replaceChildren(cards);
     if (!o.enabled) ui.cards.prepend(D.el("p.dash-banner", { text: "知识库插件在配置里是关闭的:模型用不到它,面板仍可查看与整理文件。" }));
   }
@@ -177,12 +213,20 @@
     const status = task.running ? task.stage || "进行中…"
       : task.error ? `上次失败:${task.error}`
         : s.update_available ? "有可用更新" : "已是最新";
-    const button = D.el("button.dash-button", { type: "button", text: task.running ? "更新中…" : "从上游更新", onclick: startUpdate });
+    const button = D.el("button.dash-button.is-slim", { type: "button", text: task.running ? "更新中…" : "更新", onclick: startUpdate });
     button.disabled = task.running || !d.bundled && !s.shorin_wiki_commit;
-    ui.defaultCard.replaceChildren(D.el("div.dash-inline-card", null,
+    // 版本号一致时只写一个:同一串哈希写两遍撑满一行,再把按钮挤到第二行,整条
+    // 就长得像一根进度条了(09-09 用户反馈)。完整信息挂在 title 上。
+    const local = short(s.shorin_wiki_commit);
+    const remote = short(s.remote_commit);
+    const version = local === remote ? local : `${local} → ${remote}`;
+    const imported = s.last_imported_at ? D.formatTime(s.last_imported_at) : "—";
+    const detail = D.el("span.dash-cell-muted", { text: `${version} · ${imported}` });
+    detail.title = `本地 ${short(s.shorin_wiki_commit)} · 远端 ${short(s.remote_commit)} · 上次导入 ${imported}`;
+    ui.defaultCard.replaceChildren(D.el("div.dash-inline-card.is-tight", null,
       D.el("span.dash-chip.is-builtin", { text: "内置库" }),
-      D.el("span.dash-inline-main", { text: "Shorin ArchLinux Guide(default-kb/)" }),
-      D.el("span.dash-cell-muted", { text: `本地 ${short(s.shorin_wiki_commit)} · 远端 ${short(s.remote_commit)} · 上次导入 ${s.last_imported_at ? D.formatTime(s.last_imported_at) : "—"}` }),
+      D.el("span.dash-inline-main", { text: "Shorin ArchLinux Guide" }),
+      detail,
       D.el(`span.dash-chip${s.update_available && !task.running ? ".is-warn" : ""}`, { text: status }),
       button));
   }
@@ -213,8 +257,10 @@
     const names = new Set(o.files.map((file) => file.name));
     for (const name of [...state.picked]) if (!names.has(name)) state.picked.delete(name);
     if (state.picked.size) {
+      const all = o.files.map((file) => file.name);
       ui.tree.append(D.bulkBar({
-        count: state.picked.size, noun: "个文件",
+        count: state.picked.size, total: all.length, noun: "个文件", compact: true,
+        onAll: () => { for (const name of all) state.picked.add(name); renderTree(); },
         onNone: () => { state.picked.clear(); renderTree(); },
         actions: [{ label: "删除所选", icon: "trash-2", danger: true, onClick: bulkRemove }]
       }));
@@ -236,6 +282,7 @@
     const row = D.el("div.dash-tree-row.is-dir", { onclick: () => { if (collapsed) state.collapsed.delete(path); else state.collapsed.add(path); renderTree(); } },
       D.el("span.dash-tree-indent", { text: "" }),
       D.icon(collapsed ? "chevron-right" : "chevron-down"),
+      dirCheck(node, name),
       D.el("span.dash-tree-name", { text: name }),
       builtin ? D.el("span.dash-chip.is-builtin", { text: "内置" }) : null,
       D.el("span.dash-tree-count", { text: String(count) }));
@@ -254,6 +301,41 @@
     let total = node.files.length;
     for (const child of node.dirs.values()) total += countFiles(child);
     return total;
+  }
+
+  /** 这个目录底下所有文件的完整名字,递归。整目录勾选靠它。 */
+  function filesUnder(node, out = []) {
+    for (const file of node.files) out.push(file.name);
+    for (const child of node.dirs.values()) filesUnder(child, out);
+    return out;
+  }
+
+  /**
+   * 目录行的三态勾选框。
+   *
+   * 没有它,想删掉一个几百个文件的库只能展开后一个一个点——这正是用户报的
+   * 「没法批量删除」。半选(indeterminate)必须有:否则一个已勾了部分文件的目录
+   * 看上去和完全没勾一样,再点一下会把已选的也一起清掉。
+   */
+  function dirCheck(node, label) {
+    const names = filesUnder(node);
+    const picked = names.filter((name) => state.picked.has(name)).length;
+    const box = D.el("input.dash-row-check.dash-tree-check", {
+      type: "checkbox", "aria-label": `选择 ${label} 下的全部文件`,
+    });
+    box.checked = picked > 0 && picked === names.length;
+    box.indeterminate = picked > 0 && picked < names.length;
+    box.addEventListener("click", (event) => event.stopPropagation());
+    box.addEventListener("change", () => {
+      // 半选时点一下是「全选」,而不是「清空」——那更符合正在挑选的意图。
+      const selectAll = box.checked || picked < names.length;
+      for (const name of names) {
+        if (selectAll) state.picked.add(name);
+        else state.picked.delete(name);
+      }
+      renderTree();
+    });
+    return box;
   }
 
   function fileNode(file, depth) {
@@ -502,7 +584,11 @@
     D.toast(parts.join(" · ") || "没有文件入库", rejected || failed ? "error" : undefined);
     if (stored || replaced) {
       // 逐文件导入不触发重建;整批完了起一次。失败(嵌入未配置)不算错。
-      try { await D.api("/api/dash/kb/reindex", { method: "POST" }); } catch (_) { /* 未配置嵌入 */ }
+      // 已经有一趟在跑时后端会排队(它的清单里没有这一批),所以这里照样接轮询。
+      try {
+        await D.api("/api/dash/kb/reindex", { method: "POST" });
+        pollReindex(700);
+      } catch (_) { /* 未配置嵌入 */ }
     }
     await loadOverview();
   }
@@ -536,23 +622,69 @@
   async function startReindex() {
     try {
       const result = await D.api("/api/dash/kb/reindex", { method: "POST" });
-      D.toast(result.started ? "已开始重建语义索引" : "重建已在进行");
+      D.toast(result.started ? "已开始重建语义索引" : "已排队:当前这趟跑完接着建");
+      // 子进程从起到建锁有几百毫秒,后端会先写一帧「正在启动」占住这个窗口;
+      // 这里再主动接上轮询,不指望概览那一帧恰好读到。
+      pollReindex(700);
       await loadOverview();
     } catch (error) {
       D.toast(`无法重建:${error.message}`, "error");
     }
   }
 
-  function pollReindex() {
+  /* 轮询只刷卡片,不整份重拉概览:几千个文件的库里,概览一次要带回整棵文件树。
+     状态接口本身就带回了语义块 / 陈旧 / 未索引三个数,够卡片用了。
+
+     而且是原地改数字,不重建卡片——statCards 每次重建都会跑一遍数字滚动动画,
+     两秒一次的话整排数字会一直在那儿跳。只有形态变了(开跑 / 收工 / 冒出陈旧锁)
+     才重建,那时候按钮本来就得换一个。 */
+  function reindexShape(r) {
+    return [Boolean(r.running), Boolean(r.stale_lock), Boolean(r.configured), r.total > 0].join("|");
+  }
+
+  function applyReindexStatus(status) {
+    const o = state.overview;
+    if (!o) return;
+    const changed = reindexShape(o.reindex || {}) !== reindexShape(status);
+    o.reindex = status;
+    for (const key of ["semantic_chunks", "stale_files", "unindexed_files"]) {
+      if (typeof status[key] === "number") o[key] = status[key];
+    }
+    const grid = ui.cards.querySelector(".dash-cards");
+    if (!grid || changed) { renderCards(); return; }
+    const set = (label, value, hint) => {
+      const card = [...grid.children].find((node) => node.querySelector(".dash-card-label")?.textContent === label);
+      if (!card) return;
+      card.querySelector(".dash-card-value").textContent = String(value);
+      const hintNode = card.querySelector(".dash-card-hint");
+      if (hintNode && hint != null) hintNode.textContent = hint;
+    };
+    set("语义块", o.semantic_chunks);
+    set("待重建", o.stale_files + o.unindexed_files, `陈旧 ${o.stale_files} · 未索引 ${o.unindexed_files}`);
+    const info = reindexCard(status);
+    set(info.label, info.value, info.hint);
+    const fill = grid.lastElementChild.querySelector(".dash-card-progress > i");
+    if (fill && status.total > 0) fill.style.width = `${Math.min(100, Math.round((status.done / status.total) * 100))}%`;
+  }
+
+  function pollReindex(delay = 2000) {
     clearTimeout(state.reindexTimer);
     state.reindexTimer = setTimeout(async () => {
+      let status;
       try {
-        const status = await D.api("/api/dash/kb/reindex");
-        if (status.running) { pollReindex(); return; }
-        D.toast("语义索引重建完成");
-        await loadOverview();
-      } catch (_) { /* 下次刷新再看 */ }
-    }, 5000);
+        status = await D.api("/api/dash/kb/reindex");
+        state.reindexMisses = 0;
+      } catch (_) {
+        // 一次抖动不该让进度条就此停住;连续几次拿不到再放弃。
+        if (++state.reindexMisses <= 5) pollReindex(3000);
+        return;
+      }
+      applyReindexStatus(status);
+      if (status.running) { pollReindex(); return; }
+      D.toast(status.last_error ? `重建失败:${firstLine(status.last_error)}` : "语义索引重建完成",
+        status.last_error ? "error" : undefined);
+      await loadOverview();
+    }, delay);
   }
 
   async function unlockReindex() {
