@@ -13,11 +13,20 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+import syntax
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18411"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "/tmp/miyu-webui-links")
 OUT.mkdir(parents=True, exist_ok=True)
 
 problems = []
+
+# run.py 发的那条用户消息里的 sh 代码块,一字不差。
+USER_CODE = (
+    "# 重建向量索引\n"
+    'export MIYU_HOME="/tmp/mx"\n'
+    'miyu kb embed reindex --quiet && echo "done $?"'
+)
 
 
 def check(name, ok, detail=""):
@@ -158,6 +167,15 @@ def main():
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         page.on("pageerror", lambda error: problems.append(f"pageerror: {error.message}"))
+        # 控制台的 error 也算数:高亮是在渲染主路径上跑的,它抛异常未必炸到
+        # pageerror(catch 住了也算白干),但一定会在控制台留痕。
+        # 「Failed to load resource」这类是资源 404 的回声,下面那条 response
+        # 钩子已经按 URL 判过了(/theme.css 没配 matugen 主题时必 404,是常态);
+        # 在这里再报一遍只会拿到一条没有 URL 的重复噪音。
+        page.on("console", lambda message: problems.append(
+            f"console.{message.type}: {message.text}")
+            if message.type == "error"
+            and "Failed to load resource" not in message.text else None)
         # /theme.css 404 是常态(没配 matugen 主题),不算问题;别的 4xx/5xx 要看见。
         page.on("response", lambda response: problems.append(
             f"http {response.status}: {response.url}")
@@ -226,9 +244,12 @@ def main():
         check("行内代码有独立节点", mine["inlineCodes"] >= 1, str(mine["inlineCodes"]))
         check("自己发的链接可点", mine["links"] == ["https://wiki.archlinux.org/title/Fcitx5"],
               str(mine["links"]))
-        check("代码块内容一字未改", mine["codeText"] == "miyu kb embed reindex --quiet",
-              repr(mine["codeText"]))
+        check("代码块内容一字未改",
+              mine["codeText"] == USER_CODE, repr(mine["codeText"]))
         shot(page, "07-user-message")
+
+        # ── 语法高亮：断言 + 三套配色截图 ───────────────────
+        syntax.run(page, check, USER_CODE)
 
         # ── 附件图标按类型分 ────────────────────────────────
         icons = page.evaluate(ATTACHMENT_ICON_PROBE)

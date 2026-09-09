@@ -11,6 +11,10 @@
   <!-- matugen 生成的 MD3 token 覆盖;app.js 依据「配色方案」切换 link.disabled -->
   <link rel="stylesheet" href="/theme.css" id="matugenThemeLink">
   <script defer src="/vendor/katex/katex.min.js"></script>
+  <!-- 语法高亮:data-manual 必须留着,否则 Prism 会自己扫全页并用 innerHTML 重写
+       每个 code[class*=language-];我们只借它的分词器,DOM 由 highlight.js 亲手搭。 -->
+  <script defer src="/vendor/prism/prism.min.js" data-manual></script>
+  <script defer src="/highlight.js"></script>
   <!-- 命令层要先于 app.js 就位:app.js 初始化时就会调 MiyuCommands.load -->
   <script defer src="/commands.js"></script>
   <script defer src="/lightbox.js"></script>

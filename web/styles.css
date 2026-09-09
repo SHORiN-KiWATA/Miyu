@@ -106,10 +106,26 @@ body[data-theme="linen"] {
   --chip-live: color-mix(in srgb, var(--accent-soft) 48%, transparent);
   --chip-fail: color-mix(in srgb, var(--danger-soft) 55%, transparent);
 
-  /* 代码语法色:同一派生式在两主题下自适应(暗色向亮字提亮,亮色向墨色加深) */
-  --tok-k: var(--gold);
-  --tok-v: color-mix(in srgb, var(--accent) 78%, var(--md-sys-color-on-surface));
-  --tok-s: color-mix(in srgb, var(--online) 78%, var(--md-sys-color-on-surface));
+  /*
+   * 代码语法色。全部从 MD3 token 派生,一个 vendor 主题的十六进制都不抄:
+   * MD3 保证同一个角色在亮色色板是深色调、在暗色色板是浅色调,所以同一条派生
+   * 式在两套内置主题和 matugen 按壁纸生成的任意色板下,都朝着「跟代码底色拉开」
+   * 的方向走(写死一套暗色主题的话,晨光下就是一片看不见的字)。
+   * 每条再往 --code-ink 兑一点:压掉高饱和色在 12.5px 等宽字上的刺眼感,也把
+   * matugen 偶尔给出的低对比色拽回来。
+   * 角色只有九个,故意少——壁纸生成的色板未必有九种分得开的色相,少上色比上一
+   * 堆分不清的色更好读。error 是三套色板下都必定是红的那个角色,给关键字;
+   * online 明确「不跟壁纸走」的固定绿,给字符串;剩下的交给 primary/tertiary。
+   */
+  --tok-c: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 74%, var(--code-bg));
+  --tok-p: color-mix(in srgb, var(--code-ink) 55%, var(--code-bg));
+  --tok-o: color-mix(in srgb, var(--code-ink) 78%, var(--code-bg));
+  --tok-k: color-mix(in srgb, var(--md-sys-color-error) 84%, var(--code-ink));
+  --tok-s: color-mix(in srgb, var(--md-ext-color-online) 84%, var(--code-ink));
+  --tok-n: color-mix(in srgb, var(--md-sys-color-secondary) 62%, var(--md-sys-color-error));
+  --tok-f: color-mix(in srgb, var(--md-sys-color-primary) 88%, var(--code-ink));
+  --tok-t: color-mix(in srgb, var(--md-sys-color-tertiary) 84%, var(--code-ink));
+  --tok-y: color-mix(in srgb, var(--md-sys-color-primary) 50%, var(--code-ink));
 }
 
 body[data-theme="linen"] {
@@ -143,6 +159,14 @@ body[data-theme="linen"] {
   --md-sys-color-outline: #c6b795;
   --md-sys-color-outline-variant: #e3d8c1;
   --md-ext-color-online: #3e8e5c;
+
+  /* 语法高亮:同一个 color-mix 在暗底上够亮、换到浅底就不够深了。字符串那档
+     实测只有 3.52:1(绿字压在奶油底上),往墨色多兑一些。别的 token 本来就够。 */
+  --tok-s: color-mix(in srgb, var(--md-ext-color-online) 46%, var(--code-ink));
+  /* 注释与标点在浅底上也偏淡(实测 2.45:1)。它们本来就该退到后面,但 2.5:1
+     是「眯着眼找」的程度,提到 3.5 上下。 */
+  --tok-c: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 96%, var(--code-ink));
+  --tok-p: color-mix(in srgb, var(--code-ink) 72%, var(--code-bg));
 
   /* 亮色下少数别名的映射不同:用户气泡用实心主色,代码块改暖纸浅底 */
   --user-bg: var(--md-sys-color-primary);
@@ -1480,40 +1504,18 @@ body[data-theme="graphite"] .session-unread-dot {
   margin-top: 9px;
 }
 
+/* 自己发的消息里的代码块用**正文那套代码底色**,不再是拿气泡前景色压出来的
+   一层。语法色是照着 --code-bg / --code-ink 派生的,叠在强调色气泡上会糊成一团
+   ——亮色主题的气泡是实心主色,绿的字符串、红的关键字混进紫底谁也认不出来。
+   给它一块中性底,高亮在三套配色下都落在它被设计的那个背景上,顺带也跟助手
+   那侧长得一样。外圈一道细描边,让它在气泡里仍然像一块嵌进去的板子。 */
 .user-bubble .code-block {
-  /* 气泡本身是强调色底,代码块得自己压出一层对比,不能用全局的 --code-bg
-     (那是给浅色正文准备的,叠在紫底上会糊)。 */
   margin: 0;
   border-radius: 6px;
-  /* 用气泡自己的前景色兑出来,而不是写死一层黑:亮色主题的气泡是实心主色配
-     浅字,暗色主题反过来,写死黑色只在其中一边成立。 */
-  background: color-mix(in srgb, var(--user-text) 14%, transparent);
-  color: inherit;
+  background: var(--code-bg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--user-text) 24%, transparent);
+  color: var(--code-ink);
   white-space: normal;
-}
-
-/* 代码块内部的字色必须显式改掉。`.code-block pre` 自带
-   `color: var(--code-ink)`——那是给浅色代码底准备的深色墨,而这里的底是气泡
-   压出来的暗层,深底深字直接看不清(09-09 用户实拍浅色主题)。选择器也得比
-   `.code-block pre` 更具体,`.code-block { color: inherit }` 够不着里面。 */
-.user-bubble .code-block pre,
-.user-bubble .code-block pre code {
-  color: var(--user-text);
-}
-
-.user-bubble .code-block .code-toolbar {
-  border-bottom: 1px solid color-mix(in srgb, var(--user-text) 16%, transparent);
-  background: transparent;
-  color: color-mix(in srgb, var(--user-text) 62%, transparent);
-}
-
-.user-bubble .code-copy-button {
-  color: color-mix(in srgb, var(--user-text) 70%, transparent);
-}
-
-.user-bubble .code-copy-button:hover {
-  background: color-mix(in srgb, var(--user-text) 18%, transparent);
-  color: var(--user-text);
 }
 
 .user-bubble .code-block pre {
@@ -2153,21 +2155,67 @@ body[data-theme="graphite"] .session-unread-dot {
   white-space: pre;
 }
 
-/* 代码语法色(供高亮标记使用) */
+/* 代码语法色。类名由 highlight.js 从 Prism 的 token 类型映射过来,九个角色:
+   c 注释 / p 标点 / o 运算符 / k 关键字 / s 字符串 / n 数值 / f 函数 /
+   t 类型标签 / y 属性变量,外加 diff 的增删行与 markdown 的粗斜体。 */
 .tok-c {
-  opacity: 0.5;
+  color: var(--tok-c);
+  font-style: italic;
+}
+
+.tok-p {
+  color: var(--tok-p);
+}
+
+.tok-o {
+  color: var(--tok-o);
 }
 
 .tok-k {
   color: var(--tok-k);
 }
 
-.tok-v {
-  color: var(--tok-v);
-}
-
 .tok-s {
   color: var(--tok-s);
+}
+
+.tok-n {
+  color: var(--tok-n);
+}
+
+.tok-f {
+  color: var(--tok-f);
+}
+
+.tok-t {
+  color: var(--tok-t);
+}
+
+.tok-y {
+  color: var(--tok-y);
+}
+
+.tok-b {
+  font-weight: 650;
+}
+
+.tok-i {
+  font-style: italic;
+}
+
+/* diff 的增删行:颜色之外再垫一层极淡的底,整行扫过去比只认颜色快。 */
+.tok-ins {
+  display: inline-block;
+  width: 100%;
+  background: color-mix(in srgb, var(--tok-s) 13%, transparent);
+  color: var(--tok-s);
+}
+
+.tok-del {
+  display: inline-block;
+  width: 100%;
+  background: color-mix(in srgb, var(--tok-k) 13%, transparent);
+  color: var(--tok-k);
 }
 
 /* 思考签:气泡内小签,常驻极浅紫底;直播时换 live 底 + 标题流光 */

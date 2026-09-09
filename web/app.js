@@ -3542,7 +3542,7 @@
     flushPlain(text.length);
   }
 
-  function codeBlock(language, codeText) {
+  function codeBlock(language, codeText, settled = true) {
     const wrapper = document.createElement("div");
     wrapper.className = "code-block";
     const toolbar = document.createElement("div");
@@ -3556,6 +3556,9 @@
     const code = document.createElement("code");
     if (language) code.className = `language-${language}`;
     code.textContent = codeText;
+    // 语法高亮。纯 DOM 上色,不认识的语言/分词出岔子一律保持这份纯文本
+    // (见 highlight.js);settled=false 表示围栏还没闭合,这一轮先不上色。
+    window.MiyuHighlight?.paint(code, language, codeText, settled);
     pre.appendChild(code);
     wrapper.append(toolbar, pre);
     return wrapper;
@@ -3777,9 +3780,11 @@
           codeLines.push(lines[index]);
           index += 1;
         }
-        if (index < lines.length) index += 1;
+        // 收尾围栏还没到 = 这块代码正流式写着,内容随时会变,先不上色。
+        const closed = index < lines.length;
+        if (closed) index += 1;
         const language = /^[\w.+-]{1,40}$/.test(fence[1] || "") ? fence[1] : "";
-        fragment.appendChild(codeBlock(language, codeLines.join("\n")));
+        fragment.appendChild(codeBlock(language, codeLines.join("\n"), closed));
         continue;
       }
       const video = videoSourceFor(line);
@@ -3889,6 +3894,8 @@
     // 独占一行的链接升级成卡片。这里只是排队:流式期间每来一段都会重渲染,
     // 真正的抓取要等最后一次渲染安顿下来(见 linkcards.js 的防抖)。
     window.MiyuLinkCards?.scan(container);
+    // 没闭合的围栏这一轮空着,等这块正文不再变了再补上色(同样是防抖)。
+    window.MiyuHighlight?.settle(container);
   }
 
   /// daemon 自己合成的轮，不是任何人敲的：后台任务唤醒、目标续轮。

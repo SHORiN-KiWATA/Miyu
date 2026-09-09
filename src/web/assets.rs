@@ -90,6 +90,10 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 concat!("src=\"/shared.js?v=", env!("MIYU_BUILD_ID"), "\""),
             )
             .replace(
+                "src=\"/highlight.js\"",
+                concat!("src=\"/highlight.js?v=", env!("MIYU_BUILD_ID"), "\""),
+            )
+            .replace(
                 "href=\"/vendor/katex/katex.min.css\"",
                 concat!(
                     "href=\"/vendor/katex/katex.min.css?v=",
@@ -101,6 +105,14 @@ pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
                 "src=\"/vendor/katex/katex.min.js\"",
                 concat!(
                     "src=\"/vendor/katex/katex.min.js?v=",
+                    env!("MIYU_BUILD_ID"),
+                    "\""
+                ),
+            )
+            .replace(
+                "src=\"/vendor/prism/prism.min.js\"",
+                concat!(
+                    "src=\"/vendor/prism/prism.min.js?v=",
                     env!("MIYU_BUILD_ID"),
                     "\""
                 ),
@@ -220,6 +232,22 @@ pub(in crate::web) async fn dash_script_asset(
 
 pub(in crate::web) async fn logo_asset(headers: HeaderMap) -> Response {
     embedded_asset(&headers, MIYU_LOGO, "image/png")
+}
+
+pub(in crate::web) async fn highlight_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        HIGHLIGHT_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(in crate::web) async fn prism_js_asset(headers: HeaderMap) -> Response {
+    embedded_asset(
+        &headers,
+        PRISM_JS.as_bytes(),
+        "text/javascript; charset=utf-8",
+    )
 }
 
 pub(in crate::web) async fn katex_js_asset(headers: HeaderMap) -> Response {

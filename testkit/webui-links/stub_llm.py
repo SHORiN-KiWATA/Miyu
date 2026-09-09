@@ -9,6 +9,9 @@
     · <https://…> 尖括号形式 → 成链
     · 行内代码里的地址      → 一个字都不许动
 
+末尾三个代码围栏是给语法高亮准备的：认识的语言（rust/diff）要上色，不认识的
+（zzunknownlang）与没标语言的那个要原样退回纯文本。
+
 用法：STUB_PORT=18495 python3 stub_llm.py
 """
 
@@ -46,6 +49,36 @@ https://zh.wikipedia.org/wiki/Arch_Linux
 
 ```
 https://example.com/inside-fence
+```
+
+再看一段代码,这块是给语法高亮用的:
+
+```rust
+use std::collections::HashMap;
+
+/// 统计一下
+pub fn main() {
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    counts.insert("miyu", 1);
+    println!("{:?} {}", counts, true);
+}
+```
+
+补丁也该看得出增删:
+
+```diff
+--- a/web/app.js
++++ b/web/app.js
+@@ -1,3 +1,4 @@
+-  code.textContent = codeText;
++  MiyuHighlight.paint(code, language, codeText, true);
+   pre.appendChild(code);
+```
+
+不认识的语言必须原样退回纯文本,不能炸:
+
+```zzunknownlang
+this is not a real language <b>x</b> & "quoted"
 ```
 """
 

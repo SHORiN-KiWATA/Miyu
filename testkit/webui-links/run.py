@@ -270,7 +270,10 @@ def main():
         api("/api/turns", {
             "content": (
                 "LINKTEST 随意发几个网站链接。顺便看看我这段：\n\n"
-                "```sh\nmiyu kb embed reindex --quiet\n```\n\n"
+                # 自己发的代码块也要上色：注释/字符串/变量/命令要有不同的颜色。
+                "```sh\n# 重建向量索引\n"
+                'export MIYU_HOME="/tmp/mx"\n'
+                'miyu kb embed reindex --quiet && echo "done $?"\n```\n\n'
                 "行内 `cargo fmt` 也该有底色，这个地址要能点："
                 "https://wiki.archlinux.org/title/Fcitx5"
             ),
