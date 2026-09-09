@@ -417,7 +417,9 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     jobs::register_management(&mut registry);
     usage_query::register(
         &mut registry,
-        paths.state_dir.join("usage-history.jsonl"),
+        paths
+            .state_dir
+            .join(crate::state::usage::USAGE_HISTORY_FILE),
         config.clone(),
     );
     // 编辑器只留 apply_patch(聚合增/改/删,diff 渲染载体);write_file/

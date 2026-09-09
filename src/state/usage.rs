@@ -160,6 +160,10 @@ pub fn reset_conversation(path: &Path) -> Result<()> {
 // 主对话、子代理、压缩、记忆整理、平台插件……由 StateStore 的
 // add_usage/add_auxiliary_usage 包装统一落账,想漏都难。
 
+/// 账本文件名。`StateStore::usage_history_file` 与 TUI(独立进程,拿不到
+/// StateStore)共用这一个真相源。
+pub const USAGE_HISTORY_FILE: &str = "usage-history.jsonl";
+
 /// 一次 LLM 调用的历史记录。`src` 标来源:"agent"(终端/WebUI/定时/子代理)
 /// 或平台 id(如 "qq");旧记录缺省归 "agent"。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -214,6 +218,9 @@ pub fn record_usage(path: &Path, usage: &Usage, meta: UsageMeta<'_>, aux: bool) 
     record_usage_at(path, usage, meta, aux, chrono::Utc::now().timestamp())
 }
 
+/// 持 `usage_lock` 只挡住同进程的并发写:`rename_provider` 要整文件重写,
+/// 重写期间的追加会被新文件盖掉。跨进程(`MIYU_DIRECT=1` 直连模式的另一个
+/// 进程、TUI 改名)仍有理论上的竞态,接受——账本是统计口径,不是账务。
 fn record_usage_at(
     path: &Path,
     usage: &Usage,
@@ -221,6 +228,7 @@ fn record_usage_at(
     aux: bool,
     ts: i64,
 ) -> Result<()> {
+    let _guard = usage_lock().lock().unwrap();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -261,6 +269,45 @@ fn load_records(path: &Path) -> Result<Vec<UsageRecord>> {
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<UsageRecord>(line).ok())
         .collect())
+}
+
+/// 供应商改名:把账本里 `provider == old` 的行改成 `new`,返回改了几行。
+///
+/// 账本只追加、从不回写,`provider` 存的是当时配置里的 id 裸字符串。改了 id
+/// 而账本不动,统计页会把同一个供应商拆成新旧两行,旧行还因为查不到 base_url
+/// 而算不出费用。
+///
+/// 逐行按 `serde_json::Value` 改再写回:解析不了的脏行原样留着
+/// (`load_records` 也是跳过它们,不该被这里顺手清掉)。一行都没改就不落盘,
+/// 免得为一次无关保存白白重写几十 MB。
+pub fn rename_provider(path: &Path, old: &str, new: &str) -> Result<usize> {
+    if old == new || old.is_empty() || !path.exists() {
+        return Ok(0);
+    }
+    let _guard = usage_lock().lock().unwrap();
+    let raw = std::fs::read_to_string(path)?;
+    let mut renamed = 0usize;
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(mut value) if value.get("provider").and_then(|id| id.as_str()) == Some(old) => {
+                value["provider"] = serde_json::Value::String(new.to_string());
+                out.push_str(&serde_json::to_string(&value)?);
+                renamed += 1;
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    if renamed == 0 {
+        return Ok(0);
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(out.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(renamed)
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -859,6 +906,88 @@ mod tests {
         assert_eq!(snapshot.total_tokens, 10);
         assert_eq!(snapshot.conversation_tokens, 0);
         assert!(snapshot.last_conversation_usage.is_none());
+    }
+
+    fn seed_history(path: &Path, providers: &[&str]) {
+        for provider in providers {
+            record_usage(
+                path,
+                &Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                    ..Usage::default()
+                },
+                UsageMeta {
+                    source: "agent",
+                    provider: Some(provider),
+                    model: Some("m"),
+                    kind: None,
+                },
+                false,
+            )
+            .unwrap();
+        }
+    }
+
+    /// 改名只动 provider 对得上的行,别的行一个字节不碰。
+    #[test]
+    fn rename_provider_rewrites_matching_rows_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(USAGE_HISTORY_FILE);
+        seed_history(&path, &["old", "old", "other"]);
+
+        assert_eq!(rename_provider(&path, "old", "new").unwrap(), 2);
+
+        let records = load_records(&path).unwrap();
+        assert_eq!(records.len(), 3);
+        let providers: Vec<&str> = records.iter().map(|item| item.provider.as_str()).collect();
+        assert_eq!(providers, ["new", "new", "other"]);
+        assert!(records.iter().all(|item| item.total == 15));
+    }
+
+    /// 解析不了的脏行原样留着——load_records 也是跳过它们,不该被改名顺手清掉。
+    #[test]
+    fn rename_provider_keeps_unparseable_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(USAGE_HISTORY_FILE);
+        seed_history(&path, &["old"]);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "not json").unwrap();
+        drop(file);
+        seed_history(&path, &["old"]);
+
+        assert_eq!(rename_provider(&path, "old", "new").unwrap(), 2);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(raw.lines().count(), 3);
+        assert!(raw.lines().any(|line| line == "not json"));
+        assert_eq!(load_records(&path).unwrap().len(), 2);
+    }
+
+    /// 没有一行匹配就不落盘:账本几十 MB,不为一次无关保存白白重写。
+    #[test]
+    fn rename_provider_without_matches_does_not_touch_the_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(USAGE_HISTORY_FILE);
+        seed_history(&path, &["other"]);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        assert_eq!(rename_provider(&path, "missing", "new").unwrap(), 0);
+        // 同名、空旧名、文件不存在都直接返回 0。
+        assert_eq!(rename_provider(&path, "other", "other").unwrap(), 0);
+        assert_eq!(rename_provider(&path, "", "new").unwrap(), 0);
+        assert_eq!(
+            rename_provider(&temp.path().join("absent.jsonl"), "other", "new").unwrap(),
+            0
+        );
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
     }
 }
 

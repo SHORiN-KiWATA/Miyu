@@ -68,7 +68,12 @@ impl StateStore {
     }
 
     pub fn usage_history_file(&self) -> PathBuf {
-        self.state_dir.join("usage-history.jsonl")
+        self.state_dir.join(usage::USAGE_HISTORY_FILE)
+    }
+
+    /// 供应商改名后同步用量账本;见 [`usage::rename_provider`]。
+    pub fn rename_usage_provider(&self, old: &str, new: &str) -> Result<usize> {
+        usage::rename_provider(&self.usage_history_file(), old, new)
     }
 
     /// `config` 提供时按 models.dev 单价做计费估算;None 则费用字段全零。

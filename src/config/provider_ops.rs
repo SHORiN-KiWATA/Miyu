@@ -5,6 +5,7 @@
 //! 不支持就会随机失败。
 
 use crate::config::*;
+use std::collections::HashSet;
 
 impl AppConfig {
     pub fn rename_provider_references(&mut self, old_id: &str, new_id: &str) {
@@ -768,4 +769,58 @@ impl AppConfig {
             .iter()
             .any(|provider| provider.is_antigravity() && provider.enabled)
     }
+}
+
+/// 端点标识:改名前后认同一个供应商靠它。内置 CLI 中转类的 base_url 是空的,
+/// 只剩 protocol 可比;尾斜杠不算差异。
+fn provider_endpoint(provider: &ProviderConfig) -> (String, String) {
+    (
+        provider.protocol.clone(),
+        provider.base_url.trim().trim_end_matches('/').to_string(),
+    )
+}
+
+/// 两份供应商表之间的改名对。
+///
+/// 旧表有、新表没有的 id 和新表有、旧表没有的 id,按 `(protocol, base_url)`
+/// 一对一配;配不上(0 个或多个候选)就当作删除/新增,不算改名——宁可漏认也
+/// 不能把两个供应商的账混到一起。故意不看 api_key:`restore_config_secrets`
+/// 按 id 找旧密钥,改了 id 的供应商在候选配置里密钥已经是 None 了。
+///
+/// 结果按旧 id 排序,保证确定性。
+pub(crate) fn detect_provider_renames(
+    before: &[ProviderConfig],
+    after: &[ProviderConfig],
+) -> Vec<(String, String)> {
+    let old_ids: HashSet<&str> = before.iter().map(|item| item.id.as_str()).collect();
+    let new_ids: HashSet<&str> = after.iter().map(|item| item.id.as_str()).collect();
+    let removed: Vec<&ProviderConfig> = before
+        .iter()
+        .filter(|item| !new_ids.contains(item.id.as_str()))
+        .collect();
+    let added: Vec<&ProviderConfig> = after
+        .iter()
+        .filter(|item| !old_ids.contains(item.id.as_str()))
+        .collect();
+    let mut pairs: Vec<(String, String)> = removed
+        .iter()
+        .filter_map(|gone| {
+            let endpoint = provider_endpoint(gone);
+            let mut matches = added
+                .iter()
+                .filter(|fresh| provider_endpoint(fresh) == endpoint);
+            let only = matches.next()?;
+            if matches.next().is_some() {
+                return None; // 一个旧 id 对上多个新 id:歧义,不猜。
+            }
+            // 反向也必须唯一,否则两个旧 id 会同时认领同一个新 id。
+            let claimants = removed
+                .iter()
+                .filter(|other| provider_endpoint(other) == endpoint)
+                .count();
+            (claimants == 1).then(|| (gone.id.clone(), only.id.clone()))
+        })
+        .collect();
+    pairs.sort();
+    pairs
 }
