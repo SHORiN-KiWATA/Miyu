@@ -177,7 +177,39 @@ pub(in crate::platforms::plugins::renderer) struct MarkdownCollector {
     pub(in crate::platforms::plugins::renderer) strong_depth: usize,
     pub(in crate::platforms::plugins::renderer) emphasis_depth: usize,
     pub(in crate::platforms::plugins::renderer) link_depth: usize,
+    /// 未闭合链接的目标地址栈（可嵌套：图片可以套在链接里）。
+    pub(in crate::platforms::plugins::renderer) link_urls: Vec<String>,
+    /// 与上面一一对应的可见文字，用来判断「标题本身就是网址」。
+    pub(in crate::platforms::plugins::renderer) link_texts: Vec<String>,
     pub(in crate::platforms::plugins::renderer) strike_depth: usize,
+}
+
+/// `[标题](链接)` 和 `![alt](图片地址)` 画成图之后地址会整个消失——图里点不了
+/// 也复制不了，读者连它指向哪都无从知道。所以在可见文字后面补一段 ` (地址)`；
+/// 可见文字为空（`![](url)` 这种）时整块只剩地址，那就单独把它放出来。
+fn link_suffix(url: &str, shown: &str) -> Option<String> {
+    let url = url.trim();
+    let shown = shown.trim();
+    if url.is_empty() || same_target(url, shown) {
+        return None;
+    }
+    Some(if shown.is_empty() {
+        format!("({url})")
+    } else {
+        format!(" ({url})")
+    })
+}
+
+/// 自动链接（`<https://x>` 或 `[https://x](https://x)`）的标题本身就是网址，
+/// 再补一遍只是把同一串东西写两次。
+fn same_target(url: &str, shown: &str) -> bool {
+    if url == shown {
+        return true;
+    }
+    ["https://", "http://", "mailto:"].iter().any(|scheme| {
+        url.strip_prefix(scheme)
+            .is_some_and(|rest| rest.trim_end_matches('/') == shown.trim_end_matches('/'))
+    })
 }
 
 impl MarkdownCollector {
@@ -293,8 +325,12 @@ impl MarkdownCollector {
             Tag::Strong => self.strong_depth = self.strong_depth.saturating_add(1),
             Tag::Emphasis => self.emphasis_depth = self.emphasis_depth.saturating_add(1),
             Tag::Strikethrough => self.strike_depth = self.strike_depth.saturating_add(1),
-            Tag::Link { .. } | Tag::Image { .. } => {
-                self.link_depth = self.link_depth.saturating_add(1)
+            // 图片和链接在这里是同一件事:图渲染器画不出图片,`![alt](url)`
+            // 只剩 alt、`![](url)` 什么都不剩,读者更够不到那张图。
+            Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
+                self.link_depth = self.link_depth.saturating_add(1);
+                self.link_urls.push(dest_url.to_string());
+                self.link_texts.push(String::new());
             }
             _ => {}
         }
@@ -358,7 +394,16 @@ impl MarkdownCollector {
             TagEnd::Strong => self.strong_depth = self.strong_depth.saturating_sub(1),
             TagEnd::Emphasis => self.emphasis_depth = self.emphasis_depth.saturating_sub(1),
             TagEnd::Strikethrough => self.strike_depth = self.strike_depth.saturating_sub(1),
-            TagEnd::Link | TagEnd::Image => self.link_depth = self.link_depth.saturating_sub(1),
+            TagEnd::Link | TagEnd::Image => {
+                self.link_depth = self.link_depth.saturating_sub(1);
+                let url = self.link_urls.pop().unwrap_or_default();
+                let text = self.link_texts.pop().unwrap_or_default();
+                if let Some(suffix) = link_suffix(&url, &text) {
+                    let mut style = self.style();
+                    style.link = true;
+                    self.push_text(&suffix, style);
+                }
+            }
             _ => {}
         }
     }
@@ -408,6 +453,9 @@ impl MarkdownCollector {
         text: &str,
         style: InlineStyle,
     ) {
+        if let Some(shown) = self.link_texts.last_mut() {
+            shown.push_str(text);
+        }
         if let Some(table) = self.table.as_mut() {
             table.push(text, style);
             return;
