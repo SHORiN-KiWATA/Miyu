@@ -40,6 +40,7 @@
 
 ## 一、Miyu 现状问题清单（核对后确认，按严重度）
 
+0. **P0 压后重建缺失**（已解决，第三批）：压完只留一行 `<read-files>` 路径清单，模型手里没有任何文件正文，也没有回查折叠原文的入口。
 1. **P0 全量替换、零尾巴保留**：`perform_compact` 吞掉全部可见轮次（compact.rs:110-121）。`compact.md` 里 "newest turns may be kept verbatim" 与实现矛盾。
 2. **P0 无防连环压缩**：无闩锁、无经济性检查、无陈旧 usage 作废。
 3. **P1 无机械轻量层**：0.9 之前没有任何免费手段，一上来就是付费摘要 + 全量缓存 miss。
@@ -187,6 +188,18 @@ QQ 群聊文字历史（独立历史）：**也走 LLM 摘要**（用户已定�
 | ⑤ byte-prefix e2e + /usage 水位 | `compaction_resets_the_byte_prefix_at_most_once_each`：mock 端点逐元素断言"第 N 轮请求是 N-1 的纯前缀延伸；每次压缩恰好重置一次且重置点必须是 checkpoint"；`/usage` 显示四档水位绝对余量 |
 
 压缩期间新消息安全性由 `replace_visible_with_summary` 的乐观并发检查保证（可见集合变化即整体作废），无需新排队机制。schema v14→v16。
+
+**第三批（2026-09-09，compact v3，对标 Claude Code 2.1.263）**：施工单 `docs/plan/2026-09-09-compact-v3.md`，实测数据 `testkit/compact-quality/out/compact-quality.md`。
+
+| 项 | 实现 |
+|---|---|
+| ① 上下文计量改锚点 | v33 `turns.token_context_end`：回合结束时记下**该回合最后一次请求**的 `prompt+completion`（供应商真实计数），`effective_context_tokens()` 优先读它，拿不到（摘要行在尾／回合被打断／用量是估算）才退回本地 o200k 估算。刻意不校验供应商一致性：池按请求轮换，一份外来分词器的真值也比 o200k 硬数中文准。`src/agent/context_meter.rs` |
+| ② 压后文件回灌 | v33 `turns.compact_extras`：压完把折叠区里最近碰过的文件从盘上重读，渲染成 `"N: line"` 挂在 checkpoint 之后。默认 5 文件／单文件 4000 tok／总 24000 tok，再受 `window/8` 封顶；超限只留路径（照样占名额）。尾巴读过的、MIYU 根目录下的、不存在的、二进制的全跳过。`src/agent/compact_extras.rs` |
+| ③ 折叠原文回查 | 折叠掉的轮次（连同被取代的上一份摘要）写成 `state/compact/<会话>/fold-<ms>.md`，路径进 `<compact-transcript>` 块，链式保留最近 5 份。有 read 工具时才提示「可以读回来」。转录只写不清，与 spill 同规矩。 |
+| ④ 摘要结构升级 | `prompts/compact.md` 九节：新增「所有用户消息逐条」「错误与纠正」「当前工作」，Next Move 绑定用户最后一次明确请求。User Requests 最新 15 条逐条保留、更早的可并行——防跨压缩无限膨胀。摘要输出帽 8192→16384。 |
+| ⑤ 分析再摘要 | 输出帽 ≥6000 tok 时提示词要求先写 `<analysis>` 草稿再落摘要；草稿落库前剥掉（`strip_analysis_block`）、流式里滤掉（`AnalysisChunkFilter`，标签被切在两个 chunk 中间也认）。未闭合的草稿判为空摘要，走既有重试／机械兜底。`src/agent/compact_analysis.rs`。**实测（n=1）无召回收益**：开(V2) 与强制关(V3) 同为 19/20，关掉反而更短更快。**09-09 用户裁定：保持默认开**——n=1 测不出差异不等于没差异，而这个 25 轮、事实密集的 fixture 对「先梳理再落笔」本来就不敏感；它针对的是几百轮、连压多次的长会话。想关随时 `MIYU_COMPACT_ANALYSIS=0`。 |
+| ⑥ 顺手修 | `add_usage` 只累加了供应商原始缓存字段，漏了归一化后的 `cache_read_tokens`——而落库读的正是它。fork 摘要实测 96.6% 命中（26911 prompt / 25984 cached）落库仍记 0，压缩越多整体命中率被拉得越低。 |
+| 实验开关 | `MIYU_COMPACT_PROMPT_FILE`（换摘要提示词底稿）、`MIYU_COMPACT_ANALYSIS=0`（强制关分析段），供 A/B 测具隔离变量用。 |
 
 ## 五、决策点（全部已定，2026-08-06）
 

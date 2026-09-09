@@ -719,6 +719,22 @@ pub struct ContextConfig {
     /// isolated fallback path sends the history as plain text instead.
     #[serde(default = "default_true")]
     pub compact_cache_reuse: bool,
+    /// Files re-read from disk after a compaction, most recently touched
+    /// first, inlined behind the checkpoint so the working set survives the
+    /// fold. 0 = off.
+    #[serde(default = "default_compact_restore_files")]
+    pub compact_restore_files: usize,
+    /// Per-file token cap; a file over it keeps only its path.
+    #[serde(default = "default_compact_restore_file_tokens")]
+    pub compact_restore_file_tokens: usize,
+    /// Total token budget for one restore pass. Also capped at window/8.
+    #[serde(default = "default_compact_restore_total_tokens")]
+    pub compact_restore_total_tokens: usize,
+    /// Folded turns are written to a markdown transcript under
+    /// `state/compact/<session>/` that the model can read back when the
+    /// summary lacks a detail.
+    #[serde(default = "default_true")]
+    pub compact_transcript_export: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -967,6 +983,10 @@ impl Default for ContextConfig {
             tool_result_prune_head_chars: default_tool_result_prune_head_chars(),
             tool_result_prune_tail_chars: default_tool_result_prune_tail_chars(),
             compact_cache_reuse: true,
+            compact_restore_files: default_compact_restore_files(),
+            compact_restore_file_tokens: default_compact_restore_file_tokens(),
+            compact_restore_total_tokens: default_compact_restore_total_tokens(),
+            compact_transcript_export: true,
         }
     }
 }

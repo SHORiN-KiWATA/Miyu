@@ -1,3 +1,7 @@
+use crate::agent::compact_analysis::{
+    compact_system_prompt, strip_analysis_block, AnalysisChunkFilter,
+};
+use crate::agent::compact_extras::{build_compact_extras, CompactExtras, CompactExtrasPolicy};
 use crate::agent::tool_report::replay_rounds;
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, OpenAiCompatibleClient, ToolDefinition, Usage,
@@ -39,12 +43,14 @@ pub struct Compactor {
     /// than a window fraction: the trigger grows with the window while the
     /// tail stays constant, which is what stops the re-compaction loop.
     tail_budget_tokens: usize,
-    /// Chat mode uses the persona/social summary template instead of the
-    /// coding one.
     /// 折叠前缀开头的预设对话对数(begin_dialogs)。它们为对齐实况请求的
     /// 缓存字节而留在前缀里,但不是真实会话——摘要指令按这个数量明确
     /// 排除,防止样板对话被总结成伪造的会话事实。
     preset_dialog_pairs: usize,
+    /// 压后重建策略(回灌 + 转录)。None = 不产出 extras。
+    extras_policy: Option<CompactExtrasPolicy>,
+    /// 摘要系统提示词,构造时按输出帽决定开不开分析段并冻结。
+    system_prompt: String,
 }
 
 pub struct CompactResult {
@@ -54,6 +60,10 @@ pub struct CompactResult {
     pub kept_turns: usize,
     /// 压缩用的 provider,供用量历史记账(模型按请求轮换,不在此追溯)。
     pub provider_id: Option<String>,
+    /// 正文真正回灌进 checkpoint 的文件数(超限只留路径的不算)。
+    pub restored_files: usize,
+    /// 本次折叠的原文转录路径。
+    pub transcript: Option<String>,
 }
 
 struct CompactTextResult {
@@ -76,7 +86,10 @@ impl Compactor {
         let tail_budget_tokens = tail_budget_tokens.min(context_window / 2).max(1);
         // Hard cap on the summary completion (pi: 0.8×reserve, opencode: 4k
         // flat): a runaway summary must not eat the reserved output space.
-        let summary_cap = ((reserved_tokens as f32 * 0.8) as u32).clamp(1024, 8192);
+        // 上限从 8192 提到 16384:九节结构 + 分析段的输出量比 v2 大一档,
+        // 8k 帽在长会话上会把「用户请求逐条」截在半路。
+        let summary_cap = ((reserved_tokens as f32 * 0.8) as u32).clamp(2048, 16384);
+        let system_prompt = compact_system_prompt(COMPACT_SYSTEM_PROMPT, summary_cap);
         let client = client
             .with_max_tokens(summary_cap)
             .with_request_scope("compact");
@@ -87,11 +100,25 @@ impl Compactor {
             reserved_tokens,
             tail_budget_tokens,
             preset_dialog_pairs,
+            extras_policy: None,
+            system_prompt,
         }
     }
 
-    fn system_prompt(&self) -> &'static str {
-        COMPACT_SYSTEM_PROMPT
+    /// 压后重建材料的产出策略。预算在这里按窗口缩放:窗口是唯一只有
+    /// Compactor 知道的量,而在 168k 窗口合适的 24k 回灌,搬到 32k 小窗上
+    /// 就等于压完立刻再超。
+    pub fn with_extras(mut self, policy: CompactExtrasPolicy) -> Self {
+        let mut policy = policy;
+        let window_cap = self.context_window / 8;
+        policy.restore_total_tokens = policy.restore_total_tokens.min(window_cap);
+        policy.restore_file_tokens = policy.restore_file_tokens.min(policy.restore_total_tokens);
+        self.extras_policy = Some(policy);
+        self
+    }
+
+    fn system_prompt(&self) -> &str {
+        &self.system_prompt
     }
 
     /// Fork summarization: the live conversation prefix (same bytes, same
@@ -129,16 +156,20 @@ impl Compactor {
         messages.push(ChatMessage::plain(
             "user",
             format!(
-                "IMPORTANT: The conversation stops here. Do NOT reply to the messages above and do NOT call any tools — a tool call fails this task. You are now acting under the summarization instructions below.\n\n{}\n\n{}{}Summarize the entire conversation above now, following the output structure exactly.",
+                "IMPORTANT: The conversation stops here. Do NOT reply to the messages above and do NOT call any tools — a tool call fails this task. You are now acting under the summarization instructions below.\n\n{}\n\n{}{}Summarize the entire conversation above now, following the output structure exactly. Start with the analysis block if the instructions ask for one.",
                 self.system_prompt(),
                 preset_note,
                 anchor_note,
             ),
         ));
+        let mut filter = AnalysisChunkFilter::new();
         let result = self
             .client
-            .chat_stream(messages.clone(), tools, on_chunk)
+            .chat_stream(messages.clone(), tools, &mut |chunk| {
+                filter.push(chunk, on_chunk)
+            })
             .await?;
+        filter.finish(on_chunk)?;
         if !result.tool_calls.is_empty() {
             bail!("fork summarization attempted a tool call");
         }
@@ -398,6 +429,39 @@ impl Compactor {
             Some(serde_json::to_string(&footprint)?)
         };
 
+        // 压后重建材料:回灌最近碰过的文件正文 + 折叠原文转录。尾巴逐字
+        // 保留,它读过的东西不重复回灌。
+        let tail = &head[cut..];
+        let previous_extras = match previous_summary.as_ref() {
+            Some(previous) => self
+                .state
+                .load_summary_extras_json(&previous.turn_id)?
+                .and_then(|json| serde_json::from_str::<CompactExtras>(&json).ok()),
+            None => None,
+        };
+        let extras = self
+            .extras_policy
+            .as_ref()
+            .map(|policy| {
+                build_compact_extras(
+                    policy,
+                    &self.state.session_id(),
+                    fold,
+                    tail,
+                    previous_extras.as_ref(),
+                    prev_text.as_deref(),
+                )
+            })
+            .filter(|extras| !extras.is_empty());
+        let extras_json = extras.as_ref().map(serde_json::to_string).transpose()?;
+        let restored_files = extras
+            .as_ref()
+            .map(CompactExtras::included_files)
+            .unwrap_or(0);
+        let transcript = extras
+            .as_ref()
+            .and_then(|extras| extras.transcripts.first().cloned());
+
         let visible_turn_ids = turns
             .iter()
             .map(|turn| turn.turn_id.clone())
@@ -409,11 +473,14 @@ impl Compactor {
             crate::llm::TurnTokens::from_usage(Some(&compact_usage)),
             usage_estimated,
             footprint_json.as_deref(),
+            extras_json.as_deref(),
         )?;
         tracing::info!(
             folded_turns = fold.len(),
             kept_turns = head.len() - cut,
             summary_chars = summary.len(),
+            restored_files,
+            transcript = transcript.as_deref().unwrap_or(""),
             "context_rewrite reason=compact"
         );
         Ok(Some(CompactResult {
@@ -422,6 +489,8 @@ impl Compactor {
             folded_turns: fold.len(),
             kept_turns: head.len() - cut,
             provider_id: Some(self.client.provider_id().to_string()),
+            restored_files,
+            transcript,
         }))
     }
 }
@@ -528,6 +597,18 @@ fn add_usage(total: &mut Usage, usage: &Usage) {
         .saturating_add(usage.effective_total_tokens());
     // 缓存字段曾被丢弃:fork 式折叠明明大量命中,summary 轮与用量史却
     // 记 0,Σ 命中率随折叠次数被系统性低估(deepseek 报告 P1 实证)。
+    //
+    // 09-09 补:上一轮只补了供应商原始字段,漏了归一化后的
+    // `cache_read_tokens` —— 而 `TurnTokens::from_usage` 读的正是它,于是
+    // 摘要行的 token_cache_read 照旧记 0。实测 fork 摘要 26911 prompt 里
+    // 命中 25984(96.6%),落库仍是 0。
+    total.cache_read_tokens = total
+        .cache_read_tokens
+        .saturating_add(usage.cache_read_tokens);
+    total.cache_write_tokens = total
+        .cache_write_tokens
+        .saturating_add(usage.cache_write_tokens);
+    total.cache_reported |= usage.cache_reported;
     if let Some(hit) = usage.prompt_cache_hit_tokens {
         total.prompt_cache_hit_tokens = Some(
             total
@@ -618,7 +699,9 @@ fn build_compact_prompt(history: &str, previous_summary: Option<&str>) -> String
              - ADD new facts, decisions, and progress from the new history.\n\
              - UPDATE status: move finished in-progress items to done; drop resolved \
              blockers; rewrite next steps to match the current state.\n\
-             - Remove a detail only when the new history explicitly made it stale.\n\n\
+             - Remove a detail only when the new history explicitly made it stale.\n\
+             - Keep the User Requests list bounded as the structure describes: append \
+             new requests, merge only entries older than the newest 15.\n\n\
              <previous-summary>\n{prev}\n</previous-summary>\n\n\
              <conversation>\n{history}\n</conversation>"
         ),
@@ -644,9 +727,13 @@ where
         ChatMessage::system(system_prompt.to_string()),
         ChatMessage::plain("user", &prompt),
     ];
+    let mut filter = AnalysisChunkFilter::new();
     let result = client
-        .chat_stream(messages.clone(), vec![], on_chunk)
+        .chat_stream(messages.clone(), vec![], &mut |chunk| {
+            filter.push(chunk, on_chunk)
+        })
         .await?;
+    filter.finish(on_chunk)?;
     Ok(compact_text_result(result, &messages))
 }
 
@@ -676,25 +763,32 @@ where
         ChatMessage::system(system_prompt.to_string()),
         ChatMessage::plain("user", &prompt),
     ];
+    let mut filter = AnalysisChunkFilter::new();
     let result = client
-        .chat_stream(messages.clone(), vec![], on_chunk)
+        .chat_stream(messages.clone(), vec![], &mut |chunk| {
+            filter.push(chunk, on_chunk)
+        })
         .await?;
+    filter.finish(on_chunk)?;
     Ok(compact_text_result(result, &messages))
 }
 
 fn compact_text_result(result: ChatResult, messages: &[ChatMessage]) -> CompactTextResult {
+    // 分析段是草稿,不落库。三条摘要路径(fork / 单趟 / 树状合并)的输出都
+    // 经过这里,剥一次即可全覆盖。
+    let content = strip_analysis_block(&result.content);
     if let Some(usage) = result.usage {
         return CompactTextResult {
-            text: result.content,
+            text: content,
             usage,
             usage_estimated: result.usage_estimated,
         };
     }
 
     let prompt_tokens = super::overflow::estimate_messages_tokens(messages) as u64;
-    let completion_tokens = estimate_tokens(&result.content) as u64;
+    let completion_tokens = estimate_tokens(&content) as u64;
     CompactTextResult {
-        text: result.content,
+        text: content,
         usage: Usage {
             prompt_tokens,
             completion_tokens,
@@ -967,5 +1061,30 @@ mod tests {
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
         let short = "short";
         assert_eq!(truncate_for_summary(short), short);
+    }
+
+    /// fork 摘要大量命中缓存,而摘要行落库记的是 `TurnTokens::from_usage`
+    /// 读的那个归一化字段。累加时漏掉它 → 命中率永远显示 0(09-09 实测:
+    /// 26911 prompt 命中 25984,落库仍是 0)。退回修复前这条报红。
+    #[test]
+    fn add_usage_keeps_the_normalized_cache_counters() {
+        let round = Usage {
+            prompt_tokens: 26911,
+            completion_tokens: 4031,
+            total_tokens: 30942,
+            cache_read_tokens: 25984,
+            cache_reported: true,
+            prompt_cache_hit_tokens: Some(25984),
+            ..Usage::default()
+        };
+        let mut total = Usage::default();
+        add_usage(&mut total, &round);
+        add_usage(&mut total, &round);
+
+        assert_eq!(total.cache_read_tokens, 51968);
+        assert!(total.cache_reported);
+        let tokens = crate::llm::TurnTokens::from_usage(Some(&total));
+        assert_eq!(tokens.cache_read, 51968, "落库口径必须带上命中数");
+        assert_eq!(tokens.prompt, 53822);
     }
 }

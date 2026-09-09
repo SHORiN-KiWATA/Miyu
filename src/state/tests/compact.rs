@@ -262,6 +262,7 @@ fn compact_is_reversible_with_undo() {
             },
             true,
             None,
+            None,
         )
         .unwrap();
 
@@ -309,6 +310,7 @@ fn nested_compact_undo_restores_one_layer_at_a_time() {
             TurnTokens::default(),
             false,
             None,
+            None,
         )
         .unwrap();
     store.start_turn("t3", "third", 999999).unwrap();
@@ -321,6 +323,7 @@ fn nested_compact_undo_restores_one_layer_at_a_time() {
             "summary two",
             TurnTokens::default(),
             false,
+            None,
             None,
         )
         .unwrap();
@@ -367,6 +370,7 @@ fn tail_retention_compact_folds_only_the_selected_turns() {
             TurnTokens::default(),
             false,
             None,
+            None,
         )
         .unwrap();
 
@@ -412,6 +416,7 @@ fn second_tail_compact_supersedes_the_previous_summary() {
             TurnTokens::default(),
             false,
             None,
+            None,
         )
         .unwrap();
     store.start_turn("t4", "fourth", 999999).unwrap();
@@ -428,6 +433,7 @@ fn second_tail_compact_supersedes_the_previous_summary() {
             "summary two",
             TurnTokens::default(),
             false,
+            None,
             None,
         )
         .unwrap();
@@ -478,7 +484,8 @@ fn empty_summary_leaves_visible_turns_unchanged() {
             "  ",
             TurnTokens::default(),
             false,
-            None
+            None,
+            None,
         )
         .is_err());
 
@@ -508,7 +515,8 @@ fn compact_insert_failure_rolls_back_hidden_turns() {
             "summary",
             TurnTokens::default(),
             false,
-            None
+            None,
+            None,
         )
         .is_err());
     let visible = store.load_visible_turns().unwrap();
@@ -586,7 +594,8 @@ fn compact_rejects_a_changed_snapshot() {
             "stale",
             TurnTokens::default(),
             false,
-            None
+            None,
+            None,
         )
         .is_err());
     assert!(store.load_visible_turns().unwrap().is_empty());
@@ -608,8 +617,50 @@ fn compact_rejects_a_new_turn_after_snapshot() {
             "stale",
             TurnTokens::default(),
             false,
-            None
+            None,
+            None,
         )
         .is_err());
     assert_eq!(store.load_visible_turns().unwrap().len(), 2);
+}
+
+/// 摘要行的 JSON 附件（压后回灌 + 折叠转录路径）存得进、读得回；撤销压缩
+/// 连摘要行一起删掉，附件跟着消失。state 层只当它是字符串，不解析。
+#[test]
+fn compact_stores_and_loads_extras_json() {
+    let (_temp, store) = test_store();
+    for id in ["t1", "t2"] {
+        store.start_turn(id, "hello", 999999).unwrap();
+        store.complete_turn(id, "reply", None).unwrap();
+    }
+    let (fold_ids, turn_ids) = visible_snapshot(&store);
+    let extras = r#"{"transcripts":["/state/compact/s/fold-1.md"],"read_hint":true}"#;
+
+    store
+        .replace_visible_with_summary(
+            &fold_ids,
+            &turn_ids,
+            "## Task Goal\nsummary",
+            TurnTokens::default(),
+            false,
+            None,
+            Some(extras),
+        )
+        .unwrap();
+
+    let summary = store.load_last_summary().unwrap().unwrap();
+    assert_eq!(
+        store
+            .load_summary_extras_json(&summary.turn_id)
+            .unwrap()
+            .as_deref(),
+        Some(extras),
+    );
+
+    store.undo_last_turn().unwrap();
+    assert!(store.load_last_summary().unwrap().is_none());
+    assert!(store
+        .load_summary_extras_json(&summary.turn_id)
+        .unwrap()
+        .is_none());
 }

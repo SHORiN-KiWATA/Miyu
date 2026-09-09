@@ -355,6 +355,7 @@ impl ConversationDb {
         tokens: TurnTokens,
         token_usage_estimated: bool,
         footprint_json: Option<&str>,
+        extras_json: Option<&str>,
     ) -> Result<()> {
         if summary.trim().is_empty() {
             bail!("compact returned an empty summary");
@@ -436,12 +437,32 @@ impl ConversationDb {
         let token_total = tokens.total as i64;
         let token_usage_estimated = i64::from(token_usage_estimated);
         tx.execute(
-            "INSERT INTO turns (turn_id, session_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, token_prompt, token_cache_read, compact_reversible, compact_parent_summary_seq, compact_hidden_json, tool_footprint)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'completed', '[]', 0, 1, ?8, ?9, ?13, ?14, 1, ?10, ?11, ?12)",
-            params![turn_id, session_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, parent_summary_seq, hidden_json, footprint_json, tokens.prompt as i64, tokens.cache_read as i64],
+            "INSERT INTO turns (turn_id, session_id, seq, user_content, user_timestamp, assistant_content, assistant_timestamp, status, tool_reports, hidden, is_summary, token_total, token_usage_estimated, token_prompt, token_cache_read, compact_reversible, compact_parent_summary_seq, compact_hidden_json, tool_footprint, compact_extras)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'completed', '[]', 0, 1, ?8, ?9, ?13, ?14, 1, ?10, ?11, ?12, ?15)",
+            params![turn_id, session_id, seq, "[conversation summary]", now, summary, now, token_total, token_usage_estimated, parent_summary_seq, hidden_json, footprint_json, tokens.prompt as i64, tokens.cache_read as i64, extras_json],
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// 摘要行的 JSON 附件(压后回灌 + 折叠转录路径)。state 层不解析它,
+    /// 渲染由 agent 侧按常量模板做,保证字节稳定。
+    pub fn load_summary_extras_json(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let value = conn
+            .query_row(
+                "SELECT compact_extras FROM turns WHERE session_id = ?1 AND turn_id = ?2",
+                params![session_id, turn_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .filter(|json| !json.trim().is_empty());
+        Ok(value)
     }
 
     pub fn reset(&self, session_id: &str) -> Result<()> {

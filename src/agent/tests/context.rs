@@ -796,6 +796,7 @@ fn explicit_pop_removes_new_archive_when_the_turn_still_exists_hidden() {
             TurnTokens::default(),
             false,
             None,
+            None,
         )
         .unwrap();
     let memory = MemoryStore::new(&config, &paths);
@@ -1019,4 +1020,248 @@ fn spill_replacement_respects_budget_and_char_boundaries() {
     let small = "小输出";
     let r = spill_replacement(small, 10_000, "/tmp/x.txt");
     assert!(r.is_some() || small.len() <= 10_000);
+}
+
+/// 上下文表优先吃供应商报的真实占用；压完（尾巴是摘要行）退回本地估算。
+#[tokio::test]
+async fn effective_context_tokens_prefers_the_provider_anchor() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = test_paths(temp.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let mut config = queue_test_config(base_url);
+    config.tools.enabled = false;
+    config.providers[0]
+        .model_context_window
+        .insert("test-model".to_string(), 8000);
+    config.context.compact_tail_tokens = Some(10);
+    config.context.compact_cache_reuse = false;
+    config.system_prompt = Some("anchor fixture persona".to_string());
+
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let body = read_test_http_request(&mut stream).await;
+            let body = String::from_utf8_lossy(&body).to_string();
+            let sse = if body.contains("context summarization assistant") {
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"## Task Goal\\nmock summary\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                )
+            } else {
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":100,\"total_tokens\":1000}}\n\n",
+                    "data: [DONE]\n\n"
+                )
+            };
+            write_test_sse(&mut stream, sse).await;
+        }
+    });
+
+    let state = StateStore::new(&paths).unwrap();
+    state.init_files().unwrap();
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let mut agent = Agent::new(
+        config,
+        &paths,
+        state,
+        client,
+        ToolRegistry::new(),
+        AgentMode::Normal,
+    )
+    .unwrap();
+
+    // 一轮都没跑过：没有锚点，只能估算。
+    assert_eq!(
+        agent.effective_context_tokens().unwrap(),
+        agent.context_tokens_estimate().unwrap(),
+    );
+
+    for i in 0..3 {
+        agent
+            .chat_stream(&format!("message {i}"), |_| Ok(()))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        agent.effective_context_tokens().unwrap(),
+        1000,
+        "the provider's last-request prompt+completion is the anchor",
+    );
+    assert_ne!(
+        agent.context_tokens_estimate().unwrap(),
+        1000,
+        "the local estimate must actually differ, or the assertion proves nothing",
+    );
+
+    agent.compact_now(|_| Ok(())).await.unwrap().unwrap();
+    assert_eq!(
+        agent.effective_context_tokens().unwrap(),
+        agent.context_tokens_estimate().unwrap(),
+        "a summary row at the tail carries no anchor; fall back to the estimate",
+    );
+    server.abort();
+}
+
+/// 压后重建：最近读过的文件正文与折叠转录路径跟在 checkpoint 之后进入每一次
+/// 请求，且两次渲染逐字节相同（checkpoint 是缓存复位点，漂一个字节就白复位）。
+#[tokio::test]
+async fn compaction_restores_recent_files_behind_the_checkpoint() {
+    let home = tempfile::tempdir().unwrap();
+    // 工作区必须在 MIYU 根目录之外：根目录下的文件（人格/配置/记忆）不回灌。
+    let workspace = tempfile::tempdir().unwrap();
+    let fixture = workspace.path().join("restored.rs");
+    std::fs::write(&fixture, "fn alpha() {}\nfn beta() {}\nfn gamma() {}\n").unwrap();
+
+    let paths = test_paths(home.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let mut config = queue_test_config(base_url);
+    config.tools.enabled = false;
+    config.providers[0]
+        .model_context_window
+        .insert("test-model".to_string(), 8000);
+    config.context.compact_tail_tokens = Some(10);
+    config.context.compact_cache_reuse = false;
+    config.system_prompt = Some("restore fixture persona".to_string());
+
+    let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server_bodies = bodies.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let body = read_test_http_request(&mut stream).await;
+            let body = String::from_utf8_lossy(&body).to_string();
+            let is_compact = body.contains("context summarization assistant");
+            server_bodies.lock().unwrap().push(body);
+            let sse = if is_compact {
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"## Task Goal\\nmock summary\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                )
+            } else {
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n",
+                    "data: [DONE]\n\n"
+                )
+            };
+            write_test_sse(&mut stream, sse).await;
+        }
+    });
+
+    let state = StateStore::new(&paths).unwrap();
+    state.init_files().unwrap();
+    for i in 0..4 {
+        let id = format!("t{i}");
+        state
+            .start_turn(&id, &format!("message {i}"), 999_999)
+            .unwrap();
+        state.complete_turn(&id, "reply", None).unwrap();
+    }
+    // 第一轮读过 fixture：它落在折叠区（尾巴是最后两轮），压后应被回灌。
+    state
+        .set_turn_tool_flow(
+            "t0",
+            &[crate::state::ToolFlowRound {
+                remote: false,
+                assistant_content: String::new(),
+                assistant_reasoning: None,
+                calls: vec![crate::state::ToolFlowCall {
+                    id: "c1".to_string(),
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({ "path": fixture.display().to_string() })
+                        .to_string(),
+                    output: "(old contents)".to_string(),
+                }],
+            }],
+        )
+        .unwrap();
+
+    let client =
+        OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
+    let mut agent = Agent::new(
+        config,
+        &paths,
+        state,
+        client,
+        ToolRegistry::new(),
+        AgentMode::Normal,
+    )
+    .unwrap();
+
+    let compacted = agent.compact_now(|_| Ok(())).await.unwrap();
+    assert!(compacted.is_some(), "the fixture must actually compact");
+
+    let text_of = |message: &ChatMessage| match message.content.as_ref() {
+        Some(ChatContent::Text(text)) => text.clone(),
+        _ => String::new(),
+    };
+    let (messages, _) = agent.chat_messages("", "").unwrap();
+    let checkpoint = messages
+        .iter()
+        .map(&text_of)
+        .find(|text| text.contains("<conversation-checkpoint>"))
+        .expect("a checkpoint message after compaction");
+    assert!(checkpoint.contains("<restored-files>"), "{checkpoint}");
+    assert!(
+        checkpoint.contains(&format!(
+            "<file path=\"{}\" lines=\"3\">",
+            fixture.display()
+        )),
+        "{checkpoint}"
+    );
+    assert!(checkpoint.contains("1: fn alpha() {}"), "{checkpoint}");
+    assert!(checkpoint.contains("<compact-transcript>"), "{checkpoint}");
+
+    let transcript = checkpoint
+        .split("saved verbatim at ")
+        .nth(1)
+        .and_then(|rest| rest.split_once(".md"))
+        .map(|(head, _)| format!("{head}.md"))
+        .expect("a transcript path in the checkpoint");
+    assert!(
+        std::path::Path::new(&transcript).exists(),
+        "transcript missing: {transcript}"
+    );
+    assert!(std::fs::read_to_string(&transcript)
+        .unwrap()
+        .contains("message 0"));
+
+    // 每请求重渲染必须逐字节稳定。
+    let (again, _) = agent.chat_messages("", "").unwrap();
+    assert_eq!(
+        serde_json::to_string(&messages).unwrap(),
+        serde_json::to_string(&again).unwrap(),
+    );
+    agent.chat_stream("next", |_| Ok(())).await.unwrap();
+    let live = bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|body| !body.contains("context summarization assistant"))
+        .next_back()
+        .cloned()
+        .expect("a live request after compaction");
+    let live: serde_json::Value = serde_json::from_str(&live).unwrap();
+    let sent = live["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|message| {
+            let text = message["content"].as_str().unwrap_or_default();
+            text.contains("<conversation-checkpoint>").then_some(text)
+        })
+        .expect("the checkpoint reaches the provider");
+    assert_eq!(sent, checkpoint, "the checkpoint bytes must not drift");
+    server.abort();
 }

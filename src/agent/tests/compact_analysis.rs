@@ -1,0 +1,125 @@
+//! 分析段：落库剥离与流式过滤必须是同一套判定。
+
+use crate::agent::compact_analysis::*;
+use crate::llm::{ChatStreamChunk, ChatStreamKind};
+use crate::prompts::COMPACT_SYSTEM_PROMPT;
+
+fn content(text: &str) -> ChatStreamChunk {
+    ChatStreamChunk {
+        kind: ChatStreamKind::Content,
+        text: text.to_string(),
+    }
+}
+
+fn run(chunks: &[&str]) -> String {
+    let mut filter = AnalysisChunkFilter::new();
+    let mut seen = String::new();
+    {
+        let mut sink = |chunk: ChatStreamChunk| {
+            seen.push_str(&chunk.text);
+            Ok(())
+        };
+        for chunk in chunks {
+            filter.push(content(chunk), &mut sink).unwrap();
+        }
+        filter.finish(&mut sink).unwrap();
+    }
+    seen
+}
+
+#[test]
+fn strip_analysis_block_removes_a_closed_block() {
+    let text = "<analysis>\nnotes about the conversation\n</analysis>\n\n## Standing Facts\n- a";
+    assert_eq!(
+        strip_analysis_block(text),
+        "## Standing Facts\n- a",
+        "the draft never reaches storage"
+    );
+}
+
+#[test]
+fn strip_analysis_block_returns_empty_for_an_unclosed_leading_block() {
+    let text = "<analysis>\nthe model spent the whole budget here";
+    assert_eq!(
+        strip_analysis_block(text),
+        "",
+        "an unfinished draft is not a summary; the empty result triggers the retry"
+    );
+}
+
+#[test]
+fn strip_analysis_block_leaves_text_without_tags() {
+    let text = "## Standing Facts\n- port 7043";
+    assert_eq!(strip_analysis_block(text), text);
+}
+
+#[test]
+fn strip_analysis_block_keeps_a_summary_that_merely_mentions_the_tag() {
+    let text = "## Notes\nthe prompt asks for an <analysis> block first";
+    assert_eq!(strip_analysis_block(text), text);
+}
+
+#[test]
+fn analysis_filter_hides_the_block_even_when_tags_split_across_chunks() {
+    assert_eq!(
+        run(&["<ana", "lysis>think…", "…</analy", "sis>\n## Standing"]),
+        "## Standing"
+    );
+}
+
+#[test]
+fn analysis_filter_passes_untagged_output_through() {
+    assert_eq!(
+        run(&["## Standing", " Facts\n- a"]),
+        "## Standing Facts\n- a"
+    );
+}
+
+#[test]
+fn analysis_filter_drops_an_unclosed_block_at_finish() {
+    assert_eq!(run(&["<analysis>", "still thinking"]), "");
+}
+
+#[test]
+fn analysis_filter_flushes_an_undecided_remainder_at_finish() {
+    // "<" 是开标签的合法前缀，流到此为止就得原样发出去。
+    assert_eq!(run(&["<"]), "<");
+}
+
+#[test]
+fn analysis_filter_forwards_non_content_kinds_untouched() {
+    let mut filter = AnalysisChunkFilter::new();
+    let mut kinds = Vec::new();
+    let mut sink = |chunk: ChatStreamChunk| {
+        kinds.push(chunk.kind);
+        Ok(())
+    };
+    filter
+        .push(
+            ChatStreamChunk {
+                kind: ChatStreamKind::Reasoning,
+                text: "<analysis>".to_string(),
+            },
+            &mut sink,
+        )
+        .unwrap();
+    assert_eq!(kinds, vec![ChatStreamKind::Reasoning]);
+}
+
+#[test]
+fn compact_system_prompt_toggles_analysis_by_cap() {
+    let wide = compact_system_prompt(COMPACT_SYSTEM_PROMPT, 8000);
+    let narrow = compact_system_prompt(COMPACT_SYSTEM_PROMPT, 3000);
+    assert!(wide.contains("<analysis> block"), "{wide}");
+    assert!(narrow.contains("without an analysis block"), "{narrow}");
+    for prompt in [&wide, &narrow] {
+        assert!(
+            prompt.contains("context summarization assistant"),
+            "the summary request is identified by this line",
+        );
+        assert!(!prompt.contains("{{ANALYSIS_STEP}}"), "placeholder left in");
+        assert!(prompt.contains("## User Requests"));
+        assert!(prompt.contains("## Current Work"));
+        assert!(prompt.contains("## Errors & Fixes"));
+    }
+}
