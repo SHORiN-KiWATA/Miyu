@@ -15,6 +15,8 @@ use tokio::sync::watch;
 
 pub(crate) const MESSAGE_RECALL_PLUGIN_ID: &str = "qq_message_recall";
 const MAX_SCOPES: usize = 512;
+/// 撤回日志里原文预览的字符上限。
+const LOG_PREVIEW_CHARS: usize = 80;
 
 #[derive(Default)]
 struct ScopeState {
@@ -228,6 +230,9 @@ impl MessageRecallPlugin {
                 }
             },
         };
+        // 撤谁的、撤的什么,只有这里查得到:通用「工具开始」日志只有模型传的参数。
+        let sender = sender_label(&info);
+        let preview = text_preview(&info.text, LOG_PREVIEW_CHARS);
         if !Self::belongs(&context, &info) {
             return failure_response(
                 "wrong_conversation",
@@ -267,6 +272,8 @@ impl MessageRecallPlugin {
                 target: "miyu::qq",
                 error = %error,
                 message_id = %id,
+                sender = %sender,
+                preview = %preview,
                 target_source = target.source.as_str(),
                 conversation = %context.conversation.scope_key(),
                 "{}",
@@ -290,12 +297,24 @@ impl MessageRecallPlugin {
                 scope.sent.retain(|old| old != id);
             }
         }
+        tracing::info!(
+            target: "miyu::qq",
+            message_id = %id,
+            sender = %sender,
+            target_kind = if own_message { "miyu" } else { "group_member" },
+            reason = %reason,
+            conversation = %context.conversation.scope_key(),
+            preview = %preview,
+            "{}",
+            crate::i18n::text("QQ message recalled", "QQ 消息已撤回")
+        );
         response(
             true,
             "消息已撤回",
             json!({
                 "message_id": id,
                 "sender_id": info.sender_id,
+                "sender_display_name": info.sender_display_name,
                 "target_kind": if own_message { "miyu" } else { "group_member" },
                 "reason": reason,
                 "target_source": target.source.as_str()
@@ -630,6 +649,29 @@ fn reason(args: &Value, maximum: usize) -> Result<String> {
     }
     Ok(value.to_string())
 }
+
+/// 日志里的发送者标签:昵称(QQ号);没昵称就只剩号。
+fn sender_label(info: &PlatformMessageInfo) -> String {
+    let name = info.sender_display_name.trim();
+    if name.is_empty() {
+        info.sender_id.clone()
+    } else {
+        format!("{name}({})", info.sender_id)
+    }
+}
+
+/// 日志里的原文预览:压成一行、按字符截到 `limit`,超出加省略号。
+/// 只进日志不进提示词,不过 safe_prompt_field。
+fn text_preview(text: &str, limit: usize) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= limit {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(limit).collect();
+    cut.push('…');
+    cut
+}
+
 fn response(success: bool, message: &str, data: Value) -> Result<String> {
     Ok(json!({ "success": success, "message": message, "data": data }).to_string())
 }
@@ -782,5 +824,46 @@ mod tests {
         assert_eq!(value["code"], "napcat_recall_decode_failed");
         assert_eq!(value["data"]["message_id"], "600025761");
         assert!(value["message"].as_str().unwrap().contains("没有被撤回"));
+    }
+
+    fn info_with(sender_id: &str, display_name: &str, text: &str) -> PlatformMessageInfo {
+        PlatformMessageInfo {
+            message_id: "1".into(),
+            sender_id: sender_id.into(),
+            sender_display_name: display_name.into(),
+            timestamp: 0,
+            text: text.into(),
+            reply_to_message_id: None,
+            mentioned_user_ids: Vec::new(),
+            mentioned_users: Vec::new(),
+            media: Vec::new(),
+            conversation_kind: None,
+            conversation_id: None,
+        }
+    }
+
+    /// 撤回日志要指认发送者:有昵称写「昵称(号)」,没昵称只剩号。
+    #[test]
+    fn sender_label_falls_back_to_the_bare_id() {
+        assert_eq!(
+            sender_label(&info_with("123456", "张三", "x")),
+            "张三(123456)"
+        );
+        assert_eq!(sender_label(&info_with("123456", "   ", "x")), "123456");
+    }
+
+    /// 预览压成一行、按字符截断——按字节截会切坏 UTF-8。
+    #[test]
+    fn text_preview_flattens_and_cuts_by_characters() {
+        assert_eq!(
+            text_preview("第一行\n第二行  第三行", 80),
+            "第一行 第二行 第三行"
+        );
+        assert_eq!(text_preview("短句", 80), "短句");
+        let long = "字".repeat(81);
+        let cut = text_preview(&long, 80);
+        assert_eq!(cut.chars().count(), 81); // 80 个字 + 省略号
+        assert!(cut.ends_with('…'));
+        assert_eq!(text_preview(&"字".repeat(80), 80).chars().count(), 80);
     }
 }

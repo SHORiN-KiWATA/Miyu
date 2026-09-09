@@ -79,6 +79,8 @@ pub(in crate::web) async fn update_config(
     restore_config_secrets(&mut candidate, &current, &request.secrets)?;
     validate_config_candidate(&candidate)?;
     validate_prompt_documents(&candidate, &request.prompts)?;
+    // candidate 随后被 move 进 ActorCommand,改名对要先算出来。
+    let renames = crate::config::detect_provider_renames(&current.providers, &candidate.providers);
     let qq_listener = state
         .platforms
         .qq_listener
@@ -138,6 +140,7 @@ pub(in crate::web) async fn update_config(
             ));
         }
     }
+    sync_usage_ledger_after_rename(&state, renames).await;
     cleanup_persona_assets(&state.paths, &current_prompts, &requested_prompts);
     let manager = state.manager.lock().unwrap();
     Ok(Json(config_response(
@@ -145,6 +148,53 @@ pub(in crate::web) async fn update_config(
         manager.context,
         &state.paths,
     )?))
+}
+
+/// 供应商 id 改名后把用量账本里的旧 id 一起改掉,否则统计页会把同一个供应商
+/// 拆成新旧两行,旧行还因为查不到 base_url 算不出费用。
+///
+/// 账本可能几十 MB,重写走 `spawn_blocking`。改失败只记日志:配置已经生效了,
+/// 不能让一次账本重写把保存变成报错。
+async fn sync_usage_ledger_after_rename(state: &DaemonState, renames: Vec<(String, String)>) {
+    if renames.is_empty() {
+        return;
+    }
+    let store = state.state_store.clone();
+    let applied = tokio::task::spawn_blocking(move || {
+        renames
+            .into_iter()
+            .map(|(old, new)| {
+                let result = store.rename_usage_provider(&old, &new);
+                (old, new, result)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    let applied = match applied {
+        Ok(applied) => applied,
+        Err(error) => {
+            tracing::warn!(error = %error, "renaming usage ledger providers failed");
+            return;
+        }
+    };
+    for (old, new, result) in applied {
+        match result {
+            Ok(rows) => tracing::info!(
+                old = %old,
+                new = %new,
+                rows,
+                "{}",
+                t(
+                    "usage ledger provider renamed",
+                    "用量账本供应商 id 已同步改名"
+                )
+            ),
+            Err(error) => tracing::warn!(
+                error = %error, old = %old, new = %new,
+                "renaming usage ledger providers failed"
+            ),
+        }
+    }
 }
 
 pub(in crate::web) async fn get_thinking_variants(

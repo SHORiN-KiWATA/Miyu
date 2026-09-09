@@ -900,6 +900,7 @@
       panel.hidden = panel.dataset.settingsPanel !== selected;
     });
     window.MiyuSettings?.onShow(selected);
+    if (consoleIsOpen() && state.consolePanel === "settings") writeConsoleHash(consoleHashFor("settings", selected));
   }
 
   function configValue(path, fallback = undefined) {
@@ -9026,6 +9027,25 @@
     return rate.toFixed(2);
   }
 
+  // 控制台位置写进 URL hash:#console/<面板> 与 #console/settings/<子页>。
+  // 刷新、分享链接都能回到同一页;老的裸 #console 仍开数据统计。
+  function consoleHashFor(panel, view) {
+    return panel === "settings" && view ? `#console/settings/${view}` : `#console/${panel}`;
+  }
+  function writeConsoleHash(hash) {
+    const target = hash || `${window.location.pathname}${window.location.search}`;
+    if ((hash && window.location.hash === hash) || (!hash && !window.location.hash)) return;
+    window.history.replaceState(null, "", target); // 不用 location.hash=,那会留个孤零零的 # 并滚动
+  }
+  function parseConsoleHash() {
+    const match = /^#console(?:\/([a-z-]+))?(?:\/([a-z-]+))?$/.exec(window.location.hash || "");
+    if (!match) return null;
+    const panel = match[1] || "usage";
+    // 面板清单只有 index.html 一份,这里查 DOM 而不是再抄一遍。
+    const known = Boolean(elements.consoleView.querySelector(`.con-panel[data-console-panel="${panel}"]`));
+    return { panel: known ? panel : "usage", view: match[2] || "" };
+  }
+
   function consoleOpen(panel = "usage") {
     elements.consoleView.hidden = false;
     elements.consoleView.setAttribute("aria-hidden", "false");
@@ -9035,6 +9055,7 @@
     elements.consoleView.hidden = true;
     elements.consoleView.setAttribute("aria-hidden", "true");
     usageTipHide();
+    writeConsoleHash("");
   }
   function consoleIsOpen() {
     return !elements.consoleView.hidden;
@@ -9060,6 +9081,7 @@
     if (panel === "settings" && !state.configLoaded && !state.configLoading) loadConfigDraft();
     // 插件 dashboard 面板各自独立文件,首次进入挂载、之后只刷新。
     if (window.MiyuDash?.has(panel)) window.MiyuDash.open(panel);
+    writeConsoleHash(consoleHashFor(panel, panel === "settings" ? state.settingsView : ""));
   }
 
   async function loadUsageStats() {
@@ -9926,7 +9948,13 @@
 
   function initialize() {
     renderIconSlots();
-    if (window.location.hash.includes("console")) consoleOpen();
+    // 设置子页的默认值要先落定,深链再按 hash 覆盖,否则默认值会把深链盖掉。
+    setSettingsView("interface");
+    const deepLink = parseConsoleHash();
+    if (deepLink) {
+      if (deepLink.panel === "settings" && deepLink.view) setSettingsView(deepLink.view);
+      consoleOpen(deepLink.panel);
+    }
     setTheme(safeStorageGet("miyu.web.theme") || "graphite", false);
     const storedScheme = safeStorageGet("miyu.web.colorScheme");
     if (storedScheme) setColorScheme(storedScheme, false);
@@ -9940,7 +9968,6 @@
     }
     setSidebarCollapsed(safeStorageGet("miyu.web.sidebarCollapsed") === "true");
     syncArtifactLayout();
-    setSettingsView("interface");
     bindEvents();
     resizeComposer();
     updateSettingsControls();

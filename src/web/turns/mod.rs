@@ -224,6 +224,89 @@ pub(in crate::web) fn unique_run_target(
     Some((run_id.clone(), run.turn_id.clone()?))
 }
 
+/// WebUI 往一个正在跑的 run 里排消息时该报的身份。
+///
+/// 目标续轮是机器自己开的 `Owner` 轮，WebUI（`External`）排进去是设计决定
+/// （见 [`queue_into_running_session`]）；其余 run 一律报 `External`，于是
+/// REPL 起的 `Owner` 轮对不上 `enqueue_turn_update` 的第一道校验，跨端隔离
+/// 原样保留。
+pub(in crate::web) fn web_followup_audience(run: &RunInfo) -> PromptAudience {
+    if matches!(
+        run.turn_origin,
+        crate::tools::workspace::TurnOrigin::GoalRound { .. }
+    ) {
+        PromptAudience::Owner
+    } else {
+        PromptAudience::External
+    }
+}
+
+/// 会话里已有轮在跑时，把这条消息排进那一轮。
+///
+/// 返回 `Ok(None)` = 这个会话没有可排队的轮（没有跑着的轮，或跑的是 REPL 起
+/// 的轮），调用方照常走起新轮的路——那条路上的 `session_has_runs` 会给出
+/// 409「Miyu is busy」，跨端隔离不变。
+///
+/// 目标续轮也走排队：它是机器自己开的轮，人开口该优先，而不是撞一个 409 让人
+/// 重发。回合循环在每个工具边界都会取排队的输入。续轮的 audience 是 `Owner`，
+/// 排队请求必须报同一个身份，否则 `enqueue_turn_update` 的 audience 校验会把
+/// 它挡回来（这正是「续轮跑着时 WebUI 发消息报 409」的根因）。
+pub(in crate::web) fn queue_into_running_session(
+    state: &DaemonState,
+    session_id: &Arc<str>,
+    content: &str,
+    display_content: &str,
+    uploaded_attachment_ids: &[String],
+) -> std::result::Result<Option<TurnUpdateReceipt>, ApiError> {
+    if !state
+        .state_store
+        .pinned(session_id)
+        .has_running_turns()
+        .map_err(ApiError::internal)?
+    {
+        return Ok(None);
+    }
+    let target = {
+        let manager = state.manager.lock().unwrap();
+        if !manager.session_runs_match_audience(session_id, PromptAudience::External)
+            && !manager.session_runs_are_goal_rounds(session_id)
+        {
+            return Ok(None);
+        }
+        // 上面两道闸保证这个会话的轮是同一类（全 External，或全目标续轮），
+        // 所以随便挑一条都能定出该报的身份。
+        let audience = manager
+            .active_runs
+            .values()
+            .find(|run| run.session_id.as_ref() == session_id.as_ref())
+            .map_or(PromptAudience::External, web_followup_audience);
+        unique_run_target(&manager, session_id, audience)
+            .map(|(run_id, turn_id)| (run_id, turn_id, audience))
+    };
+    let (run_id, turn_id, audience) = target.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "the running turn is not ready or is ambiguous",
+        )
+    })?;
+    let receipt = enqueue_turn_update(
+        state,
+        TurnUpdateRequest {
+            run_id,
+            turn_id,
+            session_id: Some(session_id.clone()),
+            audience,
+            content: content.to_string(),
+            display_content: display_content.to_string(),
+            attachments: Vec::new(),
+            uploaded_attachment_ids: uploaded_attachment_ids.to_vec(),
+            mode: TurnUpdateMode::Followup,
+        },
+    )
+    .map_err(|error| ApiError::new(StatusCode::CONFLICT, error.to_string()))?;
+    Ok(Some(receipt))
+}
+
 pub(in crate::web) async fn create_turn(
     State(state): State<DaemonState>,
     headers: HeaderMap,
@@ -242,49 +325,13 @@ pub(in crate::web) async fn create_turn(
     // follow-up (composer tray UX); other sessions run in parallel.
     let target_store = state.state_store.pinned(&session_id);
     let prepared = prepare_web_attachments(&target_store, &display_content, &attachment_ids)?;
-    if target_store
-        .has_running_turns()
-        .map_err(ApiError::internal)?
-        && {
-            let manager = state.manager.lock().unwrap();
-            manager.session_runs_match_audience(&session_id, PromptAudience::External)
-                // 目标续轮也走排队：它是机器自己开的轮，人开口该优先，而不是
-                // 撞一个 409 让人重发。回合循环在每个工具边界都会取排队的输入。
-                || manager.session_runs_are_goal_rounds(&session_id)
-        }
-    {
-        let audience = {
-            let manager = state.manager.lock().unwrap();
-            if manager.session_runs_are_goal_rounds(&session_id) {
-                PromptAudience::Owner
-            } else {
-                PromptAudience::External
-            }
-        };
-        let (run_id, turn_id) =
-            unique_run_target(&state.manager.lock().unwrap(), &session_id, audience).ok_or_else(
-                || {
-                    ApiError::new(
-                        StatusCode::CONFLICT,
-                        "the running turn is not ready or is ambiguous",
-                    )
-                },
-            )?;
-        let receipt = enqueue_turn_update(
-            &state,
-            TurnUpdateRequest {
-                run_id: run_id.clone(),
-                turn_id: turn_id.clone(),
-                session_id: Some(session_id.clone()),
-                audience: PromptAudience::External,
-                content: prepared.content,
-                display_content,
-                attachments: Vec::new(),
-                uploaded_attachment_ids: attachment_ids,
-                mode: TurnUpdateMode::Followup,
-            },
-        )
-        .map_err(|error| ApiError::new(StatusCode::CONFLICT, error.to_string()))?;
+    if let Some(receipt) = queue_into_running_session(
+        &state,
+        &session_id,
+        &prepared.content,
+        &display_content,
+        &attachment_ids,
+    )? {
         let prompt = SafeQueuedPrompt::from(receipt.prompt);
         return Ok((
             StatusCode::ACCEPTED,
@@ -370,13 +417,26 @@ pub(in crate::web) async fn queue_prompt(
     let session_id = resolve_turn_session(&state, request.session_id).map_err(session_api_error)?;
     let store = state.state_store.pinned(&session_id);
     let prepared = prepare_web_attachments(&store, &display_content, &attachment_ids)?;
+    // 前端把续轮挂成 live 之后,第二条起走这里;续轮要报 Owner,写死 External
+    // 会被 enqueue_turn_update 的 audience 校验挡成 409。
+    let audience = {
+        let manager = state.manager.lock().unwrap();
+        let run = manager
+            .active_runs
+            .get(&request.run_id)
+            // 409 而不是 404:run 刚跑完就是这条路,前端认 409 才会给出
+            // 「会话刚开始新的一轮」那句并重载视图(与 enqueue_turn_update
+            // 自己报这条错时的状态码一致)。
+            .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "active run not found"))?;
+        web_followup_audience(run)
+    };
     let receipt = enqueue_turn_update(
         &state,
         TurnUpdateRequest {
             run_id: request.run_id,
             turn_id: request.turn_id,
             session_id: Some(session_id),
-            audience: PromptAudience::External,
+            audience,
             content: prepared.content,
             display_content,
             attachments: Vec::new(),
@@ -411,7 +471,7 @@ pub(in crate::web) async fn remove_queue_prompt(
         .active_runs
         .get(&run_id)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "queued prompt target not found"))?;
-    if run.audience != PromptAudience::External || run.turn_id.as_deref() != Some(&turn_id) {
+    if run.audience != web_followup_audience(run) || run.turn_id.as_deref() != Some(&turn_id) {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "queued prompt target not found",

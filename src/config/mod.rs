@@ -9,6 +9,7 @@ mod pool_ref;
 mod provider;
 pub(crate) use provider::append_resolved_api_keys;
 mod provider_ops;
+pub(crate) use provider_ops::detect_provider_renames;
 mod tool_plugins;
 pub(crate) use defaults::*;
 pub(crate) use paths::*;

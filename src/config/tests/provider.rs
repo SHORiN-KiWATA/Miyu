@@ -1247,3 +1247,58 @@ fn tool_result_media_capability_is_inferred_per_provider() {
     zhipu.tool_result_media = Some(false);
     assert!(!zhipu.tool_result_carries_media());
 }
+
+fn provider_at(id: &str, base_url: &str) -> ProviderConfig {
+    let mut provider = ProviderConfig::default_opencodezen();
+    provider.id = id.to_string();
+    provider.base_url = base_url.to_string();
+    provider
+}
+
+/// 改名检测:一进一出且端点相同才算改名。配不上就当删除/新增——宁可漏认,
+/// 也不能把两个供应商的历史用量混到一起。
+#[test]
+fn provider_renames_are_detected_only_when_the_endpoint_pairs_up() {
+    let before = vec![
+        provider_at("a", "https://x.example/v1"),
+        provider_at("keep", "https://keep.example/v1"),
+    ];
+    let after = vec![
+        provider_at("b", "https://x.example/v1"),
+        provider_at("keep", "https://keep.example/v1"),
+    ];
+    assert_eq!(
+        detect_provider_renames(&before, &after),
+        vec![("a".to_string(), "b".to_string())]
+    );
+
+    // 尾斜杠不算差异。
+    let after_slash = vec![
+        provider_at("b", "https://x.example/v1/"),
+        provider_at("keep", "https://keep.example/v1"),
+    ];
+    assert_eq!(
+        detect_provider_renames(&before, &after_slash),
+        vec![("a".to_string(), "b".to_string())]
+    );
+
+    // 两个旧 id 共用一个端点,只有一个新 id:歧义,一对都不认。
+    let ambiguous_before = vec![
+        provider_at("a1", "https://x.example/v1"),
+        provider_at("a2", "https://x.example/v1"),
+    ];
+    let ambiguous_after = vec![provider_at("b", "https://x.example/v1")];
+    assert!(detect_provider_renames(&ambiguous_before, &ambiguous_after).is_empty());
+
+    // 纯删除、纯新增都不是改名。
+    assert!(detect_provider_renames(&before, &before[1..]).is_empty());
+    assert!(detect_provider_renames(&before[1..], &before).is_empty());
+    assert!(detect_provider_renames(&before, &before).is_empty());
+
+    // 端点不同 = 换了一家,不是改名。
+    let moved = vec![
+        provider_at("b", "https://other.example/v1"),
+        provider_at("keep", "https://keep.example/v1"),
+    ];
+    assert!(detect_provider_renames(&before, &moved).is_empty());
+}

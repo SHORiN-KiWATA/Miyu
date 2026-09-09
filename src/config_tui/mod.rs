@@ -115,6 +115,43 @@ impl Drop for TerminalSession {
     }
 }
 
+/// 保存成功后把用量账本里改过名的供应商 id 一起改掉。
+///
+/// 不放在改 id 的那一刻:用户可能改完不保存就退出。TUI 是独立进程,daemon 可能
+/// 同时在往账本追加——这是 `usage::record_usage_at` 注释里说过的跨进程竞态,
+/// 接受。账本改失败不阻断保存,配置已经落盘了。
+fn sync_usage_ledger_after_save(
+    paths: &MiyuPaths,
+    pristine_config: Option<&String>,
+    config: &AppConfig,
+) {
+    let Some(before) = pristine_config.and_then(|raw| serde_json::from_str::<AppConfig>(raw).ok())
+    else {
+        return;
+    };
+    let path = paths
+        .state_dir
+        .join(crate::state::usage::USAGE_HISTORY_FILE);
+    for (old, new) in crate::config::detect_provider_renames(&before.providers, &config.providers) {
+        match crate::state::usage::rename_provider(&path, &old, &new) {
+            Ok(rows) => tracing::info!(
+                old = %old,
+                new = %new,
+                rows,
+                "{}",
+                t(
+                    "usage ledger provider renamed",
+                    "用量账本供应商 id 已同步改名"
+                )
+            ),
+            Err(error) => tracing::warn!(
+                error = %error, old = %old, new = %new,
+                "renaming usage ledger providers failed"
+            ),
+        }
+    }
+}
+
 fn run_main_menu(
     stdout: &mut io::Stdout,
     paths: &MiyuPaths,
@@ -191,6 +228,7 @@ fn run_main_menu(
                     match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
+                            sync_usage_ledger_after_save(paths, pristine_config.as_ref(), config);
                             return Ok(true);
                         }
                         Err(error) => {
@@ -220,6 +258,7 @@ fn run_main_menu(
                     10 => match config.save(paths) {
                         Ok(()) => {
                             thinking_variants.save(paths)?;
+                            sync_usage_ledger_after_save(paths, pristine_config.as_ref(), config);
                             return Ok(true);
                         }
                         Err(error) => Err(error),
