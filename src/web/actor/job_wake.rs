@@ -513,7 +513,7 @@ pub(in crate::web) fn wake_local_session_for_job(
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     {
         let mut manager = state.manager.lock().unwrap();
-        if manager.admin_busy {
+        if manager.admin_blocks_session(&session_id) {
             tracing::debug!(job_id = %completion.job_id, "job wake skipped: admin busy");
             return None;
         }

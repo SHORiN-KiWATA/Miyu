@@ -106,12 +106,25 @@ fn analysis_filter_forwards_non_content_kinds_untouched() {
     assert_eq!(kinds, vec![ChatStreamKind::Reasoning]);
 }
 
+/// 分析段默认关(09-09 实况事故后改的):它让模型先写一份被流式过滤器整段
+/// 吞掉的草稿,输出量翻倍、屏幕上几分钟一片空白,而实测召回没提升。
+/// 环境变量是进程级的,这条用例不改它——只断言默认行为。
 #[test]
-fn compact_system_prompt_toggles_analysis_by_cap() {
+fn analysis_is_off_by_default_regardless_of_cap() {
+    for cap in [3000, 8000, 16384] {
+        let prompt = compact_system_prompt(COMPACT_SYSTEM_PROMPT, cap);
+        assert!(
+            prompt.contains("without an analysis block"),
+            "cap {cap} 默认就该关分析段: {prompt}"
+        );
+        assert!(!prompt.contains("Work in two phases"), "cap {cap}");
+    }
+}
+
+#[test]
+fn compact_system_prompt_keeps_its_contract() {
     let wide = compact_system_prompt(COMPACT_SYSTEM_PROMPT, 8000);
     let narrow = compact_system_prompt(COMPACT_SYSTEM_PROMPT, 3000);
-    assert!(wide.contains("<analysis> block"), "{wide}");
-    assert!(narrow.contains("without an analysis block"), "{narrow}");
     for prompt in [&wide, &narrow] {
         assert!(
             prompt.contains("context summarization assistant"),
@@ -121,5 +134,25 @@ fn compact_system_prompt_toggles_analysis_by_cap() {
         assert!(prompt.contains("## User Requests"));
         assert!(prompt.contains("## Current Work"));
         assert!(prompt.contains("## Errors & Fixes"));
+        // 逐条列用户消息必须有硬上限:没有上限时,首次压缩一个几百轮的会话
+        // 会让模型写几百行,输出量直接顶到帽子、把墙钟拖过超时线(09-09)。
+        assert!(
+            prompt.contains("newest 20 user messages"),
+            "User Requests 必须带硬上限"
+        );
     }
+}
+
+/// 摘要墙钟预算跟着输出帽走。固定 90s 的年代:帽子提到 16384 之后 opus 在
+/// 长会话上必然超时,砍完还要再试——一次压缩把 actor 拖住四分半(09-09)。
+#[test]
+fn summary_timeout_scales_with_the_output_cap() {
+    use crate::agent::compact::summary_timeout;
+    // 小窗口的 2048 帽:基准就够,落在下限。
+    assert_eq!(summary_timeout(2048).as_secs(), 90 + 2048 / 40);
+    // 满帽 8192:90 + 204 ≈ 5 分钟。
+    assert_eq!(summary_timeout(8192).as_secs(), 294);
+    // 再大也不超过 5 分钟。
+    assert_eq!(summary_timeout(u32::MAX).as_secs(), 300);
+    assert!(summary_timeout(1).as_secs() >= 90, "下限兜底");
 }

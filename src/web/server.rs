@@ -77,6 +77,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         config: config.clone(),
         active_runs: HashMap::new(),
         admin_busy: false,
+        admin_session: None,
         context,
         persona_session_ids: HashMap::from([(
             config.active_persona_scope(),

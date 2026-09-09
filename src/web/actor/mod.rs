@@ -388,61 +388,67 @@ pub(in crate::web) async fn actor_loop(
                     }
                     Ok(())
                 };
-                let result = async {
-                    let mut forward = forward;
-                    let updates_default = &*state_store.session_id() == &*session_id;
-                    let compact = if updates_default {
-                        let agent = ensure_actor_agent(
-                            &mut agent,
-                            &config,
-                            &paths,
-                            &state_store,
-                            &turn_engine,
-                        )?;
-                        let compact = agent
-                            .compact_now(&mut forward)
-                            .await
-                            .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
-                        manager.lock().unwrap().context = current_context(agent)
-                            .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
-                        compact
-                    } else {
+                // 压缩是一次几分钟的模型调用。以前它就在这个 match 臂里直接
+                // await——actor 循环在整段时间里收不到任何命令,于是**所有**
+                // 会话的 StartTurn 全排在 mpsc 队列里干等(09-09 实况:一次
+                // compact 把全部会话拖死四分半)。回合本身早就是 spawn 出去
+                // 的,压缩没理由例外。
+                //
+                // 互斥不依赖「actor 串行」:reserve_admin_for_session 在收命令
+                // 前就置了 admin_busy,任务结束再 release,这一层保证不变。
+                // 代价是当前会话也统一走独立 agent(不复用 actor 缓存的那个,
+                // 它的 &mut 借用没法跨 spawn),多一次装配换回并发。
+                let config = config.clone();
+                let paths = paths.clone();
+                let state_store = state_store.clone();
+                let manager = manager.clone();
+                let events = events.clone();
+                tokio::task::spawn_local(async move {
+                    let result = async {
+                        let mut forward = forward;
+                        let updates_default = &*state_store.session_id() == &*session_id;
                         let store = state_store.pinned(&session_id);
                         let target_agent = build_actor_agent(&config, &paths, &store)
                             .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
-                        target_agent
+                        let compact = target_agent
                             .compact_now(&mut forward)
                             .await
-                            .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?
-                    };
-                    Ok::<Value, AdminFailure>(json!({
-                        "compacted": compact.is_some(),
-                        "usage": compact.as_ref().and_then(|result| result.usage.clone()),
-                        "usage_estimated": compact
-                            .as_ref()
-                            .map(|result| result.usage_estimated)
-                            .unwrap_or(false)
-                    }))
-                }
-                .await;
-                // 压缩重写了消息数组,已经打开这个会话的界面必须重新拉一次,
-                // 否则屏幕上还是压缩前那串回合——用户会以为命令没生效。
-                // 只在**真压缩了**的时候发:上下文没到水位时 compact_now 什么
-                // 也不做,那种情况下发事件会让所有前端白刷一次。
-                if result
-                    .as_ref()
-                    .ok()
-                    .and_then(|data| data.get("compacted"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    events.publish(
-                        "conversation.compacted",
-                        json!({ "session_id": &*session_id }),
-                    );
-                }
-                release_admin(&manager);
-                let _ = reply.send(result);
+                            .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
+                        if updates_default {
+                            manager.lock().unwrap().context = current_context(&target_agent)
+                                .map_err(|error| {
+                                    AdminFailure::Internal(safe_error_message(&error))
+                                })?;
+                        }
+                        Ok::<Value, AdminFailure>(json!({
+                            "compacted": compact.is_some(),
+                            "usage": compact.as_ref().and_then(|result| result.usage.clone()),
+                            "usage_estimated": compact
+                                .as_ref()
+                                .map(|result| result.usage_estimated)
+                                .unwrap_or(false)
+                        }))
+                    }
+                    .await;
+                    // 压缩重写了消息数组,已经打开这个会话的界面必须重新拉一次,
+                    // 否则屏幕上还是压缩前那串回合——用户会以为命令没生效。
+                    // 只在**真压缩了**的时候发:上下文没到水位时 compact_now 什么
+                    // 也不做,那种情况下发事件会让所有前端白刷一次。
+                    if result
+                        .as_ref()
+                        .ok()
+                        .and_then(|data| data.get("compacted"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        events.publish(
+                            "conversation.compacted",
+                            json!({ "session_id": &*session_id }),
+                        );
+                    }
+                    release_admin(&manager);
+                    let _ = reply.send(result);
+                });
             }
         }
     }

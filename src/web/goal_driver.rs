@@ -195,7 +195,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
     // 闸 1：会话空闲。
     {
         let manager = state.manager.lock().unwrap();
-        if manager.admin_busy
+        if manager.admin_blocks_session(session_id.as_str())
             || manager
                 .active_runs
                 .values()
@@ -287,7 +287,7 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
     {
         let mut manager = state.manager.lock().unwrap();
         // 认领和登记之间可能有人抢了管理锁，这里再看一眼。
-        if manager.admin_busy {
+        if manager.admin_blocks_session(session_id.as_str()) {
             return;
         }
         manager.active_runs.insert(

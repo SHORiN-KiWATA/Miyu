@@ -26,7 +26,27 @@ const MIN_FOLD_TOKENS: usize = 400;
 /// the session as history).
 const SUMMARY_ITEM_MAX_CHARS: usize = 2000;
 /// A stalled summarizer stream fails loudly instead of wedging compaction.
-const SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// 固定 90s 是 09-09 的实况事故:输出帽提到 16384 之后,opus 在 148k 上下文
+/// 的会话上生成完整摘要要好几分钟,90s 必然砍在半路——而且砍完还要再试,
+/// 整个 actor 被拖住四分半。超时必须跟着输出预算走。
+const SUMMARY_TIMEOUT_BASE: std::time::Duration = std::time::Duration::from_secs(90);
+/// 慢供应商的保守吞吐估计(claude-code 中转的 opus 实测远低于直连)。
+const SUMMARY_TOKENS_PER_SEC: u32 = 40;
+/// 上下界:再快也至少给 90s(首字节可能就要几十秒),再慢也不超过 5 分钟。
+/// 满帽(8192)算出来是 90 + 8192/40 = 294s,基本就是 5 分钟——压缩不再阻塞
+/// 其他会话之后(见 web/actor 的 spawn),放宽超时的代价只剩「失败得晚一点」。
+const SUMMARY_TIMEOUT_MIN: u64 = 90;
+const SUMMARY_TIMEOUT_MAX: u64 = 300;
+
+/// 一次摘要请求的墙钟预算 = 基准 + 输出帽 / 吞吐。
+pub(in crate::agent) fn summary_timeout(summary_cap: u32) -> std::time::Duration {
+    let generation = u64::from(summary_cap / SUMMARY_TOKENS_PER_SEC);
+    let seconds = SUMMARY_TIMEOUT_BASE
+        .as_secs()
+        .saturating_add(generation)
+        .clamp(SUMMARY_TIMEOUT_MIN, SUMMARY_TIMEOUT_MAX);
+    std::time::Duration::from_secs(seconds)
+}
 
 /// (byte-identical conversation prefix over the fold region, live tools).
 /// Built by the agent because only it owns the request rendering; consumed by
@@ -51,6 +71,9 @@ pub struct Compactor {
     extras_policy: Option<CompactExtrasPolicy>,
     /// 摘要系统提示词,构造时按输出帽决定开不开分析段并冻结。
     system_prompt: String,
+    /// 摘要输出帽。超时按它缩放——生成一万 token 和生成一千 token 不该
+    /// 共用一个墙钟预算。
+    summary_cap: u32,
 }
 
 pub struct CompactResult {
@@ -86,9 +109,11 @@ impl Compactor {
         let tail_budget_tokens = tail_budget_tokens.min(context_window / 2).max(1);
         // Hard cap on the summary completion (pi: 0.8×reserve, opencode: 4k
         // flat): a runaway summary must not eat the reserved output space.
-        // 上限从 8192 提到 16384:九节结构 + 分析段的输出量比 v2 大一档,
-        // 8k 帽在长会话上会把「用户请求逐条」截在半路。
-        let summary_cap = ((reserved_tokens as f32 * 0.8) as u32).clamp(2048, 16384);
+        // 09-09 退回 8192:曾提到 16384(理由是九节结构 + 分析段更长),但
+        // 实测四个变体的摘要输出只有 3394-6083 tok,从没接近 8192——帽子提高
+        // 一点收益没有,只是把「模型可以一直写」的空间放开了一倍,在长会话 +
+        // 慢模型上直接把墙钟推过超时线。
+        let summary_cap = ((reserved_tokens as f32 * 0.8) as u32).clamp(2048, 8192);
         let system_prompt = compact_system_prompt(COMPACT_SYSTEM_PROMPT, summary_cap);
         let client = client
             .with_max_tokens(summary_cap)
@@ -102,6 +127,7 @@ impl Compactor {
             preset_dialog_pairs,
             extras_policy: None,
             system_prompt,
+            summary_cap,
         }
     }
 
@@ -329,12 +355,17 @@ impl Compactor {
             );
         }
 
+        let budget = summary_timeout(self.summary_cap);
+        // fork 超时后不再走隔离路径:隔离路径向同一个模型要同样长的输出,
+        // 还没有前缀缓存可吃,只会更慢。再等一个完整预算换来的多半是第二次
+        // 超时,代价却是把调用方(以及整个压缩)多拖住几分钟。
+        let mut fork_timed_out = false;
         let mut fork_summary = None;
         if let Some(builder) = fork_builder {
             match builder(&fold_turn_ids) {
                 Ok((prefix, tools)) => {
                     match tokio::time::timeout(
-                        SUMMARY_TIMEOUT,
+                        budget,
                         self.summarize_via_fork(
                             prefix,
                             tools,
@@ -351,9 +382,14 @@ impl Compactor {
                             error = %error,
                             "fork summarization failed; falling back to the isolated path"
                         ),
-                        Err(_) => tracing::warn!(
-                            "fork summarization timed out; falling back to the isolated path"
-                        ),
+                        Err(_) => {
+                            fork_timed_out = true;
+                            tracing::warn!(
+                                budget_secs = budget.as_secs(),
+                                summary_cap = self.summary_cap,
+                                "fork summarization timed out; not retrying on the isolated path"
+                            );
+                        }
                     }
                 }
                 Err(error) => tracing::warn!(
@@ -366,12 +402,17 @@ impl Compactor {
         // Timeout keeps a stalled summarizer stream from wedging the
         // compaction placeholder forever; one retry absorbs transient
         // provider failures but a timeout is not retried (the caller should
-        // not wait another 90s on a provider that just proved slow).
+        // not wait another full budget on a provider that just proved slow).
         let summary_outcome = if let Some(text) = fork_summary {
             Ok(text)
+        } else if fork_timed_out {
+            Err(anyhow::anyhow!(
+                "compaction summary timed out after {}s",
+                budget.as_secs()
+            ))
         } else {
             let first_attempt = tokio::time::timeout(
-                SUMMARY_TIMEOUT,
+                budget,
                 self.summarize_fold(
                     fold,
                     prev_text.as_deref(),
@@ -385,7 +426,7 @@ impl Compactor {
                 Ok(Ok(text)) => Ok(text),
                 Ok(Err(first_error)) => {
                     match tokio::time::timeout(
-                        SUMMARY_TIMEOUT,
+                        budget,
                         self.summarize_fold(
                             fold,
                             prev_text.as_deref(),
@@ -400,13 +441,13 @@ impl Compactor {
                         Ok(Err(retry_error)) => Err(retry_error.context(first_error)),
                         Err(_) => Err(anyhow::anyhow!(
                             "compaction summary timed out after {}s (retry)",
-                            SUMMARY_TIMEOUT.as_secs()
+                            budget.as_secs()
                         )),
                     }
                 }
                 Err(_) => Err(anyhow::anyhow!(
                     "compaction summary timed out after {}s",
-                    SUMMARY_TIMEOUT.as_secs()
+                    budget.as_secs()
                 )),
             }
         };
@@ -700,8 +741,9 @@ fn build_compact_prompt(history: &str, previous_summary: Option<&str>) -> String
              - UPDATE status: move finished in-progress items to done; drop resolved \
              blockers; rewrite next steps to match the current state.\n\
              - Remove a detail only when the new history explicitly made it stale.\n\
-             - Keep the User Requests list bounded as the structure describes: append \
-             new requests, merge only entries older than the newest 15.\n\n\
+             - Keep the User Requests list bounded as the structure describes: the \
+             newest 20 verbatim, everything older compressed into at most 5 \
+             grouped lines.\n\n\
              <previous-summary>\n{prev}\n</previous-summary>\n\n\
              <conversation>\n{history}\n</conversation>"
         ),
