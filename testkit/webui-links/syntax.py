@@ -83,6 +83,23 @@ COLOR_JS = """
 }
 """
 
+# 代码面板和它周围那两层的关系。09-09 的教训:前三轮配色都只看裁下来的代码块,
+# 从没在页面里看过,于是「面板和气泡只差 2%」「面板是中性白、页面是暖奶油」这
+# 两个问题一直看不见——它们只在整页上下文里才成立。
+SURFACE_JS = """
+() => {
+  const at = (selector, property) => {
+    const node = document.querySelector(selector);
+    return node ? getComputedStyle(node)[property] : "";
+  };
+  return {
+    panel: at(".assistant-content .code-block", "backgroundColor"),
+    bubble: at(".assistant-content", "backgroundColor"),
+    page: at("body", "backgroundColor"),
+  };
+}
+"""
+
 # 语言样品墙:直接调 MiyuHighlight,一次看全所有语言在当前色板下的样子。
 # 用 createElement 搭,不用 innerHTML——被测的东西本身就是「不产生 HTML 字符串」。
 GALLERY_JS = """
@@ -249,8 +266,8 @@ def run(page, check, user_code):
                 ("matugen-dark", "graphite", True), ("matugen-light", "linen", True)]
     available = []
     for name, theme, matugen in palettes:
-        applied = page.evaluate(THEME_JS, {"theme": theme, "matugen": matugen})
-        if matugen and not applied["loaded"]:
+        page.evaluate(THEME_JS, {"theme": theme, "matugen": matugen})
+        if matugen and not theme_ready(page):
             print(f"! 沙箱里没有 /theme.css，跳过 {name}")
             continue
         available.append((name, theme, matugen))
@@ -277,6 +294,7 @@ def run(page, check, user_code):
                 f"{role}={contrast(palette[role], palette['bg']):.1f}" for role in ROLES))
         shoot_block(page, ".assistant-content .code-block", SHOTS / f"{name}-assistant.png")
         shoot_block(page, ".user-message .user-bubble", SHOTS / f"{name}-user.png")
+        check_surfaces(page, name, check)
 
     # ── 语言样品墙:一屏放不下,单独换个大视口拍 ───────────────
     check("高亮模块挂上了", page.evaluate("() => Boolean(window.MiyuHighlight)"))
@@ -293,6 +311,49 @@ def run(page, check, user_code):
     # 收摊:主题拨回默认,免得后面的走查在别的配色下截图。
     page.evaluate(THEME_JS, {"theme": "graphite", "matugen": False})
     page.wait_for_timeout(150)
+
+
+def theme_ready(page):
+    """等 matugen 那张外链样式表真的挂上。
+
+    `link.disabled = true` 在 Chromium 里是把样式表**卸掉**,再置回 false 会重新
+    取一次,是异步的——刚 enable 完同步读 `link.sheet` 必然是 null。之前就因为这
+    个把两套 matugen 色板整体跳过了(而用户日常看的正是这一套),沙箱里明明
+    /theme.css 是 200。
+    """
+    try:
+        page.wait_for_function(
+            "() => { const link = document.getElementById('matugenThemeLink');"
+            " return Boolean(link && !link.disabled && link.sheet"
+            " && link.sheet.cssRules.length); }", timeout=4000)
+        return True
+    except Exception:
+        return False
+
+
+def check_surfaces(page, name, check):
+    """代码面板必须既跟气泡分得开、又跟页面同一张纸。顺手拍一张整页留证。"""
+    block = page.query_selector(".assistant-content .code-block")
+    if block is not None:
+        block.scroll_into_view_if_needed()
+        page.wait_for_timeout(150)
+    surfaces = page.evaluate(SURFACE_JS)
+    panel, bubble, page_bg = (srgb(surfaces[key]) for key in ("panel", "bubble", "page"))
+    # 明度差:整页看的时候,差不到一档的面板根本不像面板(09-09 实测 2% 时读作
+    # 「一片没有边界的文字」)。用 0-255 的感知明度近似,别用对比度——两者在
+    # 相邻的浅色之间差得太远。
+    step = abs(luminance(panel) ** 0.5 - luminance(bubble) ** 0.5) * 255
+    check(f"{name} 面板和气泡分得开", step >= 7, f"{step:.0f}/255")
+    # 色相:同一页上所有的纸都该是同一种白。R-B 是这套主题里唯一的冷暖轴。
+    warm = [color[0] - color[2] for color in (panel, bubble, page_bg)]
+    check(f"{name} 面板和页面同一张纸", abs(warm[0] - warm[2]) <= 8,
+          f"面板 R-B={warm[0]:.0f} 气泡={warm[1]:.0f} 页面={warm[2]:.0f}")
+    print(f"    {name} 层次：页面 {fmt(page_bg)} → 气泡 {fmt(bubble)} → 面板 {fmt(panel)}")
+    page.screenshot(path=str(SHOTS / f"{name}-page.png"))
+
+
+def fmt(color):
+    return "rgb(%d,%d,%d)" % tuple(round(channel) for channel in color)
 
 
 def shoot_block(page, selector, path):

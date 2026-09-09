@@ -86,7 +86,9 @@ body[data-theme="linen"] {
   --ribbon-soft: var(--md-sys-color-tertiary-container);
   --user-bg: var(--md-sys-color-primary-container);
   --user-text: var(--md-sys-color-on-primary-container);
-  --code-bg: var(--md-sys-color-surface-container-lowest);
+  /* 暗色:面板比气泡**亮**一档(One Dark 自己也是这么摆的),不是挖一个更黑的洞。 */
+  --code-bg: var(--md-sys-color-surface-container-high);
+  --code-edge: color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 94%, var(--md-sys-color-primary));
 
   /* 正文高亮:暗色直接用 primary,亮色在 linen 块加深 */
@@ -166,23 +168,31 @@ body[data-theme="linen"] {
 
   /* 语法高亮的浅色一套(One Light)。注释比原版的 #a0a1a7 压暗了一档——那个值
      在浅底上只有 2.6:1,是「眯着眼找」的程度;注释该退到后面,但不该看不见。 */
-  --tok-c: #8b8c93;
+  --tok-c: #81828a;
   --tok-p: #383a42;
-  --tok-o: #0184bc;
+  --tok-o: #017eb4;
   --tok-k: #a626a4;
-  --tok-s: #48934a;
+  --tok-s: #3f8141;
   --tok-n: #986801;
   --tok-f: #3a6fe0;
-  --tok-t: #a97601;
+  --tok-t: #a07001;
   --tok-y: #d3453b;
 
   /* 亮色下少数别名的映射不同:用户气泡用实心主色,代码块改暖纸浅底 */
   --user-bg: var(--md-sys-color-primary);
   --user-text: var(--md-sys-color-on-primary);
-  /* 代码底提到近白。标准色板(One Light)是照着近白底调的,压在原来那层偏暖的
-     奶油底上会吃掉约一档对比度——绿字符串掉到 2.5:1。硬把色板压暗能补回来,
-     但数字和类型那两档本来就靠明度区分,一压就撞成同一个色。改底比改色板对。 */
-  --code-bg: color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 82%, #ffffff);
+  /* 浅色的代码面板 = **页面自己那张纸**(surface),不是白纸。
+     别再往 surface-container-lowest 上兑:壁纸生成的调色板(matugen)把它定成
+     #ffffff,兑一成暖色只把 R-B 拉到 2,而同一页的气泡是 18、底是 19——量出来
+     就是一块中性白补丁贴在暖奶油纸上,这正是「贴了张打印纸」的来源
+     (09-09 实测 panel rgb(253,253,251) / bubble rgb(242,238,224))。
+     用 surface 则天然跟着主题的色相走,且离气泡正好一档(matugen 亮色 +12、
+     内置晨光 -9),和暗色那边「比气泡高一档」是同一个手法。
+     顺带一提:浅色不能靠「压深」制造层次——One Light 那套色是照着近白底设计的,
+     底色每压深一档就吃掉两成对比度,压到 surface-container-highest 时
+     tok-o/t/y 会掉到 3.5:1 以下,而且 tok-t 补深之后会和 tok-n 撞成同一个色。 */
+  --code-bg: var(--md-sys-color-surface);
+  --code-edge: color-mix(in srgb, var(--md-sys-color-outline) 42%, transparent);
   --code-ink: color-mix(in srgb, var(--md-sys-color-on-surface) 85%, var(--md-sys-color-surface));
   --hl: color-mix(in srgb, var(--md-sys-color-primary) 78%, var(--md-sys-color-on-surface));
   --bubble-shadow: 0 1px 4px rgba(83, 64, 30, 0.07);
@@ -2119,10 +2129,15 @@ body[data-theme="graphite"] .session-unread-dot {
   text-decoration-color: var(--accent);
 }
 
+/* 代码块必须一眼看出是「一块面板」。原先没有边框,底色又和气泡只差 2–3%,
+   于是它读起来不是面板,是一片没有边界的文字——这是 09-09 连挨三轮「好丑」的
+   来源,而三轮都白改了配色:问题从来不在色板,在层次。
+   两条约束缺一不可:底色跟着主题的色相走(要符合网页背景),同时跟气泡差开一档。
+   走查里 check_surfaces 就是钉这两条的(testkit/webui-links/syntax.py)。 */
 .code-block {
   margin: 2px 0 12px;
   overflow: hidden;
-  border: 0;
+  border: 1px solid var(--code-edge);
   border-radius: 8px;
   background: var(--code-bg);
   color: var(--code-ink);
@@ -2216,17 +2231,14 @@ body[data-theme="graphite"] .session-unread-dot {
 
 /* diff 的增删行:颜色之外再垫一层极淡的底,整行扫过去比只认颜色快。 */
 .tok-ins {
-  display: inline-block;
-  width: 100%;
-  background: color-mix(in srgb, var(--tok-s) 13%, transparent);
+  background: color-mix(in srgb, var(--tok-s) 15%, transparent);
   color: var(--tok-s);
 }
 
+/* 删除行用红,不是关键字那个紫——补丁里紫色的「删掉」没人认得。 */
 .tok-del {
-  display: inline-block;
-  width: 100%;
-  background: color-mix(in srgb, var(--tok-k) 13%, transparent);
-  color: var(--tok-k);
+  background: color-mix(in srgb, var(--tok-y) 15%, transparent);
+  color: var(--tok-y);
 }
 
 /* 思考签:气泡内小签,常驻极浅紫底;直播时换 live 底 + 标题流光 */

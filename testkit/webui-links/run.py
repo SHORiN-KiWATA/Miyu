@@ -144,6 +144,21 @@ def upload_clip(session_id):
         return None
 
 
+def seed_theme():
+    """把本机真实的 matugen 主题复制进沙箱。
+
+    配色走查里有两套 matugen 色板，没有这份文件就会被整体跳过——而用户日常看
+    的正是这一套（内置的晨光/夜阑他并不用）。09-09 的配色返工全发生在这套色板
+    上：它把 surface-container-lowest 定成了 #ffffff，内置主题里没有这种极值。
+    只读地复制一份，沙箱怎么折腾都碰不到真配置。
+    """
+    source = Path.home() / ".miyu" / "config" / "webui-theme.css"
+    if not source.exists():
+        return False
+    shutil.copy(source, HOME / "config" / "webui-theme.css")
+    return True
+
+
 def write_config():
     """把模型池指到桩上。表情包插件开着，供瀑布流那步用。"""
     HOME.mkdir(parents=True, exist_ok=True)
@@ -238,6 +253,8 @@ def main():
     Path(RUNTIME).mkdir(exist_ok=True)
     write_config()
     has_memes = seed_memes()
+    if not seed_theme():
+        print("! 本机没有 webui-theme.css，两套 matugen 色板会被跳过")
 
     icons_ok = check_dashboard_icons()
 
