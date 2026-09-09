@@ -80,6 +80,7 @@ fn bundled_descriptions_follow_the_header_style_rules() {
             "goofish_search",
             "hotel_deals",
             "procusage",
+            "reddit_search",
             "showenv",
             "xhs_search",
             "zhihu_search",

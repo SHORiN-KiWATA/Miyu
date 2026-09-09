@@ -1,0 +1,919 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 显示名称：Reddit 检索
+# Description: Search Reddit posts, comments, users and subreddits. Data comes from the free Arctic Shift archive, which mirrors Reddit within minutes; Reddit's own API is not used because it now needs approved credentials. Two limits to plan around: the archive has no site-wide keyword search, so a keyword must come with a subreddit or an author, and it cannot rank by hotness, so sort=top samples the time window and ranks by score. Scores and comment counts of posts younger than 36 hours are not filled in yet and are reported as unsettled rather than as a real number. Pass a reddit link or a bare post id as query to read that post with its comment tree. Zero dependencies, only python3.
+# Timeout: 120
+# Group: research
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "comments",
+#         "user",
+#         "subreddits",
+#         "doctor"
+#       ],
+#       "description": "Usually omitted: a reddit link or bare post id in query switches to comments by itself. search (default) is a keyword search, or a plain subreddit listing when query is empty; comments reads one post with its comment tree; user lists a redditor's posts and comments; subreddits finds subreddits by name; doctor is the self-check"
+#     },
+#     "query": {
+#       "type": "string",
+#       "description": "Keyword to search, or a reddit URL / post id for action=comments, or the name to look up for action=subreddits. A keyword search is the slow path on the archive (a few seconds, sometimes retried): pair it with after/before when it times out, and drop it entirely to just list a subreddit or author"
+#     },
+#     "subreddit": {
+#       "type": "string",
+#       "description": "Restrict to one subreddit, e.g. 'LocalLLaMA' (the r/ prefix is optional). A keyword search needs this or author, because the archive has no site-wide search"
+#     },
+#     "author": {
+#       "type": "string",
+#       "description": "Restrict to one redditor (the u/ prefix is optional). Required for action=user"
+#     },
+#     "sort": {
+#       "type": "string",
+#       "enum": [
+#         "new",
+#         "top"
+#       ],
+#       "description": "new (default) is newest first. top samples the time window and ranks by score, which costs several requests and is a sample of the window, not a complete ranking"
+#     },
+#     "time": {
+#       "type": "string",
+#       "enum": [
+#         "day",
+#         "week",
+#         "month",
+#         "year",
+#         "all"
+#       ],
+#       "description": "Window for sort=top, default month. all means the past year"
+#     },
+#     "after": {
+#       "type": "string",
+#       "description": "Only things posted after this point: '2026-01-01', epoch seconds, or an offset from now like '7d', '3month', '1year'"
+#     },
+#     "before": {
+#       "type": "string",
+#       "description": "Only things posted before this point, same forms as after"
+#     },
+#     "limit": {
+#       "type": "integer",
+#       "description": "Results to return, 1-100, default 10"
+#     },
+#     "kind": {
+#       "type": "string",
+#       "enum": [
+#         "both",
+#         "posts",
+#         "comments"
+#       ],
+#       "description": "action=user: fetch the redditor's posts, comments or both (default both)"
+#     },
+#     "full": {
+#       "type": "boolean",
+#       "description": "Include post bodies. Defaults to true when limit<=5. Set false to force titles only"
+#     },
+#     "max_chars": {
+#       "type": "integer",
+#       "description": "Max characters per body. Default 4000 for a single item, 800 for a list"
+#     },
+#     "depth": {
+#       "type": "integer",
+#       "description": "action=comments: how many reply levels to show, default 4"
+#     },
+#     "format": {
+#       "type": "string",
+#       "enum": [
+#         "md",
+#         "json"
+#       ],
+#       "description": "Output format, default md (compact and readable); json for field-by-field processing"
+#     }
+#   },
+#   "additionalProperties": false
+# }
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# ---------------------------------------------------------------- 常量
+
+# Reddit 自家 API 走不通:匿名 www.reddit.com/*.json 一律 403,oauth.reddit.com
+# 要审核过的凭据(2026 年的政策,不再是谁都能申请)。Arctic Shift 是免费的
+# Reddit 归档镜像,是这里唯一的数据源。
+ARCTIC_BASE = "https://arctic-shift.photon-reddit.com"
+
+USER_AGENT = "miyu-reddit-search/1.0 (https://github.com/SHORiN-KiWATA/Miyu)"
+HTTP_TIMEOUT = 25
+
+# 归档是「发帖那一刻」抓的,投票和评论数要约 36 小时后才回填。这段时间内
+# score/num_comments 基本是 1/0,不是真值,必须标出来,否则模型会把「1 赞」
+# 当成真实热度讲给用户。
+SETTLE_SECONDS = 36 * 3600
+
+TIME_WINDOWS = {"day": 86400, "week": 604800, "month": 2592000,
+                "year": 31536000, "all": 31536000}
+
+# 帖子 id 一定跟在 comments/ 后面(短链 redd.it/<id> 除外)。别把 comments/
+# 写成可选:那样 https://www.reddit.com/user/spez/comments/1vgbkge/ 会被抽成
+# "user",而 /u/ 开头的用户帖链接干脆匹配不上。
+POST_URL_RE = re.compile(
+    r"reddit\.com/(?:(?:r|u|user)/[^/]+/)?comments/([a-z0-9]{4,10})"
+    r"|redd\.it/([a-z0-9]{4,10})", re.I)
+BARE_ID_RE = re.compile(r"^(?:t3_)?([a-z0-9]{4,10})$", re.I)
+
+
+class Failure(Exception):
+    """脚本自己认出来的失败:带一句给用户看的下一步。"""
+
+    def __init__(self, error, fix=None, code=2, extra=None):
+        super().__init__(error)
+        self.error = error
+        self.fix = fix
+        self.code = code
+        self.extra = extra or {}
+
+
+def cache_dir():
+    """中间产物统一收进 Miyu 的缓存目录;单独拿到终端跑时退回 XDG。"""
+    base = os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    if not base:
+        base = os.path.join(
+            os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+            "miyu-scripts")
+    path = os.path.join(base, "reddit_search")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
+# ---------------------------------------------------------------- HTTP
+
+def http_json(url):
+    """返回 (status, headers_dict, parsed)。HTTP 错误码不抛异常——429 是要
+    读响应头的信号,不是意外。"""
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", USER_AGENT)
+    try:
+        resp = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT)
+    except urllib.error.HTTPError as err:
+        resp = err
+    except urllib.error.URLError as err:
+        raise Failure(f"连不上 Arctic Shift: {err.reason}",
+                      "检查网络/代理后重试；"
+                      "服务状态见 https://status.arctic-shift.photon-reddit.com")
+    except Exception as err:  # socket.timeout 等
+        raise Failure(f"请求 Arctic Shift 失败: {err}", "稍后重试")
+    with resp:
+        payload = resp.read()
+        head = {k.lower(): v for k, v in resp.headers.items()}
+    try:
+        parsed = json.loads(payload.decode("utf-8", errors="replace"))
+    except Exception:
+        parsed = None
+    return resp.status, head, parsed
+
+
+# 关键词查询打的是另一套索引,冷启动时服务端直接回 "Timeout. Maybe slow down
+# a bit",官方文档也说「数据库要热身,再试一次多半就成了」。09-09 实测:冷了一阵
+# 之后第 1 次必超时,第 2 次起连续 5 次全过——所以退避重试,不是撞运气。
+# 退避秒数,长度即重试次数。
+TIMEOUT_BACKOFF = (1.0, 3.0, 6.0)
+
+
+def arctic_get(path, params):
+    query = {k: v for k, v in params.items() if v not in (None, "")}
+    url = f"{ARCTIC_BASE}{path}?{urllib.parse.urlencode(query)}"
+    attempts = 0
+    while True:
+        status, head, parsed = http_json(url)
+        message = (str(parsed["error"])
+                   if isinstance(parsed, dict) and parsed.get("error") else "")
+        if status == 429:
+            wait = _retry_after(head, 60)
+            raise Failure(f"Arctic Shift 限流 (429)，{int(wait)}s 后重试",
+                          "降低调用频率；批量取数据请改用它的月度 dump")
+        # 超时判定放在 5xx 之前：超时将来若改用 5xx 返回，重试依然要生效。
+        if message and _is_timeout(message) and attempts < len(TIMEOUT_BACKOFF):
+            time.sleep(TIMEOUT_BACKOFF[attempts])
+            attempts += 1
+            continue
+        # 5xx 是服务端自己坏了，不是这次查询的参数有问题——即使它顺带回了一个
+        # error 字段，也不能说成「查询被拒」，那会让人去改本来没错的参数。
+        if status >= 500:
+            raise Failure(
+                f"Arctic Shift 服务端故障 (HTTP {status})"
+                + (f": {message}" if message else ""),
+                "稍后重试；服务状态见 https://status.arctic-shift.photon-reddit.com")
+        if message:
+            hint = _fix_for(message)
+            if _is_timeout(message):
+                hint = (f"已退避重试 {attempts} 次仍超时。" + hint)
+            raise Failure(f"Arctic Shift 拒绝了这次查询: {message}", hint)
+        if status != 200 or not isinstance(parsed, dict):
+            raise Failure(
+                f"Arctic Shift 返回 HTTP {status}（响应不是预期的 JSON）",
+                "稍后重试；持续失败见 https://status.arctic-shift.photon-reddit.com")
+        return parsed.get("data")
+
+
+def _retry_after(head, fallback):
+    for key in ("x-ratelimit-reset", "retry-after"):
+        try:
+            return max(1.0, float(head[key]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return fallback
+
+
+def _is_timeout(message):
+    low = str(message).lower()
+    return "timeout" in low or "timed out" in low
+
+
+def _fix_for(message):
+    text = str(message)
+    if "requires one of" in text:
+        return "给 subreddit 或 author 参数把范围收窄——归档没有全站关键词检索"
+    if _is_timeout(text):
+        # 实测(09-09):author+关键词 不带时间窗几乎必超时,补上 after 之后同一条
+        # 查询立刻就通;很活跃的用户/版块按归档文档本来就不支持关键词检索。
+        return ("加 after/before 收窄时间范围后重试（关键词检索不带时间窗很容易超时，"
+                "很活跃的用户/版块更是本来就不支持）；也可以去掉 query，"
+                "改成按版块或作者列出最近的帖子再自己筛")
+    return "调整参数后重试"
+
+
+# ---------------------------------------------------------------- 时间与文本
+
+def parse_date(text):
+    """支持 epoch / ISO 日期 / '7d' 这类相对偏移，统一转成 epoch 秒。"""
+    if text in (None, ""):
+        return None
+    raw = str(text).strip()
+    if re.fullmatch(r"\d{10,13}", raw):
+        value = int(raw)
+        return value / 1000.0 if value > 10 ** 11 else float(value)
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*"
+                         r"(s|sec|secs|second|seconds|min|mins|minute|minutes|"
+                         r"h|hr|hour|hours|d|day|days|w|week|weeks|"
+                         r"m|month|months|y|year|years)", raw, re.I)
+    if match:
+        units = {"s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+                 "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+                 "h": 3600, "hr": 3600, "hour": 3600, "hours": 3600,
+                 "d": 86400, "day": 86400, "days": 86400,
+                 "w": 604800, "week": 604800, "weeks": 604800,
+                 "m": 2592000, "month": 2592000, "months": 2592000,
+                 "y": 31536000, "year": 31536000, "years": 31536000}
+        return time.time() - float(match.group(1)) * units[match.group(2).lower()]
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return time.mktime(time.strptime(raw.replace("Z", "").split(".")[0], fmt))
+        except ValueError:
+            continue
+    raise Failure(f"看不懂的时间: {raw}",
+                  "用 '2026-01-01'、epoch 秒，或 '7d' / '3month' 这样的相对写法")
+
+
+def when(ts):
+    if not ts:
+        return "?"
+    delta = time.time() - float(ts)
+    stamp = time.strftime("%Y-%m-%d", time.localtime(float(ts)))
+    if delta < 0:
+        return stamp
+    if delta < 60:
+        return "刚刚"
+    if delta < 3600:
+        return f"{int(delta // 60)}分钟前"
+    if delta < 86400:
+        return f"{int(delta // 3600)}小时前"
+    if delta < 86400 * 30:
+        return f"{int(delta // 86400)}天前"
+    return stamp
+
+
+def clip(text, limit):
+    text = (text or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"…（共 {len(text)} 字，已截断）"
+
+
+def count(value):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return "?"
+    if abs(value) >= 10000:
+        return f"{value / 1000:.1f}k"
+    return str(value)
+
+
+def strip_prefix(value, prefix):
+    value = (value or "").strip().strip("/")
+    if value.lower().startswith(prefix):
+        value = value[len(prefix):]
+    return value.strip("/")
+
+
+# ---------------------------------------------------------------- 归一化
+
+def settled(created):
+    return bool(created and time.time() - float(created) > SETTLE_SECONDS)
+
+
+def norm_post(raw):
+    created = raw.get("created_utc") or raw.get("created")
+    sub = raw.get("subreddit") or ""
+    permalink = raw.get("permalink")
+    # 归档的 posts/search 不一定带 permalink(fields 里也没有这个字段),
+    # 自己按 /r/{sub}/comments/{id} 拼一个,链接必须永远有。
+    link = ("https://www.reddit.com" + permalink) if permalink else \
+        f"https://www.reddit.com/r/{sub}/comments/{raw.get('id')}"
+    return {
+        "kind": "post",
+        "id": raw.get("id"),
+        "title": raw.get("title") or "",
+        "author": raw.get("author") or "[deleted]",
+        "subreddit": sub,
+        "score": raw.get("score"),
+        "num_comments": raw.get("num_comments"),
+        "created_utc": created,
+        "permalink": link,
+        "url": raw.get("url") or "",
+        "selftext": raw.get("selftext") or "",
+        "over_18": bool(raw.get("over_18")),
+        "flair": raw.get("link_flair_text") or "",
+        "counts_settled": settled(created),
+    }
+
+
+def norm_comment(raw):
+    created = raw.get("created_utc") or raw.get("created")
+    link_id = strip_prefix(raw.get("link_id") or "", "t3_")
+    permalink = raw.get("permalink")
+    if permalink:
+        link = "https://www.reddit.com" + permalink
+    elif link_id:
+        # slug 段用 `_` 占位——reddit 认这个写法;留空会拼出 `//`,某些客户端
+        # 会把它规范成单斜杠,链接就指到帖子而不是这条评论了。
+        link = (f"https://www.reddit.com/r/{raw.get('subreddit')}/comments/"
+                f"{link_id}/_/{raw.get('id')}")
+    else:
+        link = ""
+    return {
+        "kind": "comment",
+        "id": raw.get("id"),
+        "author": raw.get("author") or "[deleted]",
+        "subreddit": raw.get("subreddit") or "",
+        "score": raw.get("score"),
+        "created_utc": created,
+        "body": raw.get("body") or "",
+        "link_id": link_id,
+        "permalink": link,
+        "counts_settled": settled(created),
+    }
+
+
+def listing_children(node):
+    if isinstance(node, dict) and node.get("kind") == "Listing":
+        return node.get("data", {}).get("children") or []
+    return []
+
+
+def walk_tree(nodes, depth, max_depth, max_nodes, out):
+    """归档的评论树与 Reddit 官方结构完全同构:节点是 {"kind":"t1","data":{…}},
+    子节点挂在 data.replies 的 Listing 里,折叠节点是 kind=more。"""
+    for node in nodes or []:
+        if len(out) >= max_nodes:
+            return
+        if not isinstance(node, dict):
+            continue
+        if node.get("kind") == "more":
+            children = node.get("data", {}).get("children") or []
+            if children:
+                out.append({"kind": "more", "depth": depth, "count": len(children)})
+            continue
+        if node.get("kind") != "t1":
+            continue
+        data = node.get("data") or {}
+        item = norm_comment(data)
+        item["depth"] = depth
+        out.append(item)
+        if depth + 1 > max_depth:
+            continue
+        replies = data.get("replies")
+        if isinstance(replies, dict):
+            walk_tree(listing_children(replies), depth + 1, max_depth, max_nodes, out)
+        elif isinstance(replies, list):
+            walk_tree(replies, depth + 1, max_depth, max_nodes, out)
+
+
+# ---------------------------------------------------------------- action: search
+
+def action_search(args):
+    sub, author, query = args["subreddit"], args["author"], args["query"]
+    if query and not sub and not author:
+        raise Failure(
+            "归档不支持全站关键词搜索（服务端要求给 subreddit 或 author）",
+            "补一个 subreddit 或 author 收窄范围；"
+            "不知道该搜哪个版块就先用 action=subreddits 找版块")
+    if not query and not sub and not author:
+        raise Failure("至少要给 query、subreddit 或 author 其中之一",
+                      "例如 subreddit=LocalLLaMA，或 query=… 加上 subreddit")
+
+    want = args["limit"]
+    base = {"subreddit": sub or None, "author": author or None, "query": query or None}
+    if args["sort"] == "top":
+        posts, notes = sample_top(base, args, want)
+        label_sort = "窗口采样后按分数"
+    else:
+        rows = arctic_get("/api/posts/search",
+                          dict(base, limit=want, sort="desc",
+                               after=args["after_raw"], before=args["before_raw"])) or []
+        posts, notes = [norm_post(row) for row in rows][:want], []
+        label_sort = "按时间倒序"
+    scope = f"r/{sub}" if sub else (f"u/{author}" if author else "归档")
+    label = f"{scope}{f' · “{query}”' if query else ''} · {label_sort}"
+    posts = filter_by_date(posts, args)
+    return {"type": "posts", "label": label, "results": posts, "notes": notes}
+
+
+# 归档一次最多回 100 条且只能按 created_utc 排,直接抓 100 条排序＝「最近 100 条
+# 里最高分」,对一天上百帖的大版块就是把「最新」冒充成「最热」(实测 r/LocalLLaMA
+# time=month 抓回的 100 条全在 24 小时内)。所以把窗口切成几段分别取样,再合并
+# 排序,并把「采样了多少、有没有被 100 条上限截断」照实说出来。
+TOP_SLICES = 5
+TOP_PER_SLICE = 100
+
+
+def sample_top(base, args, want):
+    now = time.time()
+    lo = args["after"] if args["after"] is not None else now - TIME_WINDOWS[args["time"]]
+    hi = args["before"] if args["before"] is not None else now
+    notes = []
+    # 36 小时内赞数还没回填(一律是 1),拿它们排序等于按时间排。窗口够长就把
+    # 这段尾巴切掉,让排序落在真实分数上;整个窗口都在尾巴里就没法救,照实说明。
+    settled_hi = now - SETTLE_SECONDS
+    if settled_hi > lo:
+        if hi > settled_hi:
+            hi = settled_hi
+            notes.append("已排除最近 36 小时（归档赞数尚未回填）")
+    else:
+        notes.append("整个时间窗口都在归档的 36 小时结算期内，赞数还不是真值，"
+                     "这里的排序只能当时间顺序看")
+    span = max(1.0, hi - lo)
+    slices = TOP_SLICES if span > 2 * 86400 else 1
+    seen, posts, truncated = set(), [], 0
+    for index in range(slices):
+        s_lo = lo + span * index / slices
+        s_hi = lo + span * (index + 1) / slices
+        rows = arctic_get("/api/posts/search",
+                          dict(base, limit=TOP_PER_SLICE, sort="desc",
+                               after=str(int(s_lo)), before=str(int(s_hi)))) or []
+        if len(rows) >= TOP_PER_SLICE:
+            truncated += 1
+        for row in rows:
+            if row.get("id") in seen:
+                continue
+            seen.add(row.get("id"))
+            posts.append(norm_post(row))
+    # 未结算的分数是未知而不是低分,一律排到结算过的后面。
+    posts.sort(key=lambda p: (p["counts_settled"], p["score"] or 0), reverse=True)
+    detail = f"归档不支持热度排序：在窗口内分 {slices} 段取样共 {len(posts)} 条后按分数排"
+    if truncated:
+        detail += (f"，其中 {truncated} 段撞到单次 100 条上限，"
+                   "所以这是窗口的样本而不是完整排名")
+    notes.insert(0, detail)
+    return posts[:want], notes
+
+
+def filter_by_date(items, args):
+    """归档是服务端按 after/before 筛的，这里再兜一道：sort=top 的分段取样用的是
+    自己算的边界，用户给的 after/before 得原样生效。"""
+    lo, hi = args["after"], args["before"]
+    if lo is None and hi is None:
+        return items
+    return [it for it in items
+            if it.get("created_utc")
+            and (lo is None or float(it["created_utc"]) >= lo)
+            and (hi is None or float(it["created_utc"]) <= hi)]
+
+
+# ---------------------------------------------------------------- action: comments
+
+def resolve_post_id(query):
+    if not query:
+        raise Failure("action=comments 需要帖子链接或 id",
+                      "把 reddit 链接或帖子 id（如 1wbherc）放进 query")
+    raw = query.strip()
+    match = POST_URL_RE.search(raw)
+    if match:
+        return (match.group(1) or match.group(2)).lower()
+    bare = BARE_ID_RE.match(raw)
+    if bare:
+        return bare.group(1).lower()
+    raise Failure(f"认不出这是哪个帖子: {query}",
+                  "给完整的 reddit 链接，或帖子 id（如 1wbherc / t3_1wbherc）")
+
+
+def action_comments(args):
+    post_id = resolve_post_id(args["query"])
+    rows = arctic_get("/api/posts/ids", {"ids": post_id}) or []
+    if not rows:
+        raise Failure(f"归档里没有这个帖子: {post_id}",
+                      "确认 id 是否正确；刚发出来几分钟的帖子可能还没进归档，稍后再试")
+    post = norm_post(rows[0])
+    tree = arctic_get("/api/comments/tree",
+                      {"link_id": "t3_" + post_id,
+                       "limit": max(args["limit"], 25),
+                       "start_depth": args["depth"],
+                       "start_breadth": max(2, args["limit"] // 2)}) or []
+    flat = []
+    walk_tree(tree, 0, args["depth"], args["limit"], flat)
+    notes = []
+    if not post["counts_settled"]:
+        notes.append("这帖不到 36 小时，归档里的赞数和评论数还没回填")
+    return {"type": "thread", "post": post, "comments": flat, "notes": notes}
+
+
+# ---------------------------------------------------------------- action: user
+
+def action_user(args):
+    name = strip_prefix(args["author"] or args["query"], "u/")
+    if not name:
+        raise Failure("action=user 需要 author", "给 author 参数，例如 author=spez")
+    half = max(1, args["limit"] // 2) if args["kind"] == "both" else args["limit"]
+    common = {"author": name, "limit": half, "sort": "desc",
+              "after": args["after_raw"], "before": args["before_raw"]}
+    out = {"type": "user", "name": name, "posts": [], "comments": [], "notes": []}
+    if args["kind"] in ("both", "posts"):
+        out["posts"] = [norm_post(r)
+                        for r in (arctic_get("/api/posts/search", common) or [])]
+    if args["kind"] in ("both", "comments"):
+        out["comments"] = [norm_comment(r)
+                           for r in (arctic_get("/api/comments/search", common) or [])]
+    return out
+
+
+# ---------------------------------------------------------------- action: subreddits
+
+def norm_sub(raw):
+    return {
+        "name": raw.get("display_name") or raw.get("subreddit") or "",
+        "title": raw.get("title") or "",
+        "subscribers": raw.get("subscribers"),
+        "description": raw.get("public_description") or raw.get("description") or "",
+        "over_18": bool(raw.get("over18") or raw.get("over_18")),
+        "created_utc": raw.get("created_utc"),
+    }
+
+
+def action_subreddits(args):
+    name = strip_prefix(args["query"] or args["subreddit"], "r/")
+    if not name:
+        raise Failure("action=subreddits 需要一个名字", "把版块名或关键词放进 query")
+    # 先按前缀找(能把 localll → LocalLLaMA/LocalLLM 一网打尽),没有再按全名找。
+    rows = arctic_get("/api/subreddits/search",
+                      {"subreddit_prefix": name, "limit": args["limit"],
+                       "sort_type": "subscribers", "sort": "desc"}) or []
+    if not rows:
+        rows = arctic_get("/api/subreddits/search",
+                          {"subreddit": name, "limit": args["limit"]}) or []
+    return {"type": "subreddits", "query": name,
+            "results": [norm_sub(r) for r in rows], "notes": []}
+
+
+# ---------------------------------------------------------------- action: doctor
+
+def action_doctor(args):
+    checks = []
+    started = time.time()
+    try:
+        rows = arctic_get("/api/posts/search",
+                          {"subreddit": "announcements", "limit": 1}) or []
+        checks.append({
+            "name": "Arctic Shift 归档", "ok": True,
+            "detail": f"调用成功（{int((time.time() - started) * 1000)}ms），"
+                      f"最近一条 {when((rows[0] or {}).get('created_utc')) if rows else '无数据'}"})
+    except Failure as err:
+        checks.append({"name": "Arctic Shift 归档", "ok": False,
+                       "detail": err.error, "fix": err.fix})
+    started = time.time()
+    try:
+        # 关键词检索走的是另一套索引，慢且会超时，单独探一次。
+        arctic_get("/api/posts/search",
+                   {"subreddit": "announcements", "query": "reddit", "limit": 1})
+        checks.append({"name": "关键词检索", "ok": True,
+                       "detail": f"可用（{int((time.time() - started) * 1000)}ms）"})
+    except Failure as err:
+        checks.append({"name": "关键词检索", "ok": False, "detail": err.error,
+                       "fix": "归档的关键词索引经常热身失败，稍后重试；"
+                              "按版块/作者列表的检索不受影响"})
+    return {"type": "doctor", "checks": checks, "cache_dir": cache_dir(),
+            "ok": all(c["ok"] for c in checks)}
+
+
+# ---------------------------------------------------------------- 渲染
+
+SOURCE_LINE = "来源：Arctic Shift 归档（Reddit 官方 API 需审核凭据，未使用）"
+
+
+def notes_block(payload):
+    return "".join(f"> {n}\n" for n in payload.get("notes") or [])
+
+
+def score_text(item):
+    if not item.get("counts_settled"):
+        # 说清楚是「归档还没回填」而不是「真的只有 1 个赞」，
+        # 否则模型会照着 1↑ 跟用户说这帖没人理。
+        return "赞数未结算(归档 36h 后回填)"
+    bits = [f"{count(item.get('score'))}↑"]
+    if item.get("num_comments") is not None:
+        bits.append(f"{count(item['num_comments'])}评论")
+    return " · ".join(bits)
+
+
+def md_posts(payload, args):
+    lines = [f"# Reddit · {payload.get('label', '')}".rstrip(), "", SOURCE_LINE, ""]
+    block = notes_block(payload)
+    if block:
+        lines += [block.rstrip(), ""]
+    results = payload.get("results") or []
+    if not results:
+        lines.append("没有结果。")
+        return "\n".join(lines)
+    body_limit = args["max_chars"] or (4000 if len(results) == 1 else 800)
+    for idx, post in enumerate(results, 1):
+        tags = []
+        if post["flair"]:
+            tags.append(f"[{post['flair']}]")
+        if post["over_18"]:
+            tags.append("[NSFW]")
+        lines.append(f"{idx}. **{post['title']}** {' '.join(tags)}".rstrip())
+        lines.append(f"   r/{post['subreddit']} · u/{post['author']} · "
+                     f"{score_text(post)} · {when(post['created_utc'])}")
+        lines.append(f"   {post['permalink']}")
+        if post["url"] and not post["url"].startswith("https://www.reddit.com"):
+            lines.append(f"   外链 {post['url']}")
+        if args["full"] and post["selftext"]:
+            body = clip(post["selftext"], body_limit)
+            lines.append("")
+            lines += [f"   > {ln}" if ln else "   >" for ln in body.split("\n")]
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def md_thread(payload, args):
+    post = payload["post"]
+    lines = [f"# {post['title']}", "",
+             f"r/{post['subreddit']} · u/{post['author']} · {score_text(post)} · "
+             f"{when(post['created_utc'])}",
+             post["permalink"], "", SOURCE_LINE, ""]
+    block = notes_block(payload)
+    if block:
+        lines += [block.rstrip(), ""]
+    if post["selftext"]:
+        lines += [clip(post["selftext"], args["max_chars"] or 4000), ""]
+    elif post["url"] and not post["url"].startswith("https://www.reddit.com"):
+        lines += [f"外链 {post['url']}", ""]
+    comments = payload.get("comments") or []
+    lines.append(f"## 评论（{len([c for c in comments if c['kind'] == 'comment'])} 条）")
+    lines.append("")
+    if not comments:
+        lines.append("没有评论。")
+    body_limit = args["max_chars"] or 800
+    for item in comments:
+        pad = "  " * item.get("depth", 0)
+        if item["kind"] == "more":
+            lines.append(f"{pad}- …还有 {item['count']} 条被折叠（调大 limit 展开）")
+            continue
+        lines.append(f"{pad}- **u/{item['author']}** · {score_text(item)} · "
+                     f"{when(item['created_utc'])}")
+        for line in clip(item["body"], body_limit).split("\n"):
+            lines.append(f"{pad}  {line}" if line else "")
+    return "\n".join(lines).rstrip()
+
+
+def md_user(payload, args):
+    lines = [f"# u/{payload['name']}", "", SOURCE_LINE, ""]
+    posts = payload.get("posts") or []
+    comments = payload.get("comments") or []
+    if posts:
+        lines += [f"## 帖子（{len(posts)}）", ""]
+        for idx, post in enumerate(posts, 1):
+            lines.append(f"{idx}. **{post['title']}** — r/{post['subreddit']} · "
+                         f"{score_text(post)} · {when(post['created_utc'])}")
+            lines.append(f"   {post['permalink']}")
+        lines.append("")
+    if comments:
+        lines += [f"## 评论（{len(comments)}）", ""]
+        limit = args["max_chars"] or 500
+        for idx, item in enumerate(comments, 1):
+            lines.append(f"{idx}. r/{item['subreddit']} · {score_text(item)} · "
+                         f"{when(item['created_utc'])}")
+            lines.append(f"   {clip(item['body'], limit)}")
+            if item["permalink"]:
+                lines.append(f"   {item['permalink']}")
+        lines.append("")
+    if not posts and not comments:
+        lines.append("这个人在归档里没有内容。")
+    return "\n".join(lines).rstrip()
+
+
+def md_subreddits(payload, args):
+    lines = [f"# 版块搜索 · {payload['query']}", "", SOURCE_LINE, ""]
+    results = payload.get("results") or []
+    if not results:
+        lines.append("没有结果。")
+        return "\n".join(lines)
+    for idx, sub in enumerate(results, 1):
+        lines.append(f"{idx}. **r/{sub['name']}** · {count(sub['subscribers'])} 订阅"
+                     + ("· NSFW" if sub["over_18"] else ""))
+        if sub["description"]:
+            lines.append(f"   {clip(sub['description'], 200)}")
+        lines.append(f"   https://www.reddit.com/r/{sub['name']}")
+    return "\n".join(lines).rstrip()
+
+
+def md_doctor(payload):
+    lines = ["# reddit-search 自检", "", SOURCE_LINE, ""]
+    for check in payload["checks"]:
+        lines.append(f"- {'✅' if check['ok'] else '❌'} **{check['name']}**："
+                     f"{check['detail']}")
+        if check.get("fix") and not check["ok"]:
+            lines.append(f"  - 下一步：{check['fix']}")
+    lines += ["", f"缓存目录：{payload['cache_dir']}"]
+    return "\n".join(lines)
+
+
+def to_md(payload, args):
+    kind = payload.get("type")
+    if kind == "posts":
+        return md_posts(payload, args)
+    if kind == "thread":
+        return md_thread(payload, args)
+    if kind == "user":
+        return md_user(payload, args)
+    if kind == "subreddits":
+        return md_subreddits(payload, args)
+    if kind == "doctor":
+        return md_doctor(payload)
+    return "```json\n" + json.dumps(payload, ensure_ascii=False, indent=1) + "\n```"
+
+
+def emit(payload, args):
+    if args["format"] == "json":
+        print(json.dumps(payload, ensure_ascii=False, indent=1))
+    else:
+        print(to_md(payload, args))
+
+
+def emit_failure(err):
+    out = {"ok": False, "error": err.error, "fix": err.fix}
+    out.update(err.extra)
+    print(json.dumps(out, ensure_ascii=False))
+    sys.exit(err.code)
+
+
+# ---------------------------------------------------------------- 参数
+
+ACTIONS = {}  # 在文件末尾填，见下
+
+
+def infer_action(raw):
+    action = (raw.get("action") or "").strip().lower()
+    if action:
+        return action
+    query = (raw.get("query") or "").strip()
+    # 链接或裸 id 显然是「读这个帖子」，不用调用方自己分类。
+    if query and ("reddit.com" in query or "redd.it" in query):
+        return "comments"
+    if query and BARE_ID_RE.match(query) and not query.isalpha():
+        return "comments"
+    return "search"
+
+
+def as_int(value, default, lo, hi):
+    try:
+        value = int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(hi, value))
+
+
+def normalize(raw):
+    action = infer_action(raw)
+    if action not in ACTIONS:
+        raise Failure(f"未知的 action: {action}",
+                      "用 search / comments / user / subreddits / doctor")
+    limit = as_int(raw.get("limit"), 10, 1, 100)
+    full = raw.get("full")
+    if full is None:
+        full = limit <= 5
+    sort = (raw.get("sort") or "new").strip().lower()
+    time_window = (raw.get("time") or "month").strip().lower()
+    if time_window not in TIME_WINDOWS:
+        time_window = "month"
+    fmt = (raw.get("format") or "md").strip().lower()
+    kind = (raw.get("kind") or "both").strip().lower()
+    if kind not in ("both", "posts", "comments"):
+        kind = "both"
+    return {
+        "action": action,
+        "query": (raw.get("query") or "").strip(),
+        "subreddit": strip_prefix(raw.get("subreddit") or "", "r/"),
+        "author": strip_prefix(raw.get("author") or "", "u/"),
+        "sort": "top" if sort == "top" else "new",
+        "time": time_window,
+        "after_raw": raw.get("after") or None,
+        "before_raw": raw.get("before") or None,
+        "after": parse_date(raw.get("after")),
+        "before": parse_date(raw.get("before")),
+        "limit": limit,
+        "depth": as_int(raw.get("depth"), 4, 0, 10),
+        "max_chars": as_int(raw.get("max_chars"), 0, 0, 20000),
+        "full": bool(full),
+        "kind": kind,
+        "format": "json" if fmt == "json" else "md",
+    }
+
+
+def read_args():
+    """Miyu 走 stdin JSON；直接在终端跑时走 argparse，两种形态同一份逻辑。"""
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(
+            prog="reddit-search", add_help=True,
+            description="Reddit 检索（数据源：Arctic Shift 归档）")
+        parser.add_argument("query", nargs="?", default="")
+        parser.add_argument("-a", "--action")
+        parser.add_argument("-r", "--subreddit")
+        parser.add_argument("-u", "--author")
+        parser.add_argument("-s", "--sort", choices=["new", "top"])
+        parser.add_argument("-t", "--time", choices=sorted(TIME_WINDOWS))
+        parser.add_argument("-n", "--limit", type=int)
+        parser.add_argument("--after")
+        parser.add_argument("--before")
+        parser.add_argument("--kind", choices=["both", "posts", "comments"])
+        parser.add_argument("--depth", type=int)
+        parser.add_argument("--max-chars", dest="max_chars", type=int)
+        parser.add_argument("--full", action="store_true", default=None)
+        parser.add_argument("--no-full", dest="full", action="store_false")
+        parser.add_argument("-f", "--format", default="md", choices=["md", "json"])
+        return {k: v for k, v in vars(parser.parse_args()).items() if v is not None}
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw:
+        try:
+            raw = sys.stdin.read()
+        except Exception:
+            raw = ""
+    raw = (raw or "").strip() or "{}"
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as err:
+        raise Failure(f"stdin 不是合法 JSON: {err}", "把参数作为一个 JSON 对象传进来")
+    if not isinstance(parsed, dict):
+        raise Failure("参数必须是一个 JSON 对象", "例如 {\"query\":\"deepseek\"}")
+    return parsed
+
+
+ACTIONS.update({
+    "search": action_search,
+    "comments": action_comments,
+    "user": action_user,
+    "subreddits": action_subreddits,
+    "doctor": action_doctor,
+})
+
+
+def main():
+    try:
+        args = normalize(read_args())
+        emit(ACTIONS[args["action"]](args), args)
+    except Failure as err:
+        emit_failure(err)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as err:  # 兜底：任何没预料到的异常也给结构化输出
+        emit_failure(Failure(f"{type(err).__name__}: {err}",
+                             "带上这条信息重试；持续失败跑 action=doctor 自检", code=3))
+
+
+if __name__ == "__main__":
+    main()
