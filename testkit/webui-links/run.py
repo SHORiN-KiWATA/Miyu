@@ -66,6 +66,57 @@ def upload_attachment(session_id):
         return None
 
 
+def check_dashboard_icons():
+    """各面板用到的图标名必须都在 dashboards.js 的表里。
+
+    `D.icon()` 对不认识的名字**静默**返回一个空 `<svg>`,按钮上于是什么都不画。
+    目录树展开态的箭头就这么缺了很久——表里只有 chevron-right,没有 chevron-down
+    (09-09 用户反馈「展开之后就没有箭头了」)。这条放在源码层查,不依赖当时渲染
+    的是哪个面板。
+    """
+    import re
+    table = (REPO / "web" / "dashboards.js").read_text(encoding="utf-8")
+    body = re.search(r"const ICONS = \{(.*?)\n  \};", table, re.S)
+    known = set(re.findall(r'"([a-z0-9-]+)":', body.group(1))) if body else set()
+    used = set()
+    for path in sorted((REPO / "web").glob("*.js")):
+        if not re.match(r"^(dash|dashboards|settings)", path.name):
+            continue
+        text = path.read_text(encoding="utf-8")
+        # 调用参数整段取出来再挑字符串:目录树写的是
+        # `D.icon(collapsed ? "chevron-right" : "chevron-down")`,只认第一个字面量
+        # 的话正好漏掉展开态那个——而它恰恰就是缺的那个(09-09)。
+        for call in re.finditer(r"D\.(?:icon|iconButton)\(", text):
+            depth, index = 0, call.end() - 1
+            while index < len(text):
+                if text[index] == "(":
+                    depth += 1
+                elif text[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            # 只看第一个实参:iconButton 的第四个参数是 CSS 类名,不是图标。
+            args = text[call.end():index]
+            depth = 0
+            for offset, char in enumerate(args):
+                if char in "([{":
+                    depth += 1
+                elif char in ")]}":
+                    depth -= 1
+                elif char == "," and depth == 0:
+                    args = args[:offset]
+                    break
+            used |= set(re.findall(r"""["'`]([a-z0-9][a-z0-9-]*)["'`]""", args))
+        used |= set(re.findall(r"""icon:\s*["']([a-z0-9-]+)["']""", text))
+    missing = sorted(used - known)
+    if missing:
+        print(f"FAIL 面板用到但图标表里没有：{' '.join(missing)}", file=sys.stderr)
+        return False
+    print(f"  ok 面板图标表完整（用到 {len(used)} 个，表里 {len(known)} 个）")
+    return True
+
+
 def upload_clip(session_id):
     """一段一秒的 mp4。视频附件以前点了只会下载，现在应该给播放器。"""
     clip = Path("/tmp/miyu-webui-links-clip.mp4")
@@ -188,6 +239,8 @@ def main():
     write_config()
     has_memes = seed_memes()
 
+    icons_ok = check_dashboard_icons()
+
     stub = spawn("stub_llm.py", {"STUB_PORT": str(STUB_PORT)})
     daemon = None
     try:
@@ -235,7 +288,7 @@ def main():
         )
         if not has_memes:
             print("! 表情包那步被跳过（缺 Pillow）")
-        return result.returncode
+        return result.returncode or (0 if icons_ok else 1)
     finally:
         for process in (daemon, stub):
             if process is None:

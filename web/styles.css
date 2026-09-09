@@ -8926,6 +8926,9 @@ body.miyu-paused *::after {
 .dash-bulk-bar strong { flex: none; font-size: var(--fs-ui); }
 /* 按钮成组:窄了整组换行,不会散成三行。margin-left:auto 让宽容器里仍然右对齐。 */
 .dash-bulk-actions { display: flex; flex-wrap: wrap; align-items: center; margin-left: auto; gap: 8px; }
+/* compact:只剩两个按钮,不必再占一整条。 */
+.dash-bulk-bar.is-compact { padding: 6px 8px; }
+.dash-bulk-bar.is-compact .dash-bulk-actions { margin-left: 0; }
 .dash-bulk-spacer { flex: 1 1 auto; }
 .dash-row-check { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .dash-cell-check { justify-content: center; padding: 0 !important; }

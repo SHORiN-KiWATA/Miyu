@@ -254,6 +254,48 @@ mod tests {
         .is_err());
     }
 
+    /// 09-09 实机事故留桩：数据目录搬家之后，库里那一列绝对路径就烂了。
+    ///
+    /// `~/.local/share/miyu` → `~/.miyu/data` 那次老布局迁移把文件搬过去了，却
+    /// 没有重写 `files.path`。用户库里 6426 条记录全指着不存在的旧根，重建语义
+    /// 索引时每个文件都是 `No such file or directory`，而面板上文件明明还在。
+    /// 落盘位置必须由 `name` 现算——它是主键、也是相对 `files/` 的路径。
+    #[test]
+    fn a_stale_absolute_path_in_the_index_does_not_hide_the_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        config.plugins.knowledge_base.embedding_enabled = false;
+        let kb = KnowledgeBase::new(config, paths).unwrap();
+        let source = temp.path().join("note.md");
+        std::fs::write(&source, "海压竹枝低复举").unwrap();
+        kb.import_file(&source, "wiki/note.md").unwrap();
+
+        // 把那一列改成一个早已不存在的旧根，模拟迁移之后的库。
+        {
+            let conn = kb.meta_conn().unwrap();
+            conn.execute(
+                "UPDATE files SET path = ?1",
+                rusqlite::params!["/nonexistent/old-root/kb/files/wiki/note.md"],
+            )
+            .unwrap();
+        }
+
+        let records = kb.list().unwrap();
+        assert_eq!(records.len(), 1);
+        let listed = std::path::Path::new(&records[0].path);
+        assert!(
+            listed.exists(),
+            "列表给出的路径必须能打开，实际是 {}",
+            listed.display()
+        );
+        assert_eq!(
+            std::fs::read_to_string(listed).unwrap(),
+            "海压竹枝低复举",
+            "读到的必须是那份文件本身"
+        );
+    }
+
     /// 09-09 排查留桩：知识库不按人格分库，也不按人格改工具面。
     ///
     /// 用户转来的报告是「新人格使用创建知识库和加载知识库功能会报错」。同一份
