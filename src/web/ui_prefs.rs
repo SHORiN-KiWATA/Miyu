@@ -12,12 +12,13 @@
 use crate::web::*;
 
 /// 跟着 daemon 走的外观键。改这里就是在改「哪些设置跨设备同步」。
-const SYNCED_KEYS: [&str; 5] = [
+const SYNCED_KEYS: [&str; 6] = [
     "theme",
     "colorScheme",
     "chatFontSize",
     "reasoningExpanded",
     "toolExpanded",
+    "procCollapse",
 ];
 
 const MAX_VALUE_LEN: usize = 64;

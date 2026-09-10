@@ -9341,3 +9341,294 @@ body.miyu-paused *::after {
   background: var(--accent);
   transition: width 240ms ease;
 }
+
+
+/* ═══════════════════════════ 过程时间线(思考 + 工具) ═══════════════════════════ */
+/*
+ * 连续的思考块和工具签串成一条时间线:一根 1px 细线穿过图标列的中心,图标处断开,
+ * 图标就是节点。没有底板、边框、标签色——简洁靠形式,不靠把过程藏起来。
+ * 线是独立元素(.proc-rail),起点终点由 JS 按可见节点算,高度走 transition,
+ * 新出一行就平滑长到那个图标。动画只有一条曲线一组时长:行淡入/线生长 0.45s,开合 0.38s。
+ * 次要色不用 --text-soft(亮色下是发棕的 on-surface-variant),改从正文色按比例兑底色得中性灰。
+ */
+.proc-line {
+  position: relative;
+  --proc-col: 16px;
+  --proc-gap: 4px;
+  --proc-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --proc-soft: color-mix(in srgb, var(--text) 62%, var(--app-bg));
+  --proc-think: color-mix(in srgb, var(--text) 74%, var(--app-bg));
+  --proc-indent: calc(var(--proc-col) + var(--proc-gap) + 4px);
+  margin: 2px 0;
+}
+.proc-rail {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: calc(var(--proc-col) / 2 - 0.5px);
+  width: 1px;
+  height: 0;
+  background: color-mix(in srgb, var(--line-strong) 75%, var(--line));
+  pointer-events: none;
+  transition: height 0.45s var(--proc-ease), top 0.45s var(--proc-ease);
+}
+.proc-head,
+.proc-wrap {
+  position: relative;
+  z-index: 1;
+}
+@keyframes proc-fadein {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* 节点:图标带上下两段页面色,把线遮出断口 */
+.proc-node,
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-icon,
+.assistant-blocks .proc-steps > .reasoning-block > summary > .reasoning-icon {
+  display: grid;
+  box-sizing: border-box;
+  width: var(--proc-col);
+  height: var(--proc-col);
+  flex: 0 0 var(--proc-col);
+  margin: 0;
+  place-items: center;
+  border-radius: 0;
+  background: var(--app-bg);
+  box-shadow: 0 -2px 0 var(--app-bg), 0 2px 0 var(--app-bg);
+  color: var(--proc-soft);
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-icon .icon-slot,
+.assistant-blocks .proc-steps > .reasoning-block > summary > .reasoning-icon svg,
+.proc-node .icon-slot {
+  width: 13px;
+  height: 13px;
+}
+
+/* 总结行:只在「过程自动收起」开着、且时间线已切断时出现 */
+.proc-head {
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  align-items: center;
+  margin: 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--proc-soft);
+  font: 600 11.5px/1.5 var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  gap: var(--proc-gap);
+}
+.proc-head[hidden] {
+  display: none;
+}
+.proc-summary {
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0 4px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 0.18s ease;
+  animation: proc-fadein 0.45s var(--proc-ease) both;
+}
+.proc-head:hover .proc-summary {
+  background: var(--surface-2);
+}
+.proc-summary b {
+  color: var(--text);
+  font-weight: 600;
+}
+.proc-summary .proc-err {
+  color: var(--danger);
+}
+.proc-summary .proc-dot {
+  padding: 0 2px;
+  opacity: 0.6;
+}
+.proc-chevron {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.38s var(--proc-ease);
+}
+.proc-line.is-open .proc-chevron {
+  transform: rotate(90deg);
+}
+/* 开合是高度过渡:外层 grid 行高 0fr↔1fr,内层 overflow hidden */
+.proc-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.38s var(--proc-ease), opacity 0.25s ease;
+}
+.proc-line.is-open .proc-wrap {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.proc-wrap > div {
+  min-height: 0;
+  overflow: hidden;
+}
+.proc-steps {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 0 0 2px;
+  gap: 0;
+}
+.assistant-blocks .proc-steps > * {
+  margin: 0;
+  animation: proc-fadein 0.45s var(--proc-ease) both;
+}
+.proc-line.is-static .proc-steps > * {
+  animation: none;
+}
+/* 「准备 xx」占位签:属于过程,缩进到文字列 */
+.assistant-blocks .proc-steps > .tool-preparing-tag {
+  margin: 4px 0 4px calc(var(--proc-col) + var(--proc-gap));
+}
+
+/* 工具行:节点 + 名字 + 等宽主语,右侧耗时。不再是各自宽度的彩色芯片 */
+.assistant-blocks .proc-steps > .tool-card {
+  width: 100%;
+  max-width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-height: 30px;
+  align-items: center;
+  padding: 4px 0;
+  border-radius: 0;
+  background: none;
+  color: var(--proc-soft);
+  gap: var(--proc-gap);
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title {
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 auto;
+  align-items: baseline;
+  padding: 1px 4px;
+  border-radius: 5px;
+  gap: 5px;
+  transition: background-color 0.18s ease;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head:hover > .tool-title {
+  background: var(--surface-2);
+}
+.assistant-blocks .proc-steps > .tool-card .tool-title strong {
+  color: var(--text);
+  transition: color 0.35s ease;
+}
+.assistant-blocks .proc-steps > .tool-card .tool-title .tool-summary {
+  color: var(--proc-soft);
+  transition: color 0.35s ease;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-status {
+  margin-left: auto;
+  color: var(--proc-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.35s ease;
+}
+/* 成功不打勾:右侧就是耗时 */
+.assistant-blocks .proc-steps > .tool-card.is-success > .tool-head > .tool-status .icon-slot,
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-chevron {
+  display: none;
+}
+/* 颜色只给失败一处:那一行的节点、名字、主语、状态全红,线不变色 */
+.assistant-blocks .proc-steps > .tool-card.is-failure > .tool-head > .tool-icon,
+.assistant-blocks .proc-steps > .tool-card.is-failure .tool-title strong,
+.assistant-blocks .proc-steps > .tool-card.is-failure .tool-title .tool-summary,
+.assistant-blocks .proc-steps > .tool-card.is-failure > .tool-head > .tool-status {
+  color: var(--danger);
+}
+/* 命令签:命令写在行里,不再单独一块粉底预览;收起态的输出预览缩进到文字列 */
+.assistant-blocks .proc-steps > .tool-card > .tool-command-preview {
+  display: none;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-command-output-preview {
+  margin: 0 0 6px var(--proc-indent);
+  border-left-color: var(--line-strong);
+  background: var(--surface-1);
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-live-progress {
+  margin: 0 0 6px var(--proc-indent);
+}
+/* 详情:一个面板,细边,参数在前、空一行、结果在后;不再有「参数 / 结果」小标 */
+.assistant-blocks .proc-steps > .tool-card > .tool-body {
+  width: auto;
+  margin: 2px 0 8px var(--proc-indent);
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  gap: 1em;
+}
+.assistant-blocks .proc-steps > .tool-card .tool-detail-label {
+  display: none;
+}
+.assistant-blocks .proc-steps > .tool-card .tool-detail pre {
+  padding: 0;
+  background: none;
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+/* 思考行:节点是原子,标题「已思考」,内容是一段淡色文字(没有底色) */
+.assistant-blocks .proc-steps > .reasoning-block {
+  border: 0;
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary {
+  width: 100%;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 4px 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+  gap: var(--proc-gap);
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary:hover {
+  background: none;
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-title {
+  padding: 1px 4px;
+  border-radius: 5px;
+  transition: background-color 0.18s ease;
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary:hover .reasoning-title {
+  background: var(--surface-2);
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-live-status,
+.assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-chevron {
+  color: var(--proc-soft);
+}
+.assistant-blocks .proc-steps > .reasoning-block > .reasoning-text {
+  margin: 0 8px 6px var(--proc-indent);
+  padding: 0;
+  background: none;
+  color: var(--proc-think);
+}
+
+/* ═══ 气泡:AI 不套气泡,正文直接铺在页面底色上;用户消息改用原先助手气泡的中性色 ═══ */
+.assistant-content {
+  padding: 2px 0 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.user-bubble {
+  background: var(--surface-1);
+  color: var(--text);
+  box-shadow: var(--bubble-shadow);
+}
