@@ -70,7 +70,7 @@ miyu config
 - 从源码构建
 
   ```
-  git clone https://github.com/SHORiN-KiWATA/Miyu.git
+  git clone https://github.com/SHORiN-KiWATA/miyu-agent.git
   cd Miyu
   cargo build --release                    # 只出 miyu
   cargo build --release --features voice   # 再出 miyu-voice(可选,链接 sherpa-onnx)
