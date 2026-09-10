@@ -5523,6 +5523,11 @@
     return { title: "", body: raw };
   }
 
+  // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
+  function reasoningPeekText(text) {
+    return String(text || "").replace(/\s+/g, " ").trimEnd().slice(-160);
+  }
+
   function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
     const details = document.createElement("details");
     details.className = "reasoning-block";
@@ -5553,6 +5558,14 @@
       progressFill.setAttribute("aria-hidden", "true");
       progress.appendChild(progressFill);
     }
+    // 思考内容收着的时候,标题行右边那片空白放思考的尾巴:正在想就跟着滚,想完了
+    // 也留着(回看那份同样有),展开时才让位。尾部对齐,新字从右边推进来,旧字从左边淡出。
+    const slot = document.createElement("span");
+    slot.className = "reasoning-peek";
+    const peek = document.createElement("span");
+    peek.textContent = reasoningPeekText(text);
+    slot.appendChild(peek);
+    summary.appendChild(slot);
     summary.appendChild(chevron);
     const body = document.createElement("div");
     body.className = "reasoning-text";
@@ -5566,6 +5579,7 @@
       liveStatus,
       progress,
       body,
+      peek,
       raw: String(text || ""),
       pendingTitle: "",
       summaryOnly,
@@ -6577,6 +6591,8 @@
       const reasoning = ensureLiveReasoning(live);
       reasoning.raw += delta;
       reasoning.body.textContent = reasoning.raw;
+      // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
+      if (reasoning.peek) reasoning.peek.textContent = reasoningPeekText(reasoning.raw);
       live.assistantReasoning = collectLiveReasoning(live);
       contentAdded(live);
       return;
