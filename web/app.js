@@ -726,7 +726,7 @@
     return line;
   }
 
-  const PROC_NODE_SELECTOR = ":scope > .tool-head > .tool-icon, :scope > summary > .reasoning-icon";
+  const PROC_NODE_SELECTOR = ":scope > .tool-head > .tool-icon, :scope > summary > .reasoning-icon, :scope.tool-preparing-tag > .icon-slot";
 
   function procLineFit(line) {
     const proc = line.miyuProc;
