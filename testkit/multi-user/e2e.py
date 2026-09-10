@@ -404,13 +404,13 @@ def main():
         check("注册后引导待做", boot.get("account", {}).get("oobe_pending") is True, json.dumps(boot.get("account")))
         status, data = member.call("POST", "/api/account/personas",
                                    {"name": "小满", "description": "测试人格", "prompt": "你是小满,一只会说话的橘猫,每句话结尾带喵。",
-                                    "memory": False, "plugins": ["knowledge_base", "ledger", "not-a-plugin"],
+                                    "memory": False, "plugins": ["knowledge_base", "memes", "not-a-plugin"],
                                     "scripts": ["e2e_hello", "not-a-script"], "activate": True})
         persona = data.get("persona", {})
         check("成员建人格", status == 201 and persona.get("name") == "小满" and persona.get("memory") is False,
               json.dumps(data)[:200])
         check("插件=核心常开+勾选的,未知 id 被丢",
-              set(persona.get("plugins", [])) == {"files", "print_image", "usage_query", "knowledge_base", "ledger"},
+              set(persona.get("plugins", [])) == {"files", "print_image", "usage_query", "knowledge_base", "memes"},
               json.dumps(persona.get("plugins")))
         check("脚本白名单原样存下", persona.get("scripts") == ["e2e_hello", "not-a-script"], json.dumps(persona.get("scripts")))
         # 知识库/记账 dashboard 对成员开放,且落在成员自己家里
@@ -423,6 +423,16 @@ def main():
         status, ledger = member.call("GET", "/api/dash/ledger/overview")
         check("成员记账 dashboard 200", status == 200, f"{status} {json.dumps(ledger)[:100]}")
         check("成员账本落在 home/alice", (HOME / "home/alice/ledger").exists(), str(HOME / "home/alice/ledger"))
+        status, libs = member.call("GET", "/api/dash/memes/libraries")
+        check("成员表情包 dashboard 200 且库是自己人格的", status == 200 and libs.get("active", "").startswith("home-alice-")
+              and len(libs.get("libraries", [])) == 1, f"{status} {json.dumps(libs)[:120]}")
+        status, items = member.call("GET", "/api/dash/memes/items")
+        check("成员表情包条目 200", status == 200, f"{status} {json.dumps(items)[:80]}")
+        status, _ = member.call("GET", "/api/dash/memes/items?library=miyu")
+        check("成员点名别人的表情包库 403", status == 403, str(status))
+        status, boot = member.call("GET", "/api/bootstrap")
+        dashboards = boot.get("account", {}).get("persona", {}).get("dashboards")
+        check("bootstrap 带面板清单(记忆关、知识库+表情包开)", sorted(dashboards or []) == ["kb", "memes"], json.dumps(dashboards))
         slug = persona.get("slug")
         pdir = HOME / f"home/alice/personas/{slug}"
         check("人格目录落在 home/alice/personas", pdir.is_dir() and (pdir / "persona.md").is_file()
@@ -455,6 +465,20 @@ def main():
         status, created = member.call("POST", "/api/sessions", {"name": "小满的会话"})
         sid = created.get("session", {}).get("session_id")
         check("成员新会话挂在私有人格 scope 上", status == 201 and bool(sid), str(status))
+        status, data = member.call("PUT", f"/api/sessions/{sid}/models", {"models": []})
+        check("成员改会话模型 200", status == 200, f"{status} {json.dumps(data)[:80]}")
+        # 工具桥/目录按会话所属成员+人格算:没勾记账就没有 ledger,勾了表情包就有 use_meme
+        try:
+            # CLI 按 state/daemon-launch.json 找 daemon 端口;直接起 __daemon 的测试环境自己补一份
+            (HOME / "state").mkdir(exist_ok=True)
+            (HOME / "state/daemon-launch.json").write_text(json.dumps({"port": PORT}))
+            listing = subprocess.run([str(BIN), "tool-call", "--list"], env=dict(ENV, MIYU_SESSION=sid),
+                                     capture_output=True, text=True, timeout=60, cwd=str(HOME))
+            names = listing.stdout + listing.stderr
+            check("工具桥目录按人格过滤(无 ledger,有 use_meme)", listing.returncode == 0 and "use_meme" in names
+                  and "manage_ledger" not in names, (names.strip().replace("\n", " | ")[:300]))
+        except Exception as error:  # noqa: BLE001
+            check("工具桥目录按人格过滤(无 ledger,有 use_meme)", False, str(error))
         before = len(STUB_SYSTEM_DUMP.read_text().splitlines()) if STUB_SYSTEM_DUMP.exists() else 0
         run_turn(member, sid, "你是谁")
         lines = STUB_SYSTEM_DUMP.read_text().splitlines()[before:]

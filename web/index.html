@@ -340,7 +340,7 @@
             <span class="icon-slot" data-icon="book-open" aria-hidden="true"><span class="icon-fallback">▤</span></span>
             <span>知识库</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="memes" data-admin-only>
+          <button class="con-rail-item" type="button" data-console-panel="memes">
             <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
             <span>表情包</span>
           </button>
@@ -459,7 +459,7 @@
             </div>
             <label class="acct-profile">
               <span>希望 AI 如何认知你</span>
-              <textarea id="accountProfile" rows="6" maxlength="20000" placeholder="怎么称呼你、你的习惯与偏好、希望它记住的事"></textarea>
+              <textarea id="accountProfile" rows="6" maxlength="20000" placeholder="怎么称呼你、你的习惯与偏好、希望 AI 记住的事"></textarea>
             </label>
             <div class="acct-actions">
               <button class="login-submit" id="accountSave" type="button">保存</button>
@@ -638,11 +638,11 @@
         </header>
         <div class="oobe-panes" id="oobePanes">
           <section class="oobe-pane is-active" data-oobe-step="1">
-            <h1>先决定它是谁</h1>
-            <p>直接用管理员发布的 Miyu,或者创建一个只属于你的人格。</p>
+            <h1>创建 AI 人格</h1>
+            <p>使用预置人格,或创建专属于自己的 AI 人格。</p>
             <div class="oobe-choice" role="radiogroup">
               <button type="button" class="oobe-option" data-persona-mode="shared" role="radio" aria-checked="false">
-                <b>直接用 Miyu</b><span>管理员维护的共享人格,设定不可改</span>
+                <b id="oobeSharedName">Miyu</b><span id="oobeSharedHint">预置人格,不可修改</span>
               </button>
               <button type="button" class="oobe-option is-on" data-persona-mode="private" role="radio" aria-checked="true">
                 <b>创建我的人格</b><span>自己起名、写设定、传头像;记忆和资料只属于你</span>
@@ -663,11 +663,6 @@
               <label class="oobe-prompt">设定(可留空)
                 <textarea id="oobePrompt" rows="7" placeholder="用第二人称写:你是……"></textarea>
               </label>
-              <label class="oobe-board" title="点击选看板图">
-                <input type="file" id="oobeBoardInput" accept="image/png,image/jpeg,image/webp" hidden>
-                <img id="oobeBoardPreview" alt="" hidden>
-                <span id="oobeBoardHint">看板图(可选):空白对话页的背景图,点这里选一张</span>
-              </label>
             </div>
           </section>
           <section class="oobe-pane" data-oobe-step="2">
@@ -684,8 +679,8 @@
             </div>
           </section>
           <section class="oobe-pane" data-oobe-step="3">
-            <h1>希望它怎么认识你</h1>
-            <p>叫你什么、你的习惯与偏好、希望它记住的事。</p>
+            <h1>希望 AI 怎么认识你</h1>
+            <p>叫你什么、你的习惯与偏好、希望 AI 记住的事。</p>
             <textarea id="oobeProfile" rows="8" placeholder="比如:叫我阿满。我在东京做前端,喜欢直接的建议,不要客套。"></textarea>
           </section>
           <section class="oobe-pane" data-oobe-step="4">

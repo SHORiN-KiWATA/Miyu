@@ -293,6 +293,11 @@ pub(crate) fn selected_library(args: &Value, config: &AppConfig) -> String {
 }
 
 pub(crate) fn current_persona_library(config: &AppConfig) -> String {
+    // 成员私有人格:库名就是人格 scope(home-<用户>-<slug>),按人隔开;
+    // `active_persona` 此时是 "<slug>.md",按它算会把两个人的同名人格并成一库。
+    if config.private_persona_dir().is_some() {
+        return sanitize_library(&config.active_persona_scope());
+    }
     sanitize_library(
         &config
             .plugins

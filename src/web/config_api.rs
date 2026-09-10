@@ -307,7 +307,8 @@ pub(in crate::web) async fn set_session_models_http(
         }
     }
     state
-        .state_store
+        .stores
+        .for_session(&record.session_id)
         .set_session_model_override(&record.session_id, models.as_deref())
         .map_err(ApiError::internal)?;
     state.events.publish(

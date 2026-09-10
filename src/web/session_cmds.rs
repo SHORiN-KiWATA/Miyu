@@ -230,14 +230,16 @@ pub(in crate::web) async fn handle_session_command(
                 }
                 None => store.session_id().to_string(),
             };
-            let record = store
+            // 会话按人分库:成员的会话在成员库里,配置也按成员+人格算。
+            let session_store = state.stores.for_session(&session_id);
+            let record = session_store
                 .session_record(&session_id)
                 .map_err(|error| safe_error_message(&error))?
                 .ok_or_else(|| "session not found".to_string())?;
-            let mode = turn_mode_for_session(store, &session_id, AgentMode::Normal);
+            let mode = turn_mode_for_session(&session_store, &session_id, AgentMode::Normal);
             // 与回合同源的 registry(guard/超时齐备);会话工作区与来源
             // 一并作用域化,内层工具看到的世界和回合内一致。
-            let config = { state.manager.lock().unwrap().config.clone() };
+            let config = session_scoped_config(state, &session_id);
             let mut registry =
                 crate::tools::build_tool_registry(&config, &state.paths, mode, false)
                     .map_err(|error| safe_error_message(&error))?;
@@ -314,8 +316,9 @@ pub(in crate::web) async fn handle_session_command(
                 }
                 None => store.session_id().to_string(),
             };
-            let mode = turn_mode_for_session(store, &session_id, AgentMode::Normal);
-            let config = { state.manager.lock().unwrap().config.clone() };
+            let session_store = state.stores.for_session(&session_id);
+            let mode = turn_mode_for_session(&session_store, &session_id, AgentMode::Normal);
+            let config = session_scoped_config(state, &session_id);
             let mut registry =
                 crate::tools::build_tool_registry(&config, &state.paths, mode, false)
                     .map_err(|error| safe_error_message(&error))?;

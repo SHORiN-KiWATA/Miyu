@@ -88,7 +88,7 @@
 - [x] 会话 id 不变;memory.db 不动;`MiyuPaths` 不加字段(六十处测试夹具),按标记现算 `personas_dir/artifacts_dir/ledger_dir/shared_files_dir/profile_file/conversation_db_dir/identities_dir`
 - [x] `miyu layout`(干跑计划)/`--apply`/`--rollback`(搬回并写 `.home-layout-off`,同一二进制不再自动搬,`--apply` 撤销);中断靠 journal 接续/回滚
 - [x] 导出/导入:registry 新增 home/personas/extensions 单元,`.home-layout-v1` 随档案走
-- [x] 按人拆库(成员各自 `home/<user>/conversation.db`,阶段 8):`runtime/stores.rs` `StoreRegistry`——管理员库 + 按账号懒开的成员库(`StateStore::open_member`,artifact 也落成员家里;附件本体/用量账本/账号表仍在 state 与管理员库);web 层按登录身份取库(`for_identity/for_owner`),actor 与事件归属只有会话 id 就 `for_session/owner_of_session`(先查管理员库、再查开过的成员库、最后按账号表开一遍,结果缓存);会话 id 全局唯一(时间戳+随机)所以查到即定。知识库/记账对成员 = `home/<user>/{kb,ledger}`(`AppConfig::member_home_dir`),记忆/知识库/记账 dashboard 对成员开放(`dash_config_for`)
+- [x] 按人拆库(成员各自 `home/<user>/conversation.db`,阶段 8):`runtime/stores.rs` `StoreRegistry`——管理员库 + 按账号懒开的成员库(`StateStore::open_member`,artifact 也落成员家里;附件本体/用量账本/账号表仍在 state 与管理员库);web 层按登录身份取库(`for_identity/for_owner`),actor 与事件归属只有会话 id 就 `for_session/owner_of_session`(先查管理员库、再查开过的成员库、最后按账号表开一遍,结果缓存);会话 id 全局唯一(时间戳+随机)所以查到即定。知识库/记账对成员 = `home/<user>/{kb,ledger}`(`AppConfig::member_home_dir`),记忆/知识库/记账/表情包 dashboard 对成员开放(`dash_config_for`;表情包库按人格 scope 分库 `current_persona_library`,只给有私有人格的成员);bootstrap `account.persona.dashboards` 决定成员控制台露哪些面板;工具桥/工具目录(IPC ToolCall/ToolCatalog)按会话所属成员+人格算配置(`session_scoped_config`),否则中转线成员拿到管理员全量工具面且全报 session not found
 - [x] 测具:单测 `paths::tests::home`(搬/回滚/冲突零写入/新装/路径解析)、`config::tests::paths::home_layout_marker_redirects_identity_and_persona_paths`;真二进制 `testkit/multi-user/layout_e2e.py`(新装→跑一轮→回滚→老布局起 daemon→再搬→同会话回合还在)
 - 验证:隔离 home 上跑迁移前后 tools 指纹、会话列表、记忆召回逐一相等
 

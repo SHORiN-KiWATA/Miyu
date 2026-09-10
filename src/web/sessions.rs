@@ -515,6 +515,44 @@ pub(in crate::web) fn resolve_local_session_ref_with_kinds(
     Ok(record)
 }
 
+/// 桥与工具目录用的配置:与 turns/task.rs 的成员回合同源——会话归成员就把
+/// 家目录(知识库/账本按人分家)与私有人格(提示词/清单/脚本白名单)套上,
+/// 否则中转线(claude-code/codex/agy 只能从 MCP 桥拿工具)看到的是管理员的全量
+/// 工具面:人格没勾记账也列出 ledger,勾了表情包也用不了。
+pub(in crate::web) fn session_scoped_config(state: &DaemonState, session_id: &str) -> AppConfig {
+    let mut config = state.manager.lock().unwrap().config.clone();
+    let Some(owner) = state.stores.owner_of_session(session_id) else {
+        return config;
+    };
+    if owner.is_empty() {
+        return config;
+    }
+    let Ok(Some(account)) = state.state_store.account_by_id(&owner) else {
+        return config;
+    };
+    config.accounts.home_dir = Some(
+        state
+            .paths
+            .user_home_dir(&account.username)
+            .display()
+            .to_string(),
+    );
+    let scope = state
+        .stores
+        .for_session(session_id)
+        .session_record(session_id)
+        .ok()
+        .flatten()
+        .map(|record| record.persona)
+        .unwrap_or_default();
+    if let Some(persona) =
+        member_persona::persona_for_scope(&state.paths, &account.username, &scope)
+    {
+        member_persona::apply_to_config(&mut config, &persona);
+    }
+    config
+}
+
 /// 工具桥专用的会话寻址:在本地会话之外**额外**放行"正有回合在跑"的平台
 /// 会话。MCP 桥(claude-code 供应商唯一的工具通道)带的就是平台会话 id,被
 /// 本地解析一律挡掉时,群聊里整套平台工具都调不到(08-26 实测 `tool-call

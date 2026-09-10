@@ -132,7 +132,8 @@ def main():
             sessions = page.evaluate("() => [...document.querySelectorAll('#sessionItems [data-session-id]')].map(e => e.textContent)")
             check("成员侧栏看不到管理员的会话", not any("管理员的会话" in text for text in sessions), json.dumps(sessions, ensure_ascii=False))
             visible_rail = page.evaluate("() => [...document.querySelectorAll('.con-rail-item[data-console-panel]')].filter(e => !e.hidden).map(e => e.dataset.consolePanel)")
-            check("成员控制台=数据统计、账号 + 自己的记忆/知识库/记账", sorted(visible_rail) == ["account", "kb", "ledger", "memory", "usage"], json.dumps(visible_rail))
+            # 小满:记忆默认勾着,插件页只把表情包取消了 → 记忆/知识库/记账有,表情包没有
+            check("成员控制台面板跟人格勾选走(无表情包)", sorted(visible_rail) == ["account", "kb", "ledger", "memory", "usage"], json.dumps(visible_rail))
             page.screenshot(path=str(OUT / "ui-member-console.png"))
             page.fill("#accountProfile", "请叫我爱丽丝")
             page.click("#accountSave")

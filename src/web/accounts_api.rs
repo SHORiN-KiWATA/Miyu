@@ -18,6 +18,52 @@ fn account_json(account: &crate::state::Account) -> Value {
     })
 }
 
+/// 成员控制台该露哪些面板:私有人格按它的清单(记忆开了才有记忆面板,
+/// 插件勾了才有对应面板);用共享 Miyu 时知识库/账本仍是成员自己家里的,
+/// 记忆库与表情包库是共享的,不给。
+pub(in crate::web) fn member_dashboards(
+    config: &AppConfig,
+    persona: Option<&member_persona::PrivatePersona>,
+) -> Vec<&'static str> {
+    let allowed = config.accounts.allowed_member_plugins();
+    let allowed = |id: &str| allowed.iter().any(|item| item == id);
+    let mut out = Vec::new();
+    match persona {
+        Some(persona) => {
+            let manifest = &persona.manifest;
+            let on = |id: &str| {
+                allowed(id)
+                    && manifest
+                        .plugins
+                        .enabled
+                        .as_ref()
+                        .is_none_or(|list| list.iter().any(|item| item == id))
+            };
+            if manifest.subsystems.memory {
+                out.push("memory");
+            }
+            if on("knowledge_base") {
+                out.push("kb");
+            }
+            if on("memes") {
+                out.push("memes");
+            }
+            if on("ledger") {
+                out.push("ledger");
+            }
+        }
+        None => {
+            if allowed("knowledge_base") {
+                out.push("kb");
+            }
+            if allowed("ledger") {
+                out.push("ledger");
+            }
+        }
+    }
+    out
+}
+
 /// bootstrap 里的账号块:身份 + 当前人格 + 引导是否待做。
 pub(in crate::web) fn account_bootstrap_json(state: &DaemonState, identity: &WebIdentity) -> Value {
     let mut value = identity_json(identity);
@@ -25,11 +71,15 @@ pub(in crate::web) fn account_bootstrap_json(state: &DaemonState, identity: &Web
         let settings = member_persona::load_settings(&state.paths, &identity.username);
         let active = member_persona::active_persona(&state.paths, &identity.username);
         value["oobe_pending"] = json!(!settings.oobe_done);
+        let config = state.manager.lock().unwrap().config.clone();
+        let dashboards = member_dashboards(&config, active.as_ref());
         value["persona"] = match active {
             Some(persona) => {
-                json!({ "slug": persona.slug, "name": persona.meta.name, "private": true })
+                json!({ "slug": persona.slug, "name": persona.meta.name, "private": true, "dashboards": dashboards })
             }
-            None => json!({ "slug": null, "name": "Miyu", "private": false }),
+            None => {
+                json!({ "slug": null, "name": "Miyu", "private": false, "dashboards": dashboards })
+            }
         };
     } else {
         value["oobe_pending"] = json!(false);
@@ -457,6 +507,34 @@ pub(in crate::web) async fn account_personas(
             |(id, display, description)| json!({ "id": id, "label": display, "hint": description }),
         )
         .collect::<Vec<_>>();
+    // 预置人格(管理员维护的那份)叫什么、谁维护:引导页那张卡用。
+    let shared = {
+        let name = crate::web::persona_identity(
+            &config,
+            &crate::web::read_prompt_documents(&config, &state.paths)
+                .unwrap_or_else(|_| PromptDocuments::default()),
+        )
+        .name;
+        let maintainer = state
+            .state_store
+            .list_accounts()
+            .ok()
+            .and_then(|accounts| {
+                accounts
+                    .into_iter()
+                    .find(|account| account.is_admin())
+                    .map(|account| {
+                        if account.display_name.trim().is_empty() {
+                            account.username
+                        } else {
+                            account.display_name
+                        }
+                    })
+            })
+            .or_else(|| state.paths.home_admin())
+            .unwrap_or_else(|| "admin".to_string());
+        json!({ "name": name, "maintainer": maintainer })
+    };
     if identity.admin || identity.username.is_empty() {
         return Ok(Json(json!({
             "personas": [],
@@ -464,6 +542,7 @@ pub(in crate::web) async fn account_personas(
             "member_personas": false,
             "plugins": options,
             "scripts": scripts,
+            "shared": shared,
         }))
         .into_response());
     }
@@ -476,6 +555,7 @@ pub(in crate::web) async fn account_personas(
         "member_personas": config.accounts.member_personas,
         "plugins": options,
         "scripts": scripts,
+        "shared": shared,
         "prompt": std::fs::read_to_string(profile_file_for(&state.paths, &identity)).unwrap_or_default(),
     }))
     .into_response())

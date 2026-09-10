@@ -304,9 +304,8 @@
     oobeName: document.getElementById("oobeName"),
     oobeDesc: document.getElementById("oobeDesc"),
     oobePrompt: document.getElementById("oobePrompt"),
-    oobeBoardInput: document.getElementById("oobeBoardInput"),
-    oobeBoardPreview: document.getElementById("oobeBoardPreview"),
-    oobeBoardHint: document.getElementById("oobeBoardHint"),
+    oobeSharedName: document.getElementById("oobeSharedName"),
+    oobeSharedHint: document.getElementById("oobeSharedHint"),
     oobeMemory: document.getElementById("oobeMemory"),
     oobePlugins: document.getElementById("oobePlugins"),
     oobeProfile: document.getElementById("oobeProfile"),
@@ -9001,12 +9000,18 @@
     for (const element of document.querySelectorAll("[data-admin-only]")) element.hidden = !admin;
     for (const element of document.querySelectorAll("[data-multi-user-only]")) element.hidden = !multiUser;
     for (const element of document.querySelectorAll("[data-member-only]")) element.hidden = admin || !multiUser;
+    // 成员的记忆/知识库/表情包/记账面板跟当前人格开了什么走(服务端算好的清单)。
+    const dashboards = Array.isArray(state.account?.persona?.dashboards) ? state.account.persona.dashboards : [];
+    for (const panel of ["memory", "kb", "memes", "ledger"]) {
+      const item = elements.consoleView.querySelector(`.con-rail-item[data-console-panel="${panel}"]`);
+      if (item) item.hidden = !admin && !dashboards.includes(panel);
+    }
     if (!admin && consoleIsOpen() && isAdminOnlyPanel(state.consolePanel)) setConsolePanel("usage");
   }
 
   function isAdminOnlyPanel(panel) {
     const item = elements.consoleView.querySelector(`.con-rail-item[data-console-panel="${panel}"]`);
-    return Boolean(item?.hasAttribute("data-admin-only"));
+    return Boolean(item?.hasAttribute("data-admin-only") || item?.hidden);
   }
 
   function showRegisterForm(show) {
@@ -10398,8 +10403,6 @@
     elements.oobePrompt.value = "";
     elements.oobeAvatarPreview.hidden = true;
     elements.oobeAvatarPreview.removeAttribute("src");
-    elements.oobeBoardPreview.hidden = true;
-    elements.oobeBoardPreview.removeAttribute("src");
     elements.oobeMemory.checked = persona ? persona.memory !== false : true;
     elements.oobeProfile.value = "";
     oobeSetMode("private");
@@ -10410,6 +10413,14 @@
       const data = await apiRequest("/api/account/personas").then((response) => response.json());
       options = data.plugins || [];
       scripts = data.scripts || [];
+      if (data.shared?.name) elements.oobeSharedName.textContent = data.shared.name;
+      elements.oobeSharedHint.textContent = data.shared?.maintainer
+        ? `${data.shared.maintainer} 维护的预置人格,不可修改`
+        : "预置人格,不可修改";
+      if (data.shared?.name) elements.oobeSharedName.textContent = data.shared.name;
+      elements.oobeSharedHint.textContent = data.shared?.maintainer
+        ? `${data.shared.maintainer} 维护的预置人格,不可修改`
+        : "预置人格,不可修改";
       elements.oobeProfile.value = data.prompt || "";
       if (data.member_personas === false && reason !== "first") {
         showToast("管理员关闭了成员自建人格", "error");
@@ -10420,7 +10431,6 @@
       if (persona) {
         elements.oobePrompt.value = persona.prompt || "";
         if (persona.avatar_url) { elements.oobeAvatarPreview.src = `${persona.avatar_url}&v=${Date.now()}`; elements.oobeAvatarPreview.hidden = false; }
-        if (persona.board_image_url) { elements.oobeBoardPreview.src = `${persona.board_image_url}&v=${Date.now()}`; elements.oobeBoardPreview.hidden = false; }
       }
     } catch (error) {
       oobeShowError(error.message || "载入失败");
@@ -10476,7 +10486,6 @@
         slug = persona.slug;
         displayName = persona.name;
         await uploadPersonaImage(slug, oobeState.avatarFile, false);
-        await uploadPersonaImage(slug, oobeState.boardFile, true);
       }
       const profile = elements.oobeProfile.value;
       await apiRequest("/api/account", { method: "PATCH", body: JSON.stringify({ profile }) });
@@ -10513,10 +10522,6 @@
     elements.oobeAvatarInput.addEventListener("change", () => {
       oobeState.avatarFile = elements.oobeAvatarInput.files?.[0] || null;
       previewImageFile(oobeState.avatarFile, elements.oobeAvatarPreview);
-    });
-    elements.oobeBoardInput.addEventListener("change", () => {
-      oobeState.boardFile = elements.oobeBoardInput.files?.[0] || null;
-      previewImageFile(oobeState.boardFile, elements.oobeBoardPreview);
     });
     elements.oobeBack.addEventListener("click", () => oobeSetStep(Math.max(1, oobeState.step - 1)));
     elements.oobeNext.addEventListener("click", () => {

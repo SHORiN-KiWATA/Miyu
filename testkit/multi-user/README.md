@@ -1,7 +1,7 @@
 # 多用户(09-10 分层架构阶段 5)端到端
 
 ```sh
-BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/e2e.py      # 接口层,92 项(含按人分会话库/可勾清单/脚本/成员 dashboard)
+BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/e2e.py      # 接口层,98 项(含按人分会话库/可勾清单/脚本/成员 dashboard/表情包分库/工具桥按人格)
 BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/ui.py       # 浏览器:登录页/注册/成员控制台截图
 BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/layout_e2e.py  # 阶段 6:家目录布局 新装→回滚→再搬
 ```

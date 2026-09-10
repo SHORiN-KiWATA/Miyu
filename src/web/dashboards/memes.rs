@@ -70,6 +70,34 @@ fn default_mode() -> String {
 /// 单张上传硬顶;配置里的 max_image_mb 在 add_meme 里还会再查一次。
 pub(in crate::web) const MEME_UPLOAD_LIMIT: usize = 24 * 1024 * 1024;
 
+/// 成员的表情包库 = 当前私有人格的库(库名就是人格 scope);用共享 Miyu 时
+/// 表情包库是共享的,不给成员管。点名别的库一律拒。
+fn library_for(
+    state: &DaemonState,
+    identity: &WebIdentity,
+    requested: &str,
+) -> std::result::Result<String, ApiError> {
+    if identity.admin {
+        return Ok(library_name(state, requested));
+    }
+    let config = super::dash_config_for(state, identity, "")?;
+    if config.private_persona_dir().is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "memes dashboard needs a private persona",
+        ));
+    }
+    let own = crate::tools::memes::current_persona_library(&config);
+    let requested = requested.trim();
+    if !requested.is_empty() && crate::tools::memes::sanitize_library(requested) != own {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "not your meme library",
+        ));
+    }
+    Ok(own)
+}
+
 fn library_name(state: &DaemonState, requested: &str) -> String {
     let requested = requested.trim();
     if requested.is_empty() {
@@ -97,7 +125,18 @@ pub(in crate::web) async fn dash_memes_libraries(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    if !identity.admin {
+        let own = library_for(&state, &identity, "")?;
+        let config = super::dash_config_for(&state, &identity, "")?;
+        return Ok(Json(json!({
+            "ok": true,
+            "active": own,
+            "active_persona": config.prompt.active_persona,
+            "persona_libraries": {},
+            "libraries": [{ "name": own, "builtin": false, "user": true }],
+        })));
+    }
     let config = state.manager.lock().unwrap().config.clone();
     let paths = state.paths.clone();
     let result = tokio::task::spawn_blocking(move || dashboard_libraries(&config, &paths))
@@ -112,8 +151,8 @@ pub(in crate::web) async fn dash_memes_items(
     headers: HeaderMap,
     Query(query): Query<LibraryQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let library = library_name(&state, &query.library);
+    let identity = require_identity(&headers, &state)?;
+    let library = library_for(&state, &identity, &query.library)?;
     let paths = state.paths.clone();
     let store = state.state_store.clone();
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
@@ -134,8 +173,8 @@ pub(in crate::web) async fn dash_memes_image(
     headers: HeaderMap,
     Query(query): Query<ImageQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_admin(&headers, &state)?;
-    let library = library_name(&state, &query.library);
+    let identity = require_identity(&headers, &state)?;
+    let library = library_for(&state, &identity, &query.library)?;
     let id = valid_id(&query.id)?;
     let paths = state.paths.clone();
     let resolved = tokio::task::spawn_blocking(move || dashboard_image(&paths, &library, &id))
@@ -160,7 +199,8 @@ pub(in crate::web) async fn dash_memes_upload(
     Query(query): Query<UploadQuery>,
     body: Bytes,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     if body.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty image"));
     }
@@ -176,7 +216,7 @@ pub(in crate::web) async fn dash_memes_upload(
         ));
     }
     let upload = DashboardUpload {
-        library: library_name(&state, &query.library),
+        library: library_for(&state, &identity, &query.library)?,
         name_zh: query.name_zh.trim().to_string(),
         name_en: query.name_en.trim().to_string(),
         description: query.description.trim().to_string(),
@@ -190,7 +230,7 @@ pub(in crate::web) async fn dash_memes_upload(
             .collect(),
         manual,
     };
-    let config = state.manager.lock().unwrap().config.clone();
+    let config = super::dash_config_for(&state, &identity, "")?;
     let paths = state.paths.clone();
     // add_meme 内部同步读写文件,但视觉分类是网络调用,整段留在 async 里。
     let result = dashboard_add(&config, &paths, upload, &body)
@@ -206,10 +246,11 @@ pub(in crate::web) async fn dash_memes_patch(
     Query(query): Query<LibraryQuery>,
     Json(body): Json<PatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let id = valid_id(&id)?;
-    let library = library_name(&state, &query.library);
-    let config = state.manager.lock().unwrap().config.clone();
+    let library = library_for(&state, &identity, &query.library)?;
+    let config = super::dash_config_for(&state, &identity, "")?;
     let patch = DashboardPatch {
         name_zh: body.name_zh.map(|v| v.trim().to_string()),
         name_en: body.name_en.map(|v| v.trim().to_string()),
@@ -235,10 +276,11 @@ pub(in crate::web) async fn dash_memes_delete(
     Path(id): Path<String>,
     Query(query): Query<DeleteQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let id = valid_id(&id)?;
-    let library = library_name(&state, &query.library);
-    let config = state.manager.lock().unwrap().config.clone();
+    let library = library_for(&state, &identity, &query.library)?;
+    let config = super::dash_config_for(&state, &identity, "")?;
     let result = dashboard_delete(&config, &state.paths, &library, &id, query.hard)
         .await
         .map_err(user_error)?;
@@ -251,10 +293,11 @@ pub(in crate::web) async fn dash_memes_classify(
     Path(id): Path<String>,
     Query(query): Query<LibraryQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let id = valid_id(&id)?;
-    let library = library_name(&state, &query.library);
-    let config = state.manager.lock().unwrap().config.clone();
+    let library = library_for(&state, &identity, &query.library)?;
+    let config = super::dash_config_for(&state, &identity, "")?;
     let result = dashboard_classify(&config, &state.paths, &library, &id)
         .await
         .map_err(user_error)?;
