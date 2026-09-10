@@ -5542,6 +5542,14 @@
     return String(text || "").replace(/\s+/g, " ").trimEnd().slice(-160);
   }
 
+  // 写入窥视文字并量一下:放得下就左对齐紧跟着时间;放不下才切到尾部可见 + 左侧渐隐
+  function setReasoningPeek(peek, text) {
+    if (!peek) return;
+    peek.textContent = reasoningPeekText(text);
+    const slot = peek.parentElement;
+    if (slot) slot.classList.toggle("is-overflow", peek.scrollWidth > slot.clientWidth + 1);
+  }
+
   function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
     const details = document.createElement("details");
     details.className = "reasoning-block";
@@ -5577,9 +5585,11 @@
     const slot = document.createElement("span");
     slot.className = "reasoning-peek";
     const peek = document.createElement("span");
-    peek.textContent = reasoningPeekText(text);
     slot.appendChild(peek);
     summary.appendChild(slot);
+    // 此时还没挂进文档量不到宽度;先写字,挂上后由 fit/下一次 delta 再量
+    peek.textContent = reasoningPeekText(text);
+    window.requestAnimationFrame(() => setReasoningPeek(peek, text));
     summary.appendChild(chevron);
     const body = document.createElement("div");
     body.className = "reasoning-text";
@@ -6606,7 +6616,7 @@
       reasoning.raw += delta;
       reasoning.body.textContent = reasoning.raw;
       // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
-      if (reasoning.peek) reasoning.peek.textContent = reasoningPeekText(reasoning.raw);
+      setReasoningPeek(reasoning.peek, reasoning.raw);
       live.assistantReasoning = collectLiveReasoning(live);
       contentAdded(live);
       return;

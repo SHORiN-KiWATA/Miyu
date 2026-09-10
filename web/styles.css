@@ -9602,7 +9602,7 @@ body.miyu-paused *::after {
   transition: color 0.35s ease;
 }
 .assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-status {
-  margin-left: auto;
+  margin-left: 4px;
   color: var(--proc-soft);
   font-family: var(--font-mono);
   font-size: 10.5px;
@@ -9694,20 +9694,25 @@ body.miyu-paused *::after {
 .reasoning-peek {
   display: none;
   min-width: 0;
-  flex: 1 1 auto;
-  justify-content: flex-end;
+  /* 只占文字那么宽,展开箭头紧跟其后;放不下时才被压到剩余宽度 */
+  flex: 0 1 auto;
+  justify-content: flex-start;
   margin-left: 6px;
   overflow: hidden;
   color: var(--proc-think);
   font-size: var(--fs-meta);
   font-weight: 400;
   line-height: 1.5;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px);
-  mask-image: linear-gradient(to right, transparent, #000 32px);
 }
 .reasoning-peek > span {
   flex: none;
   white-space: nowrap;
+}
+/* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
+.reasoning-peek.is-overflow {
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px);
+  mask-image: linear-gradient(to right, transparent, #000 32px);
 }
 .assistant-blocks .proc-steps > .reasoning-block:not([open]) > summary .reasoning-peek {
   display: flex;
