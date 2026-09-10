@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code-quality:
+    name: Code Quality & Safety Net
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check model-facing text (No CJK in descriptions)
+        run: bash test_scripts/check-model-english.sh
+
+      - name: Check architectural dependencies
+        run: python3 test_scripts/arch_dep_check.py --warn
+
+      - name: File size audit report
+        run: python3 test_scripts/refactor_size_report.py
+
+  build-and-test:
+    name: Build & Test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: Linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS-Apple-Silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Check all targets
+        run: cargo check --all-targets --target ${{ matrix.target }}
+
+      - name: Run unit tests
+        run: cargo test --lib --no-fail-fast

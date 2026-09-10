@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name to release (e.g. v0.5.1)'
+        required: true
+        default: 'v0.5.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build Binary (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "RELEASE_TAG=${TAG}" >> $GITHUB_ENV
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package release archive
+        shell: bash
+        run: |
+          ARCHIVE_DIR="miyu-${{ env.RELEASE_TAG }}-${{ matrix.name }}"
+          mkdir -p "${ARCHIVE_DIR}"
+
+          # Copy main binary
+          cp "target/${{ matrix.target }}/release/miyu" "${ARCHIVE_DIR}/"
+
+          # Copy project metadata & assets
+          cp README.md LICENSE "${ARCHIVE_DIR}/" || true
+          [ -d kb ] && cp -r kb "${ARCHIVE_DIR}/" || true
+          [ -d assets ] && cp -r assets "${ARCHIVE_DIR}/" || true
+          [ -d src/memes ] && mkdir -p "${ARCHIVE_DIR}/memes" && cp -r src/memes/miyu "${ARCHIVE_DIR}/memes/" || true
+          [ -d src/scripts ] && mkdir -p "${ARCHIVE_DIR}/scripts" && cp -r src/scripts "${ARCHIVE_DIR}/" || true
+
+          # Create tar.gz
+          tar -czvf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: miyu-${{ env.RELEASE_TAG }}-${{ matrix.name }}.tar.gz
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "RELEASE_TAG=${TAG}" >> $GITHUB_ENV
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets and checksums
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
+
+          cd release-assets
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Miyu ${{ env.RELEASE_TAG }}"
+          files: |
+            release-assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
