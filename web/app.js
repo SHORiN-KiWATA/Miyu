@@ -6741,7 +6741,9 @@
     }
     if (subject) details.push(subject);
     if (tool.imageCount) details.push(`${tool.imageCount} 张图片`);
-    tool.summary.textContent = details.filter(Boolean).join(" · ") || (tool.finished ? "无输出" : "等待输出");
+    // 没有主语就空着:「无输出 / 等待输出」是旧芯片时代占摘要位的话,时间线上耗时和转圈
+    // 都在状态位,这里再写字只会让人以为工具真的没输出。
+    tool.summary.textContent = details.filter(Boolean).join(" · ");
   }
 
   function scrollToolOutputToEnd(tool) {
