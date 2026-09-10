@@ -208,9 +208,15 @@ fn resource_path_remapping_includes_the_legacy_xdg_config_root() {
         paths.migrated_resource_path(&base.config_dir().join("miyu/prompts/team")),
         Some(root.join("data/prompts/team"))
     );
+    // 这条用的是真 ~/.miyu 的根:机器已经搬成家目录布局时脚本住 extensions/。
+    let scripts_root = if paths.home_admin().is_some() {
+        root.join("extensions/scripts/images")
+    } else {
+        root.join("data/scripts/images")
+    };
     assert_eq!(
         paths.migrated_resource_path(Path::new("prompts/../scripts/images")),
-        Some(root.join("data/scripts/images"))
+        Some(scripts_root)
     );
 }
 

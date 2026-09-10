@@ -34,6 +34,7 @@ RUNTIME = OUT / "runtime"
 PORT = int(os.environ.get("PORT", "18491"))
 STUB_PORT = int(os.environ.get("STUB_PORT", "18497"))
 BASE = f"http://127.0.0.1:{PORT}"
+BUILTIN_PASSWORD = "miyu"  # 首次访问的内置口令,建完管理员就失效
 ADMIN_PASSWORD = "hunter2-admin"
 # MIYU_ADMIN_USER 固定成 admin:管理员用户名 = 家目录名,不能随跑测试的系统用户名变。
 ENV = dict(os.environ, MIYU_HOME=str(HOME), XDG_RUNTIME_DIR=str(RUNTIME),
@@ -112,6 +113,22 @@ class Client:
         return self.call("POST", "/api/auth/login", body)
 
 
+def bootstrap_admin(client, username="admin", password=None):
+    """09-11 起 WebUI 永远要登录:内置口令(测试 daemon 带 -p,就是 ADMIN_PASSWORD)登录 →
+    建管理员 → 用账号重新登录;管理员已存在就直接账号登录。"""
+    password = password or ADMIN_PASSWORD
+    status, _ = client.login(BUILTIN_PASSWORD)
+    if status == 204:
+        status, boot = client.call("GET", "/api/bootstrap")
+        if boot.get("account", {}).get("setup_pending"):
+            status, _ = client.call("POST", "/api/auth/setup-admin",
+                                    {"username": username, "display_name": "", "password": password})
+            assert status == 204, f"setup-admin {status}"
+    status, _ = client.login(password, username)
+    assert status == 204, f"account login {status}"
+    return client
+
+
 def sse_collect(cookie, seconds):
     """开一条 SSE 流,收 `seconds` 秒内的事件种类 + 载荷。"""
     events = []
@@ -162,8 +179,6 @@ def main():
     HOME.mkdir(parents=True)
     RUNTIME.mkdir(parents=True)
     write_config()
-    password_file = OUT / "web-password"
-    password_file.write_text(ADMIN_PASSWORD + "\n")
     stub_env = dict(os.environ, STUB_PORT=str(STUB_PORT), MODE="plain", STUB_CHUNK_SLEEP="0.01",
                     STUB_DUMP_SYSTEM=str(STUB_SYSTEM_DUMP))
     stub = subprocess.Popen([sys.executable, str(REPO / "testkit/webui-fixes/stub_reasoning.py")], env=stub_env,
@@ -171,8 +186,7 @@ def main():
     daemon = None
     try:
         assert wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub not up"
-        daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1",
-                                   "--password-file", str(password_file)],
+        daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1"],
                                   env=ENV, cwd=str(HOME), stdout=(OUT / "daemon.log").open("w"),
                                   stderr=subprocess.STDOUT)
         assert wait_http(f"{BASE}/api/health"), "daemon not up"
@@ -192,16 +206,33 @@ def main():
         check("会话库在管理员家目录", (HOME / "home/admin/conversation.db").is_file())
         check("state 里没有会话库", not (HOME / "state/conversation.db").exists())
 
-        # 1. 登录
+        # 1. 登录:首次访问 = 内置口令(测试 daemon 带 -p,口令就是它)→ 建管理员 → 内置口令失效
         anon = Client()
         status, _ = anon.call("GET", "/api/bootstrap")
         check("未登录 bootstrap 401", status == 401, str(status))
+        status, auth_status = anon.call("GET", "/api/auth/status")
+        check("建号前 /api/auth/status 说 setup_pending", status == 200 and auth_status.get("setup_pending") is True
+              and auth_status.get("setup_username") == "admin", json.dumps(auth_status))
         admin = Client()
-        status, _ = admin.login(ADMIN_PASSWORD)
-        check("只填口令登录(机器级管理员)", status == 204, str(status))
+        status, _ = admin.login(BUILTIN_PASSWORD)
+        check("建号前内置口令 miyu 能登录", status == 204, str(status))
+        status, boot = admin.call("GET", "/api/bootstrap")
+        check("建号前 bootstrap 标记 setup_pending", boot.get("account", {}).get("setup_pending") is True
+              and boot.get("account", {}).get("setup_username") == "admin", json.dumps(boot.get("account")))
+        status, _ = admin.call("POST", "/api/auth/setup-admin", {"username": "x", "display_name": "", "password": "short"})
+        check("建号参数不合法 400", status == 400, str(status))
+        status, _ = admin.call("POST", "/api/auth/setup-admin", {"username": "admin", "display_name": "", "password": ADMIN_PASSWORD})
+        check("创建管理员账号并直接登录", status == 204, str(status))
+        status, _ = admin.call("POST", "/api/auth/setup-admin", {"username": "admin2", "display_name": "", "password": ADMIN_PASSWORD})
+        check("再建一次被拒", status in (403, 409), str(status))
         status, boot = admin.call("GET", "/api/bootstrap")
         check("管理员 bootstrap admin=true", status == 200 and boot.get("capabilities", {}).get("admin") is True
-              and boot.get("capabilities", {}).get("multi_user") is True, json.dumps(boot.get("capabilities")))
+              and boot.get("capabilities", {}).get("multi_user") is True
+              and boot.get("account", {}).get("setup_pending") is False, json.dumps(boot.get("capabilities")))
+        status, _ = Client().login(BUILTIN_PASSWORD)
+        check("建号后内置口令失效 401", status == 401, str(status))
+        status, auth_status = anon.call("GET", "/api/auth/status")
+        check("建号后 /api/auth/status 不再 setup_pending", auth_status.get("setup_pending") is False, json.dumps(auth_status))
         admin_named = Client()
         status, _ = admin_named.login(ADMIN_PASSWORD, "admin")
         check("用户名 admin + 口令登录", status == 204, str(status))

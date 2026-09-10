@@ -160,6 +160,33 @@
               </button>
               <p class="login-switch">已有账号?<button type="button" id="showLoginButton">返回登录</button></p>
             </form>
+            <form class="login-form" id="setupForm" hidden novalidate>
+              <label for="setupUsername">管理员用户名</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="user" aria-hidden="true"><span class="icon-fallback">@</span></span>
+                <input id="setupUsername" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" required placeholder="3–32 位,字母数字 _ - .">
+              </div>
+              <label for="setupDisplayName">显示名(可选)</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
+                <input id="setupDisplayName" name="display_name" type="text" autocomplete="nickname" spellcheck="false" placeholder="AI 怎么称呼你">
+              </div>
+              <label for="setupPassword">密码</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">*</span></span>
+                <input id="setupPassword" name="password" type="password" autocomplete="new-password" required spellcheck="false">
+              </div>
+              <label for="setupPassword2">再输一次</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">*</span></span>
+                <input id="setupPassword2" name="password2" type="password" autocomplete="new-password" required spellcheck="false">
+              </div>
+              <p class="login-error" id="setupError" role="alert" hidden></p>
+              <button class="login-submit" id="setupSubmit" type="submit">
+                <span class="icon-slot" data-icon="user-plus" aria-hidden="true"><span class="icon-fallback">+</span></span>
+                <span id="setupSubmitLabel">创建管理员并登录</span>
+              </button>
+            </form>
             <button class="secondary-button" id="retryBootstrapButton" type="button">
               <span class="icon-slot" data-icon="refresh-cw" aria-hidden="true"><span class="icon-fallback">↻</span></span>
               <span>重新载入</span>

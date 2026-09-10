@@ -58,15 +58,23 @@ pub(in crate::web) async fn actor_loop(
                 // Per-turn workspace: a workspace bound to the session wins,
                 // otherwise the calling client's cwd, otherwise the daemon
                 // process cwd. The resolved path scopes the whole turn task.
-                let workspace = store
-                    .session_record(&session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|record| record.workspace.map(std::path::PathBuf::from))
-                    .filter(|path| path.is_dir())
+                // 成员回合(09-11):工作区固定在成员家里,子进程套 Landlock。
+                let member = member_scope(&paths, &state_store, &stores, &session_id);
+                let workspace = member
+                    .as_ref()
+                    .map(|scope| scope.workspace.clone())
+                    .or_else(|| {
+                        store
+                            .session_record(&session_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|record| record.workspace.map(std::path::PathBuf::from))
+                            .filter(|path| path.is_dir())
+                    })
                     .or_else(|| cwd.filter(|path| path.is_dir()))
                     .or_else(|| std::env::current_dir().ok())
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let sandbox = member.map(|scope| scope.policy);
                 // 平台回合的真实发起者。后台任务 spawn 时从 task-local 捕获,
                 // 完成唤醒凭它还原身份(issue #29)。
                 let platform_sender = profile
@@ -98,15 +106,18 @@ pub(in crate::web) async fn actor_loop(
                     turn_engine.clone(),
                     memory_organizer.clone(),
                 );
-                tokio::task::spawn_local(crate::tools::workspace::with_workspace(
-                    workspace,
-                    crate::tools::workspace::with_session(
-                        session_id,
-                        crate::tools::workspace::with_origin_tty(
-                            origin_tty.map(|origin| *origin),
-                            crate::tools::workspace::with_platform_sender(
-                                platform_sender,
-                                crate::tools::workspace::with_turn_origin(*turn_origin, task),
+                tokio::task::spawn_local(crate::tools::sandbox::with_sandbox(
+                    sandbox,
+                    crate::tools::workspace::with_workspace(
+                        workspace,
+                        crate::tools::workspace::with_session(
+                            session_id,
+                            crate::tools::workspace::with_origin_tty(
+                                origin_tty.map(|origin| *origin),
+                                crate::tools::workspace::with_platform_sender(
+                                    platform_sender,
+                                    crate::tools::workspace::with_turn_origin(*turn_origin, task),
+                                ),
                             ),
                         ),
                     ),
@@ -123,14 +134,21 @@ pub(in crate::web) async fn actor_loop(
                 let session_store = stores.for_session(&session_id);
                 let _ = session_store.recover_stale_turns();
                 let store = session_store.pinned_for_turn(&session_id);
-                let workspace = store
-                    .session_record(&session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|record| record.workspace.map(std::path::PathBuf::from))
-                    .filter(|path| path.is_dir())
+                let member = member_scope(&paths, &state_store, &stores, &session_id);
+                let workspace = member
+                    .as_ref()
+                    .map(|scope| scope.workspace.clone())
+                    .or_else(|| {
+                        store
+                            .session_record(&session_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|record| record.workspace.map(std::path::PathBuf::from))
+                            .filter(|path| path.is_dir())
+                    })
                     .or_else(|| std::env::current_dir().ok())
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let sandbox = member.map(|scope| scope.policy);
                 let task = run_turn_task(
                     config.clone(),
                     paths.clone(),
@@ -150,9 +168,12 @@ pub(in crate::web) async fn actor_loop(
                     turn_engine.clone(),
                     memory_organizer.clone(),
                 );
-                tokio::task::spawn_local(crate::tools::workspace::with_workspace(
-                    workspace,
-                    crate::tools::workspace::with_session(session_id, task),
+                tokio::task::spawn_local(crate::tools::sandbox::with_sandbox(
+                    sandbox,
+                    crate::tools::workspace::with_workspace(
+                        workspace,
+                        crate::tools::workspace::with_session(session_id, task),
+                    ),
                 ));
             }
             ActorCommand::SetModels { models, reply } => {

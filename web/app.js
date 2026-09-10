@@ -273,6 +273,13 @@
     showRegisterButton: document.getElementById("showRegisterButton"),
     showLoginButton: document.getElementById("showLoginButton"),
     registerForm: document.getElementById("registerForm"),
+    setupForm: document.getElementById("setupForm"),
+    setupUsername: document.getElementById("setupUsername"),
+    setupDisplayName: document.getElementById("setupDisplayName"),
+    setupPassword: document.getElementById("setupPassword"),
+    setupPassword2: document.getElementById("setupPassword2"),
+    setupError: document.getElementById("setupError"),
+    setupSubmit: document.getElementById("setupSubmit"),
     registerInvite: document.getElementById("registerInvite"),
     registerUsername: document.getElementById("registerUsername"),
     registerDisplayName: document.getElementById("registerDisplayName"),
@@ -8860,7 +8867,9 @@
     elements.blockedMessage.textContent = unauthorized ? "输入访问密码以继续。" : message || "本地服务暂时无法访问";
     elements.loginForm.hidden = !unauthorized;
     elements.registerForm.hidden = true;
+    elements.setupForm.hidden = true;
     elements.retryBootstrapButton.hidden = unauthorized;
+    if (unauthorized) refreshLoginHint();
     elements.loginError.textContent = "";
     elements.loginError.hidden = true;
     elements.registerError.textContent = "";
@@ -8870,6 +8879,70 @@
     setConnectionStatus(unauthorized ? "blocked" : "offline");
     updateControlState();
     if (unauthorized) window.requestAnimationFrame(() => elements.loginPassword.focus());
+  }
+
+  /// 还没建管理员账号:登录页直说「输入内置口令」;之后就是普通的用户名+密码。
+  async function refreshLoginHint() {
+    try {
+      const status = await fetch("/api/auth/status", { cache: "no-store" }).then((response) => response.json());
+      if (!document.body.classList.contains("is-login") || !elements.loginForm || elements.loginForm.hidden) return;
+      if (status?.setup_pending) {
+        elements.blockedMessage.textContent = "首次使用:输入内置密码 miyu,登录后创建管理员账号。";
+        elements.loginUsername.placeholder = "首次使用留空";
+      } else {
+        elements.blockedMessage.textContent = "输入用户名和密码以继续。";
+        elements.loginUsername.placeholder = "用户名";
+      }
+    } catch (_) { /* 提示拿不到就用默认文案 */ }
+  }
+
+  /// 引导第 0 步:拿内置口令登进来、还没有管理员账号——先建号,建完直接以它登录。
+  function showSetupAdmin() {
+    state.blocked = true;
+    document.body.classList.add("is-login", "is-blocked");
+    elements.loadingState.hidden = true;
+    elements.timeline.hidden = true;
+    elements.emptyState.hidden = true;
+    elements.blockedState.hidden = false;
+    elements.blockedTitle.textContent = "创建管理员账号";
+    elements.blockedMessage.textContent = "内置密码只用这一次;建好账号后用它登录,别人凭邀请码注册。";
+    elements.loginForm.hidden = true;
+    elements.registerForm.hidden = true;
+    elements.setupForm.hidden = false;
+    elements.retryBootstrapButton.hidden = true;
+    elements.setupError.textContent = "";
+    elements.setupError.hidden = true;
+    if (!elements.setupUsername.value) elements.setupUsername.value = state.account?.setup_username || "";
+    setConnectionStatus("blocked");
+    updateControlState();
+    window.requestAnimationFrame(() => (elements.setupUsername.value ? elements.setupPassword : elements.setupUsername).focus());
+  }
+
+  async function submitSetupAdmin() {
+    if (state.setupSubmitting) return;
+    const username = elements.setupUsername.value.trim();
+    const password = elements.setupPassword.value;
+    const fail = (text, focus) => { elements.setupError.textContent = text; elements.setupError.hidden = false; focus?.focus(); };
+    if (!username) return fail("先起个用户名", elements.setupUsername);
+    if (!password) return fail("请输入密码", elements.setupPassword);
+    if (password !== elements.setupPassword2.value) return fail("两次密码不一样", elements.setupPassword2);
+    elements.setupError.hidden = true;
+    state.setupSubmitting = true;
+    elements.setupSubmit.disabled = true;
+    try {
+      await apiRequest("/api/auth/setup-admin", {
+        method: "POST",
+        body: JSON.stringify({ username, display_name: elements.setupDisplayName.value.trim(), password }),
+      });
+      elements.setupPassword.value = "";
+      elements.setupPassword2.value = "";
+      await loadBootstrap();
+    } catch (error) {
+      fail(error.message || "创建失败", elements.setupUsername);
+    } finally {
+      state.setupSubmitting = false;
+      elements.setupSubmit.disabled = false;
+    }
   }
 
   const VIEW_SESSION_KEY = "miyu.web.viewSession";
@@ -8894,6 +8967,11 @@
   }
 
   function applyBootstrap(snapshot) {
+    if (snapshot?.account?.setup_pending) {
+      state.account = snapshot.account;
+      showSetupAdmin();
+      return;
+    }
     state.blocked = false;
     document.body.classList.remove("is-login", "is-blocked");
     clearViewSyncTimer();
@@ -8920,6 +8998,7 @@
     for (const run of allRuns) trackRun(String(run.session_id), String(run.run_id));
     elements.loginForm.hidden = true;
     elements.registerForm.hidden = true;
+    elements.setupForm.hidden = true;
     elements.retryBootstrapButton.hidden = false;
     elements.loginPassword.value = "";
     elements.loginError.textContent = "";
@@ -11276,6 +11355,10 @@
     elements.loginForm.addEventListener("submit", (event) => {
       event.preventDefault();
       submitLogin();
+    });
+    elements.setupForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitSetupAdmin();
     });
     elements.registerForm.addEventListener("submit", (event) => {
       event.preventDefault();

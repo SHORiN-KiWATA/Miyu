@@ -15,6 +15,7 @@ from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE", "http://127.0.0.1:8388")
 PASSWORD = os.environ.get("PASSWORD", "miyu-sandbox")
+USERNAME = os.environ.get("USERNAME_", "shorin")
 PROMPT = sys.argv[1] if len(sys.argv) > 1 else "用大约四百字介绍一下 Arch Linux 的滚动更新模型,分三段,别用列表。"
 OUT = Path("~/.cache/miyu-jump-probe").expanduser()
 SECONDS = float(os.environ.get("SECONDS", "45"))
@@ -80,6 +81,8 @@ def main():
         page.goto(BASE)
         page.wait_for_selector("#loginForm:not([hidden]), #composerInput", timeout=20000)
         if page.is_visible("#loginForm"):
+            if USERNAME:
+                page.fill("#loginUsername", USERNAME)
             page.fill("#loginPassword", PASSWORD)
             page.click("#loginSubmit")
         page.wait_for_selector("#composerInput:not([disabled])", timeout=30000)

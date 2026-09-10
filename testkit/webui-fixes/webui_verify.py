@@ -24,6 +24,9 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "webui-fixes"))
+import authlib  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 BIN = Path(os.environ["BIN"])
 TAG = os.environ.get("TAG", "run")
@@ -66,7 +69,7 @@ def api(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method,
                                  headers={"content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with authlib.OPENER.open(req, timeout=30) as resp:
         raw = resp.read()
     return json.loads(raw) if raw else None
 
@@ -104,7 +107,8 @@ def main():
         assert wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub not up"
         daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT)], env=ENV, cwd=str(HOME),
                                   stdout=(OUT / "daemon.log").open("w"), stderr=subprocess.STDOUT)
-        assert wait_http(f"{BASE}/api/config"), "daemon not up"
+        assert wait_http(f"{BASE}/api/health"), "daemon not up"
+        authlib.bootstrap(BASE)
         time.sleep(1)
 
         created = api("POST", "/api/sessions", {"name": "走查", "switch": True})
@@ -117,6 +121,7 @@ def main():
             # ── 桌面:上下文窗口 + 自动滚动 + 按钮偏移 ──
             page = browser.new_page(viewport={"width": 1280, "height": 860})
             page.goto(BASE)
+            authlib.ui_login(page)
             page.wait_for_selector("#contextNumbers")
             page.wait_for_timeout(1500)
             ctx1 = page.text_content("#contextNumbers")
@@ -143,6 +148,7 @@ def main():
             if opened:
                 page.keyboard.press("Escape")
                 page.goto(BASE)
+                authlib.ui_login(page)
                 page.wait_for_selector("#composerInput")
                 page.wait_for_timeout(800)
 
@@ -225,6 +231,7 @@ def main():
                                       device_scale_factor=2)
             mp = ctx.new_page()
             mp.goto(BASE)
+            authlib.ui_login(mp)
             mp.wait_for_selector("#composerInput")
             mp.wait_for_timeout(1200)
             before = turn_count(session_id)
@@ -245,6 +252,7 @@ def main():
             # 只差 hash 的导航不重跑脚本,先离开再进(深链走启动路径)
             mp.goto("about:blank")
             mp.goto(BASE + "#console/usage")
+            authlib.ui_login(mp)
             mp.wait_for_timeout(3000)
             layout = mp.evaluate("""() => {
                 const body = document.querySelector('.u-model-body');

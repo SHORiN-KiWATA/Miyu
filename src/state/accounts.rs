@@ -171,6 +171,15 @@ impl StateStore {
         Ok(Some(account))
     }
 
+    /// 有没有管理员账号:没有 = 首次访问还没建号,内置口令还开着。
+    pub fn has_admin_account(&self) -> Result<bool> {
+        Ok(self
+            .conv_db
+            .list_accounts()?
+            .iter()
+            .any(|account| account.is_admin()))
+    }
+
     /// 引导:daemon 带着 `-p` 起来时,保证有一个管理员账号且密码就是它。
     /// 没有账号就建一个(用户名 = 家目录名,拿不到时 `admin`);已有管理员就
     /// 把密码重设成 `-p` 的值(它是属主这台机器上的机器级凭据,改了 `-p`

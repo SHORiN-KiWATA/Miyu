@@ -84,6 +84,16 @@ pub(in crate::web) fn account_bootstrap_json(state: &DaemonState, identity: &Web
     } else {
         value["oobe_pending"] = json!(false);
         value["persona"] = json!({ "slug": null, "name": "Miyu", "private": false });
+        // 拿内置口令登录且还没有管理员账号:先建号(引导第 0 步)。
+        let setup_pending = identity.account_id.is_empty()
+            && !state.state_store.has_admin_account().unwrap_or(true);
+        value["setup_pending"] = json!(setup_pending);
+        if setup_pending {
+            value["setup_username"] = json!(state
+                .paths
+                .home_admin()
+                .unwrap_or_else(|| crate::state::BOOTSTRAP_ADMIN_USERNAME.to_string()));
+        }
     }
     value
 }

@@ -22,6 +22,86 @@ pub(in crate::web) struct LoginRequest {
     pub(in crate::web) password: String,
 }
 
+/// 首次访问的内置口令(09-11):没建管理员账号之前,用它登录就是管理员,登录后
+/// 必须先建号;建完号它就失效,不知道它的人只能凭邀请码注册。`-p` 可以换掉它。
+pub(in crate::web) const BUILTIN_SETUP_PASSWORD: &str = "miyu";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::web) struct SetupAdminRequest {
+    pub(in crate::web) username: String,
+    #[serde(default)]
+    pub(in crate::web) display_name: String,
+    pub(in crate::web) password: String,
+}
+
+/// 登录页用:还没建管理员账号就提示「输入内置口令」。不需要登录。
+pub(in crate::web) async fn auth_status(
+    State(state): State<DaemonState>,
+) -> std::result::Result<Response, ApiError> {
+    let setup_pending = !state.state_store.has_admin_account().unwrap_or(true);
+    Ok(Json(json!({
+        "setup_pending": setup_pending,
+        "setup_username": suggested_admin_username(&state),
+    }))
+    .into_response())
+}
+
+fn suggested_admin_username(state: &DaemonState) -> String {
+    state
+        .paths
+        .home_admin()
+        .unwrap_or_else(|| crate::state::BOOTSTRAP_ADMIN_USERNAME.to_string())
+}
+
+/// 引导第 0 步:拿内置口令登录的人建管理员账号,建完直接以该账号登录,内置
+/// 口令从此失效。
+pub(in crate::web) async fn auth_setup_admin(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupAdminRequest>,
+) -> std::result::Result<Response, ApiError> {
+    if !origin_is_allowed(&headers) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "request origin is not allowed",
+        ));
+    }
+    let identity = require_identity(&headers, &state)?;
+    if !identity.admin || !identity.account_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "only the built-in login can create the first admin",
+        ));
+    }
+    if state
+        .state_store
+        .has_admin_account()
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "an admin account already exists",
+        ));
+    }
+    let username = request.username.trim();
+    let account = state
+        .state_store
+        .create_account(
+            username,
+            request.display_name.trim(),
+            &request.password,
+            crate::state::ROLE_ADMIN,
+        )
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, safe_error_message(&error)))?;
+    tracing::info!(username = %account.username, "admin account created via setup");
+    if let Some(token) = cookie_value(&headers, AUTH_COOKIE) {
+        state.auth.logout(token);
+    }
+    let session = state.auth.issue(WebIdentity::from_account(&account));
+    session_cookie_response(&session)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::web) struct RegisterRequest {
@@ -66,7 +146,18 @@ pub(in crate::web) async fn auth_login(
         .map(str::trim)
         .filter(|username| !username.is_empty());
     let attempt = match username {
-        None => state.auth.login(peer.ip(), &request.password),
+        None => {
+            // 内置口令只到建号为止:有了管理员账号,只填口令一律拒。
+            // 不计入限流:这条路上没有可猜的口令,记失败只会把同一台机器上紧接着的
+            // 正常账号登录一起限掉。
+            if state.state_store.has_admin_account().unwrap_or(false) {
+                return Err(ApiError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "the built-in password is disabled once an admin account exists; sign in with a username",
+                ));
+            }
+            state.auth.login(peer.ip(), &request.password)
+        }
         Some(username) => {
             state
                 .auth
@@ -210,34 +301,6 @@ pub(in crate::web) async fn auth_register(
 pub(in crate::web) fn ensure_user_home(paths: &MiyuPaths, username: &str) -> Result<()> {
     crate::paths::ensure_private_dir(&paths.homes_dir())?;
     crate::paths::ensure_private_dir(&paths.user_home_dir(username))
-}
-
-pub(in crate::web) fn resolve_web_password(args: &WebArgs) -> Result<Option<String>> {
-    let password = if let Some(path) = &args.password_file {
-        let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("reading WebUI password file: {}", path.display()))?;
-        Some(contents.trim_end_matches(['\r', '\n']).to_string())
-    } else {
-        match &args.password {
-            Some(password) if !password.is_empty() => Some(password.clone()),
-            Some(_) if io::stdin().is_terminal() => {
-                Some(rpassword::prompt_password("WebUI password: ")?)
-            }
-            Some(_) => {
-                anyhow::bail!("-p requires an interactive terminal or an explicit password value")
-            }
-            None => None,
-        }
-    };
-    if let Some(password) = &password {
-        if password.is_empty() {
-            anyhow::bail!("WebUI password cannot be empty");
-        }
-        if password.chars().count() > 1_024 {
-            anyhow::bail!("WebUI password cannot exceed 1,024 characters");
-        }
-    }
-    Ok(password)
 }
 
 pub(in crate::web) fn redact_secret_list(

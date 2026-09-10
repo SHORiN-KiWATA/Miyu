@@ -45,22 +45,19 @@ def main():
     e2e.HOME.mkdir(parents=True)
     e2e.RUNTIME.mkdir(parents=True)
     e2e.write_config()
-    password_file = e2e.OUT / "web-password"
-    password_file.write_text(e2e.ADMIN_PASSWORD + "\n")
     stub_env = dict(os.environ, STUB_PORT=str(STUB_PORT), MODE="plain", STUB_CHUNK_SLEEP="0.01")
     stub = subprocess.Popen([sys.executable, str(REPO / "testkit/webui-fixes/stub_reasoning.py")], env=stub_env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     daemon = None
     try:
         assert e2e.wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub not up"
-        daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1",
-                                   "--password-file", str(password_file)],
+        daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1"],
                                   env=e2e.ENV, cwd=str(e2e.HOME), stdout=(e2e.OUT / "daemon.log").open("w"),
                                   stderr=subprocess.STDOUT)
         assert e2e.wait_http(f"{BASE}/api/health"), "daemon not up"
         time.sleep(1)
         admin = e2e.Client()
-        assert admin.login(e2e.ADMIN_PASSWORD)[0] == 204
+        e2e.bootstrap_admin(admin)
         admin.call("POST", "/api/sessions", {"name": "管理员的会话"})
         _, invite = admin.call("POST", "/api/admin/invites", {})
         code = invite["code"]

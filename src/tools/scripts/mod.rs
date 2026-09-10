@@ -155,6 +155,7 @@ async fn run_script(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     command.kill_on_drop(true);
+    crate::tools::sandbox::confine(&mut command);
 
     let mut child = command.spawn()?;
     let stdin_pipe = child.stdin.take();

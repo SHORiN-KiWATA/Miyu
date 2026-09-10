@@ -164,10 +164,8 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(
-            overridden_args,
-            ["--port", "9400", "--password-file", "/private/password"]
-        );
+        // 09-11 起口令不走命令行:旧 launch 状态里的 password_file 不再传给 daemon。
+        assert_eq!(overridden_args, ["--port", "9400"]);
         assert!(overridden_args.iter().all(|arg| !arg.contains("secret")));
     }
 
@@ -245,13 +243,13 @@ mod tests {
         assert_eq!(restored, saved);
         let mut command = std::process::Command::new("miyu");
         append_daemon_process_args(&mut command, &restored);
+        // password_file 只是旧字段:状态文件里存着,进程参数里不再出现。
+        assert!(password.exists());
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
                 std::ffi::OsStr::new("--port"),
                 std::ffi::OsStr::new("9412"),
-                std::ffi::OsStr::new("--password-file"),
-                password.as_os_str(),
             ]
         );
     }

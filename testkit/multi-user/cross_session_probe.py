@@ -43,8 +43,6 @@ def main():
     HOME.mkdir(parents=True)
     RUNTIME.mkdir(parents=True)
     e2e.write_config()
-    password_file = OUT / "web-password"
-    password_file.write_text(e2e.ADMIN_PASSWORD + "\n")
     # 长回复:70 行 × 0.15s ≈ 10s,足够在中间对别的会话动手
     stub_env = dict(os.environ, STUB_PORT=str(STUB_PORT), MODE="long", STUB_CHUNK_SLEEP="0.12", STUB_LINES="400")
     stub = subprocess.Popen([sys.executable, str(REPO / "testkit/webui-fixes/stub_reasoning.py")], env=stub_env,
@@ -52,13 +50,12 @@ def main():
     daemon = None
     try:
         assert e2e.wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub not up"
-        daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1",
-                                   "--password-file", str(password_file)],
+        daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1"],
                                   env=ENV, cwd=str(HOME), stdout=(OUT / "daemon.log").open("w"), stderr=subprocess.STDOUT)
         assert e2e.wait_http(f"{BASE}/api/health"), "daemon not up"
         time.sleep(1)
         admin = e2e.Client()
-        assert admin.login(e2e.ADMIN_PASSWORD)[0] == 204
+        e2e.bootstrap_admin(admin)
         _, a = admin.call("POST", "/api/sessions", {"name": "A 在跑"})
         _, b = admin.call("POST", "/api/sessions", {"name": "B 被操作"})
         sid_a, sid_b = a["session"]["session_id"], b["session"]["session_id"]

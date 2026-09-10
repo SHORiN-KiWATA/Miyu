@@ -260,35 +260,46 @@ pub(in crate::web) async fn handle_session_command(
                 .as_deref()
                 .and_then(|raw| serde_json::from_str(raw).ok())
                 .unwrap_or(crate::tools::workspace::TurnOrigin::Human);
-            let workspace = record
-                .workspace
-                .clone()
-                .map(std::path::PathBuf::from)
-                .filter(|path| path.is_dir())
+            // 成员的桥调用与回合同一份作用域:工作区在家里,子进程套 Landlock。
+            let member = member_scope(&state.paths, &state.state_store, &state.stores, &session_id);
+            let workspace = member
+                .as_ref()
+                .map(|scope| scope.workspace.clone())
+                .or_else(|| {
+                    record
+                        .workspace
+                        .clone()
+                        .map(std::path::PathBuf::from)
+                        .filter(|path| path.is_dir())
+                })
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let sandbox = member.map(|scope| scope.policy);
             let session_arc: Arc<str> = session_id.clone().into();
-            let output = crate::tools::workspace::with_workspace(
-                workspace,
-                crate::tools::workspace::with_session(
-                    session_arc,
-                    crate::tools::workspace::with_turn_origin(
-                        turn_origin,
-                        crate::tools::workspace::with_bridge_depth(depth + 1, async {
-                            // ask_question 是交互特例:注册表里只有报错桩,真实
-                            // 流程走 broker 问答(与回合内同一条前端通道)。
-                            if name == "ask_question" {
-                                Ok(bridge_ask_question(state, &session_id, &arguments).await)
-                            } else {
-                                call_with_bridge_progress(
-                                    state,
-                                    &session_id,
-                                    &registry,
-                                    &name,
-                                    &arguments,
-                                )
-                                .await
-                            }
-                        }),
+            let output = crate::tools::sandbox::with_sandbox(
+                sandbox,
+                crate::tools::workspace::with_workspace(
+                    workspace,
+                    crate::tools::workspace::with_session(
+                        session_arc,
+                        crate::tools::workspace::with_turn_origin(
+                            turn_origin,
+                            crate::tools::workspace::with_bridge_depth(depth + 1, async {
+                                // ask_question 是交互特例:注册表里只有报错桩,真实
+                                // 流程走 broker 问答(与回合内同一条前端通道)。
+                                if name == "ask_question" {
+                                    Ok(bridge_ask_question(state, &session_id, &arguments).await)
+                                } else {
+                                    call_with_bridge_progress(
+                                        state,
+                                        &session_id,
+                                        &registry,
+                                        &name,
+                                        &arguments,
+                                    )
+                                    .await
+                                }
+                            }),
+                        ),
                     ),
                 ),
             )

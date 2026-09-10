@@ -6,7 +6,6 @@
 //!
 //! `cli.rs` 仍然 re-export 这些名字，外部按 `cli::WebArgs` 引用不会断。
 use clap::Args;
-use std::path::PathBuf;
 
 use crate::ipc;
 
@@ -19,24 +18,16 @@ pub struct WebArgs {
     #[arg(long, value_name = "ADDR")]
     pub bind: Option<std::net::IpAddr>,
 
-    #[arg(short = 'p', long, num_args = 0, default_missing_value = "")]
-    pub password: Option<String>,
-
-    #[arg(long, value_name = "PATH", conflicts_with = "password")]
-    pub password_file: Option<PathBuf>,
-
     #[arg(skip)]
     pub port_explicit: bool,
 }
 
-/// 手写而非派生：密码不能进日志。
 impl std::fmt::Debug for WebArgs {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("WebArgs")
             .field("port", &self.port)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field("password_file", &self.password_file)
+            .field("bind", &self.bind)
             .field("port_explicit", &self.port_explicit)
             .finish()
     }

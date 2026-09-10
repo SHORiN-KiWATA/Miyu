@@ -539,9 +539,7 @@ pub(crate) fn append_daemon_process_args(
     launch: &DaemonLaunchConfig,
 ) {
     command.arg("--port").arg(launch.port.to_string());
-    if let Some(path) = &launch.password_file {
-        command.arg("--password-file").arg(path);
-    }
+    // password_file 是旧字段:09-11 起口令不走命令行,daemon 也不再认这个参数。
     if let Some(bind) = &launch.bind {
         command.arg("--bind").arg(bind.to_string());
     }

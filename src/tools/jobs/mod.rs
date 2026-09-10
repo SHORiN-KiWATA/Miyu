@@ -338,6 +338,7 @@ pub async fn spawn_background(
         .stdout(std::process::Stdio::from(log.try_clone()?))
         .stderr(std::process::Stdio::from(log));
     process.process_group(0);
+    super::sandbox::confine(&mut process);
     let mut child = process
         .spawn()
         .context("failed to spawn the background job")?;

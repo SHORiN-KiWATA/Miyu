@@ -8,7 +8,6 @@
 use crate::web::*;
 
 pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
-    let password = resolve_web_password(&args)?;
     AppConfig::init_files(&paths)?;
     let config = AppConfig::load_or_default(&paths)?;
     tools::jobs::init(&paths);
@@ -125,20 +124,10 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         Some(memory_organizer_handle),
     )?;
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-    // 多用户(阶段 5):带 `-p` 起来就保证有一个管理员账号且密码等于它;
-    // 用户名+密码登录走账号表,只填口令仍是老路。
-    if let Some(password) = password.as_deref() {
-        // 用户名 = 家目录名(阶段 6):`home/<用户名>/` 就是这个人的目录。
-        let admin_username = paths
-            .home_admin()
-            .unwrap_or_else(|| crate::state::BOOTSTRAP_ADMIN_USERNAME.to_string());
-        match state_store.ensure_bootstrap_admin(password, &admin_username) {
-            Ok(account) => tracing::info!(username = %account.username, "admin account ready"),
-            Err(error) => tracing::warn!(error = %error, "bootstrap admin account failed"),
-        }
-    }
+    // 多用户(09-11 起 WebUI 永远要登录):没建管理员账号之前,内置口令 `miyu`
+    // 登录即管理员,登录后先建号;建完号内置口令失效,只剩账号登录与邀请码注册。
     let state = DaemonState {
-        auth: WebAuth::new(password.as_deref()),
+        auth: WebAuth::new(Some(BUILTIN_SETUP_PASSWORD)),
         boot_id,
         web_port: port,
         web_public: !bind_ip.is_loopback(),
@@ -179,14 +168,20 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     for url in &urls {
         println!("Miyu WebUI: {url}");
     }
-    if password.is_none() && !bind_ip.is_loopback() {
+    if !state.state_store.has_admin_account().unwrap_or(true) {
         eprintln!(
             "{}",
             t(
-                "WARNING: the WebUI is listening on a non-loopback address without a password; anyone who can reach this port has full control. Pass a password or bind to 127.0.0.1.",
-                "警告：WebUI 正在无密码监听非回环地址，任何能访问该端口的人都拥有完全控制权。请设置访问密码或绑定 127.0.0.1。"
+                "First visit: sign in with the built-in password `miyu` and create the admin account; the built-in password stops working afterwards.",
+                "首次访问：用内置口令 miyu 登录并创建管理员账号，建完号内置口令即失效。"
             )
         );
+    }
+    match crate::tools::sandbox::probe() {
+        Some(abi) => tracing::info!(abi, "member sandbox: landlock available"),
+        None => tracing::warn!(
+            "member sandbox: landlock unavailable on this kernel; member commands will be refused"
+        ),
     }
     std::io::stdout().flush().ok();
 
@@ -336,6 +331,8 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
         .route("/api/auth/register", post(auth_register))
+        .route("/api/auth/status", get(auth_status))
+        .route("/api/auth/setup-admin", post(auth_setup_admin))
         .route("/api/account", get(account_me).patch(account_update))
         .route(
             "/api/account/personas",

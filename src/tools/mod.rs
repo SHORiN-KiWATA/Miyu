@@ -36,6 +36,7 @@ mod todowrite;
 pub(crate) mod voice_chat;
 pub(crate) mod voice_speak;
 pub(crate) use todowrite::{clear_session_todos, session_todos};
+pub mod sandbox;
 pub mod tool_descriptions;
 pub(crate) mod usage_query;
 pub mod vision;

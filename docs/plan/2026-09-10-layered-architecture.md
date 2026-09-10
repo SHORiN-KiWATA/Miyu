@@ -76,7 +76,8 @@
 - [x] 账号面板:改显示名/密码、退出登录;管理员生成/作废邀请码、停用/恢复成员、重设密码、30 天按人用量;登录页加用户名 + 「注册账号」表单
 - [x] OOBE 三步引导(注册成功即全屏引导,有动画):①人格——直接用 Miyu 或创建自己的(名字/简介/自写设定可留空/头像/看板图,措辞不假定性别);②功能——记忆开关 + 管理员白名单里的插件(`accounts.member_plugins`、`accounts.member_personas`,设置页可改;视觉分析/读写文件/用量是核心常开不做开关,外发 `platform_outreach` 永不给成员;全局脚本逐个勾选 → `PersonaManifest.plugins.scripts` 白名单,注册时过滤);③认知——`home/<user>/profile.md`。激活人格时把成员名下空会话改挂到私有 scope(没有就新建),否则「建了 Eris 还是 Miyu 在答」。成员私有人格 = `home/<user>/personas/<slug>/{persona.md,persona.json,persona.toml,avatar.*,board.*,memory/,skills/,scripts/}`,会话表 scope `home-<user>-<slug>`,回合里 `prompt.private_persona_dir` 覆盖(提示词/清单/记忆/技能/脚本全跟目录,资源缓存键含它);`/api/account/personas*`、`/api/account/active-persona`;账号页人格卡可切换/编辑/删除;头像走 `/api/persona/avatar?scope=`(只给本人)
 - [x] `home/<user>/profile.md` 注入:成员回合把 `prompt.user_identity_file` 指到自己的档案(task.rs,只改 Agent 的配置副本,资源缓存键不变);管理员读 `home/<admin>/profile.md`
-- [ ] 三个钩子:信任枚举 Member(今天=Owner)、回合上下文必填 principal、run_command spawn 处沙盒策略参数(默认完全放开)——principal 已落(成员回合必带);另两个未动
+- [x] 成员沙盒(09-11,`src/tools/sandbox.rs` + `src/web/sandbox_scope.rs`):照搬 dsh `landlock-run`——fork 后 exec 前在子进程里装 Landlock 允许列表(裸 syscall 444/445/446 + no_new_privs,零依赖),规则随 execve 继承;策略挂回合的 task-local(`with_sandbox`),run_command / job / 脚本工具的 spawn 处 `confine`;成员策略 = `/` 只读 + `home/<user>/workspace`、`/tmp`、`/dev/null`、脚本缓存可写;成员工作区固定 `home/<user>/workspace`;内核无 Landlock 失败关闭。管理员/终端/平台回合不套。信任枚举 Member 仍未做
+- [x] 首次访问建管理员(09-11):WebUI 永远要登录;没有管理员账号时内置口令 `miyu` 登录 = 机器级管理员且 bootstrap `account.setup_pending`,前端强制走「创建管理员账号」(`POST /api/auth/setup-admin`,建完直接以该账号登录);有了管理员账号只填口令一律 401;`/api/auth/status` 给登录页提示。`miyu web -p/--password-file` 退场(launch 状态的 `password_file` 字段留作读旧文件)
 - [x] 测具 `testkit/multi-user/e2e.py`:隔离 daemon + 桩模型,登录/邀请/注册/归属/管理台闸/用量按人/SSE 归属/停用恢复
 - 验证:两个账号各开会话互不可见;成员在共享 Miyu 下 recall 只见 public + 自己;dashboard/设置页 403
 

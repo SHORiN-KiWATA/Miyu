@@ -43,6 +43,9 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "webui-fixes"))
+import authlib  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 BIN = Path(os.environ["BIN"]).expanduser()
 WEB = Path(os.environ.get("WEB", HERE.parent.parent / "web")).resolve()
@@ -84,7 +87,7 @@ def wait_http(url, timeout=40):
 def api(method, path, payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method, headers={"content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with authlib.OPENER.open(req, timeout=10) as resp:
         raw = resp.read()
         return json.loads(raw) if raw else {}
 
@@ -135,7 +138,8 @@ def main():
         assert wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub not up"
         daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT)], env=ENV, cwd=str(HOME),
                                   stdout=(OUT / "daemon.log").open("w"), stderr=subprocess.STDOUT)
-        assert wait_http(f"{BASE}/api/config"), "daemon not up"
+        assert wait_http(f"{BASE}/api/health"), "daemon not up"
+        authlib.bootstrap(BASE)
         time.sleep(1)
         created = api("POST", "/api/sessions", {"name": "时间线走查", "switch": True})
         session_id = created.get("session_id") or created.get("id") or (created.get("session") or {}).get("session_id")
@@ -146,11 +150,12 @@ def main():
             page = browser.new_page(viewport={"width": 1280, "height": 900})
             page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
             # 沙箱 home 没有 matugen 主题文件和人格头像,那两处 404 是既有噪声,不算错
-            page.on("console", lambda m: errors.append(f"console: {m.text}") if m.type == "error" and "status of 404" not in m.text else None)
+            page.on("console", lambda m: errors.append(f"console: {m.text}") if m.type == "error" and "status of 404" not in m.text and "status of 401" not in m.text else None)
             page.route(lambda u: u.startswith(BASE) and (u.rstrip("/") == BASE or any(k in u for k in ("/app.js", "/styles.css", "/index.html"))), serve_local)
             # 思考内容收着(默认是开的):这样才能验「思考中那一行里滚思考文字」
             page.add_init_script("try { localStorage.setItem('miyu.web.reasoningExpanded', 'false'); } catch (_) {}")
             page.goto(BASE)
+            authlib.ui_login(page)
             page.wait_for_selector("#composerInput:not([disabled])", timeout=20000)
             page.wait_for_timeout(800)
             # 用户消息里也带一个代码块:用户气泡改中性色后,里面那块深蓝要跟着换
@@ -360,6 +365,7 @@ def main():
             phone = browser.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
             phone.route(lambda u: u.startswith(BASE) and (u.rstrip("/") == BASE or any(k in u for k in ("/app.js", "/styles.css", "/index.html"))), serve_local)
             phone.goto(BASE)
+            authlib.ui_login(phone)
             phone.wait_for_selector("#composerInput", timeout=20000)
             phone.wait_for_timeout(2000)
             phone.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')[1]; l?.querySelector('.proc-head')?.click(); }")

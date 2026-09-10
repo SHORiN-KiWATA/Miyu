@@ -1,12 +1,14 @@
 # 多用户(09-10 分层架构阶段 5)端到端
 
 ```sh
-BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/e2e.py      # 接口层,98 项(含按人分会话库/可勾清单/脚本/成员 dashboard/表情包分库/工具桥按人格)
+BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/e2e.py      # 接口层,105 项(含内置口令建号/按人分会话库/可勾清单/脚本/成员 dashboard/表情包分库/工具桥按人格)
 BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/ui.py       # 浏览器:登录页/注册/成员控制台截图
 BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/layout_e2e.py  # 阶段 6:家目录布局 新装→回滚→再搬
 ```
 
 - 三个脚本都固定 `MIYU_ADMIN_USER=admin`:管理员用户名 = 家目录名,不能随跑测试的系统用户名变。
+- 09-11 起 daemon 不带口令:测具先用内置口令 `miyu` 登录、`POST /api/auth/setup-admin` 建号(`e2e.bootstrap_admin`),之后用账号登录;WebUI 测具(webui-timeline / webui-fixes)共用 `testkit/webui-fixes/authlib.py`。
+- `typing_probe.py`:打字抖动取证(逐字敲、采滚动/几何/layout-shift,`SPAWN=1 TURN=1` 自起桩 daemon 并在流式中/结束后各敲一遍;`WEB=` 指向哪份前端就测哪份,A/B 用)。
 - e2e.py 里的档案断言靠桩模型的 `STUB_DUMP_SYSTEM=<文件>`(每个请求的 system 消息一行 JSON):
   成员回合带成员档案、不带属主档案;管理员回合反之。
 

@@ -67,6 +67,8 @@ pub(in crate::tools) async fn execute_command(
         .kill_on_drop(true);
     #[cfg(unix)]
     command_process.process_group(0);
+    // 成员回合:子进程套 Landlock(策略在回合的 task-local 上;管理员没有)。
+    crate::tools::sandbox::confine(&mut command_process);
     let mut child = command_process.spawn()?;
     let mut process_group = CommandProcessGroup::new(child.id());
     let stdout = child

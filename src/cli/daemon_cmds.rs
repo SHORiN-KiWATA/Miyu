@@ -14,10 +14,10 @@ pub(in crate::cli) const RELOAD_RETRY_INTERVAL: Duration = Duration::from_secs(5
 
 pub(in crate::cli) const RELOAD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
-pub(in crate::cli) async fn run_web(paths: &MiyuPaths, mut args: WebArgs) -> Result<()> {
+pub(in crate::cli) async fn run_web(paths: &MiyuPaths, args: WebArgs) -> Result<()> {
     if let Some(info) = ipc::daemon_info(paths).await {
         if info.build_id == ipc::BUILD_ID {
-            if args.port_explicit || args.password.is_some() || args.password_file.is_some() {
+            if args.port_explicit || args.bind.is_some() {
                 bail!(
                     "{}",
                     t(
@@ -33,12 +33,6 @@ pub(in crate::cli) async fn run_web(paths: &MiyuPaths, mut args: WebArgs) -> Res
         }
     }
 
-    if args.password.as_deref() == Some("") {
-        args.password = Some(rpassword::prompt_password(t(
-            "WebUI password: ",
-            "WebUI 密码：",
-        ))?);
-    }
     let launch = web_launch_config(paths, &args)?;
     let info = ipc::ensure_daemon(paths, launch.as_ref()).await?;
     for url in daemon_web_access_urls(&info) {
@@ -51,35 +45,15 @@ pub(in crate::cli) fn web_launch_config(
     paths: &MiyuPaths,
     args: &WebArgs,
 ) -> Result<Option<ipc::DaemonLaunchConfig>> {
-    if !args.port_explicit
-        && args.bind.is_none()
-        && args.password.is_none()
-        && args.password_file.is_none()
-    {
+    if !args.port_explicit && args.bind.is_none() {
         return Ok(None);
     }
-    let password_file = match args.password.as_deref() {
-        Some("") => bail!(
-            "{}",
-            t("WebUI password cannot be empty", "WebUI 密码不能为空")
-        ),
-        Some(password) if password.chars().count() > 1_024 => bail!(
-            "{}",
-            t(
-                "WebUI password cannot exceed 1,024 characters",
-                "WebUI 密码不能超过 1,024 个字符"
-            )
-        ),
-        Some(password) => Some(ipc::stage_managed_web_password(paths, password)?),
-        None => args
-            .password_file
-            .as_deref()
-            .map(|path| ipc::stage_web_password_file(paths, path))
-            .transpose()?,
-    };
+    // 09-11 起 WebUI 的口令不再从命令行来:首次访问用内置口令建管理员账号,
+    // 之后只认账号;launch 状态里的 password_file 是旧字段,留着只为读得懂旧文件。
+    let _ = paths;
     Ok(Some(ipc::DaemonLaunchConfig {
         port: args.port,
-        password_file,
+        password_file: None,
         bind: args.bind,
     }))
 }

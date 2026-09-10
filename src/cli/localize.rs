@@ -664,16 +664,10 @@ pub(in crate::cli) fn localize_config_command(command: clap::Command) -> clap::C
 pub(in crate::cli) fn localize_web_command(command: clap::Command) -> clap::Command {
     command
         .mut_arg("port", |arg| arg.help(t("Local TCP port", "本地 TCP 端口")))
-        .mut_arg("password", |arg| {
+        .mut_arg("bind", |arg| {
             arg.help(t(
-                "Prompt securely for a required password",
-                "安全输入所需的访问密码",
-            ))
-        })
-        .mut_arg("password_file", |arg| {
-            arg.help(t(
-                "Read the WebUI password from a file",
-                "从文件读取 WebUI 访问密码",
+                "WebUI bind address (default 0.0.0.0; 127.0.0.1 = this machine only)",
+                "WebUI 监听地址（默认 0.0.0.0；127.0.0.1 仅限本机）",
             ))
         })
 }

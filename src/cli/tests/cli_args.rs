@@ -3,7 +3,6 @@
 // 被测的东西散在 cli::mod 与 repl 的兄弟模块里，这里全都要够到。
 use super::shared::*;
 use crate::cli::*;
-use std::os::unix::fs::PermissionsExt;
 /// REPL 的 `/models` 收一整串自由文本,`--global` / `-g` 要能从里面摘
 /// 出来,并且不能把 `-g` 开头的模型名(如 `-gpt`)误当成开关。
 #[test]
@@ -141,8 +140,6 @@ fn web_is_a_cli_subcommand_with_local_server_options() {
         Some(Command::Web(WebArgs {
             port: 4100,
             bind: None,
-            password: None,
-            password_file: None,
             port_explicit: true,
         }))
     ));
@@ -157,76 +154,18 @@ fn web_is_a_cli_subcommand_with_local_server_options() {
         Some(Command::Web(WebArgs {
             port: 8300,
             bind: None,
-            password: None,
-            password_file: None,
             port_explicit: false,
         }))
     ));
 
-    let cli = parse_args(["miyu", "web", "-p"].map(OsString::from).to_vec()).unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Web(WebArgs {
-            password: Some(password),
-            ..
-        })) if password.is_empty()
-    ));
     for args in [
-        vec!["miyu", "web", "-p", "secret"],
-        vec!["miyu", "web", "--password=secret"],
-        vec!["miyu", "web", "-psecret"],
+        vec!["miyu", "web", "-p"],
+        vec!["miyu", "web", "--password-file", "/tmp/x"],
     ] {
         assert!(parse_args(args.into_iter().map(OsString::from).collect()).is_err());
     }
 
-    let cli = parse_args(
-        ["miyu", "web", "--password-file", "/tmp/miyu-password"]
-            .map(OsString::from)
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Web(WebArgs {
-            password: None,
-            password_file: Some(path),
-            ..
-        })) if path == PathBuf::from("/tmp/miyu-password")
-    ));
-
     assert!(parse_args(["miyu", "web", "--public"].map(OsString::from).to_vec(),).is_err());
-}
-
-#[test]
-fn web_password_is_materialized_as_a_private_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = pop_test_paths(temp.path());
-    let args = WebArgs {
-        port: 9400,
-        bind: None,
-        password: Some("very-secret".to_string()),
-        password_file: None,
-        port_explicit: false,
-    };
-
-    let launch = web_launch_config(&paths, &args).unwrap().unwrap();
-
-    assert_eq!(launch.port, 9400);
-    let password_file = launch.password_file.unwrap();
-    let password_dir = paths.managed_web_password_dir();
-    assert_eq!(password_file.parent(), Some(password_dir.as_path()));
-    assert_eq!(
-        std::fs::read_to_string(&password_file).unwrap(),
-        "very-secret"
-    );
-    assert_eq!(
-        std::fs::metadata(password_file)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
 }
 
 #[test]
@@ -236,34 +175,10 @@ fn bare_web_does_not_override_the_persisted_launch_config() {
     let args = WebArgs {
         port: ipc::DEFAULT_WEB_PORT,
         bind: None,
-        password: None,
-        password_file: None,
         port_explicit: false,
     };
 
     assert!(web_launch_config(&paths, &args).unwrap().is_none());
-}
-
-#[test]
-fn explicit_password_file_is_copied_into_private_miyu_state() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = pop_test_paths(temp.path());
-    let external = temp.path().join("external-password");
-    std::fs::write(&external, "file-secret\n").unwrap();
-    let args = WebArgs {
-        port: ipc::DEFAULT_WEB_PORT,
-        bind: None,
-        password: None,
-        password_file: Some(external.clone()),
-        port_explicit: false,
-    };
-
-    let launch = web_launch_config(&paths, &args).unwrap().unwrap();
-    let managed = launch.password_file.unwrap();
-    assert_ne!(managed, external);
-    let password_dir = paths.managed_web_password_dir();
-    assert_eq!(managed.parent(), Some(password_dir.as_path()));
-    assert_eq!(std::fs::read_to_string(managed).unwrap(), "file-secret");
 }
 
 #[test]

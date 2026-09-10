@@ -48,9 +48,8 @@ def cli(*args):
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def start_daemon(password_file):
-    daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1",
-                               "--password-file", str(password_file)],
+def start_daemon():
+    daemon = subprocess.Popen([str(BIN), "__daemon", "--port", str(PORT), "--bind", "127.0.0.1"],
                               env=ENV, cwd=str(HOME), stdout=(OUT / "daemon.log").open("a"), stderr=subprocess.STDOUT)
     assert e2e.wait_http(f"{BASE}/api/health"), "daemon not up"
     time.sleep(1)
@@ -73,8 +72,6 @@ def main():
     HOME.mkdir(parents=True)
     RUNTIME.mkdir(parents=True)
     e2e.write_config()
-    password_file = OUT / "web-password"
-    password_file.write_text(e2e.ADMIN_PASSWORD + "\n")
     stub_env = dict(os.environ, STUB_PORT=str(STUB_PORT), MODE="plain", STUB_CHUNK_SLEEP="0.01")
     stub = subprocess.Popen([sys.executable, str(REPO / "testkit/webui-fixes/stub_reasoning.py")], env=stub_env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -82,12 +79,12 @@ def main():
     try:
         assert e2e.wait_http(f"http://127.0.0.1:{STUB_PORT}/v1/models"), "stub not up"
         # 1. 新装
-        daemon = start_daemon(password_file)
+        daemon = start_daemon()
         marker = HOME / ".home-layout-v1"
         check("新装即家目录布局", marker.is_file() and marker.read_text().strip() == "admin")
         check("会话库在 home/admin", (HOME / "home/admin/conversation.db").is_file())
         admin = e2e.Client()
-        assert admin.login(e2e.ADMIN_PASSWORD)[0] == 204
+        e2e.bootstrap_admin(admin)
         _, created = admin.call("POST", "/api/sessions", {"name": "搬家前的会话"})
         session_id = created["session"]["session_id"]
         view = e2e.run_turn(admin, session_id, "搬家前说一句")
@@ -112,10 +109,10 @@ def main():
         check("miyu layout 报老布局+已回滚", code == 0 and "老布局" in out and "*" in out, out.strip()[:160])
 
         # 5. 回滚后再起 daemon:不自动搬,数据还在
-        daemon = start_daemon(password_file)
+        daemon = start_daemon()
         check("opt-out 生效:没有自动搬回去", not marker.exists() and (HOME / "state/conversation.db").is_file())
         admin = e2e.Client()
-        assert admin.login(e2e.ADMIN_PASSWORD)[0] == 204
+        e2e.bootstrap_admin(admin)
         status, view = admin.call("GET", f"/api/sessions/{session_id}/turns")
         check("老布局下会话与回合仍在", status == 200 and len(view.get("turns", [])) == 1, str(status))
         status, me = admin.call("GET", "/api/account")
@@ -127,9 +124,9 @@ def main():
         code, out = cli("layout", "--apply")
         check("miyu layout --apply 成功", code == 0 and "home/admin" in out, out.strip()[:160])
         check("apply 后标记回来、opt-out 没了", marker.is_file() and not (HOME / ".home-layout-off").exists())
-        daemon = start_daemon(password_file)
+        daemon = start_daemon()
         admin = e2e.Client()
-        assert admin.login(e2e.ADMIN_PASSWORD)[0] == 204
+        e2e.bootstrap_admin(admin)
         status, view = admin.call("GET", f"/api/sessions/{session_id}/turns")
         check("搬家后同一个会话 id、回合还在", status == 200 and len(view.get("turns", [])) == 1, str(status))
         status, me = admin.call("GET", "/api/account")
