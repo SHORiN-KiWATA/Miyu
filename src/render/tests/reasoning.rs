@@ -1,5 +1,6 @@
 //! 推理阶段的计时、标题与状态。
 
+use super::shared::*;
 use crate::render::*;
 
 #[test]
@@ -383,4 +384,79 @@ fn wait_timer_reanchors_after_each_tool_result() {
     renderer.reasoning_started_at = None;
     renderer.reanchor_wait_timer();
     assert!(renderer.reasoning_started_at.is_none());
+}
+
+/// 09-10 终端截图:正文行开着时来一个空的推理分段(没有推理文本、没有待写
+/// 的摘要),不能把正文截成一行一段。
+#[test]
+fn empty_reasoning_part_mid_content_does_not_break_the_line() {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Summary,
+        ToolCallDisplayMode::Summary,
+        false,
+        true,
+        10,
+    );
+    renderer.use_external_cursor_control();
+    renderer.use_buffered_output();
+    let now = std::time::Instant::now();
+    let content = |text: &str| ChatStreamChunk {
+        kind: ChatStreamKind::Content,
+        text: text.to_string(),
+    };
+
+    renderer.write_chunk(content("问我的模型")).unwrap();
+    renderer.start_reasoning_part(now).unwrap();
+    renderer.finish_reasoning_part(now).unwrap();
+    renderer.write_chunk(content("的话")).unwrap();
+    renderer.start_reasoning_part(now).unwrap();
+    renderer.finish_reasoning_part(now).unwrap();
+    renderer.write_chunk(content("，这有什么好讲的。")).unwrap();
+    renderer.finish().unwrap();
+
+    let frame = String::from_utf8(renderer.take_output_frame()).unwrap();
+    let plain = strip_ansi_for_test(&frame);
+    // 正文之间不许夹换行;收尾的换行(markdown 行尾 + finish)不算。
+    assert_eq!(
+        plain.trim_end_matches('\n'),
+        "问我的模型的话，这有什么好讲的。",
+        "正文应仍是一整行,实得:{plain:?}"
+    );
+}
+
+/// 真·交错思考:推理文本落在正文中间时,先收正文行再起转轮,不能在半行
+/// 正文上 MoveToColumn(0)+清行。
+#[test]
+fn real_reasoning_mid_content_ends_the_line_before_the_spinner() {
+    let mut renderer = StreamRenderer::new(
+        ReasoningDisplayMode::Summary,
+        ToolCallDisplayMode::Summary,
+        false,
+        true,
+        10,
+    );
+    renderer.use_external_cursor_control();
+    renderer.use_buffered_output();
+    let now = std::time::Instant::now();
+
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Content,
+            text: "前半句".to_string(),
+        })
+        .unwrap();
+    renderer.start_reasoning_part(now).unwrap();
+    renderer
+        .write_chunk(ChatStreamChunk {
+            kind: ChatStreamKind::Reasoning,
+            text: "想一下".to_string(),
+        })
+        .unwrap();
+    let frame = String::from_utf8(renderer.take_output_frame()).unwrap();
+    let plain = strip_ansi_for_test(&frame);
+    assert!(
+        plain.starts_with("前半句\n"),
+        "推理文本到来时正文行应先被收掉,实得:{plain:?}"
+    );
+    assert_eq!(renderer.mode, Some(ChatStreamKind::Reasoning));
 }

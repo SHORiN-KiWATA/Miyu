@@ -402,3 +402,58 @@ fn test_chat_request_extra_body_flatten() {
     assert_eq!(serialized.matches("\"model\":").count(), 1);
     assert_eq!(serialized.matches("\"messages\":").count(), 1);
 }
+
+/// 09-10 终端截图:正文被拆成一行一段。供应商在每个正文 delta 上附带
+/// `reasoning_content: ""`,若把空串当一段推理,每个正文分片都会被包上一对
+/// ReasoningPartStart/End,终端每收到一次分段开始就截断正文行。
+#[test]
+fn empty_reasoning_field_beside_content_does_not_open_a_reasoning_part() {
+    let mut content = String::new();
+    let mut content_emitted = 0usize;
+    let mut reasoning = String::new();
+    let mut reasoning_emitted = 0usize;
+    let mut reasoning_part_active = false;
+    let mut finish_reason = None;
+    let mut usage = None;
+    let mut tool_calls = ToolCallAccumulator::default();
+    let mut chunks = Vec::new();
+    let mut on_chunk = |chunk| {
+        chunks.push(chunk);
+        Ok(())
+    };
+
+    for line in [
+        r#"data: {"choices":[{"delta":{"reasoning_content":"先想","content":null}}]}"#,
+        r#"data: {"choices":[{"delta":{"reasoning_content":"","content":"问我的模型"}}]}"#,
+        r#"data: {"choices":[{"delta":{"reasoning_content":"","content":"的话"}}]}"#,
+    ] {
+        handle_sse_line(
+            line,
+            &mut content,
+            &mut content_emitted,
+            &mut reasoning,
+            &mut reasoning_emitted,
+            &mut reasoning_part_active,
+            &mut finish_reason,
+            &mut usage,
+            &mut tool_calls,
+            &mut on_chunk,
+        )
+        .unwrap();
+    }
+
+    let kinds = chunks.iter().map(|chunk| chunk.kind).collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            ChatStreamKind::ReasoningPartStart,
+            ChatStreamKind::Reasoning,
+            ChatStreamKind::ReasoningPartEnd,
+            ChatStreamKind::Content,
+            ChatStreamKind::Content,
+        ],
+        "空 reasoning 字段不能再开一段:正文分片之间不该夹分段事件"
+    );
+    assert!(!reasoning_part_active);
+    assert_eq!(content, "问我的模型的话");
+}

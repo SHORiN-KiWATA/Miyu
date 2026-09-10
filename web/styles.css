@@ -7295,9 +7295,13 @@ body[data-theme="linen"] .u-type-pill.t-aux { color: var(--md-sys-color-on-secon
 .u-src-pill { font-size: var(--fs-micro); padding: 1px 8px; border-radius: var(--radius);
   background: var(--surface-2); color: var(--text-soft); }
 
-@media (max-width: 720px) {
+/* 与手机布局同一断点(836,侧栏抽屉/控制台顶部标签条那条线)。 */
+@media (max-width: 836px) {
   .con-inner { padding: 16px 14px 32px; }
-  .u-model-body { gap: 16px; }
+  /* 环形图不再站在表格左边:窄屏里两者并排放不下,表格被挤成一条。
+     竖排:环形图居中在上,表格整行在下。 */
+  .u-model-body { flex-direction: column; align-items: stretch; gap: 12px; }
+  .u-donut-wrap { width: 160px; height: 160px; margin: 0 auto; align-self: center; }
   /* 手机端表格:滚动容器不再撑最小宽,列间距收紧,并裁掉次要列——
      整行塞不进屏幕时宁可少列也不让页面横向溢出。 */
   .u-table-scroll { min-width: 0; width: 100%; }

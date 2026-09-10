@@ -187,6 +187,11 @@ impl StreamRenderer {
         if self.reasoning_mode == ReasoningDisplayMode::Summary
             && chunk.kind == ChatStreamKind::Reasoning
         {
+            // 真·交错思考:正文行还开着就先收行,转轮画在自己的行上,
+            // 不然 MoveToColumn(0)+清行会抹掉半行正文。
+            if self.mode == Some(ChatStreamKind::Content) {
+                self.end_active_stream_line()?;
+            }
             self.finalize_tools_summary()?;
             self.record_reasoning_text(&text);
             self.mode = Some(ChatStreamKind::Reasoning);

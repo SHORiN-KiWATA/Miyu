@@ -154,7 +154,8 @@ where
                         }
                     }
                     Some("thinking_delta") => {
-                        if let Some(text) = delta.thinking {
+                        // 空 thinking delta 不开新分段(同 chat 路径的空 reasoning_content)。
+                        if let Some(text) = delta.thinking.filter(|text| !text.is_empty()) {
                             if !state.reasoning_part_active {
                                 if !state.reasoning.is_empty() && !state.reasoning.ends_with("\n\n")
                                 {

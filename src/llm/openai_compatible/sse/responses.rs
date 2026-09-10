@@ -157,7 +157,8 @@ where
         "response.reasoning_text.delta"
         | "response.reasoning_summary.delta"
         | "response.reasoning_summary_text.delta" => {
-            if let Some(text) = event.delta {
+            // 空 delta 不开新分段(同 chat 路径的空 reasoning_content)。
+            if let Some(text) = event.delta.filter(|text| !text.is_empty()) {
                 if !*reasoning_part_active {
                     if !reasoning.is_empty() && !reasoning.ends_with("\n\n") {
                         reasoning.push_str("\n\n");
