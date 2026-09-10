@@ -61,15 +61,41 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
     // system prompt never carries a `<runtime` tag.
     assert!(!owner.contains("<runtime"));
 
-    // Platform and judge sessions come out byte-identical to today's prompt,
-    // so they take no prefix-cache cold start from this change at all.
-    for audience in [PromptAudience::External, PromptAudience::Internal] {
-        assert_eq!(
-            with_host_environment("base".to_string(), audience, &paths, AgentMode::Normal),
-            "base",
-            "{audience:?} must be untouched"
-        );
-    }
+    // 判官/子代理(Internal)一字不加;平台会话(External)只多一段风格锁——
+    // 它与受众无关,主机路径、LaTeX、语音协议仍旧只给属主。
+    assert_eq!(
+        with_host_environment(
+            "base".to_string(),
+            PromptAudience::Internal,
+            &paths,
+            AgentMode::Normal
+        ),
+        "base"
+    );
+    let external = with_host_environment(
+        "base".to_string(),
+        PromptAudience::External,
+        &paths,
+        AgentMode::Normal,
+    );
+    assert_eq!(external, format!("base{STYLE_LOCK}"));
+    assert!(!external.contains("<host-environment"));
+    assert!(!external.contains("LaTeX"));
+    assert!(!external.contains("<voice-protocol"));
+    // dev 提示词极简,外部受众也不带风格锁。
+    assert_eq!(
+        with_host_environment(
+            "base".to_string(),
+            PromptAudience::External,
+            &paths,
+            AgentMode::Dev
+        ),
+        "base"
+    );
+    // 属主提示词的字节顺序不变:风格锁仍在主机环境之后。
+    let host_at = owner.find("<host-environment").unwrap();
+    let lock_at = owner.find("<style-lock>").unwrap();
+    assert!(host_at < lock_at);
 }
 
 #[test]

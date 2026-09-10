@@ -4,8 +4,9 @@
 //! 换了顺序等于全 miss。`host_environment_is_byte_stable_across_prompt_rebuilds`
 //! 那条测试守的就是这一点：同一份配置重建两次，字节必须完全一致。
 //!
-//! `with_host_environment` 只对属主开放：主机路径、用户身份这些东西不该出现在
-//! 群聊人格的提示词里。
+//! `with_host_environment` 的主机路径、渲染能力、语音协议只对属主开放：主机
+//! 路径不该出现在群聊人格的提示词里。风格锁例外——它与受众无关,外部受众也
+//! 带(追加在末尾,属主分支字节顺序不变)。
 
 use crate::agent::*;
 
@@ -70,12 +71,27 @@ pub(in crate::agent) fn with_memory_preamble(
     system_prompt
 }
 
+/// 工具期风格锁(08-23 工具体制 A/B 实测 n=12/臂:探针全过 5/12→8/12,无换行
+/// 6/12→10/12)。所有人格会话共用,dev 不带。
+pub(in crate::agent) const STYLE_LOCK: &str = "\n\n<style-lock>Stay in character across tool calls. Tool results are working material; they are not a reason to switch into an assistant reporting tone.</style-lock>";
+
 pub(in crate::agent) fn with_host_environment(
     mut system_prompt: String,
     audience: PromptAudience,
     paths: &MiyuPaths,
     mode: AgentMode,
 ) -> String {
+    if audience == PromptAudience::External {
+        // 风格锁与受众无关(09-10 分层架构阶段 2):它守的是「工具循环后别切
+        // 播报腔」,QQ 群里同样需要。此前它只是顺手放进了属主分支,等于让
+        // 场所替人格做了决定。属主提示词的字节顺序不动(零冷启动),外部
+        // 受众追加在末尾——风格锁的位置有 A/B 背书(08-23),末尾就是那个位。
+        // Internal(判官、子代理)不是人格,不加。
+        if mode != AgentMode::Dev {
+            system_prompt.push_str(STYLE_LOCK);
+        }
+        return system_prompt;
+    }
     if audience != PromptAudience::Owner {
         return system_prompt;
     }
@@ -88,9 +104,7 @@ pub(in crate::agent) fn with_host_environment(
         // 工具期风格锁:模型进工具循环后切播报腔是 OOC 主场景(AstrBot 4.6
         // 同款思路)。08-23 工具体制 A/B 实测 n=12/臂:探针全过 5/12→8/12,
         // 无换行 6/12→10/12,其余指标不降。
-        system_prompt.push_str(
-            "\n\n<style-lock>Stay in character across tool calls. Tool results are working material; they are not a reason to switch into an assistant reporting tone.</style-lock>",
-        );
+        system_prompt.push_str(STYLE_LOCK);
         system_prompt.push_str(
             "\n\nWrite math in LaTeX. Block formulas (`$$…$$` on their own paragraph) render as typeset images; inline `$…$` becomes Unicode math text. Never hand-build formulas from bare Unicode or ASCII.",
         );

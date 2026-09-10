@@ -31,17 +31,17 @@
 
 ### 阶段 1 · 扩展清单五字段(纯加能力)
 
-- [ ] `src/tools/scripts/header.rs`:头部解析新增 `trust`、`group`、`hint`、`requires`(跨工具闸)、`attachments`
-- [ ] `src/tools/load_tools.rs` 分组从硬编码表改读清单字段(内置工具先给一张等价映射表,零行为变化)
-- [ ] `src/tools/cross_hints.rs` 指路句改读清单
-- [ ] guard 层:按 `requires` 生成「需先调用某工具」闸(现有 `aur_review_install_guard` 改成数据驱动)
-- [ ] 脚本产出的图片/文件回投递层(`ToolProgress`/attachments 通路)
-- [ ] 测具:`testkit/toolcall-bridge` 扩一组清单字段用例;单测覆盖头部解析
+- [x] `src/tools/scripts/header.rs`:头部解析新增 `Trust`、`Permission`、`Example`、`Hint`、`Requires`(4d3837d6;分组本就有)
+- [x] 分组:脚本头部 `Group` 与 ToolSpec::groups 本就是数据驱动,内置分组表 groups.json 保持;无需改
+- [x] `src/tools/cross_hints.rs` 除内置表外读清单自带指路句(ToolSpec::cross_hints)
+- [x] guard 层:`requires_prior_guard` 按 ToolSpec::requires_prior 放行/拒绝;AUR 的「不同轮」互斥语义不同,保留原 guard
+- [x] 脚本 stdout `MIYU-IMAGE: 路径 | 说明` 行交给投递层(run_script 拿 ToolProgress)
+- [x] 单测 6 组(头部/entry→spec/注册表范围/守卫/指路句/图片回传);受限平台注册表按 Trust: external 收脚本
 - 验证:全部内置工具行为逐字节不变(tools 数组指纹对比,见 AGENTS.md 1.6)
 
 ### 阶段 2 · 系统提示词归位(独立可做,直接减跨端分叉)
 
-- [ ] `src/agent/prompt.rs::with_host_environment`:style-lock 与 VOICE_PROTOCOL 挪到人格路径(位置仍在末尾)
+- [x] style-lock 给外部受众(追加末尾,属主字节序不变,Internal 不加);VOICE_PROTOCOL 留到阶段 4 按「可播报」能力位决定
 - [ ] 属主档案改由 `profile.md` 注入,只在 Owner/Member 入口;通讯平台不注入
 - [ ] 删除 host-environment 一行(可删项,需确认)
 - [ ] LaTeX 一句改由场所能力位决定
