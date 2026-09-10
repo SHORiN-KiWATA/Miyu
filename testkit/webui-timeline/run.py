@@ -7,6 +7,7 @@ web/*.js 与 styles.css 编进二进制,所以 WEB 给的是哪个目录,页面�
 Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二进制本身不用重编。
 
 判定项(一轮「思考 → 2 工具 → 说话 → 1 失败工具 → 思考 → 1 工具 → 最终回答」):
+  command_dedup      命令签跑完展开只有「参数」「结果」两块(流式输出已藏),收起态没有输出预览气泡
   think_node         思考中的节点仍是原子图标(svg 显示、芯片形态的三个跳动点不显示、宽 16px)
   prep_row           「准备 xx」签在时间线里、无底色,线已长到它
   live_groups        实时:说话把时间线切成两条,第一条 1 思考 2 工具,第二条 1 工具 + 1 思考 + 1 工具
@@ -197,7 +198,10 @@ def main():
             page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
             page.wait_for_timeout(600)
             page.evaluate("() => { const last = [...document.querySelectorAll('.assistant-message')].pop(); (last.querySelector('.tool-card.is-failure .tool-head') || last.querySelector('.proc-line:last-of-type .tool-card .tool-head'))?.click(); }")
+            # 同时点开最后那条命令签:展开面板里应只有参数和结果,没有第二份流式输出
+            page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); cards[cards.length - 1]?.querySelector('.tool-head')?.click(); }")
             page.wait_for_timeout(600)
+            report["command_panel"] = page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); const c = cards[cards.length - 1]; return { visibleDetails: [...c.querySelectorAll('.tool-detail')].filter(d => !d.hidden).map(d => d.querySelector('.tool-detail-label')?.textContent), preview: c.querySelector('.tool-command-output-preview') ? getComputedStyle(c.querySelector('.tool-command-output-preview')).display : null }; }")
             page.screenshot(path=str(OUT / "04-expanded.png"))
             report["rail_after_expand"] = page.evaluate(GROUPS_JS)["lines"][1]["railHeight"]
 
@@ -266,7 +270,9 @@ def main():
     report["errors"] = errors
     report["console_clean"] = not errors
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
-    keys = ["think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    cp = report.get("command_panel") or {}
+    report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") == "none"
+    keys = ["command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")

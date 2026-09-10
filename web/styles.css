@@ -9626,9 +9626,7 @@ body.miyu-paused *::after {
   display: none;
 }
 .assistant-blocks .proc-steps > .tool-card > .tool-command-output-preview {
-  margin: 0 0 6px var(--proc-indent);
-  border-left-color: var(--line-strong);
-  background: var(--surface-1);
+  display: none;
 }
 .assistant-blocks .proc-steps > .tool-card > .tool-live-progress {
   margin: 0 0 6px var(--proc-indent);
@@ -9648,10 +9646,13 @@ body.miyu-paused *::after {
 }
 .assistant-blocks .proc-steps > .tool-card .tool-detail pre {
   padding: 0;
+  overflow-x: hidden;
   background: none;
   color: var(--text);
   font-size: 11.5px;
   line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* 思考行:节点是原子,标题「已思考」,内容是一段淡色文字(没有底色) */

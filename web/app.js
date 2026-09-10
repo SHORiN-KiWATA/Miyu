@@ -7298,6 +7298,10 @@
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
       tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
+      if (tool.commandPreview && tool.resultDetail.raw) {
+        tool.stdoutDetail.wrapper.hidden = true;
+        tool.stderrDetail.wrapper.hidden = true;
+      }
       const ok = Boolean(data?.ok);
       resetPreparingWindow(live);
       // 只刷正在看的那个会话——后台会话的 todowrite 不该改屏幕上这块面板。
