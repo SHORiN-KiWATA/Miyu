@@ -286,10 +286,12 @@ def main():
         check("成员改名自己的会话(走成员库)", status == 200, str(status))
 
         # 5. 管理台闸
-        for path in ["/api/config", "/api/dash/memory/personas", "/api/admin/invites", "/api/admin/accounts",
+        for path in ["/api/config", "/api/dash/memes/libraries", "/api/admin/invites", "/api/admin/accounts",
                      "/api/voice/status", "/api/dash/scripts/personas"]:
             status, _ = member.call("GET", path)
             check(f"成员 GET {path} 403", status == 403, str(status))
+        status, data = member.call("GET", "/api/dash/memory/personas")
+        check("成员记忆 dashboard 人格列表 200(自己的)", status == 200, f"{status} {json.dumps(data)[:100]}")
         status, _ = member.call("POST", "/api/admin/invites", {})
         check("成员生成邀请码 403", status == 403, str(status))
         status, _ = member.call("POST", "/api/usage/clear")

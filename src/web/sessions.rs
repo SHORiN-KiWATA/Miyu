@@ -460,13 +460,17 @@ pub(in crate::web) fn resolve_local_session_ref_with_kinds(
     kinds: &[&str],
     owner: Option<&str>,
 ) -> std::result::Result<crate::state::SessionRecord, String> {
-    // 归属键给了就用那个人的库(成员自己一份);IPC/桥(None)= 管理员库。
+    // 归属键给了就用那个人的库(成员自己一份);IPC/桥(None)按 id 找会话在
+    // 谁的库里(HTTP 路径已经用身份验过归属才走到这),其余 = 管理员库。
     let store = match owner {
         Some(owner) if !owner.is_empty() => state
             .stores
             .for_owner(owner)
             .map_err(|error| safe_error_message(&error))?,
-        _ => state.state_store.clone(),
+        _ => match target {
+            ipc::SessionRef::Id { id } => state.stores.for_session(id),
+            _ => state.state_store.clone(),
+        },
     };
     let store = &store;
     let persona = active_persona_scope(state);

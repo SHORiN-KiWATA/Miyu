@@ -182,9 +182,26 @@ pub(in crate::web) async fn handle_session_command(
             if session_ids.is_empty() {
                 return Err(t("no sessions to reorder", "没有可排序的会话").to_string());
             }
-            store
-                .reorder_sessions(&session_ids)
-                .map_err(|error| safe_error_message(&error))?;
+            // 会话按人分库:一批 id 可能横跨几份库,按归属分组各排各的。
+            let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+            for session_id in &session_ids {
+                let owner = state
+                    .stores
+                    .owner_of_session(session_id)
+                    .unwrap_or_default();
+                match groups.iter_mut().find(|(key, _)| *key == owner) {
+                    Some((_, ids)) => ids.push(session_id.clone()),
+                    None => groups.push((owner, vec![session_id.clone()])),
+                }
+            }
+            for (owner, ids) in groups {
+                state
+                    .stores
+                    .for_owner(&owner)
+                    .map_err(|error| safe_error_message(&error))?
+                    .reorder_sessions(&ids)
+                    .map_err(|error| safe_error_message(&error))?;
+            }
             // 广播给其它客户端刷新列表;发起端在本地已乐观重排。
             state
                 .events
@@ -371,7 +388,9 @@ pub(in crate::web) async fn handle_session_command(
             if name.is_empty() {
                 return Err(t("session name cannot be empty", "会话名称不能为空").to_string());
             }
-            store
+            state
+                .stores
+                .for_session(&record.session_id)
                 .rename_session(&record.session_id, name)
                 .map_err(|error| safe_error_message(&error))?;
             state.events.publish(
@@ -428,7 +447,9 @@ pub(in crate::web) async fn handle_session_command(
                     return Err(error);
                 }
             }
-            let result = store
+            let result = state
+                .stores
+                .for_session(&record.session_id)
                 .delete_session(&record.session_id)
                 .map_err(|error| safe_error_message(&error));
             crate::llm::forget_relay_sessions(&record.session_id);
@@ -458,7 +479,9 @@ pub(in crate::web) async fn handle_session_command(
                 }
                 None => None,
             };
-            store
+            state
+                .stores
+                .for_session(&record.session_id)
                 .set_session_workspace(&record.session_id, workspace.as_deref())
                 .map_err(|error| safe_error_message(&error))?;
             state.events.publish(
@@ -488,7 +511,9 @@ pub(in crate::web) async fn handle_session_command(
                     }
                 }
             }
-            store
+            state
+                .stores
+                .for_session(&record.session_id)
                 .set_session_model_override(&record.session_id, models.as_deref())
                 .map_err(|error| safe_error_message(&error))?;
             state.events.publish(
