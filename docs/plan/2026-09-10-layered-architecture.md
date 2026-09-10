@@ -66,15 +66,18 @@
 
 ### 阶段 5 · 多用户(可与阶段 4 并行,只依赖「人格是会话属性」)
 
-- [ ] 账号表 + 邀请表(state 库);第一个账号=超级管理员;现有共享密码升级为其密码
-- [ ] 登录 cookie 记账号 id;principal = 哈希(web, daemon 实例, 账号 id),复用 `platform_types::stable_key`
-- [ ] 会话表加 owner 列;列表/打开/删除按 owner 过滤;管理员默认只看自己的
-- [ ] WebUI 回合带 principal:成员走 `MemoryAccess::principal`,管理员 Privileged(复用 QQ 路径)
-- [ ] 用量表加 account 列;成员看自己,管理员看按人拆总表
-- [ ] 设置页门槛:供应商/key、共享人格编辑、扩展与脚本技能管理、QQ 与群管后台、共享人格 dashboard、总表 → 管理员
-- [ ] OOBE:邀请码 → 账号密码 → 人格(名字/模板/自写/头像/看板图)→ 白名单勾扩展 → 开聊;「直接用 Miyu」入口
-- [ ] `home/<user>/profile.md` 注入(属主类入口)
-- [ ] 三个钩子:信任枚举 Member(今天=Owner)、回合上下文必填 principal、run_command spawn 处沙盒策略参数(默认完全放开)
+- [x] 账号表 + 邀请表(migration v34:`accounts`/`invites`,`sessions.owner`);第一个账号=超级管理员;`-p` 起 daemon 即保证有 `admin` 账号且密码等于它(`ensure_bootstrap_admin`);密码 PBKDF2-HMAC-SHA256 自实现(RFC 4231/6070 向量单测)
+- [x] 登录令牌记身份(`WebIdentity{account_id,username,display_name,admin}`);只填口令仍是机器级管理员;`/api/auth/register` 凭一次性邀请码(8 位、默认 7 天、只存 sha256、原子消费)建号即登录;`/api/auth/logout`
+- [x] 会话表 owner 列;列表/打开/改名/删除/排序/回合/附件全部按 owner 过滤(`require_local_web_session` 带身份、`resolve_turn_session` 带归属键);管理员名下 = 空串(遗留/终端/语音);成员没有全局指针,「当前会话」= 名下最近一条(没有就建);成员建不了 dev 会话
+- [x] 成员回合 principal = `web:<账号 id>`,走 `MemoryAccess::principal`;归属从会话记录来(`pinned_for_turn` 填 `usage_account`),不信请求方声明;管理员仍 Privileged
+- [x] 用量账本每行带 `acct`;成员 `/api/usage/{stats,details}` 锁自己;管理员默认全部 + `stats.accounts` 按人拆分,`?account=` 可筛;`/api/admin/usage/accounts` 带用户名
+- [x] 管理台闸:`/api/dash/*`、`/api/config`(GET/PUT)、思考档位、全局模型、供应商拉模型、语音、QQ 历史、记忆重置、清空统计、账号/邀请码 → `require_admin`;成员 403。前端 `data-admin-only` 隐藏侧栏设置按钮与控制台十个管理面板,成员只剩「数据统计(自己的)」与「账号」
+- [x] 事件流按归属过滤(`web/ownership.rs`):`session_id` → 归属;无则 `run_id` → 活跃回合表/`run.started` 反查;两者都没有的全局事件只给管理员。管理员也看不到成员会话的事件
+- [x] 账号面板:改显示名/密码、退出登录;管理员生成/作废邀请码、停用/恢复成员、重设密码、30 天按人用量;登录页加用户名 + 「注册账号」表单
+- [ ] OOBE 两步(专属人格 + 「希望 AI 如何认知你」→ `home/<user>/profile.md`,通讯平台不生效)——依赖阶段 6 家目录,顺延
+- [ ] `home/<user>/profile.md` 注入(属主类入口)——同上顺延
+- [ ] 三个钩子:信任枚举 Member(今天=Owner)、回合上下文必填 principal、run_command spawn 处沙盒策略参数(默认完全放开)——principal 已落(成员回合必带);另两个未动
+- [x] 测具 `testkit/multi-user/e2e.py`:隔离 daemon + 桩模型,登录/邀请/注册/归属/管理台闸/用量按人/SSE 归属/停用恢复
 - 验证:两个账号各开会话互不可见;成员在共享 Miyu 下 recall 只见 public + 自己;dashboard/设置页 403
 
 ### 阶段 6 · 迁移(单独版本,只做搬家 + 回滚脚本)
@@ -104,7 +107,7 @@
 | `AgentMode` 及全部分支 | src/agent、src/cli、src/web | 阶段 4 | REPL 模式选择、footer 显示、dev-prompt.md 读取 |
 | `with_host_environment` 里的 host-environment 行 | src/agent/prompt.rs | 阶段 2 | 测试 host_environment_is_byte_stable_* |
 | `config/identities/user-identity.md` 路径链 | src/config/persona_paths.rs | 阶段 6 | 迁移脚本要先搬 |
-| WebAuth 单密码 | src/runtime/state.rs | 阶段 5 | 升级为管理员密码后退场 |
+| WebAuth 单密码 | src/runtime/state.rs | 阶段 5 | 保留:只填口令 = 机器级管理员登录,与账号表并存(`-p` 同步进 admin 账号) |
 | `data/persona-avatars` 目录 | paths | 阶段 6 | 头像进人格目录后 |
 
 ## 本次(09-10)已随手修的六个 bug

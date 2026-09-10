@@ -201,8 +201,52 @@ impl TurnResourceCache {
 pub(crate) struct WebAuth {
     pub(crate) password_digest: Option<[u8; 32]>,
     /// 按登录先后有序:超限淘汰最旧令牌,而不是把全部在用会话一起登出。
-    pub(crate) sessions: Arc<Mutex<Vec<String>>>,
+    /// 每个令牌记着登录者是谁(阶段 5 多用户)。
+    pub(crate) sessions: Arc<Mutex<Vec<(String, WebIdentity)>>>,
     pub(crate) attempts: Arc<Mutex<HashMap<IpAddr, LoginAttempt>>>,
+}
+
+/// 登录后的身份(09-10 分层架构阶段 5,多用户)。
+///
+/// `account_id` 为空 = 机器级管理员:没开口令时的一切请求,以及拿 `-p`
+/// 口令(不带用户名)登录的人。它与账号表里的管理员账号是同一个人——
+/// 会话归属键都是空串,遗留数据(终端集成会话、语音会话、迁移前的一切)
+/// 全在这个名下。成员的归属键是账号 id。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WebIdentity {
+    pub(crate) account_id: String,
+    pub(crate) username: String,
+    pub(crate) display_name: String,
+    pub(crate) admin: bool,
+}
+
+impl WebIdentity {
+    pub(crate) fn local_admin() -> Self {
+        Self {
+            account_id: String::new(),
+            username: String::new(),
+            display_name: String::new(),
+            admin: true,
+        }
+    }
+
+    pub(crate) fn from_account(account: &crate::state::Account) -> Self {
+        Self {
+            account_id: account.id.clone(),
+            username: account.username.clone(),
+            display_name: account.display_name.clone(),
+            admin: account.is_admin(),
+        }
+    }
+
+    /// 会话/用量的归属键:管理员 = 空串,成员 = 账号 id。
+    pub(crate) fn owner_key(&self) -> &str {
+        if self.admin {
+            ""
+        } else {
+            &self.account_id
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -236,16 +280,115 @@ impl WebAuth {
     }
 
     pub(crate) fn is_authenticated(&self, supplied: Option<&str>) -> bool {
+        self.identity(supplied).is_some()
+    }
+
+    /// 令牌对应的身份。没开口令时人人都是本机管理员。
+    pub(crate) fn identity(&self, supplied: Option<&str>) -> Option<WebIdentity> {
         if !self.required() {
-            return true;
+            return Some(WebIdentity::local_admin());
         }
-        supplied.is_some_and(|token| {
-            self.sessions
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|existing| existing == token)
-        })
+        let token = supplied?;
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(existing, _)| existing == token)
+            .map(|(_, identity)| identity.clone())
+    }
+
+    pub(crate) fn logout(&self, token: &str) {
+        self.sessions
+            .lock()
+            .unwrap()
+            .retain(|(existing, _)| existing != token);
+    }
+
+    /// 限流闸:同一来源窗口内失败超限就拒。登录与凭邀请码注册共用。
+    pub(crate) fn throttle(&self, peer: IpAddr) -> std::result::Result<(), LoginFailure> {
+        let now = Instant::now();
+        let peer = Self::attempt_key(peer);
+        let mut attempts = self.attempts.lock().unwrap();
+        // 窗口过了的条目留着没意义(下面本来就会重置计数),顺手清掉。
+        // 只清过期的:还在窗口内的条目一旦被淘汰,计数就归零了,那等于
+        // 给攻击者一条「刷满表把自己的记录挤掉」的绕过路径。
+        if attempts.len() >= MAX_TRACKED_LOGIN_PEERS {
+            attempts.retain(|_, entry| now.duration_since(entry.window_started) < LOGIN_WINDOW);
+        }
+        // 清完还是满的,说明这么多来源正在同时失败。此时不再收新条目——
+        // 宁可让新来源走没有计数的路径,也不能把正在被限的记录挤掉。
+        if attempts.len() >= MAX_TRACKED_LOGIN_PEERS && !attempts.contains_key(&peer) {
+            return Err(LoginFailure::RateLimited);
+        }
+        let entry = attempts.entry(peer).or_insert(LoginAttempt {
+            window_started: now,
+            failures: 0,
+        });
+        if now.duration_since(entry.window_started) >= LOGIN_WINDOW {
+            entry.window_started = now;
+            entry.failures = 0;
+        }
+        if entry.failures >= LOGIN_ATTEMPT_LIMIT {
+            return Err(LoginFailure::RateLimited);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn note_failure(&self, peer: IpAddr) {
+        let peer = Self::attempt_key(peer);
+        let mut attempts = self.attempts.lock().unwrap();
+        if let Some(entry) = attempts.get_mut(&peer) {
+            entry.failures = entry.failures.saturating_add(1);
+        }
+    }
+
+    /// 给已验明的身份发一枚令牌。
+    pub(crate) fn issue(&self, identity: WebIdentity) -> String {
+        let token = random_token(32);
+        let mut sessions = self.sessions.lock().unwrap();
+        sessions.push((token.clone(), identity));
+        // 第 65 个登录淘汰最旧的一个令牌;此前是 sessions.clear() 全员登出。
+        if sessions.len() > 64 {
+            sessions.remove(0);
+        }
+        token
+    }
+
+    /// `-p` 口令是否匹配。
+    pub(crate) fn password_matches(&self, password: &str) -> bool {
+        let Some(expected) = self.password_digest else {
+            return true;
+        };
+        let mut digest = Sha256::new();
+        digest.update(password.as_bytes());
+        let supplied: [u8; 32] = digest.finalize().into();
+        constant_time_eq(&supplied, &expected)
+    }
+
+    /// 用户名 + 密码走账号表登录。禁用账号与不存在的账号同样是 Invalid。
+    pub(crate) fn login_account(
+        &self,
+        peer: IpAddr,
+        username: &str,
+        password: &str,
+        store: &StateStore,
+    ) -> std::result::Result<String, LoginFailure> {
+        if !self.required() {
+            return Ok(String::new());
+        }
+        self.throttle(peer)?;
+        match store.authenticate_account(username, password) {
+            Ok(Some(account)) => Ok(self.issue(WebIdentity::from_account(&account))),
+            Ok(None) => {
+                self.note_failure(peer);
+                Err(LoginFailure::Invalid)
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "account login lookup failed");
+                self.note_failure(peer);
+                Err(LoginFailure::Invalid)
+            }
+        }
     }
 
     /// 限流表的键。IPv6 按 **/64 前缀**归并。
@@ -274,61 +417,21 @@ impl WebAuth {
         self.attempts.lock().unwrap().len()
     }
 
+    /// 只拿 `-p` 口令登录(不带用户名):机器级管理员。
     pub(crate) fn login(
         &self,
         peer: IpAddr,
         password: &str,
     ) -> std::result::Result<String, LoginFailure> {
-        let Some(expected) = self.password_digest else {
+        if !self.required() {
             return Ok(String::new());
-        };
-        let now = Instant::now();
-        let peer = Self::attempt_key(peer);
-        {
-            let mut attempts = self.attempts.lock().unwrap();
-            // 窗口过了的条目留着没意义(下面本来就会重置计数),顺手清掉。
-            // 只清过期的:还在窗口内的条目一旦被淘汰,计数就归零了,那等于
-            // 给攻击者一条「刷满表把自己的记录挤掉」的绕过路径。
-            if attempts.len() >= MAX_TRACKED_LOGIN_PEERS {
-                attempts.retain(|_, entry| now.duration_since(entry.window_started) < LOGIN_WINDOW);
-            }
-            // 清完还是满的,说明这么多来源正在同时失败。此时不再收新条目——
-            // 宁可让新来源走没有计数的路径,也不能把正在被限的记录挤掉。
-            if attempts.len() >= MAX_TRACKED_LOGIN_PEERS && !attempts.contains_key(&peer) {
-                return Err(LoginFailure::RateLimited);
-            }
-            let entry = attempts.entry(peer).or_insert(LoginAttempt {
-                window_started: now,
-                failures: 0,
-            });
-            if now.duration_since(entry.window_started) >= LOGIN_WINDOW {
-                entry.window_started = now;
-                entry.failures = 0;
-            }
-            if entry.failures >= LOGIN_ATTEMPT_LIMIT {
-                return Err(LoginFailure::RateLimited);
-            }
         }
-
-        let mut digest = Sha256::new();
-        digest.update(password.as_bytes());
-        let supplied: [u8; 32] = digest.finalize().into();
-        if !constant_time_eq(&supplied, &expected) {
-            let mut attempts = self.attempts.lock().unwrap();
-            if let Some(entry) = attempts.get_mut(&peer) {
-                entry.failures = entry.failures.saturating_add(1);
-            }
+        self.throttle(peer)?;
+        if !self.password_matches(password) {
+            self.note_failure(peer);
             return Err(LoginFailure::Invalid);
         }
-
-        let token = random_token(32);
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions.push(token.clone());
-        // 第 65 个登录淘汰最旧的一个令牌;此前是 sessions.clear() 全员登出。
-        if sessions.len() > 64 {
-            sessions.remove(0);
-        }
-        Ok(token)
+        Ok(self.issue(WebIdentity::local_admin()))
     }
 }
 

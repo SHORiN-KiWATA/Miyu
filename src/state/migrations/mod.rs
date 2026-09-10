@@ -192,10 +192,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "compact_v3",
         apply: apply_v33_compact_v3,
     },
+    Migration {
+        version: 34,
+        name: "accounts",
+        apply: apply_v34_accounts,
+    },
 ];
 
 /// Latest schema version this build produces.
-pub const LATEST_VERSION: i64 = 33;
+pub const LATEST_VERSION: i64 = 34;
 
 /// Returns the schema version currently recorded in the database.
 pub fn current_version(conn: &Connection) -> Result<i64> {

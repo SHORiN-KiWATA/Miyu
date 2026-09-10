@@ -248,7 +248,7 @@ pub(in crate::web) async fn dash_sponsors_overview(
     headers: HeaderMap,
     Query(query): Query<OverviewQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let order = SponsorOrder::parse(&query.order);
     let limit = clamp(query.limit, DEFAULT_LEADERBOARD, MAX_LEADERBOARD);
     let store = state.state_store.clone();
@@ -274,7 +274,7 @@ pub(in crate::web) async fn dash_sponsors_records(
     headers: HeaderMap,
     Query(query): Query<RecordsQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let limit = clamp(query.limit, DEFAULT_RECORDS, MAX_RECORDS);
     let offset = query.offset.unwrap_or(0);
     let sponsor_id = query.sponsor_id.trim().to_string();
@@ -307,7 +307,7 @@ pub(in crate::web) async fn dash_sponsors_create(
     headers: HeaderMap,
     Json(body): Json<CreateBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let new = new_record(body)?;
     let store = state.state_store.clone();
     let record = blocking(move || store.add_sponsor_record(&new)).await?;
@@ -320,7 +320,7 @@ pub(in crate::web) async fn dash_sponsors_patch(
     Path(record_id): Path<i64>,
     Json(body): Json<PatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     if body.note.is_none() && body.sponsor_name.is_none() {
         return Err(bad("give note or sponsor_name"));
     }
@@ -344,7 +344,7 @@ pub(in crate::web) async fn dash_sponsors_delete(
     headers: HeaderMap,
     Path(record_id): Path<i64>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let store = state.state_store.clone();
     let removed = blocking(move || store.delete_sponsor_record(record_id)).await?;
     if !removed {

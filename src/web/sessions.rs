@@ -13,17 +13,74 @@ pub(in crate::web) async fn list_sessions_http(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
-    let current = state.state_store.session_id();
+    let identity = require_identity(&headers, &state)?;
     let persona = active_persona_scope(&state);
     // 侧栏按模式分组:普通+dev 一起下发,mode 字段区分(问题七)。
-    let sessions = sessions_with_dev(&state.state_store, &persona).map_err(ApiError::internal)?;
+    // 归属(阶段 5):各人只看自己名下的;管理员名下 = 遗留 + 终端 + 自己建的。
+    let sessions = sessions_with_dev(&state.state_store, &persona, identity.owner_key())
+        .map_err(ApiError::internal)?;
+    let current = current_session_for(&state, &identity, &sessions);
     let sessions = sessions
         .iter()
         .map(|overview| session_overview_json(overview, &current))
         .collect::<Vec<_>>();
-    let data = json!({ "current": &*current, "sessions": sessions });
+    let data = json!({ "current": current, "sessions": sessions });
     Ok(Json(data).into_response())
+}
+
+/// 「当前会话」:管理员是 daemon 的全局指针(与 REPL 共用);成员没有全局
+/// 指针,拿名下最近活跃的一条。
+pub(in crate::web) fn current_session_for(
+    state: &DaemonState,
+    identity: &WebIdentity,
+    sessions: &[crate::state::SessionOverview],
+) -> String {
+    if identity.admin {
+        return state.state_store.session_id().to_string();
+    }
+    sessions
+        .iter()
+        .max_by_key(|overview| overview.record.updated_at.clone())
+        .map(|overview| overview.record.session_id.clone())
+        .unwrap_or_default()
+}
+
+/// 成员的当前会话 id:没有就建一条(自动按第一句话命名)。
+pub(in crate::web) fn member_current_session(
+    state: &DaemonState,
+    owner: &str,
+) -> std::result::Result<String, String> {
+    let persona = active_persona_scope(state);
+    let sessions = state
+        .state_store
+        .list_local_sessions_for_owner(&persona, owner)
+        .map_err(|error| safe_error_message(&error))?;
+    if let Some(overview) = sessions
+        .iter()
+        .max_by_key(|overview| overview.record.updated_at.clone())
+    {
+        return Ok(overview.record.session_id.clone());
+    }
+    let record = state
+        .state_store
+        .create_session_for_owner(&persona, "", crate::state::USER_SESSION_KIND, None, owner)
+        .map_err(|error| safe_error_message(&error))?;
+    publish_session_created(state, &record);
+    Ok(record.session_id)
+}
+
+pub(in crate::web) fn publish_session_created(
+    state: &DaemonState,
+    record: &crate::state::SessionRecord,
+) {
+    state.events.publish(
+        "session.created",
+        json!({
+            "session_id": record.session_id,
+            "name": record.name,
+            "mode": session_mode_label(record),
+        }),
+    );
 }
 
 #[derive(Deserialize)]
@@ -48,6 +105,34 @@ pub(in crate::web) async fn create_session_http(
     Json(request): Json<CreateSessionRequest>,
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    if !identity.admin {
+        // 成员的会话归成员名下,不动全局指针;dev 会话(run_command 等
+        // 属主工具)只有管理员能开。
+        if request.mode.as_deref() == Some("dev") {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "dev sessions are admin only",
+            ));
+        }
+        let name = request
+            .name
+            .map(|name| name.trim().to_string())
+            .unwrap_or_default();
+        let record = state
+            .state_store
+            .create_session_for_owner(
+                &active_persona_scope(&state),
+                &name,
+                crate::state::USER_SESSION_KIND,
+                None,
+                identity.owner_key(),
+            )
+            .map_err(ApiError::internal)?;
+        publish_session_created(&state, &record);
+        let data = json!({ "session": session_record_json(&record) });
+        return Ok((StatusCode::CREATED, Json(data)).into_response());
+    }
     let data = handle_session_command(
         &state,
         IpcCommand::CreateSession {
@@ -83,6 +168,9 @@ pub(in crate::web) async fn reorder_sessions_http(
     Json(request): Json<ReorderSessionsRequest>,
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
+    for session_id in &request.session_ids {
+        require_local_web_session(&state, &headers, session_id)?;
+    }
     let data = handle_session_command(
         &state,
         IpcCommand::ReorderSessions {
@@ -101,7 +189,7 @@ pub(in crate::web) async fn update_session_http(
     Json(request): Json<UpdateSessionRequest>,
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let target = || ipc::SessionRef::Id {
         id: session_id.clone(),
     };
@@ -141,7 +229,7 @@ pub(in crate::web) async fn session_todos_http(
     Path(session_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let todos = tools::session_todos(&state.paths, &session_id);
     Ok(Json(json!({ "todos": todos })))
 }
@@ -155,7 +243,7 @@ pub(in crate::web) async fn session_turns_http(
     Path(session_id): Path<String>,
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let store = state.state_store.pinned(&session_id);
     let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
     for asset in store.load_image_assets().map_err(ApiError::internal)? {
@@ -241,7 +329,7 @@ pub(in crate::web) async fn delete_session_http(
     Path(session_id): Path<String>,
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let data = handle_session_command(
         &state,
         IpcCommand::DeleteSession {
@@ -257,24 +345,35 @@ pub(in crate::web) fn resolve_local_session_ref(
     state: &DaemonState,
     target: &ipc::SessionRef,
 ) -> std::result::Result<crate::state::SessionRecord, String> {
-    resolve_local_session_ref_with_kinds(state, target, &[crate::state::USER_SESSION_KIND])
+    resolve_local_session_ref_with_kinds(state, target, &[crate::state::USER_SESSION_KIND], None)
 }
 
 /// Same, but for the two callers that must also reach one-shot `ask` sessions
 /// (running their turn, then deleting them). `SessionRef::Name` still cannot
 /// find those — the DB lookup filters to user sessions — so only the client
 /// holding the freshly minted id can address one.
+/// `owner`(阶段 5):Some(归属键) 时只放行该账号名下的会话——HTTP 路径
+/// 一律带;IPC/工具桥/测试传 None(终端就是管理员,不再另查)。
 pub(in crate::web) fn resolve_local_session_ref_with_kinds(
     state: &DaemonState,
     target: &ipc::SessionRef,
     kinds: &[&str],
+    owner: Option<&str>,
 ) -> std::result::Result<crate::state::SessionRecord, String> {
     let store = &state.state_store;
     let persona = active_persona_scope(state);
     let record = match target {
-        ipc::SessionRef::Current => store
-            .session_record(&store.session_id())
-            .map_err(|error| safe_error_message(&error))?,
+        ipc::SessionRef::Current => match owner {
+            Some(owner) if !owner.is_empty() => {
+                let id = member_current_session(state, owner)?;
+                store
+                    .session_record(&id)
+                    .map_err(|error| safe_error_message(&error))?
+            }
+            _ => store
+                .session_record(&store.session_id())
+                .map_err(|error| safe_error_message(&error))?,
+        },
         ipc::SessionRef::Id { id } => store
             .session_record(id)
             .map_err(|error| safe_error_message(&error))?,
@@ -294,7 +393,8 @@ pub(in crate::web) fn resolve_local_session_ref_with_kinds(
     let persona_ok = record.persona == persona
         || record.persona == crate::state::DEV_PERSONA
         || matches!(target, ipc::SessionRef::Id { .. });
-    if !persona_ok || !kinds.contains(&record.kind.as_str()) || is_platform {
+    let owner_ok = owner.is_none_or(|owner| record.owner == owner);
+    if !persona_ok || !owner_ok || !kinds.contains(&record.kind.as_str()) || is_platform {
         return Err(t("session not found", "找不到该会话").to_string());
     }
     Ok(record)
@@ -309,7 +409,7 @@ pub(in crate::web) fn resolve_tool_bridge_session_ref(
     state: &DaemonState,
     target: &ipc::SessionRef,
 ) -> std::result::Result<crate::state::SessionRecord, String> {
-    match resolve_local_session_ref_with_kinds(state, target, TURN_TARGET_KINDS) {
+    match resolve_local_session_ref_with_kinds(state, target, TURN_TARGET_KINDS, None) {
         Ok(record) => Ok(record),
         Err(error) => {
             let ipc::SessionRef::Id { id } = target else {
@@ -348,9 +448,10 @@ pub(in crate::web) fn fallback_session_id(
     exclude: &str,
 ) -> std::result::Result<String, String> {
     let persona = active_persona_scope(state);
+    // 全局指针只在管理员名下的会话里挪,不能落到成员的会话上。
     let sessions = state
         .state_store
-        .list_local_sessions(&persona)
+        .list_local_sessions_for_owner(&persona, "")
         .map_err(|error| safe_error_message(&error))?;
     if let Some(overview) = sessions
         .iter()
@@ -379,10 +480,11 @@ pub(in crate::web) fn fallback_session_id(
 pub(in crate::web) fn sessions_with_dev(
     store: &StateStore,
     persona: &str,
+    owner: &str,
 ) -> anyhow::Result<Vec<crate::state::SessionOverview>> {
-    let mut rows = store.list_local_sessions(persona)?;
+    let mut rows = store.list_local_sessions_for_owner(persona, owner)?;
     if persona != crate::state::DEV_PERSONA {
-        rows.extend(store.list_local_sessions(crate::state::DEV_PERSONA)?);
+        rows.extend(store.list_local_sessions_for_owner(crate::state::DEV_PERSONA, owner)?);
     }
     // 手动排序键优先(v28,越小越靠前);同键退回最近活跃。
     rows.sort_by(|a, b| {
@@ -451,17 +553,25 @@ pub(in crate::web) fn turn_mode_for_session(
     }
 }
 
+/// `owner` 同 [`resolve_local_session_ref_with_kinds`]:HTTP 路径传登录者的
+/// 归属键,IPC 传 None。没给会话 id 时,管理员/IPC 落到全局当前会话,成员落到
+/// 自己名下最近的一条(没有就建)。
 pub(in crate::web) fn resolve_turn_session(
     state: &DaemonState,
+    owner: Option<&str>,
     session_id: Option<String>,
 ) -> std::result::Result<Arc<str>, String> {
     match session_id {
-        None => Ok(state.state_store.session_id()),
+        None => match owner {
+            Some(owner) if !owner.is_empty() => Ok(member_current_session(state, owner)?.into()),
+            _ => Ok(state.state_store.session_id()),
+        },
         Some(session_id) => {
             let record = resolve_local_session_ref_with_kinds(
                 state,
                 &ipc::SessionRef::Id { id: session_id },
                 TURN_TARGET_KINDS,
+                owner,
             )?;
             Ok(record.session_id.into())
         }
@@ -474,10 +584,14 @@ pub(in crate::web) async fn reset_conversation(
     Json(request): Json<ResetConversationRequest>,
 ) -> std::result::Result<StatusCode, ApiError> {
     require_mutation(&headers, &state)?;
-    let session_id = request
-        .session_id
-        .unwrap_or_else(|| state.state_store.session_id().to_string());
-    require_local_web_session(&state, &session_id)?;
+    let identity = require_identity(&headers, &state)?;
+    let session_id = match request.session_id {
+        Some(session_id) => session_id,
+        None => resolve_turn_session(&state, Some(identity.owner_key()), None)
+            .map_err(session_api_error)?
+            .to_string(),
+    };
+    require_local_web_session(&state, &headers, &session_id)?;
     let store = state.state_store.pinned(&session_id);
     if store.has_running_turns().map_err(ApiError::internal)? {
         return Err(ApiError::new(
@@ -654,7 +768,11 @@ pub(in crate::web) fn session_for_persona(
             return Ok(session_id);
         }
     }
-    if let Some(overview) = state_store.list_local_sessions(persona)?.into_iter().next() {
+    if let Some(overview) = state_store
+        .list_local_sessions_for_owner(persona, "")?
+        .into_iter()
+        .next()
+    {
         return Ok(overview.record.session_id);
     }
     Ok(state_store
@@ -779,7 +897,7 @@ pub(in crate::web) async fn session_context_http(
     Path(session_id): Path<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     require_auth(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let snapshot = session_state_for(&state, &session_id).map_err(ApiError::internal)?;
     Ok(Json(json!({
         "context_tokens": snapshot.context_tokens,

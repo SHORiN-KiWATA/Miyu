@@ -46,7 +46,7 @@ pub(in crate::web) async fn get_config(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let (config, context) = {
         let manager = state.manager.lock().unwrap();
         (manager.config.clone(), manager.context)
@@ -63,7 +63,7 @@ pub(in crate::web) async fn update_config(
     headers: HeaderMap,
     Json(request): Json<UpdateConfigRequest>,
 ) -> std::result::Result<Json<ConfigResponse>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
 
     let current = state.manager.lock().unwrap().config.clone();
     let current_prompts =
@@ -201,7 +201,7 @@ pub(in crate::web) async fn get_thinking_variants(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
     let options =
         active_thinking_variant_options(&config, &state.paths).map_err(ApiError::internal)?;
@@ -217,7 +217,7 @@ pub(in crate::web) async fn set_thinking_variants(
     headers: HeaderMap,
     Json(request): Json<SetThinkingVariantsRequest>,
 ) -> std::result::Result<Json<ThinkingVariantsResponse>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let updates = validate_thinking_variant_updates(request.updates)?;
     reserve_admin(&state.manager)?;
     let (reply, receiver) = oneshot::channel();
@@ -271,7 +271,7 @@ pub(in crate::web) async fn get_session_models_http(
     Path(session_id): Path<String>,
 ) -> std::result::Result<Json<SessionModelsResponse>, ApiError> {
     require_auth(&headers, &state)?;
-    let record = require_local_web_session(&state, &session_id)?;
+    let record = require_local_web_session(&state, &headers, &session_id)?;
     let model_override = state
         .state_store
         .session_model_override(&record.session_id)
@@ -286,7 +286,7 @@ pub(in crate::web) async fn set_session_models_http(
     Json(request): Json<SetSessionModelsRequest>,
 ) -> std::result::Result<Json<SessionModelsResponse>, ApiError> {
     require_mutation(&headers, &state)?;
-    let record = require_local_web_session(&state, &session_id)?;
+    let record = require_local_web_session(&state, &headers, &session_id)?;
     let models = (!request.models.is_empty()).then(|| request.models);
     if let Some(models) = &models {
         let choices = {
@@ -322,7 +322,7 @@ pub(in crate::web) async fn set_models(
     headers: HeaderMap,
     Json(request): Json<SetModelsRequest>,
 ) -> std::result::Result<Json<ModelResponse>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let models = validate_model_selection(request.models)?;
     reserve_admin_light(&state.manager)?;
     let (reply, receiver) = oneshot::channel();

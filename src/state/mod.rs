@@ -1,3 +1,5 @@
+mod accounts;
+pub use accounts::*;
 mod assets;
 mod history;
 mod shared_files;
@@ -195,9 +197,22 @@ pub struct StateStore {
     session_id: Arc<std::sync::RwLock<Arc<str>>>,
     queue_session_id: Arc<str>,
     queue_owner_pid: u32,
+    /// 用量账本的账号列(阶段 5):`pinned_for_turn` 按会话归属填;空串 =
+    /// 管理员/遗留。整理器、判官等自己起的 store 都记在空串名下。
+    usage_account: Arc<str>,
 }
 
 impl StateStore {
+    /// 当前 store 记账归到哪个账号(空串 = 管理员/遗留)。
+    pub fn usage_account(&self) -> &str {
+        &self.usage_account
+    }
+
+    pub fn with_usage_account(mut self, account: &str) -> Self {
+        self.usage_account = account.into();
+        self
+    }
+
     pub fn new(paths: &MiyuPaths) -> Result<Self> {
         let state_dir = paths.state_dir.clone();
         let conv_db = Arc::new(ConversationDb::open(&state_dir)?);
@@ -226,6 +241,7 @@ impl StateStore {
             session_id,
             queue_session_id,
             queue_owner_pid,
+            usage_account: Arc::from(""),
         })
     }
 

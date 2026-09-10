@@ -123,6 +123,14 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         Some(memory_organizer_handle),
     )?;
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+    // 多用户(阶段 5):带 `-p` 起来就保证有一个管理员账号且密码等于它;
+    // 用户名+密码登录走账号表,只填口令仍是老路。
+    if let Some(password) = password.as_deref() {
+        match state_store.ensure_bootstrap_admin(password) {
+            Ok(account) => tracing::info!(username = %account.username, "admin account ready"),
+            Err(error) => tracing::warn!(error = %error, "bootstrap admin account failed"),
+        }
+    }
     let state = DaemonState {
         auth: WebAuth::new(password.as_deref()),
         boot_id,
@@ -319,6 +327,23 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/assets/miyuwallpaper.png", get(wallpaper_asset))
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth_login))
+        .route("/api/auth/logout", post(auth_logout))
+        .route("/api/auth/register", post(auth_register))
+        .route("/api/account", get(account_me).patch(account_update))
+        .route("/api/admin/accounts", get(admin_list_accounts))
+        .route(
+            "/api/admin/accounts/{account_id}",
+            patch(admin_update_account),
+        )
+        .route(
+            "/api/admin/invites",
+            get(admin_list_invites).post(admin_create_invite),
+        )
+        .route(
+            "/api/admin/invites/{invite_id}",
+            delete(admin_delete_invite),
+        )
+        .route("/api/admin/usage/accounts", get(admin_usage_accounts))
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/persona/avatar", get(persona_avatar))
         .route(
@@ -618,19 +643,39 @@ pub(in crate::web) async fn bootstrap(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let metadata_config = state.manager.lock().unwrap().config.clone();
     crate::models_cache::ensure_active_metadata(&state.paths, &metadata_config);
     state
         .state_store
         .recover_stale_turns()
         .map_err(ApiError::internal)?;
-    let current_session = state.state_store.session_id();
+    // 归属(阶段 5):成员的「当前会话」是自己名下最近的一条(没有就建);
+    // 管理员仍是 daemon 的全局指针。下面的回合/队列/重做候选都按它取。
+    let current_session: Arc<str> = if identity.admin {
+        state.state_store.session_id()
+    } else {
+        member_current_session(&state, identity.owner_key())
+            .map_err(session_api_error)?
+            .into()
+    };
+    let store = state.state_store.pinned(&current_session);
+    let owned_sessions = sessions_with_dev(
+        &state.state_store,
+        &metadata_config.active_persona_scope(),
+        identity.owner_key(),
+    )
+    .map_err(ApiError::internal)?;
+    let owned_ids: HashSet<&str> = owned_sessions
+        .iter()
+        .map(|overview| overview.record.session_id.as_str())
+        .collect();
     let (config, active_run_id, runs, context) = {
         let manager = state.manager.lock().unwrap();
         let runs: Vec<Value> = manager
             .active_runs
             .iter()
+            .filter(|(_, info)| owned_ids.contains(&*info.session_id))
             .map(|(run_id, info)| {
                 json!({
                     "run_id": run_id,
@@ -649,8 +694,7 @@ pub(in crate::web) async fn bootstrap(
             manager.context,
         )
     };
-    let running_target = state
-        .state_store
+    let running_target = store
         .running_turn_queue_target()
         .map_err(ApiError::internal)?;
     let external_target = active_run_id
@@ -658,29 +702,20 @@ pub(in crate::web) async fn bootstrap(
         .then_some(running_target.as_ref())
         .flatten();
     let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
-    for asset in state
-        .state_store
-        .load_image_assets()
-        .map_err(ApiError::internal)?
-    {
+    for asset in store.load_image_assets().map_err(ApiError::internal)? {
         assets_by_turn
             .entry(asset.turn_id.clone())
             .or_default()
             .push(asset);
     }
     let mut artifacts_by_turn = HashMap::<String, Vec<ArtifactAsset>>::new();
-    for artifact in state
-        .state_store
-        .load_artifact_assets()
-        .map_err(ApiError::internal)?
-    {
+    for artifact in store.load_artifact_assets().map_err(ApiError::internal)? {
         artifacts_by_turn
             .entry(artifact.turn_id.clone())
             .or_default()
             .push(artifact);
     }
-    let turns = state
-        .state_store
+    let turns = store
         .load_turns()
         .map_err(ApiError::internal)?
         .into_iter()
@@ -697,14 +732,10 @@ pub(in crate::web) async fn bootstrap(
         .map_err(ApiError::internal)?
         .into();
     let queued_prompts = match external_target {
-        Some(target) => state
-            .state_store
+        Some(target) => store
             .load_queued_prompts_for_target(target)
             .map_err(ApiError::internal)?,
-        None => state
-            .state_store
-            .load_queued_prompts()
-            .map_err(ApiError::internal)?,
+        None => store.load_queued_prompts().map_err(ApiError::internal)?,
     }
     .into_iter()
     .map(SafeQueuedPrompt::from)
@@ -712,9 +743,8 @@ pub(in crate::web) async fn bootstrap(
     let running_turn_id = running_target.as_ref().map(|target| target.turn_id.clone());
     let external_queue_available = external_target
         .is_some_and(|target| target.queue_session_id.is_some() && target.owner_pid.is_some());
-    let current_session_id = state.state_store.session_id().to_string();
-    let sessions = sessions_with_dev(&state.state_store, &config.active_persona_scope())
-        .map_err(ApiError::internal)?
+    let current_session_id = current_session.to_string();
+    let sessions = owned_sessions
         .iter()
         .map(|overview| session_overview_json(overview, &current_session_id))
         .collect();
@@ -723,8 +753,7 @@ pub(in crate::web) async fn bootstrap(
         &read_prompt_documents(&config, &state.paths).map_err(ApiError::internal)?,
     );
     let redo_candidate = if active_run_id.is_none() {
-        state
-            .state_store
+        store
             .redo_candidate()
             .map_err(ApiError::internal)?
             .map(SafeRedoCandidate::from)
@@ -749,12 +778,15 @@ pub(in crate::web) async fn bootstrap(
             attachments: true,
             queue: true,
             redo: true,
+            admin: identity.admin,
+            multi_user: state.auth.required(),
         },
         sessions,
         current_session_id,
         runs,
         persona,
         redo_candidate,
+        account: identity_json(&identity),
     })
     .into_response();
     response
@@ -769,7 +801,8 @@ pub(in crate::web) async fn events(
     Query(query): Query<EventsQuery>,
 ) -> std::result::Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError>
 {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let owner_filter = EventOwnerFilter::new(state.clone(), &identity);
     let header_after = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -782,6 +815,7 @@ pub(in crate::web) async fn events(
         receiver: subscription.receiver,
         events: state.events,
         last_id: after,
+        owner_filter,
     };
     let events = stream::unfold(stream_state, |mut state| async move {
         loop {
@@ -794,11 +828,17 @@ pub(in crate::web) async fn events(
                     continue;
                 }
                 state.last_id = record.id;
+                if !state.owner_filter.allows(&record) {
+                    continue;
+                }
                 return Some((Ok(record_to_sse(record)), state));
             }
             match state.receiver.recv().await {
                 Ok(record) if record.id > state.last_id => {
                     state.last_id = record.id;
+                    if !state.owner_filter.allows(&record) {
+                        continue;
+                    }
                     return Some((Ok(record_to_sse(record)), state));
                 }
                 Ok(_) => {}
@@ -826,19 +866,23 @@ pub(in crate::web) async fn usage_stats_web(
     headers: HeaderMap,
     Query(query): Query<UsageStatsQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let range = crate::state::UsageRange::parse(query.range.as_deref().unwrap_or("1d"));
     let config = state.manager.lock().unwrap().config.clone();
     crate::models_cache::ensure_active_metadata(&state.paths, &config);
+    // 归属(阶段 5):成员只看自己;管理员默认看全部(附按人拆分),也可按账号筛。
+    let account = usage_account_filter(&identity, query.account.as_deref());
     // 整读整解析 usage-history.jsonl，而那个文件只增不轮转：本机 5.7 天就
     // 攒到 2.2 MB / 86 ms，一年是 141 MB / 5.5 秒。同步跑就是把一个 tokio
     // worker 冻这么久。两条工具路径（platforms/tool.rs、tools/usage_query.rs）
     // 早就是 spawn_blocking，这两个 handler 漏了。
     let store = state.state_store.clone();
-    let stats = tokio::task::spawn_blocking(move || store.usage_stats(range, Some(&config)))
-        .await
-        .map_err(ApiError::internal)?
-        .map_err(ApiError::internal)?;
+    let stats = tokio::task::spawn_blocking(move || {
+        store.usage_stats_for_account(range, Some(&config), account.as_deref())
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(ApiError::internal)?;
     Ok(Json(json!({ "ok": true, "stats": stats })).into_response())
 }
 
@@ -848,7 +892,7 @@ pub(in crate::web) async fn usage_clear_web(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let store = state.state_store.clone();
     tokio::task::spawn_blocking(move || store.clear_usage_history())
         .await
@@ -862,19 +906,35 @@ pub(in crate::web) async fn usage_details_web(
     headers: HeaderMap,
     Query(query): Query<UsageDetailsQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let config = state.manager.lock().unwrap().config.clone();
     crate::models_cache::ensure_active_metadata(&state.paths, &config);
+    let account = usage_account_filter(&identity, query.account.as_deref());
     let store = state.state_store.clone();
     let (src, model) = (query.src.clone(), query.model.clone());
     let records = tokio::task::spawn_blocking(move || {
-        store.usage_details(limit, src.as_deref(), model.as_deref(), Some(&config))
+        store.usage_details_for_account(
+            limit,
+            src.as_deref(),
+            model.as_deref(),
+            Some(&config),
+            account.as_deref(),
+        )
     })
     .await
     .map_err(ApiError::internal)?
     .map_err(ApiError::internal)?;
     Ok(Json(json!({ "ok": true, "records": records })).into_response())
+}
+
+/// 用量接口的账号过滤:成员锁死自己;管理员按 `account` 参数(None = 全部)。
+fn usage_account_filter(identity: &WebIdentity, requested: Option<&str>) -> Option<String> {
+    if identity.admin {
+        requested.map(str::to_string)
+    } else {
+        Some(identity.owner_key().to_string())
+    }
 }
 
 pub(in crate::web) use crate::runtime::trim_process_memory;

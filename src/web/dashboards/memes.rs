@@ -97,7 +97,7 @@ pub(in crate::web) async fn dash_memes_libraries(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
     let paths = state.paths.clone();
     let result = tokio::task::spawn_blocking(move || dashboard_libraries(&config, &paths))
@@ -112,7 +112,7 @@ pub(in crate::web) async fn dash_memes_items(
     headers: HeaderMap,
     Query(query): Query<LibraryQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let library = library_name(&state, &query.library);
     let paths = state.paths.clone();
     let store = state.state_store.clone();
@@ -134,7 +134,7 @@ pub(in crate::web) async fn dash_memes_image(
     headers: HeaderMap,
     Query(query): Query<ImageQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let library = library_name(&state, &query.library);
     let id = valid_id(&query.id)?;
     let paths = state.paths.clone();
@@ -160,7 +160,7 @@ pub(in crate::web) async fn dash_memes_upload(
     Query(query): Query<UploadQuery>,
     body: Bytes,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     if body.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty image"));
     }
@@ -206,7 +206,7 @@ pub(in crate::web) async fn dash_memes_patch(
     Query(query): Query<LibraryQuery>,
     Json(body): Json<PatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let id = valid_id(&id)?;
     let library = library_name(&state, &query.library);
     let config = state.manager.lock().unwrap().config.clone();
@@ -235,7 +235,7 @@ pub(in crate::web) async fn dash_memes_delete(
     Path(id): Path<String>,
     Query(query): Query<DeleteQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let id = valid_id(&id)?;
     let library = library_name(&state, &query.library);
     let config = state.manager.lock().unwrap().config.clone();
@@ -251,7 +251,7 @@ pub(in crate::web) async fn dash_memes_classify(
     Path(id): Path<String>,
     Query(query): Query<LibraryQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let id = valid_id(&id)?;
     let library = library_name(&state, &query.library);
     let config = state.manager.lock().unwrap().config.clone();

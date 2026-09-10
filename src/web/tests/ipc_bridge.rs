@@ -43,7 +43,7 @@ async fn one_shot_sessions_are_mintable_runnable_and_deletable_but_nothing_else(
     // A turn may target it. (SwitchSession 已随「终端集成会话不可改」
     // 整体移除,外部再无切换全局指针的入口。)
     assert_eq!(
-        resolve_turn_session(&state, Some(ask_id.clone())).unwrap(),
+        resolve_turn_session(&state, None, Some(ask_id.clone())).unwrap(),
         ask_id.clone().into()
     );
 
@@ -82,7 +82,7 @@ async fn one_shot_sessions_are_mintable_runnable_and_deletable_but_nothing_else(
     .await
     .unwrap();
     assert!(state.state_store.session_record(&ask_id).unwrap().is_none());
-    assert!(resolve_turn_session(&state, Some(ask_id)).is_err());
+    assert!(resolve_turn_session(&state, None, Some(ask_id)).is_err());
 }
 
 /// 终端集成、普通 REPL、开发 REPL 是三条并行车道。

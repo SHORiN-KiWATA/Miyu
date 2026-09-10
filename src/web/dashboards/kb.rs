@@ -77,7 +77,7 @@ pub(in crate::web) async fn dash_kb_overview(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let kb = kb(&state)?;
     let overview = blocking(move || kb.dashboard_overview()).await?;
     Ok(Json(overview))
@@ -88,7 +88,7 @@ pub(in crate::web) async fn dash_kb_file(
     headers: HeaderMap,
     Query(query): Query<FileQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let kb = kb(&state)?;
     let page =
         blocking_user(move || kb.dashboard_read(&query.name, query.start, query.lines)).await?;
@@ -100,7 +100,7 @@ pub(in crate::web) async fn dash_kb_search(
     headers: HeaderMap,
     Query(query): Query<SearchQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let text = query.q.trim().to_string();
     if text.is_empty() {
         return Ok(Json(
@@ -126,7 +126,7 @@ pub(in crate::web) async fn dash_kb_upload(
     Query(query): Query<NameQuery>,
     body: Bytes,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     if body.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty file"));
     }
@@ -141,7 +141,7 @@ pub(in crate::web) async fn dash_kb_delete(
     headers: HeaderMap,
     Query(query): Query<NameQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let kb = kb(&state)?;
     blocking_user(move || kb.dashboard_remove(&query.name)).await?;
     Ok(Json(json!({ "ok": true })))
@@ -151,7 +151,7 @@ pub(in crate::web) async fn dash_kb_reindex_start(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let kb = kb(&state)?;
     let result = blocking_user(move || kb.dashboard_reindex()).await?;
     Ok(Json(result))
@@ -161,7 +161,7 @@ pub(in crate::web) async fn dash_kb_reindex_status(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let kb = kb(&state)?;
     let status = blocking(move || {
         let mut status = kb.dashboard_reindex_status()?;
@@ -179,7 +179,7 @@ pub(in crate::web) async fn dash_kb_reindex_unlock(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let kb = kb(&state)?;
     let cleared = blocking(move || kb.dashboard_clear_stale_lock()).await?;
     Ok(Json(json!({ "ok": true, "cleared": cleared })))
@@ -214,7 +214,7 @@ pub(in crate::web) async fn dash_kb_default(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let paths = state.paths.clone();
     let kb_state = blocking(move || crate::default_kb::state(&paths)).await?;
     Ok(Json(json!({
@@ -229,7 +229,7 @@ pub(in crate::web) async fn dash_kb_default_update(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     {
         let mut guard = DEFAULT_KB_TASK.lock().unwrap();
         if guard.as_ref().is_some_and(|task| task.running) {

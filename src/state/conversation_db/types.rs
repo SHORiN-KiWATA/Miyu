@@ -422,6 +422,8 @@ pub struct SessionRecord {
     pub updated_at: String,
     /// 侧栏手动排序键,越小越靠前(v28)。
     pub sort_key: i64,
+    /// 归属账号 id(v34);空串 = 遗留/管理员所有。
+    pub owner: String,
 }
 
 #[derive(Debug, Clone)]

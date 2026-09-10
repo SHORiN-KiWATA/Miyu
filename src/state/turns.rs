@@ -21,6 +21,7 @@ impl StateStore {
             session_id: Arc::new(std::sync::RwLock::new(session_id.into())),
             queue_session_id: self.queue_session_id.clone(),
             queue_owner_pid: self.queue_owner_pid,
+            usage_account: self.usage_account.clone(),
         }
     }
 
@@ -30,6 +31,12 @@ impl StateStore {
     /// turn finishes.
     pub fn pinned_for_turn(&self, session_id: &str) -> Self {
         let mut store = self.pinned(session_id);
+        // 会话归属决定这一回合记在谁的账上(阶段 5):成员的会话归成员。
+        if let Ok(Some(record)) = store.session_record(session_id) {
+            if !record.owner.is_empty() {
+                store.usage_account = record.owner.into();
+            }
+        }
         store.queue_session_id = format!(
             "queue_{}_{}_{}",
             store.queue_owner_pid,

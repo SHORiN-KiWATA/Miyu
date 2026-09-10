@@ -352,6 +352,24 @@ async fn run_turn_task_inner(
         if !turn_system_context.is_empty() {
             agent.set_turn_system_context(turn_system_context);
         }
+        // 成员的 WebUI 回合(阶段 5):记忆按 principal 隔离——日记/联想只看
+        // 自己的层,可写 public;情绪/好感度是全局的,不在这里动。归属从
+        // 会话记录来(pinned_for_turn 已填进 store),不信任请求方声明。
+        if platform_context.is_none() && !store.usage_account().is_empty() {
+            let owner = store.usage_account().to_string();
+            let display_name = base_store
+                .account_by_id(&owner)
+                .ok()
+                .flatten()
+                .map(|account| account.display_name)
+                .unwrap_or_default();
+            let principal = format!("web:{owner}");
+            agent.set_memory_request_context(
+                MemoryAccess::principal(principal.clone()),
+                Some(principal),
+                display_name,
+            );
+        }
         if let Some(profile) = &profile {
             agent.set_memory_writes_enabled(profile.memory_write_enabled);
             agent.set_memory_content(profile.memory_content.clone());

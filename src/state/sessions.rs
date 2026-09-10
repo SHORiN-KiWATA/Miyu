@@ -252,6 +252,14 @@ impl StateStore {
         self.conv_db.list_local_sessions(persona)
     }
 
+    pub fn list_local_sessions_for_owner(
+        &self,
+        persona: &str,
+        owner: &str,
+    ) -> Result<Vec<SessionOverview>> {
+        self.conv_db.list_local_sessions_for_owner(persona, owner)
+    }
+
     pub fn is_platform_session(&self, session_id: &str) -> Result<bool> {
         self.conv_db.is_platform_session(session_id)
     }
@@ -276,7 +284,20 @@ impl StateStore {
         parent_session_id: Option<&str>,
     ) -> Result<SessionRecord> {
         self.conv_db
-            .create_session(persona, name, kind, parent_session_id)
+            .create_session(persona, name, kind, parent_session_id, "")
+    }
+
+    /// 带归属账号建会话(阶段 5):WebUI 登录用户建的会话归他;空串 = 管理员/遗留。
+    pub fn create_session_for_owner(
+        &self,
+        persona: &str,
+        name: &str,
+        kind: &str,
+        parent_session_id: Option<&str>,
+        owner: &str,
+    ) -> Result<SessionRecord> {
+        self.conv_db
+            .create_session(persona, name, kind, parent_session_id, owner)
     }
 
     pub fn create_or_get_platform_session(

@@ -3,6 +3,7 @@
 //! 原本是一个三千行的 `mod tests`。这一层的断言几乎都是「崩在中间也不能坏」，
 //! 所以分组按事务边界走：回合、会话、平台、队列、压缩、重做。
 
+mod accounts;
 mod assets;
 mod compact;
 mod context_anchor;

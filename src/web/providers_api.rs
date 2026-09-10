@@ -29,7 +29,7 @@ pub(in crate::web) async fn provider_models(
     headers: HeaderMap,
     Json(request): Json<ProviderModelsRequest>,
 ) -> std::result::Result<Json<ProviderModelsResponse>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let mut provider: ProviderConfig =
         serde_json::from_value(request.provider).map_err(|error| {
             ApiError::new(

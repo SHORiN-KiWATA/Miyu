@@ -112,15 +112,17 @@ pub(in crate::web) async fn handle_session_command(
                 store.session_id()
             };
             let sessions = if all {
-                sessions_with_dev(store, &persona).map_err(|error| safe_error_message(&error))?
+                sessions_with_dev(store, &persona, "")
+                    .map_err(|error| safe_error_message(&error))?
             } else {
                 let scope = if dev {
                     crate::state::DEV_PERSONA.to_string()
                 } else {
                     persona.clone()
                 };
+                // 终端/IPC 是管理员视角:只列归属空串的会话,成员的不可见。
                 store
-                    .list_local_sessions(&scope)
+                    .list_local_sessions_for_owner(&scope, "")
                     .map_err(|error| safe_error_message(&error))?
             };
             let sessions: Vec<Value> = sessions
@@ -386,7 +388,8 @@ pub(in crate::web) async fn handle_session_command(
         }
         IpcCommand::DeleteSession { target } => {
             // Accepts `ask` too: a one-shot turn deletes its own session here.
-            let record = resolve_local_session_ref_with_kinds(state, &target, TURN_TARGET_KINDS)?;
+            let record =
+                resolve_local_session_ref_with_kinds(state, &target, TURN_TARGET_KINDS, None)?;
             // 终端集成会话是 CLI/shellhook 的固定入口,永远只有这一个;
             // 清空用 /reset,删除免谈(验收:WebUI 不许改默认会话)。
             if record.session_id == crate::state::DEFAULT_SESSION_ID {
@@ -599,8 +602,10 @@ pub(in crate::web) fn session_api_error(message: String) -> ApiError {
 
 pub(in crate::web) fn require_local_web_session(
     state: &DaemonState,
+    headers: &HeaderMap,
     session_id: &str,
 ) -> std::result::Result<crate::state::SessionRecord, ApiError> {
+    let identity = require_identity(headers, state)?;
     let record = state
         .state_store
         .session_record(session_id)
@@ -612,9 +617,11 @@ pub(in crate::web) fn require_local_web_session(
     match record {
         // dev 会话(保留人格)对 WebUI 可见:侧栏分组列它,打开/改名/删除
         // 也得放行,否则点进去 404「会话不存在」(验收三轮)。
+        // 归属(阶段 5):别人的会话一律 404,管理员也看不到成员的。
         Some(record)
             if !is_platform
                 && record.kind == "user"
+                && record.owner == identity.owner_key()
                 && (record.persona == active_persona_scope(state)
                     || record.persona == crate::state::DEV_PERSONA) =>
         {

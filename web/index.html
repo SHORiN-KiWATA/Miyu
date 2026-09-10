@@ -74,7 +74,7 @@
           <button class="icon-button" id="sharedFilesButton" type="button" title="分享文件" aria-label="分享文件">
             <span class="icon-slot" data-icon="download" aria-hidden="true"><span class="icon-fallback">⇩</span></span>
           </button>
-          <button class="icon-button" id="sidebarSettingsButton" type="button" title="打开设置" aria-label="打开设置">
+          <button class="icon-button" id="sidebarSettingsButton" type="button" title="打开设置" aria-label="打开设置" data-admin-only>
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
           </button>
           <button class="icon-button" id="sidebarThemeButton" type="button" title="切换主题" aria-label="切换主题">
@@ -115,7 +115,12 @@
             <h1 id="blockedTitle">登录 Miyu</h1>
             <p id="blockedMessage">输入访问密码以继续。</p>
             <form class="login-form" id="loginForm" hidden novalidate>
-              <label for="loginPassword">访问密码</label>
+              <label for="loginUsername">用户名</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="user" aria-hidden="true"><span class="icon-fallback">@</span></span>
+                <input id="loginUsername" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="留空则用访问密码登录">
+              </div>
+              <label for="loginPassword">密码</label>
               <div class="login-input">
                 <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">*</span></span>
                 <input id="loginPassword" name="password" type="password" autocomplete="current-password" required spellcheck="false" autocapitalize="none">
@@ -125,6 +130,35 @@
                 <span class="icon-slot" data-icon="log-in" aria-hidden="true"><span class="icon-fallback">→</span></span>
                 <span id="loginSubmitLabel">登录</span>
               </button>
+              <p class="login-switch">有邀请码?<button type="button" id="showRegisterButton">注册账号</button></p>
+            </form>
+            <form class="login-form" id="registerForm" hidden novalidate>
+              <label for="registerInvite">邀请码</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="ticket" aria-hidden="true"><span class="icon-fallback">#</span></span>
+                <input id="registerInvite" name="invite" type="text" autocomplete="off" spellcheck="false" autocapitalize="characters" required>
+              </div>
+              <label for="registerUsername">用户名</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="user" aria-hidden="true"><span class="icon-fallback">@</span></span>
+                <input id="registerUsername" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" required placeholder="3–32 位,字母数字 _ - .">
+              </div>
+              <label for="registerDisplayName">显示名(可选)</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
+                <input id="registerDisplayName" name="display_name" type="text" autocomplete="nickname" spellcheck="false" placeholder="她怎么称呼你">
+              </div>
+              <label for="registerPassword">密码</label>
+              <div class="login-input">
+                <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">*</span></span>
+                <input id="registerPassword" name="password" type="password" autocomplete="new-password" required spellcheck="false" placeholder="至少 6 位">
+              </div>
+              <p class="login-error" id="registerError" role="alert" hidden></p>
+              <button class="login-submit" id="registerSubmit" type="submit">
+                <span class="icon-slot" data-icon="user-plus" aria-hidden="true"><span class="icon-fallback">+</span></span>
+                <span id="registerSubmitLabel">注册并登录</span>
+              </button>
+              <p class="login-switch">已有账号?<button type="button" id="showLoginButton">返回登录</button></p>
             </form>
             <button class="secondary-button" id="retryBootstrapButton" type="button">
               <span class="icon-slot" data-icon="refresh-cw" aria-hidden="true"><span class="icon-fallback">↻</span></span>
@@ -294,43 +328,47 @@
             <span class="icon-slot" data-icon="chart-column" aria-hidden="true"><span class="icon-fallback">▮</span></span>
             <span>数据统计</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="memory">
+          <button class="con-rail-item" type="button" data-console-panel="account" data-multi-user-only hidden>
+            <span class="icon-slot" data-icon="user" aria-hidden="true"><span class="icon-fallback">@</span></span>
+            <span>账号</span>
+          </button>
+          <button class="con-rail-item" type="button" data-console-panel="memory" data-admin-only>
             <span class="icon-slot" data-icon="brain" aria-hidden="true"><span class="icon-fallback">◎</span></span>
             <span>记忆</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="kb">
+          <button class="con-rail-item" type="button" data-console-panel="kb" data-admin-only>
             <span class="icon-slot" data-icon="book-open" aria-hidden="true"><span class="icon-fallback">▤</span></span>
             <span>知识库</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="memes">
+          <button class="con-rail-item" type="button" data-console-panel="memes" data-admin-only>
             <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
             <span>表情包</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="qq">
+          <button class="con-rail-item" type="button" data-console-panel="qq" data-admin-only>
             <span class="icon-slot" data-icon="messages-square" aria-hidden="true"><span class="icon-fallback">▥</span></span>
             <span>QQ 消息记录</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="groups">
+          <button class="con-rail-item" type="button" data-console-panel="groups" data-admin-only>
             <span class="icon-slot" data-icon="lock-keyhole" aria-hidden="true"><span class="icon-fallback">⚑</span></span>
             <span>群管</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="affection">
+          <button class="con-rail-item" type="button" data-console-panel="affection" data-admin-only>
             <span class="icon-slot" data-icon="sparkles" aria-hidden="true"><span class="icon-fallback">♥</span></span>
             <span>好感·情绪</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="sponsors">
+          <button class="con-rail-item" type="button" data-console-panel="sponsors" data-admin-only>
             <span class="icon-slot" data-icon="dollar-sign" aria-hidden="true"><span class="icon-fallback">¥</span></span>
             <span>赞助</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="scripts">
+          <button class="con-rail-item" type="button" data-console-panel="scripts" data-admin-only>
             <span class="icon-slot" data-icon="file-code" aria-hidden="true"><span class="icon-fallback">▶</span></span>
             <span>脚本</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="ledger">
+          <button class="con-rail-item" type="button" data-console-panel="ledger" data-admin-only>
             <span class="icon-slot" data-icon="wallet" aria-hidden="true"><span class="icon-fallback">¥</span></span>
             <span>记账</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="settings">
+          <button class="con-rail-item" type="button" data-console-panel="settings" data-admin-only>
             <span class="icon-slot" data-icon="sliders-horizontal" aria-hidden="true"><span class="icon-fallback">⚙</span></span>
             <span>设置</span>
           </button>
@@ -350,7 +388,7 @@
             <button class="icon-button u-refresh" id="usageRefresh" type="button" title="刷新" aria-label="刷新">
               <span class="icon-slot" data-icon="refresh-cw" aria-hidden="true"><span class="icon-fallback">⟳</span></span>
             </button>
-            <button class="icon-button u-clear" id="usageClear" type="button" title="清空数据统计" aria-label="清空数据统计">
+            <button class="icon-button u-clear" id="usageClear" type="button" title="清空数据统计" aria-label="清空数据统计" data-admin-only>
               <span class="icon-slot" data-icon="trash-2" aria-hidden="true"><span class="icon-fallback">🗑</span></span>
             </button>
             <small id="usageStamp">正在载入…</small>
@@ -401,6 +439,52 @@
             <div class="u-table-scroll"><table class="u-table u-records-table">
               <thead><tr><th>时间</th><th>来源</th><th>模型</th><th class="num">输入</th><th class="num">输出</th><th class="num">消费</th><th>缓存命中</th><th>类型</th></tr></thead>
               <tbody id="usageRecords"></tbody>
+            </table></div>
+          </div>
+        </div>
+        </div>
+        <div class="con-panel" data-console-panel="account" hidden>
+        <div class="con-inner">
+          <div class="con-head">
+            <h2>账号</h2>
+            <small id="accountStamp"></small>
+          </div>
+          <div class="u-card">
+            <div class="u-card-head"><h3>我</h3><span class="u-hint" id="accountSelfHint"></span></div>
+            <div class="acct-grid">
+              <label>用户名<input id="accountUsername" type="text" disabled></label>
+              <label>显示名<input id="accountDisplayName" type="text" maxlength="64" autocomplete="nickname"></label>
+              <label>当前密码<input id="accountCurrentPassword" type="password" autocomplete="current-password"></label>
+              <label>新密码<input id="accountNewPassword" type="password" autocomplete="new-password" placeholder="不改就留空"></label>
+            </div>
+            <div class="acct-actions">
+              <button class="login-submit" id="accountSave" type="button">保存</button>
+              <button class="secondary-button" id="accountLogout" type="button">
+                <span class="icon-slot" data-icon="log-out" aria-hidden="true"><span class="icon-fallback">←</span></span>
+                <span>退出登录</span>
+              </button>
+            </div>
+            <p class="login-error" id="accountError" role="alert" hidden></p>
+          </div>
+          <div class="u-card" data-admin-only>
+            <div class="u-card-head">
+              <h3>邀请码</h3><span class="u-hint">一次性 · 默认 7 天有效 · 明文只显示这一次</span>
+              <button class="secondary-button acct-head-action" id="inviteCreate" type="button">
+                <span class="icon-slot" data-icon="ticket" aria-hidden="true"><span class="icon-fallback">#</span></span>
+                <span>生成邀请码</span>
+              </button>
+            </div>
+            <p class="acct-invite-code" id="inviteFresh" hidden></p>
+            <div class="u-table-scroll"><table class="u-table">
+              <thead><tr><th>状态</th><th>创建</th><th>到期</th><th>使用者</th><th></th></tr></thead>
+              <tbody id="inviteRows"></tbody>
+            </table></div>
+          </div>
+          <div class="u-card" data-admin-only>
+            <div class="u-card-head"><h3>成员</h3><span class="u-hint">停用后不能登录 · 会话与用量按人分开 · 重设密码后记得告诉对方</span></div>
+            <div class="u-table-scroll"><table class="u-table">
+              <thead><tr><th>用户名</th><th>显示名</th><th>角色</th><th>最近登录</th><th class="num">30 天 token</th><th class="num">30 天消费</th><th></th></tr></thead>
+              <tbody id="accountRows"></tbody>
             </table></div>
           </div>
         </div>

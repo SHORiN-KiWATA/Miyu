@@ -16,6 +16,19 @@ pub(in crate::web) const AUTH_COOKIE: &str = "miyu_session";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::web) struct LoginRequest {
+    /// 缺省/空 = 拿 `-p` 口令登录的机器级管理员;填了走账号表。
+    #[serde(default)]
+    pub(in crate::web) username: Option<String>,
+    pub(in crate::web) password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::web) struct RegisterRequest {
+    pub(in crate::web) invite: String,
+    pub(in crate::web) username: String,
+    #[serde(default)]
+    pub(in crate::web) display_name: String,
     pub(in crate::web) password: String,
 }
 
@@ -47,23 +60,49 @@ pub(in crate::web) async fn auth_login(
             "password is too long",
         ));
     }
-    let session = match state.auth.login(peer.ip(), &request.password) {
-        Ok(session) => session,
-        Err(LoginFailure::Invalid) => {
-            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "invalid password"));
-        }
-        Err(LoginFailure::RateLimited) => {
-            let mut response = ApiError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "too many login attempts; try again shortly",
-            )
-            .into_response();
-            response
-                .headers_mut()
-                .insert(RETRY_AFTER, HeaderValue::from_static("60"));
-            return Ok(response);
+    let username = request
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|username| !username.is_empty());
+    let attempt = match username {
+        None => state.auth.login(peer.ip(), &request.password),
+        Some(username) => {
+            state
+                .auth
+                .login_account(peer.ip(), username, &request.password, &state.state_store)
         }
     };
+    let session = match attempt {
+        Ok(session) => session,
+        Err(LoginFailure::Invalid) => {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                if username.is_some() {
+                    "invalid username or password"
+                } else {
+                    "invalid password"
+                },
+            ));
+        }
+        Err(LoginFailure::RateLimited) => return Ok(rate_limited_response()),
+    };
+    session_cookie_response(&session)
+}
+
+fn rate_limited_response() -> Response {
+    let mut response = ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many login attempts; try again shortly",
+    )
+    .into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("60"));
+    response
+}
+
+fn session_cookie_response(session: &str) -> std::result::Result<Response, ApiError> {
     let cookie =
         format!("{AUTH_COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400");
     let mut response = StatusCode::NO_CONTENT.into_response();
@@ -75,6 +114,84 @@ pub(in crate::web) async fn auth_login(
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
+}
+
+/// 退出登录:作废令牌并清 cookie。
+pub(in crate::web) async fn auth_logout(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    if !origin_is_allowed(&headers) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "request origin is not allowed",
+        ));
+    }
+    if let Some(token) = cookie_value(&headers, AUTH_COOKIE) {
+        state.auth.logout(token);
+    }
+    let cookie = format!("{AUTH_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&cookie).map_err(ApiError::internal)?,
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+/// 凭邀请码注册(阶段 5):建号成功即登录。邀请码错误一律同一句话,
+/// 用户名/密码格式问题原样返回(那不是秘密)。
+pub(in crate::web) async fn auth_register(
+    State(state): State<DaemonState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<RegisterRequest>,
+) -> std::result::Result<Response, ApiError> {
+    if !origin_is_allowed(&headers) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "request origin is not allowed",
+        ));
+    }
+    if !state.auth.required() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "registration needs a password-protected WebUI (start the daemon with -p)",
+        ));
+    }
+    if request.password.chars().count() > 1_024 || request.invite.chars().count() > 64 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "request is too long",
+        ));
+    }
+    if state.auth.throttle(peer.ip()).is_err() {
+        return Ok(rate_limited_response());
+    }
+    let store = state.state_store.clone();
+    let (invite, username, display_name, password) = (
+        request.invite,
+        request.username,
+        request.display_name,
+        request.password,
+    );
+    let account = tokio::task::spawn_blocking(move || {
+        store.register_with_invite(&invite, &username, &display_name, &password)
+    })
+    .await
+    .map_err(ApiError::internal)?;
+    let account = match account {
+        Ok(account) => account,
+        Err(error) => {
+            state.auth.note_failure(peer.ip());
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, error.to_string()));
+        }
+    };
+    let session = state.auth.issue(WebIdentity::from_account(&account));
+    session_cookie_response(&session)
 }
 
 pub(in crate::web) fn resolve_web_password(args: &WebArgs) -> Result<Option<String>> {
@@ -267,15 +384,45 @@ pub(in crate::web) fn require_auth(
     headers: &HeaderMap,
     state: &DaemonState,
 ) -> std::result::Result<(), ApiError> {
-    if state
+    require_identity(headers, state).map(|_| ())
+}
+
+/// 登录者身份;没开口令时是本机管理员。
+pub(in crate::web) fn require_identity(
+    headers: &HeaderMap,
+    state: &DaemonState,
+) -> std::result::Result<WebIdentity, ApiError> {
+    state
         .auth
-        .is_authenticated(cookie_value(headers, AUTH_COOKIE))
-    {
-        Ok(())
+        .identity(cookie_value(headers, AUTH_COOKIE))
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "authentication required"))
+}
+
+/// 管理台专用:供应商与密钥、共享人格、脚本/技能、QQ、账号与邀请码。
+pub(in crate::web) fn require_admin(
+    headers: &HeaderMap,
+    state: &DaemonState,
+) -> std::result::Result<WebIdentity, ApiError> {
+    let identity = require_identity(headers, state)?;
+    if identity.admin {
+        Ok(identity)
+    } else {
+        Err(ApiError::new(StatusCode::FORBIDDEN, "admin only"))
+    }
+}
+
+/// 管理员改配置/写共享资源的路径:身份 + 来源校验。
+pub(in crate::web) fn require_admin_mutation(
+    headers: &HeaderMap,
+    state: &DaemonState,
+) -> std::result::Result<WebIdentity, ApiError> {
+    let identity = require_admin(headers, state)?;
+    if origin_is_allowed(headers) {
+        Ok(identity)
     } else {
         Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "authentication required",
+            StatusCode::FORBIDDEN,
+            "request origin is not allowed",
         ))
     }
 }

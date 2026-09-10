@@ -18,7 +18,7 @@ pub(in crate::web) async fn voice_status(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     Ok(Json(voice_bridge::status(&state)))
 }
 
@@ -26,7 +26,7 @@ pub(in crate::web) async fn voice_devices(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let Some(binary) = voice_bridge::locate_binary() else {
         return Ok(json_devices(Vec::new(), Some("miyu-voice not installed")));
     };
@@ -75,7 +75,7 @@ pub(in crate::web) async fn voice_tts_voices(
     headers: HeaderMap,
     Query(query): Query<TtsVoicesQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let tts = state.manager.lock().unwrap().config.voice.tts.clone();
     let provider = query
         .provider
@@ -103,7 +103,7 @@ pub(in crate::web) async fn voice_tts_preview(
     headers: HeaderMap,
     Json(request): Json<TtsPreviewRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let text = if request.text.trim().is_empty() {
         let preview = state
             .manager
@@ -136,7 +136,7 @@ pub(in crate::web) async fn voice_stream(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Err(error) = require_auth(&headers, &state) {
+    if let Err(error) = require_admin(&headers, &state) {
         return error.into_response();
     }
     ws.on_upgrade(move |socket| stream_dictation(state, socket))
@@ -204,7 +204,7 @@ pub(in crate::web) async fn voice_transcribe(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     if body.len() < 44 {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty audio"));
     }

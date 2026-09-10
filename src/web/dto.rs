@@ -65,6 +65,8 @@ pub(in crate::web) struct BootstrapResponse {
     pub(in crate::web) runs: Vec<Value>,
     pub(in crate::web) persona: PersonaIdentity,
     pub(in crate::web) redo_candidate: Option<SafeRedoCandidate>,
+    /// 登录者(阶段 5):`account_id` 空 = 机器级管理员。
+    pub(in crate::web) account: Value,
 }
 
 #[derive(Serialize)]
@@ -73,6 +75,10 @@ pub(in crate::web) struct Capabilities {
     pub(in crate::web) attachments: bool,
     pub(in crate::web) queue: bool,
     pub(in crate::web) redo: bool,
+    /// 登录者是管理员:管理台(供应商/密钥、共享人格、脚本、QQ、账号)可见。
+    pub(in crate::web) admin: bool,
+    /// 开了口令 = 多用户模式:有账号、有邀请码注册、有退出登录。
+    pub(in crate::web) multi_user: bool,
 }
 
 #[derive(Serialize)]
@@ -246,6 +252,9 @@ pub(in crate::web) struct ThinkingVariantsResponse {
 pub(in crate::web) struct UsageStatsQuery {
     #[serde(default)]
     pub(in crate::web) range: Option<String>,
+    /// 管理员可按账号看(空串 = 管理员/遗留);成员忽略此参数只看自己。
+    #[serde(default)]
+    pub(in crate::web) account: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -256,6 +265,8 @@ pub(in crate::web) struct UsageDetailsQuery {
     pub(in crate::web) src: Option<String>,
     #[serde(default)]
     pub(in crate::web) model: Option<String>,
+    #[serde(default)]
+    pub(in crate::web) account: Option<String>,
 }
 
 #[derive(Deserialize)]

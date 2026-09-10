@@ -87,7 +87,7 @@ pub(in crate::web) async fn dash_scripts_personas(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
     let active = crate::config::persona_scope_name(&config.prompt.active_persona);
     let mut names = std::collections::BTreeSet::new();
@@ -114,7 +114,7 @@ pub(in crate::web) async fn dash_scripts_overview(
     headers: HeaderMap,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let (config, paths) = scoped(&state, &query.persona)?;
     let overview = tokio::task::spawn_blocking(move || scripts_dashboard_overview(&config, &paths))
         .await
@@ -128,7 +128,7 @@ pub(in crate::web) async fn dash_scripts_source(
     headers: HeaderMap,
     Query(query): Query<SourceQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let (config, paths) = scoped(&state, &query.persona)?;
     let source = blocking_user(move || {
         scripts_dashboard_source(&config, &paths, &query.id, &query.path, query.lines)
@@ -142,7 +142,7 @@ pub(in crate::web) async fn dash_scripts_enable(
     headers: HeaderMap,
     Json(body): Json<IdBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let (config, paths) = scoped(&state, &body.persona)?;
     let result = blocking_user(move || scripts_dashboard_enable(&config, &paths, &body.id)).await?;
     Ok(Json(result))
@@ -153,7 +153,7 @@ pub(in crate::web) async fn dash_scripts_disable(
     headers: HeaderMap,
     Json(body): Json<IdBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let (config, paths) = scoped(&state, &body.persona)?;
     let result =
         blocking_user(move || scripts_dashboard_disable(&config, &paths, &body.id)).await?;
@@ -165,7 +165,7 @@ pub(in crate::web) async fn dash_scripts_delete(
     headers: HeaderMap,
     Query(query): Query<IdQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let (config, paths) = scoped(&state, &query.persona)?;
     let result =
         blocking_user(move || scripts_dashboard_delete(&config, &paths, &query.id)).await?;
@@ -177,7 +177,7 @@ pub(in crate::web) async fn dash_scripts_register(
     headers: HeaderMap,
     Json(body): Json<RegisterBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let (config, paths) = scoped(&state, &body.persona)?;
     let result = blocking_user(move || {
         scripts_dashboard_register(&config, &paths, &body.path, &body.description, &body.id)

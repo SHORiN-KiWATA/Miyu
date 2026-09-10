@@ -97,6 +97,10 @@
     lightbulb: [["path", { d: "M9 18h6" }], ["path", { d: "M10 22h4" }], ["path", { d: "M15.09 14c.18-.59.59-1.05 1.05-1.52A6 6 0 1 0 7.86 12.5c.45.44.85.9 1.03 1.5" }], ["path", { d: "M9 14h6v1a3 3 0 0 1-6 0v-1Z" }]],
     "list-todo": [["rect", { x: "3", y: "5", width: "6", height: "6", rx: "1" }], ["path", { d: "m3 17 2 2 4-4" }], ["path", { d: "M13 6h8" }], ["path", { d: "M13 12h8" }], ["path", { d: "M13 18h8" }]],
     "loader-circle": [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56" }]],
+    "log-out": [["path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }], ["polyline", { points: "16 17 21 12 16 7" }], ["line", { x1: "21", x2: "9", y1: "12", y2: "12" }]],
+    ticket: [["path", { d: "M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" }], ["path", { d: "M13 5v2" }], ["path", { d: "M13 17v2" }], ["path", { d: "M13 11v2" }]],
+    user: [["path", { d: "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" }], ["circle", { cx: "12", cy: "7", r: "4" }]],
+    "user-plus": [["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }], ["circle", { cx: "9", cy: "7", r: "4" }], ["line", { x1: "19", x2: "19", y1: "8", y2: "14" }], ["line", { x1: "22", x2: "16", y1: "11", y2: "11" }]],
     "lock-keyhole": [["circle", { cx: "12", cy: "16", r: "1" }], ["rect", { x: "3", y: "10", width: "18", height: "12", rx: "2" }], ["path", { d: "M7 10V7a5 5 0 0 1 10 0v3" }]],
     "log-in": [["path", { d: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" }], ["polyline", { points: "10 17 15 12 10 7" }], ["line", { x1: "15", x2: "3", y1: "12", y2: "12" }]],
     "message-circle": [["path", { d: "M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" }]],
@@ -262,7 +266,31 @@
     blockedTitle: document.getElementById("blockedTitle"),
     blockedMessage: document.getElementById("blockedMessage"),
     loginForm: document.getElementById("loginForm"),
+    loginUsername: document.getElementById("loginUsername"),
     loginPassword: document.getElementById("loginPassword"),
+    showRegisterButton: document.getElementById("showRegisterButton"),
+    showLoginButton: document.getElementById("showLoginButton"),
+    registerForm: document.getElementById("registerForm"),
+    registerInvite: document.getElementById("registerInvite"),
+    registerUsername: document.getElementById("registerUsername"),
+    registerDisplayName: document.getElementById("registerDisplayName"),
+    registerPassword: document.getElementById("registerPassword"),
+    registerError: document.getElementById("registerError"),
+    registerSubmit: document.getElementById("registerSubmit"),
+    registerSubmitLabel: document.getElementById("registerSubmitLabel"),
+    accountStamp: document.getElementById("accountStamp"),
+    accountSelfHint: document.getElementById("accountSelfHint"),
+    accountUsername: document.getElementById("accountUsername"),
+    accountDisplayName: document.getElementById("accountDisplayName"),
+    accountCurrentPassword: document.getElementById("accountCurrentPassword"),
+    accountNewPassword: document.getElementById("accountNewPassword"),
+    accountSave: document.getElementById("accountSave"),
+    accountLogout: document.getElementById("accountLogout"),
+    accountError: document.getElementById("accountError"),
+    inviteCreate: document.getElementById("inviteCreate"),
+    inviteFresh: document.getElementById("inviteFresh"),
+    inviteRows: document.getElementById("inviteRows"),
+    accountRows: document.getElementById("accountRows"),
     loginError: document.getElementById("loginError"),
     loginSubmit: document.getElementById("loginSubmit"),
     loginSubmitLabel: document.getElementById("loginSubmitLabel"),
@@ -372,6 +400,8 @@
     context: { tokens: 0, window: null },
     usage: {},
     capabilities: {},
+    /// 登录者(阶段 5 多用户):{account_id, username, display_name, admin}。
+    account: null,
     version: null,
     eventSource: null,
     connection: "connecting",
@@ -8433,10 +8463,14 @@
     elements.blockedTitle.textContent = unauthorized ? "登录 Miyu" : "无法载入 Miyu WebUI";
     elements.blockedMessage.textContent = unauthorized ? "输入访问密码以继续。" : message || "本地服务暂时无法访问";
     elements.loginForm.hidden = !unauthorized;
+    elements.registerForm.hidden = true;
     elements.retryBootstrapButton.hidden = unauthorized;
     elements.loginError.textContent = "";
     elements.loginError.hidden = true;
+    elements.registerError.textContent = "";
+    elements.registerError.hidden = true;
     setLoginSubmitting(false);
+    setRegisterSubmitting(false);
     setConnectionStatus(unauthorized ? "blocked" : "offline");
     updateControlState();
     if (unauthorized) window.requestAnimationFrame(() => elements.loginPassword.focus());
@@ -8475,6 +8509,8 @@
     state.context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : { tokens: 0, window: null };
     state.usage = snapshot?.usage && typeof snapshot.usage === "object" ? snapshot.usage : {};
       state.capabilities = snapshot?.capabilities && typeof snapshot.capabilities === "object" ? snapshot.capabilities : {};
+    state.account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
+    applyRoleVisibility();
     state.sessions = Array.isArray(snapshot?.sessions) ? snapshot.sessions : [];
     state.currentSessionId = typeof snapshot?.current_session_id === "string" && snapshot.current_session_id ? snapshot.current_session_id : null;
     state.sessionMenuFor = null;
@@ -8485,6 +8521,7 @@
     state.runsBySession = new Map();
     for (const run of allRuns) trackRun(String(run.session_id), String(run.run_id));
     elements.loginForm.hidden = true;
+    elements.registerForm.hidden = true;
     elements.retryBootstrapButton.hidden = false;
     elements.loginPassword.value = "";
     elements.loginError.textContent = "";
@@ -8577,8 +8614,86 @@
     }
   }
 
+  /// 成员看不到管理台(供应商/密钥、共享人格、脚本、QQ、记忆库……),
+  /// 只留数据统计(自己的)与账号页。没开口令时人人都是管理员。
+  function isAdmin() {
+    return state.capabilities?.admin !== false;
+  }
+
+  function applyRoleVisibility() {
+    const admin = isAdmin();
+    const multiUser = Boolean(state.capabilities?.multi_user);
+    for (const element of document.querySelectorAll("[data-admin-only]")) element.hidden = !admin;
+    for (const element of document.querySelectorAll("[data-multi-user-only]")) element.hidden = !multiUser;
+    if (!admin && consoleIsOpen() && isAdminOnlyPanel(state.consolePanel)) setConsolePanel("usage");
+  }
+
+  function isAdminOnlyPanel(panel) {
+    const item = elements.consoleView.querySelector(`.con-rail-item[data-console-panel="${panel}"]`);
+    return Boolean(item?.hasAttribute("data-admin-only"));
+  }
+
+  function showRegisterForm(show) {
+    elements.loginForm.hidden = show;
+    elements.registerForm.hidden = !show;
+    elements.blockedMessage.textContent = show ? "凭管理员发的邀请码创建账号。" : "输入用户名和密码以继续。";
+    window.requestAnimationFrame(() => (show ? elements.registerInvite : elements.loginUsername).focus());
+  }
+
+  function setRegisterSubmitting(submitting) {
+    state.registerSubmitting = Boolean(submitting);
+    for (const input of [elements.registerInvite, elements.registerUsername, elements.registerDisplayName, elements.registerPassword]) {
+      input.disabled = state.registerSubmitting;
+    }
+    elements.registerSubmit.disabled = state.registerSubmitting;
+    elements.registerSubmit.classList.toggle("is-loading", state.registerSubmitting);
+    elements.registerSubmitLabel.textContent = state.registerSubmitting ? "正在注册" : "注册并登录";
+  }
+
+  async function submitRegister() {
+    if (state.registerSubmitting) return;
+    const invite = elements.registerInvite.value.trim();
+    const username = elements.registerUsername.value.trim();
+    const display_name = elements.registerDisplayName.value.trim();
+    const password = elements.registerPassword.value;
+    const fail = (message, input) => {
+      elements.registerError.textContent = message;
+      elements.registerError.hidden = false;
+      input?.focus();
+    };
+    if (!invite) return fail("请输入邀请码", elements.registerInvite);
+    if (!username) return fail("请输入用户名", elements.registerUsername);
+    if (password.length < 6) return fail("密码至少 6 位", elements.registerPassword);
+    elements.registerError.hidden = true;
+    setRegisterSubmitting(true);
+    try {
+      await apiRequest("/api/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ invite, username, display_name, password })
+      });
+      elements.registerPassword.value = "";
+      elements.registerInvite.value = "";
+      await loadBootstrap();
+    } catch (error) {
+      fail(error.message || "注册失败", elements.registerInvite);
+    } finally {
+      setRegisterSubmitting(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST" });
+    } catch (_) {
+      // 令牌已失效也一样回到登录页
+    }
+    if (consoleIsOpen()) consoleClose();
+    showBlockedState(true);
+  }
+
   function setLoginSubmitting(submitting) {
     state.loginSubmitting = Boolean(submitting);
+    elements.loginUsername.disabled = state.loginSubmitting;
     elements.loginPassword.disabled = state.loginSubmitting;
     elements.loginSubmit.disabled = state.loginSubmitting;
     elements.loginSubmit.classList.toggle("is-loading", state.loginSubmitting);
@@ -8589,9 +8704,10 @@
 
   async function submitLogin() {
     if (state.loginSubmitting) return;
+    const username = elements.loginUsername.value.trim();
     const password = elements.loginPassword.value;
     if (!password) {
-      elements.loginError.textContent = "请输入访问密码";
+      elements.loginError.textContent = "请输入密码";
       elements.loginError.hidden = false;
       elements.loginPassword.focus();
       return;
@@ -8602,12 +8718,14 @@
     try {
       await apiRequest("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ password })
+        body: JSON.stringify(username ? { username, password } : { password })
       });
       elements.loginPassword.value = "";
       await loadBootstrap();
     } catch (error) {
-      elements.loginError.textContent = error.status === 401 ? "密码不正确，请重试" : error.message || "登录失败";
+      elements.loginError.textContent = error.status === 401
+        ? (username ? "用户名或密码不正确，请重试" : "密码不正确，请重试")
+        : error.message || "登录失败";
       elements.loginError.hidden = false;
       window.requestAnimationFrame(() => {
         elements.loginPassword.focus();
@@ -9274,7 +9392,8 @@
     const panel = match[1] || "usage";
     // 面板清单只有 index.html 一份,这里查 DOM 而不是再抄一遍。
     const known = Boolean(elements.consoleView.querySelector(`.con-panel[data-console-panel="${panel}"]`));
-    return { panel: known ? panel : "usage", view: match[2] || "" };
+    const allowed = known && (isAdmin() || !isAdminOnlyPanel(panel));
+    return { panel: allowed ? panel : "usage", view: match[2] || "" };
   }
 
   function consoleOpen(panel = "usage") {
@@ -9295,7 +9414,9 @@
   /// 切控制台标签页。数据统计的图表要等真正显示了才量得到尺寸,配置也是进了
   /// 设置页才拉——都放在这里,免得开个控制台把两边的请求都打出去。
   function setConsolePanel(panel) {
+    if (!isAdmin() && isAdminOnlyPanel(panel)) panel = "usage";
     state.consolePanel = panel;
+    if (panel === "account") loadAccountPanel();
     for (const item of elements.consoleView.querySelectorAll(".con-rail-item[data-console-panel]")) {
       item.classList.toggle("active", item.dataset.consolePanel === panel);
     }
@@ -9571,6 +9692,199 @@
     });
   }
 
+  /* ── 账号面板(阶段 5 多用户) ── */
+  const accountState = { names: new Map(), loadSeq: 0 };
+
+  function accountLabel(accountId) {
+    if (!accountId) return "未署名";
+    const entry = accountState.names.get(accountId);
+    if (!entry) return accountId;
+    return entry.display_name && entry.display_name !== entry.username
+      ? `${entry.display_name} (${entry.username})`
+      : entry.username;
+  }
+
+  async function loadAccountNames() {
+    const response = await apiRequest("/api/admin/accounts");
+    const data = await response.json();
+    accountState.names = new Map((data.accounts || []).map((account) => [account.id, account]));
+    return data.accounts || [];
+  }
+
+  function showAccountError(message) {
+    elements.accountError.textContent = message || "";
+    elements.accountError.hidden = !message;
+  }
+
+  async function loadAccountPanel() {
+    const seq = ++accountState.loadSeq;
+    showAccountError("");
+    const account = state.account || {};
+    const noRow = !account.account_id;
+    elements.accountUsername.value = account.username || (noRow ? "(访问密码登录)" : "");
+    elements.accountDisplayName.value = account.display_name || "";
+    elements.accountDisplayName.disabled = noRow;
+    elements.accountCurrentPassword.disabled = noRow;
+    elements.accountNewPassword.disabled = noRow;
+    elements.accountSave.disabled = noRow;
+    elements.accountSelfHint.textContent = noRow
+      ? "用访问密码登录的是机器级管理员,密码在启动参数里改;用「admin」用户名登录可以改显示名。"
+      : account.admin ? "管理员" : "成员";
+    elements.accountStamp.textContent = "";
+    if (!isAdmin()) return;
+    elements.inviteFresh.hidden = true;
+    try {
+      const [accounts, invitesResponse, usageResponse] = await Promise.all([
+        loadAccountNames(),
+        apiRequest("/api/admin/invites").then((response) => response.json()),
+        apiRequest("/api/admin/usage/accounts?range=30d").then((response) => response.json()).catch(() => ({ accounts: [] })),
+      ]);
+      if (seq !== accountState.loadSeq) return;
+      renderInviteRows(invitesResponse.invites || []);
+      renderAccountRows(accounts, usageResponse.accounts || []);
+    } catch (error) {
+      if (seq !== accountState.loadSeq) return;
+      elements.accountStamp.textContent = `载入失败:${error.message || error}`;
+    }
+  }
+
+  function renderInviteRows(invites) {
+    const body = elements.inviteRows;
+    body.replaceChildren();
+    if (!invites.length) {
+      body.innerHTML = `<tr><td colspan="5" class="acct-muted">还没有邀请码</td></tr>`;
+      return;
+    }
+    const statusLabel = { open: "可用", used: "已使用", expired: "已过期" };
+    for (const invite of invites) {
+      const row = document.createElement("tr");
+      const usedBy = invite.used_by ? accountLabel(invite.used_by) : "—";
+      row.innerHTML = `<td>${statusLabel[invite.status] || invite.status}</td><td>${formatDateTime(invite.created_at)}</td><td>${formatDateTime(invite.expires_at)}</td><td></td><td></td>`;
+      row.children[3].textContent = usedBy;
+      if (invite.status !== "used") {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary-button acct-row-action";
+        remove.textContent = "作废";
+        remove.addEventListener("click", async () => {
+          remove.disabled = true;
+          try {
+            await apiRequest(`/api/admin/invites/${encodeURIComponent(invite.id)}`, { method: "DELETE" });
+            loadAccountPanel();
+          } catch (error) {
+            showToast(error.message || "作废失败", "error");
+            remove.disabled = false;
+          }
+        });
+        row.children[4].appendChild(remove);
+      }
+      body.appendChild(row);
+    }
+  }
+
+  function renderAccountRows(accounts, usage) {
+    const body = elements.accountRows;
+    body.replaceChildren();
+    const usageById = new Map(usage.map((entry) => [entry.acct, entry]));
+    for (const account of accounts) {
+      const row = document.createElement("tr");
+      const spent = usageById.get(account.id);
+      const cells = [
+        account.username,
+        account.display_name,
+        account.admin ? "管理员" : "成员",
+        account.last_login_at ? formatRelativeTime(account.last_login_at) : "从未",
+        spent ? usageFmt(asFiniteNumber(spent.total)) : "0",
+        spent ? (usageFmtCost(asFiniteNumber(spent.cost)) || "—") : "—",
+      ];
+      cells.forEach((text, index) => {
+        const cell = document.createElement("td");
+        if (index >= 4) cell.className = "num";
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      if (account.disabled) row.classList.add("acct-muted");
+      const actions = document.createElement("td");
+      const isSelf = state.account?.account_id === account.id;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "secondary-button acct-row-action";
+      toggle.textContent = account.disabled ? "恢复" : "停用";
+      toggle.disabled = isSelf;
+      toggle.addEventListener("click", () => patchAccount(account.id, { disabled: !account.disabled }, toggle));
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "secondary-button acct-row-action";
+      reset.textContent = "重设密码";
+      reset.addEventListener("click", () => {
+        const password = window.prompt(`给 ${account.username} 设一个新密码(至少 6 位):`);
+        if (password == null) return;
+        patchAccount(account.id, { password }, reset);
+      });
+      actions.append(toggle, reset);
+      row.appendChild(actions);
+      body.appendChild(row);
+    }
+  }
+
+  async function patchAccount(accountId, patch, button) {
+    if (button) button.disabled = true;
+    try {
+      await apiRequest(`/api/admin/accounts/${encodeURIComponent(accountId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      });
+      loadAccountPanel();
+    } catch (error) {
+      showToast(error.message || "操作失败", "error");
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function createInvite() {
+    elements.inviteCreate.disabled = true;
+    try {
+      const response = await apiRequest("/api/admin/invites", { method: "POST", body: JSON.stringify({}) });
+      const data = await response.json();
+      elements.inviteFresh.textContent = data.code || "";
+      elements.inviteFresh.hidden = !data.code;
+      const invitesResponse = await apiRequest("/api/admin/invites").then((r) => r.json());
+      renderInviteRows(invitesResponse.invites || []);
+    } catch (error) {
+      showToast(error.message || "生成失败", "error");
+    } finally {
+      elements.inviteCreate.disabled = false;
+    }
+  }
+
+  async function saveAccount() {
+    const patch = {};
+    const displayName = elements.accountDisplayName.value.trim();
+    if (displayName && displayName !== (state.account?.display_name || "")) patch.display_name = displayName;
+    const newPassword = elements.accountNewPassword.value;
+    if (newPassword) {
+      patch.password = newPassword;
+      patch.current_password = elements.accountCurrentPassword.value;
+    }
+    if (!Object.keys(patch).length) return showAccountError("没有要保存的改动");
+    elements.accountSave.disabled = true;
+    try {
+      const response = await apiRequest("/api/account", { method: "PATCH", body: JSON.stringify(patch) });
+      const data = await response.json();
+      if (data.account && state.account) {
+        state.account.display_name = data.account.display_name;
+      }
+      elements.accountCurrentPassword.value = "";
+      elements.accountNewPassword.value = "";
+      showAccountError("");
+      showToast("已保存", "success");
+    } catch (error) {
+      showAccountError(error.message || "保存失败");
+    } finally {
+      elements.accountSave.disabled = false;
+    }
+  }
+
   function renderUsageSources(stats) {
     const container = elements.usageSources;
     container.innerHTML = "";
@@ -9581,6 +9895,9 @@
     }
     const agent = sources.find((source) => source.src === "agent");
     const platforms = sources.filter((source) => source.src !== "agent");
+    if (isAdmin() && Array.isArray(stats.accounts) && stats.accounts.length > 1) {
+      container.appendChild(buildUsageAccountsCard(stats.accounts));
+    }
     if (agent) {
       container.appendChild(buildUsageSourceCard(
         "模型消耗明细 · 智能体",
@@ -9603,6 +9920,43 @@
         platforms,
       ));
     }
+  }
+
+  /// 总表按人拆(管理员):空账号 = 管理员自己 + 终端 + 通讯平台。名字来自
+  /// 成员表,没拉到之前先显示 id。
+  function buildUsageAccountsCard(accounts) {
+    const card = document.createElement("div");
+    card.className = "u-card";
+    card.innerHTML = `<div class="u-card-head"><h3>按人拆分</h3><span class="u-hint">成员的 WebUI 会话各记各的 · 未署名 = 管理员/终端/通讯平台</span></div>`;
+    const scroll = document.createElement("div");
+    scroll.className = "u-table-scroll";
+    const table = document.createElement("table");
+    table.className = "u-table";
+    table.innerHTML = `<thead><tr><th>账号</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">合计</th><th class="num">消费</th></tr></thead>`;
+    const body = document.createElement("tbody");
+    for (const entry of accounts) {
+      const row = document.createElement("tr");
+      const cells = [
+        accountLabel(entry.acct),
+        formatInteger(entry.requests),
+        usageFmt(asFiniteNumber(entry.prompt)),
+        usageFmt(asFiniteNumber(entry.completion)),
+        usageFmt(asFiniteNumber(entry.total)),
+        usageFmtCost(asFiniteNumber(entry.cost)) || "—",
+      ];
+      cells.forEach((text, index) => {
+        const cell = document.createElement("td");
+        if (index > 0) cell.className = "num";
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+    if (!accountState.names.size && isAdmin()) loadAccountNames().then(() => renderUsageSources(usageState.stats)).catch(() => {});
+    return card;
   }
 
   function buildUsageSourceCard(title, hint, source, stats, platformTabs) {
@@ -10135,6 +10489,15 @@
       event.preventDefault();
       submitLogin();
     });
+    elements.registerForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitRegister();
+    });
+    elements.showRegisterButton.addEventListener("click", () => showRegisterForm(true));
+    elements.showLoginButton.addEventListener("click", () => showRegisterForm(false));
+    elements.accountSave.addEventListener("click", saveAccount);
+    elements.accountLogout.addEventListener("click", logout);
+    elements.inviteCreate.addEventListener("click", createInvite);
     elements.newChatButton.addEventListener("click", requestNewConversation);
     elements.retryBootstrapButton.addEventListener("click", loadBootstrap);
     elements.resetConfirmButton.addEventListener("click", resetConversation);

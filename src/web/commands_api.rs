@@ -57,7 +57,7 @@ pub(in crate::web) async fn goal_command_http(
     Json(request): Json<GoalCommandRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_mutation(&headers, &state)?;
-    require_local_web_session(&state, &request.session_id)?;
+    require_local_web_session(&state, &headers, &request.session_id)?;
     let text = crate::web::apply_goal_command(&state, &request.session_id, &request.input);
     Ok(Json(json!({ "text": text })))
 }
@@ -72,7 +72,7 @@ pub(in crate::web) async fn session_goal_http(
     Path(session_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let goal = crate::tools::goal::session_goal_json(&state.paths, &session_id);
     Ok(Json(goal))
 }
@@ -90,7 +90,7 @@ pub(in crate::web) async fn compact_conversation(
     let session_id = request
         .session_id
         .unwrap_or_else(|| state.state_store.session_id().to_string());
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let session_id: std::sync::Arc<str> = session_id.into();
     reserve_admin_for_session(&state.manager, &session_id)?;
     let (reply, receiver) = oneshot::channel();
@@ -151,7 +151,7 @@ pub(in crate::web) async fn poppable_turns_http(
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     require_auth(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let turns = state
         .state_store
         .pinned(&session_id)
@@ -187,7 +187,7 @@ pub(in crate::web) async fn pop_conversation(
     let session_id = request
         .session_id
         .unwrap_or_else(|| state.state_store.session_id().to_string());
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let turn_ids: Vec<String> = if !request.turn_ids.is_empty() {
         // 选择器多选：具体弹哪些由 actor 再按可弹出集合过滤一遍，这里
         // 不重复校验（读取与执行之间状态可能已变，校验也只是快照）。
@@ -272,7 +272,7 @@ pub(in crate::web) async fn reset_memory_http(
     headers: HeaderMap,
     Json(request): Json<ResetMemoryRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let config = reset_memory_config(&state, request.mode.as_deref());
     let session_id = match request.session_id {
         Some(session_id) if !session_id.trim().is_empty() => session_id,
@@ -290,7 +290,7 @@ pub(in crate::web) async fn reset_all_memory_http(
     headers: HeaderMap,
     Json(request): Json<ResetMemoryRequest>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let config = reset_memory_config(&state, request.mode.as_deref());
     crate::memory::MemoryStore::new(&config, &state.paths)
         .reset_all(false)

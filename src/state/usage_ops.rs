@@ -51,7 +51,13 @@ impl StateStore {
     /// 历史明细落账失败只告警:usage.json 累计是正账,明细缺一行不该
     /// 让整个回合报错。
     pub(crate) fn record_usage_history(&self, usage: &Usage, meta: UsageMeta<'_>, aux: bool) {
-        if let Err(error) = usage::record_usage(&self.usage_history_file(), usage, meta, aux) {
+        if let Err(error) = usage::record_usage_for_account(
+            &self.usage_history_file(),
+            usage,
+            meta,
+            aux,
+            &self.usage_account,
+        ) {
             tracing::warn!(error = %error, "recording usage history failed");
         }
     }
@@ -82,12 +88,23 @@ impl StateStore {
         range: UsageRange,
         config: Option<&crate::config::AppConfig>,
     ) -> Result<usage::UsageStats> {
+        self.usage_stats_for_account(range, config, None)
+    }
+
+    /// `account` 为 Some 时只统计该账号(空串 = 管理员/遗留);None = 全部并按人拆分。
+    pub fn usage_stats_for_account(
+        &self,
+        range: UsageRange,
+        config: Option<&crate::config::AppConfig>,
+        account: Option<&str>,
+    ) -> Result<usage::UsageStats> {
+        let path = self.usage_history_file();
         match config {
             Some(config) => {
                 let price = crate::models_cache::pricing_resolver(config);
-                usage::usage_stats(&self.usage_history_file(), range, &price)
+                usage::usage_stats_for_account(&path, range, &price, account)
             }
-            None => usage::usage_stats(&self.usage_history_file(), range, &|_, _| None),
+            None => usage::usage_stats_for_account(&path, range, &|_, _| None, account),
         }
     }
 
@@ -98,13 +115,25 @@ impl StateStore {
         model: Option<&str>,
         config: Option<&crate::config::AppConfig>,
     ) -> Result<Vec<usage::UsageRecord>> {
+        self.usage_details_for_account(limit, src, model, config, None)
+    }
+
+    pub fn usage_details_for_account(
+        &self,
+        limit: usize,
+        src: Option<&str>,
+        model: Option<&str>,
+        config: Option<&crate::config::AppConfig>,
+        account: Option<&str>,
+    ) -> Result<Vec<usage::UsageRecord>> {
+        let path = self.usage_history_file();
         match config {
             Some(config) => {
                 let price = crate::models_cache::pricing_resolver(config);
-                usage::usage_details(&self.usage_history_file(), limit, src, model, &price)
+                usage::usage_details_for_account(&path, limit, src, model, &price, account)
             }
             None => {
-                usage::usage_details(&self.usage_history_file(), limit, src, model, &|_, _| None)
+                usage::usage_details_for_account(&path, limit, src, model, &|_, _| None, account)
             }
         }
     }

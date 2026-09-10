@@ -191,6 +191,9 @@ pub struct UsageRecord {
     /// 细项标签(见 [`UsageMeta::kind`]);老记录没有,空串=主线。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
+    /// 归属账号 id(阶段 5 多用户);空串 = 管理员/遗留/平台。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub acct: String,
     /// 计费估算(USD),读取时按当前价目计算,不落盘。
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub cost: Option<f64>,
@@ -218,6 +221,24 @@ pub fn record_usage(path: &Path, usage: &Usage, meta: UsageMeta<'_>, aux: bool) 
     record_usage_at(path, usage, meta, aux, chrono::Utc::now().timestamp())
 }
 
+/// 同 [`record_usage`],记到某个账号名下(空串 = 管理员/遗留)。
+pub fn record_usage_for_account(
+    path: &Path,
+    usage: &Usage,
+    meta: UsageMeta<'_>,
+    aux: bool,
+    account: &str,
+) -> Result<()> {
+    record_usage_for_account_at(
+        path,
+        usage,
+        meta,
+        aux,
+        account,
+        chrono::Utc::now().timestamp(),
+    )
+}
+
 /// 持 `usage_lock` 只挡住同进程的并发写:`rename_provider` 要整文件重写,
 /// 重写期间的追加会被新文件盖掉。跨进程(`MIYU_DIRECT=1` 直连模式的另一个
 /// 进程、TUI 改名)仍有理论上的竞态,接受——账本是统计口径,不是账务。
@@ -226,6 +247,17 @@ fn record_usage_at(
     usage: &Usage,
     meta: UsageMeta<'_>,
     aux: bool,
+    ts: i64,
+) -> Result<()> {
+    record_usage_for_account_at(path, usage, meta, aux, "", ts)
+}
+
+fn record_usage_for_account_at(
+    path: &Path,
+    usage: &Usage,
+    meta: UsageMeta<'_>,
+    aux: bool,
+    account: &str,
     ts: i64,
 ) -> Result<()> {
     let _guard = usage_lock().lock().unwrap();
@@ -248,6 +280,7 @@ fn record_usage_at(
         cache_write: usage.cache_write_tokens,
         aux,
         kind: meta.kind.unwrap_or_default().to_string(),
+        acct: account.to_string(),
         cost: None,
     };
     let mut file = std::fs::OpenOptions::new()
@@ -382,6 +415,14 @@ pub struct SourceUsage {
     pub kinds: Vec<KindUsage>,
 }
 
+/// 一个账号在选定范围内的汇总(阶段 5,按人拆总表)。`acct` 空串 = 管理员/遗留/平台。
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountUsage {
+    pub acct: String,
+    #[serde(flatten)]
+    pub aggregate: UsageAggregate,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageStats {
     pub range: String,
@@ -392,6 +433,9 @@ pub struct UsageStats {
     /// 最近 364 个本地自然日(含今天),供热力图与柱状图切片。
     pub daily: Vec<DailyUsage>,
     pub sources: Vec<SourceUsage>,
+    /// 范围内按账号拆分;只按某个账号过滤时为空(拆分没有意义)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_ts: Option<i64>,
 }
@@ -435,7 +479,20 @@ fn local_day_start(ts: i64) -> Option<chrono::DateTime<Local>> {
 pub type PriceFn<'a> = &'a dyn Fn(&str, &str) -> Option<crate::models_cache::ApiCost>;
 
 pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result<UsageStats> {
-    let records = load_records(path)?;
+    usage_stats_for_account(path, range, price, None)
+}
+
+/// 同 [`usage_stats`];`account` 为 Some 时只看该账号的记录(空串 = 管理员/遗留)。
+pub fn usage_stats_for_account(
+    path: &Path,
+    range: UsageRange,
+    price: PriceFn<'_>,
+    account: Option<&str>,
+) -> Result<UsageStats> {
+    let mut records = load_records(path)?;
+    if let Some(account) = account {
+        records.retain(|record| record.acct == account);
+    }
     // 单价按 (provider, model) 记忆化:每条记录都查一次目录锁太浪费。
     let mut price_cache =
         std::collections::HashMap::<(String, String), Option<crate::models_cache::ApiCost>>::new();
@@ -478,6 +535,7 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
     >::new();
     let daily_floor = today_start - 363 * 86_400;
     let mut first_ts: Option<i64> = None;
+    let mut accounts = BTreeMap::<String, UsageAggregate>::new();
 
     for record in &records {
         first_ts = Some(first_ts.map_or(record.ts, |t| t.min(record.ts)));
@@ -485,6 +543,12 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
         let in_range = start.map_or(true, |s| record.ts >= s);
         if in_range {
             totals.absorb(record, cost);
+            if account.is_none() {
+                accounts
+                    .entry(record.acct.clone())
+                    .or_default()
+                    .absorb(record, cost);
+            }
             let src = if record.src.is_empty() {
                 "agent"
             } else {
@@ -604,12 +668,19 @@ pub fn usage_stats(path: &Path, range: UsageRange, price: PriceFn<'_>) -> Result
         rank(a).cmp(&rank(b)).then_with(|| a.src.cmp(&b.src))
     });
 
+    let mut accounts: Vec<AccountUsage> = accounts
+        .into_iter()
+        .map(|(acct, aggregate)| AccountUsage { acct, aggregate })
+        .collect();
+    accounts.sort_by(|a, b| b.aggregate.total.cmp(&a.aggregate.total));
+
     Ok(UsageStats {
         range: range.label(),
         totals,
         prev_totals: (range != UsageRange::All).then_some(prev_totals),
         daily,
         sources,
+        accounts,
         first_ts,
     })
 }
@@ -623,7 +694,22 @@ pub fn usage_details(
     model: Option<&str>,
     price: PriceFn<'_>,
 ) -> Result<Vec<UsageRecord>> {
+    usage_details_for_account(path, limit, src, model, price, None)
+}
+
+/// 同 [`usage_details`];`account` 为 Some 时只看该账号的记录。
+pub fn usage_details_for_account(
+    path: &Path,
+    limit: usize,
+    src: Option<&str>,
+    model: Option<&str>,
+    price: PriceFn<'_>,
+    account: Option<&str>,
+) -> Result<Vec<UsageRecord>> {
     let mut records = load_records(path)?;
+    if let Some(account) = account {
+        records.retain(|record| record.acct == account);
+    }
     if let Some(src) = src.filter(|value| !value.is_empty()) {
         records.retain(|record| {
             let record_src = if record.src.is_empty() {

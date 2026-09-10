@@ -487,6 +487,8 @@ pub(in crate::web) struct SseStreamState {
     pub(in crate::web) receiver: broadcast::Receiver<EventRecord>,
     pub(in crate::web) events: EventHub,
     pub(in crate::web) last_id: u64,
+    /// 归属过滤(阶段 5):只放行登录者名下会话的事件。
+    pub(in crate::web) owner_filter: EventOwnerFilter,
 }
 
 pub(in crate::web) fn record_to_sse(record: EventRecord) -> Event {

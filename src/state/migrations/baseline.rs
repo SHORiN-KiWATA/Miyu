@@ -643,6 +643,42 @@ pub(in crate::state) fn apply_v27_shared_files(conn: &Connection) -> Result<()> 
     Ok(())
 }
 
+/// v34(09-10 分层架构阶段 5,多用户):WebUI 账号与邀请码。
+///
+/// 账号只解决「我和朋友的会话别混在一起」与「按人统计」;第一个账号是超级
+/// 管理员,新账号凭管理员发的一次性邀请码注册。`sessions.owner` 在 columns.rs
+/// 同版本加列:空串 = 遗留/管理员所有(终端集成会话、语音会话、迁移前的一切)。
+pub(in crate::state) fn apply_v34_accounts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS accounts (
+            id            TEXT PRIMARY KEY,
+            username      TEXT NOT NULL,
+            display_name  TEXT NOT NULL DEFAULT '',
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'member',
+            disabled      INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL,
+            last_login_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username
+            ON accounts(lower(username));
+        CREATE TABLE IF NOT EXISTS invites (
+            code_hash  TEXT PRIMARY KEY,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_by    TEXT,
+            used_at    TEXT,
+            role       TEXT NOT NULL DEFAULT 'member'
+        );",
+    )?;
+    add_column_if_missing(conn, "sessions", "owner", "TEXT NOT NULL DEFAULT ''")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner, persona, kind);",
+    )?;
+    Ok(())
+}
+
 pub(in crate::state) fn apply_v25_tool_reports_child_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS turn_tool_reports (

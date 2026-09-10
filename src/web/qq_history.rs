@@ -51,7 +51,7 @@ pub(in crate::web) async fn qq_group_history_http(
     headers: HeaderMap,
     Query(query): Query<QqGroupHistoryQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let scope = qq_group_scope(&query.account_id, &query.group_id)?;
     let offenders = state
         .state_store
@@ -89,7 +89,7 @@ pub(in crate::web) async fn qq_group_history_clear_http(
     headers: HeaderMap,
     Json(request): Json<QqGroupHistoryClearRequest>,
 ) -> std::result::Result<Response, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let scope = qq_group_scope(&request.account_id, &request.group_id)?;
     let key = match request.kind.as_str() {
         "offenders" => "offender_history",
@@ -114,7 +114,7 @@ pub(in crate::web) async fn qq_group_offender_delete_http(
     Path(user_id): Path<String>,
     Query(query): Query<QqGroupHistoryQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     if !valid_qq_id(&user_id) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

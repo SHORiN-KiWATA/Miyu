@@ -18,6 +18,7 @@ use crate::paths::MiyuPaths;
 use crate::question::{self, QuestionAnswers};
 // daemon 运行时的共享状态已下沉到 runtime：web 只是它的消费者之一，IPC 与
 // 平台适配是另外两个。放在 web 里会让平台层反过来依赖 HTTP 服务。
+mod accounts_api;
 mod actor;
 mod assets;
 mod attachments;
@@ -30,6 +31,7 @@ mod dto;
 mod event_map;
 mod goal_driver;
 mod link_preview;
+mod ownership;
 mod persona;
 mod prompt_files;
 mod providers_api;
@@ -52,6 +54,7 @@ pub(crate) mod voice_tts;
 // 离真正的原因很远。
 mod ipc_server;
 
+use accounts_api::*;
 use actor::*;
 use assets::*;
 use attachments::*;
@@ -71,6 +74,7 @@ use dto::*;
 use event_map::*;
 use goal_driver::*;
 use ipc_server::*;
+use ownership::*;
 use persona::*;
 use prompt_files::*;
 use providers_api::*;
@@ -93,7 +97,7 @@ use crate::runtime::{
     EventRecord, IpcRunGuard, LoginFailure, ManagerState, PlatformPersonaResetError,
     PromptDocument, PromptDocuments, QuestionBroker, RedoWebPrompt, RunInfo, RunOperation,
     SafeQueuedPrompt, SafeUserAttachment, ThinkingVariantUpdate, TurnEngineState,
-    TurnResourceCache, TurnUpdateMode, TurnUpdateReceipt, TurnUpdateRequest, WebAuth,
+    TurnResourceCache, TurnUpdateMode, TurnUpdateReceipt, TurnUpdateRequest, WebAuth, WebIdentity,
 };
 use crate::state::{
     ArtifactAsset, ImageAsset, PlatformPluginScopeKey, QueuedPrompt, StateStore, Turn,

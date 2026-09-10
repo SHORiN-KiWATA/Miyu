@@ -27,7 +27,7 @@ pub(in crate::web) async fn dash_ledger_export(
     headers: HeaderMap,
     Query(query): Query<OverviewQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let paths = state.paths.clone();
     let (name, body) = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
         let db = LedgerDb::open(&paths)?;
@@ -82,7 +82,7 @@ pub(in crate::web) async fn dash_ledger_import(
     headers: HeaderMap,
     Json(body): Json<ImportBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let rate_config = {
         let manager = state.manager.lock().unwrap();
         manager.config.plugins.exchange_rate.clone()

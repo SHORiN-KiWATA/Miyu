@@ -170,7 +170,7 @@ pub(in crate::web) async fn dash_qq_accounts(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let connected = connected_accounts(&state);
     let paths = state.paths.clone();
     let store = state.state_store.clone();
@@ -208,7 +208,7 @@ pub(in crate::web) async fn dash_qq_conversations(
     headers: HeaderMap,
     Query(query): Query<AccountQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let account = query.account.trim().to_string();
     if !account.is_empty() && !valid_qq_id(&account) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid account"));
@@ -237,7 +237,7 @@ pub(in crate::web) async fn dash_qq_messages(
     headers: HeaderMap,
     Query(params): Query<MessagesParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let key = conversation_key(&params.account, &params.kind, &params.id)?;
     let before = match (params.before_sent, params.before_row) {
         (Some(sent_at), Some(row_id)) => Some(history::DashHistoryCursor { sent_at, row_id }),
@@ -264,7 +264,7 @@ pub(in crate::web) async fn dash_qq_stats(
     headers: HeaderMap,
     Query(params): Query<StatsParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let key = conversation_key(&params.account, &params.kind, &params.id)?;
     let until = chrono::Utc::now().timestamp();
     let since = if params.days <= 0 {
@@ -283,7 +283,7 @@ pub(in crate::web) async fn dash_qq_recalls(
     headers: HeaderMap,
     Query(params): Query<RecallsParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let key = conversation_key(&params.account, &params.kind, &params.id)?;
     let paths = state.paths.clone();
     let result =
@@ -299,7 +299,7 @@ pub(in crate::web) async fn dash_qq_delete(
     headers: HeaderMap,
     Json(body): Json<DeleteBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     if !valid_qq_id(&body.account) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid account"));
     }
@@ -354,7 +354,7 @@ pub(in crate::web) async fn dash_qq_boundary(
     headers: HeaderMap,
     Query(query): Query<BoundaryQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let key = conversation_key(&query.account, &query.kind, &query.id)?;
     let scope = persona_scope(&state, &query.persona);
     let mut result = history::dashboard_boundary(&state.paths, key, scope.clone())
@@ -369,7 +369,7 @@ pub(in crate::web) async fn dash_qq_reset_context(
     headers: HeaderMap,
     Query(query): Query<BoundaryQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let key = conversation_key(&query.account, &query.kind, &query.id)?;
     let scope = persona_scope(&state, &query.persona);
     let result = history::dashboard_reset_context(&state.paths, key, scope)
@@ -386,7 +386,7 @@ pub(in crate::web) async fn dash_qq_groups(
     headers: HeaderMap,
     Query(query): Query<AccountQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let account = query.account.trim().to_string();
     let store = state.state_store.clone();
     let scopes =
@@ -412,7 +412,7 @@ pub(in crate::web) async fn dash_qq_management(
     headers: HeaderMap,
     Query(query): Query<GroupQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let scope = qq_group_scope(&query.account, &query.group)?;
     let store = state.state_store.clone();
     let mut result = blocking(move || groups::dashboard_management(&store, &scope)).await?;
@@ -425,7 +425,7 @@ pub(in crate::web) async fn dash_qq_management_clear_events(
     headers: HeaderMap,
     Query(query): Query<GroupQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let scope = qq_group_scope(&query.account, &query.group)?;
     let store = state.state_store.clone();
     let cleared = blocking(move || groups::dashboard_clear_events(&store, &scope)).await?;

@@ -187,8 +187,10 @@ pub(in crate::web) async fn upload_user_attachment(
     body: axum::body::Body,
 ) -> std::result::Result<Json<SafeUserAttachment>, ApiError> {
     require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let session_id =
-        resolve_turn_session(&state, Some(query.session_id)).map_err(session_api_error)?;
+        resolve_turn_session(&state, Some(identity.owner_key()), Some(query.session_id))
+            .map_err(session_api_error)?;
     let encoded_name = headers
         .get("x-miyu-filename")
         .and_then(|value| value.to_str().ok())
@@ -340,8 +342,10 @@ pub(in crate::web) async fn delete_user_attachment(
 ) -> std::result::Result<StatusCode, ApiError> {
     require_mutation(&headers, &state)?;
     validate_attachment_id(&attachment_id)?;
+    let identity = require_identity(&headers, &state)?;
     let session_id =
-        resolve_turn_session(&state, Some(query.session_id)).map_err(session_api_error)?;
+        resolve_turn_session(&state, Some(identity.owner_key()), Some(query.session_id))
+            .map_err(session_api_error)?;
     let deleted = state
         .state_store
         .pinned(&session_id)

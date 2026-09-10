@@ -9341,3 +9341,20 @@ body.miyu-paused *::after {
   background: var(--accent);
   transition: width 240ms ease;
 }
+
+/* ── 账号(阶段 5 多用户) ── */
+.login-switch { margin: 4px 0 0; font-size: 12px; color: var(--text-soft); text-align: center; }
+.login-switch button { padding: 0 0 0 4px; border: 0; background: none; color: var(--accent); font-size: 12px; cursor: pointer; }
+.acct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; }
+.acct-grid label { display: grid; gap: 4px; font-size: var(--fs-meta); color: var(--text-soft); }
+.acct-grid input { min-height: 38px; padding: 0 10px; border: 0; border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text); font-size: var(--fs-ui); outline: 0; }
+.acct-grid input:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.acct-grid input:disabled { color: var(--text-soft); }
+.acct-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.acct-actions .login-submit { margin-top: 0; padding: 0 18px; }
+.acct-head-action { margin-left: auto; }
+.acct-invite-code { display: inline-block; margin: 0 0 12px; padding: 10px 14px; border-radius: var(--radius);
+  background: var(--surface-2); font-family: var(--mono); font-size: 20px; letter-spacing: .14em; user-select: all; }
+.u-table .acct-row-action { min-height: 26px; padding: 2px 10px; font-size: var(--fs-micro); margin-right: 6px; }
+.u-table .acct-muted { color: var(--text-faint); }

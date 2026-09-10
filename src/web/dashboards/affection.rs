@@ -71,7 +71,7 @@ pub(in crate::web) async fn dash_affection_scopes(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     let store = state.state_store.clone();
     let mut result = blocking(move || affection::dashboard_scopes(&store)).await?;
     result["active_persona"] = json!(persona_scope(&state, ""));
@@ -92,7 +92,7 @@ pub(in crate::web) async fn dash_affection_items(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     check_ids(&query.account, None)?;
     let scope = persona_scope(&state, &query.persona);
     let settings = settings(&state)?;
@@ -109,7 +109,7 @@ pub(in crate::web) async fn dash_affection_item(
     Path(user): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     check_ids(&query.account, Some(&user))?;
     let scope = persona_scope(&state, &query.persona);
     let settings = settings(&state)?;
@@ -130,7 +130,7 @@ pub(in crate::web) async fn dash_affection_patch(
     Query(query): Query<ListQuery>,
     Json(body): Json<PatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     check_ids(&query.account, Some(&user))?;
     if body.score.is_some_and(|value| !value.is_finite()) {
         return Err(ApiError::new(
@@ -165,7 +165,7 @@ pub(in crate::web) async fn dash_affection_delete(
     Path(user): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     check_ids(&query.account, Some(&user))?;
     let scope = persona_scope(&state, &query.persona);
     let store = state.state_store.clone();
@@ -201,7 +201,7 @@ pub(in crate::web) async fn dash_emotion_state(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_auth(&headers, &state)?;
+    require_admin(&headers, &state)?;
     check_ids(&query.account, None)?;
     let scope = persona_scope(&state, &query.persona);
     let settings = settings(&state)?;
@@ -220,7 +220,7 @@ pub(in crate::web) async fn dash_emotion_set(
     Query(query): Query<ListQuery>,
     Json(body): Json<EmotionSetBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     check_ids(&query.account, None)?;
     if !body.valence.is_finite() || !body.arousal.is_finite() {
         return Err(ApiError::new(
@@ -255,7 +255,7 @@ pub(in crate::web) async fn dash_emotion_reset(
     Query(query): Query<ListQuery>,
     Json(body): Json<EmotionResetBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     check_ids(&query.account, None)?;
     let scope = persona_scope(&state, &query.persona);
     let store = state.state_store.clone();

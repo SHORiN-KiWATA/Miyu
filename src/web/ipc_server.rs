@@ -834,7 +834,7 @@ pub(in crate::web) async fn handle_ipc_turn(
     // the same session (placeholder semantics). The only rejection is a
     // transient admin mutation window.
     let run_id = random_id("run", 18);
-    let session_id = match resolve_turn_session(state, session_id) {
+    let session_id = match resolve_turn_session(state, None, session_id) {
         Ok(session_id) => session_id,
         // (mode 在会话解析后按会话记录强制,见下。)
         Err(message) => {

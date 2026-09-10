@@ -76,7 +76,7 @@ pub(in crate::web) async fn redo_turn(
     Json(request): Json<RedoTurnRequest>,
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
-    require_local_web_session(&state, &session_id)?;
+    require_local_web_session(&state, &headers, &session_id)?;
     let mode = parse_mode(request.mode.as_deref().unwrap_or("normal"))?;
     let store = state.state_store.pinned_for_turn(&session_id);
     let candidate = store
@@ -316,7 +316,9 @@ pub(in crate::web) async fn create_turn(
     let attachment_ids = request.attachment_ids;
     let display_content = validate_message_content(request.content, !attachment_ids.is_empty())?;
     let mode = parse_mode(request.mode.as_deref().unwrap_or("normal"))?;
-    let session_id = resolve_turn_session(&state, request.session_id).map_err(session_api_error)?;
+    let identity = require_identity(&headers, &state)?;
+    let session_id = resolve_turn_session(&state, Some(identity.owner_key()), request.session_id)
+        .map_err(session_api_error)?;
     state
         .state_store
         .recover_stale_turns()
@@ -414,7 +416,9 @@ pub(in crate::web) async fn queue_prompt(
     require_mutation(&headers, &state)?;
     let attachment_ids = request.attachment_ids;
     let display_content = validate_message_content(request.content, !attachment_ids.is_empty())?;
-    let session_id = resolve_turn_session(&state, request.session_id).map_err(session_api_error)?;
+    let identity = require_identity(&headers, &state)?;
+    let session_id = resolve_turn_session(&state, Some(identity.owner_key()), request.session_id)
+        .map_err(session_api_error)?;
     let store = state.state_store.pinned(&session_id);
     let prepared = prepare_web_attachments(&store, &display_content, &attachment_ids)?;
     // 前端把续轮挂成 live 之后,第二条起走这里;续轮要报 Owner,写死 External

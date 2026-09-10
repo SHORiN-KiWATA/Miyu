@@ -232,20 +232,31 @@ impl ConversationDb {
     /// User-facing sessions of a persona, most recently updated first.
     /// Subagent sessions (`kind != 'user'`) are excluded.
     pub fn list_sessions(&self, persona: &str) -> Result<Vec<SessionOverview>> {
-        self.list_sessions_filtered(persona, false)
+        self.list_sessions_filtered(persona, false, None)
+    }
+
+    /// 某个账号名下的本地会话(阶段 5):`owner` 为空串时是管理员视角——
+    /// 看遗留/自己的会话,不看别的账号的。
+    pub fn list_local_sessions_for_owner(
+        &self,
+        persona: &str,
+        owner: &str,
+    ) -> Result<Vec<SessionOverview>> {
+        self.list_sessions_filtered(persona, true, Some(owner))
     }
 
     /// Local user sessions suitable for CLI/WebUI navigation. Sessions
     /// owned by a messaging-platform binding keep their history but are not
     /// exposed as local conversations.
     pub fn list_local_sessions(&self, persona: &str) -> Result<Vec<SessionOverview>> {
-        self.list_sessions_filtered(persona, true)
+        self.list_sessions_filtered(persona, true, None)
     }
 
     pub(crate) fn list_sessions_filtered(
         &self,
         persona: &str,
         local_only: bool,
+        owner: Option<&str>,
     ) -> Result<Vec<SessionOverview>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(
@@ -263,9 +274,10 @@ impl ConversationDb {
                     SELECT 1 FROM platform_session_bindings
                     WHERE platform_session_bindings.session_id = sessions.session_id
                ))
+               AND (?3 IS NULL OR owner = ?3)
              ORDER BY sort_key ASC, updated_at DESC"
         ))?;
-        let rows = stmt.query_map(params![persona, local_only], |row| {
+        let rows = stmt.query_map(params![persona, local_only, owner], |row| {
             Ok(SessionOverview {
                 record: session_record_from_row(row)?,
                 turn_count: row.get("turn_count")?,
@@ -339,6 +351,7 @@ impl ConversationDb {
         name: &str,
         kind: &str,
         parent_session_id: Option<&str>,
+        owner: &str,
     ) -> Result<SessionRecord> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
@@ -353,11 +366,11 @@ impl ConversationDb {
         // 新会话插到本人格列表最前(sort_key 越小越靠前;手动排序语义下
         // "最新建的在顶上"是唯一自动行为)。
         conn.execute(
-            "INSERT INTO sessions (session_id, persona, name, kind, parent_session_id, created_at, updated_at, sort_key)
+            "INSERT INTO sessions (session_id, persona, name, kind, parent_session_id, created_at, updated_at, sort_key, owner)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6,
                      (SELECT COALESCE(MIN(sort_key), 1024) - 1024 FROM sessions
-                       WHERE persona = ?2 AND kind = 'user'))",
-            params![session_id, persona, name, kind, parent_session_id, now],
+                       WHERE persona = ?2 AND kind = 'user'), ?7)",
+            params![session_id, persona, name, kind, parent_session_id, now, owner],
         )?;
         drop(conn);
         Ok(self
@@ -455,6 +468,7 @@ impl ConversationDb {
             created_at: now.clone(),
             updated_at: now,
             sort_key: 0,
+            owner: String::new(),
         };
         tx.commit()?;
         Ok((record, true))

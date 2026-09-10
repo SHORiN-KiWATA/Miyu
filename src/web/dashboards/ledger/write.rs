@@ -10,7 +10,7 @@ pub(in crate::web) async fn dash_ledger_create_entry(
     headers: HeaderMap,
     Json(body): Json<EntryBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     // 锁不能跨 await 持有，配置先取出来。
     let rate_config = {
         let manager = state.manager.lock().unwrap();
@@ -126,7 +126,7 @@ pub(in crate::web) async fn dash_ledger_update_entry(
     Path(entry_id): Path<String>,
     Json(body): Json<EntryPatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let paths = state.paths.clone();
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let db = LedgerDb::open(&paths)?;
@@ -180,7 +180,7 @@ pub(in crate::web) async fn dash_ledger_delete_entry(
     headers: HeaderMap,
     Path(entry_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     db.delete_entry(&entry_id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
@@ -191,7 +191,7 @@ pub(in crate::web) async fn dash_ledger_restore_entry(
     headers: HeaderMap,
     Path(entry_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     db.restore_entry(&entry_id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
@@ -202,7 +202,7 @@ pub(in crate::web) async fn dash_ledger_create_book(
     headers: HeaderMap,
     Json(body): Json<BookBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     let currency = validate_currency(&body.currency).map_err(bad_request)?;
     let book = db.create_book(&body.name, &currency).map_err(bad_request)?;
@@ -217,7 +217,7 @@ pub(in crate::web) async fn dash_ledger_create_account(
     headers: HeaderMap,
     Json(body): Json<AccountBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     let book = pick_book(&db, &body.book)?;
     let kind = AccountKind::parse(opt(&body.kind).unwrap_or("other")).map_err(bad_request)?;
@@ -238,7 +238,7 @@ pub(in crate::web) async fn dash_ledger_create_category(
     headers: HeaderMap,
     Json(body): Json<CategoryBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     let book = pick_book(&db, &body.book)?;
     let direction =
@@ -260,7 +260,7 @@ pub(in crate::web) async fn dash_ledger_set_budget(
     headers: HeaderMap,
     Json(body): Json<BudgetBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     let book = pick_book(&db, &body.book)?;
     let amount_minor = parse_amount(&body.amount, &book.base_currency).map_err(bad_request)?;
@@ -283,7 +283,7 @@ pub(in crate::web) async fn dash_ledger_delete_budget(
     headers: HeaderMap,
     Path(budget_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let db = open(&state)?;
     db.delete_budget(&budget_id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
@@ -295,7 +295,7 @@ pub(in crate::web) async fn dash_ledger_backfill_rates(
     headers: HeaderMap,
     Query(query): Query<OverviewQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_mutation(&headers, &state)?;
+    require_admin_mutation(&headers, &state)?;
     let rate_config = {
         let manager = state.manager.lock().unwrap();
         manager.config.plugins.exchange_rate.clone()
