@@ -1,7 +1,7 @@
 {
   "name": "ledger",
   "display_name": "记账",
-  "description": "Record and query personal income and expenses.\nAmounts are number strings like \"35.50\". A foreign currency is converted into the book's currency automatically and the rate is stored on the entry. The add result carries a budget field when a monthly budget is near or past its limit. Books, accounts, categories and budgets belong to manage_ledger.",
+  "description": "Record and query personal income and expenses.\nAmounts are number strings like \"35.50\". A foreign currency is converted into the book's currency automatically and the rate is stored on the entry. The add result carries a budget field when a monthly budget is near or past its limit. An account balance converts entries in other currencies at the rate frozen on each entry. Books, accounts, categories and budgets belong to manage_ledger.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -25,11 +25,11 @@
       },
       "category": {
         "type": "string",
-        "description": "For add, list and update: the category name."
+        "description": "For add, list and update: the category name. Optional. On add and update a name that does not exist yet is created right there, and the result says so; list never creates one."
       },
       "account": {
         "type": "string",
-        "description": "For add and list: which account the money came from. Optional. For a transfer it is the source."
+        "description": "For add and list: which account the money paid out of. Optional. Every book starts with 现金, 电子支付, 交通卡, 信用卡 and 银行卡. For a transfer it is the source."
       },
       "to_account": {
         "type": "string",

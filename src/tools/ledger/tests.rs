@@ -199,12 +199,7 @@ async fn a_transfer_needs_two_different_accounts_and_no_category() {
         &paths,
     )
     .await;
-    manage(json!({"action": "create_account", "name": "现金"}), &paths).await;
-    manage(
-        json!({"action": "create_account", "name": "银行卡"}),
-        &paths,
-    )
-    .await;
+    // 「现金」「银行卡」是新账本自带的默认账户，不用先建。
 
     let missing = call_err(
         json!({"action": "add", "kind": "transfer", "amount": "100", "account": "现金"}),
@@ -277,14 +272,24 @@ async fn income_and_expense_categories_do_not_leak_into_each_other() {
     )
     .await;
 
-    // 「工资」只在收入树里,拿它记一笔支出应当找不到。
+    // 「工资」只在收入树里。拿它记一笔支出要报错,而不是顺手在支出树下
+    // 建一个同名的镜像分类——那样分类表里会有两个「工资」,而真正的问题
+    // (kind 填错了) 反倒被藏起来。
     let error = call_err(
         json!({"action": "add", "kind": "expense", "amount": "10", "category": "工资"}),
         &paths,
         &config,
     )
     .await;
-    assert!(error.contains("no category matches"), "{error}");
+    assert!(error.contains("is an income category"), "{error}");
+    let categories = manage(json!({"action": "list", "what": "categories"}), &paths).await;
+    let wages = categories["categories"]
+        .as_array()
+        .expect("categories is a list")
+        .iter()
+        .filter(|category| category["name"] == "工资")
+        .count();
+    assert_eq!(wages, 1, "支出树下不该冒出第二个「工资」");
 
     let ok = call(
         json!({"action": "add", "kind": "income", "amount": "5000", "category": "工资"}),
@@ -293,6 +298,71 @@ async fn income_and_expense_categories_do_not_leak_into_each_other() {
     )
     .await;
     assert_eq!(ok["entry"]["category"], "工资");
+}
+
+#[tokio::test]
+async fn an_unknown_category_is_created_on_the_spot() {
+    let (_dir, paths, config) = sandbox();
+    let first = call(
+        json!({"action": "add", "amount": "60.25", "category": "通讯", "note": "电话费"}),
+        &paths,
+        &config,
+    )
+    .await;
+    assert_eq!(first["ok"], true);
+    assert_eq!(first["entry"]["category"], "通讯");
+    // 账本里凭空多一个分类,得说出口。
+    assert_eq!(first["created_category"], "通讯 (new)");
+
+    // 第二笔复用它,不该再报一次「新建」。
+    let second = call(
+        json!({"action": "add", "amount": "39.00", "category": "通讯", "note": "宽带"}),
+        &paths,
+        &config,
+    )
+    .await;
+    assert_eq!(second["entry"]["category"], "通讯");
+    assert!(second.get("created_category").is_none(), "{second}");
+
+    let categories = manage(json!({"action": "list", "what": "categories"}), &paths).await;
+    let made = categories["categories"]
+        .as_array()
+        .expect("categories is a list")
+        .iter()
+        .filter(|category| category["name"] == "通讯")
+        .count();
+    assert_eq!(made, 1);
+}
+
+/// 分类是在重复闸**之后**才建的。建在前面的话，被挡下的那一笔会在账本里
+/// 留下一个没有任何账目挂着的分类。
+#[tokio::test]
+async fn a_blocked_duplicate_leaves_no_new_category_behind() {
+    let (_dir, paths, config) = sandbox();
+    call(
+        json!({"action": "add", "amount": "10", "note": "咖啡"}),
+        &paths,
+        &config,
+    )
+    .await;
+
+    // 同额同备注,只多了个没见过的分类名——两笔的分类都还是空,重复闸认得出来。
+    let blocked = call(
+        json!({"action": "add", "amount": "10", "note": "咖啡", "category": "饮料"}),
+        &paths,
+        &config,
+    )
+    .await;
+    assert_eq!(blocked["ok"], false);
+    assert_eq!(blocked["reason"], "possible_duplicate");
+
+    let categories = manage(json!({"action": "list", "what": "categories"}), &paths).await;
+    let leaked = categories["categories"]
+        .as_array()
+        .expect("categories is a list")
+        .iter()
+        .any(|category| category["name"] == "饮料");
+    assert!(!leaked, "被挡下的那一笔不该留下「饮料」");
 }
 
 #[tokio::test]
@@ -305,11 +375,19 @@ async fn manage_lists_what_it_creates() {
     .await;
     assert_eq!(book["book"]["currency"], "JPY");
 
-    manage(json!({"action": "create_account", "name": "现金"}), &paths).await;
+    // 名字避开新账本自带的那套默认账户。
+    manage(json!({"action": "create_account", "name": "钱包"}), &paths).await;
     let accounts = manage(json!({"action": "list", "what": "accounts"}), &paths).await;
-    assert_eq!(accounts["accounts"][0]["name"], "现金");
+    let wallet = accounts["accounts"]
+        .as_array()
+        .expect("accounts is a list")
+        .iter()
+        .find(|account| account["name"] == "钱包")
+        .expect("列出刚建的账户");
     // 日元没有小数位,余额不该显示成 0.00。
-    assert_eq!(accounts["accounts"][0]["balance"], "0");
+    assert_eq!(wallet["balance"], "0");
+    // 默认账户跟着账本币种走,这本账是 JPY。
+    assert_eq!(accounts["accounts"][0]["currency"], "JPY");
 
     manage(
         json!({"action": "create_category", "name": "健身", "direction": "expense"}),
