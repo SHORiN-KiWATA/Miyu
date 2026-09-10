@@ -292,7 +292,14 @@ fn artifact_media_type(path: &Path) -> (&'static str, &'static str) {
         "html" | "htm" => ("text/html; charset=utf-8", "html"),
         "pdf" => ("application/pdf", "pdf"),
         "json" | "jsonl" => ("application/json; charset=utf-8", "json"),
-        "txt" | "log" | "csv" | "tsv" => ("text/plain; charset=utf-8", "text"),
+        // SVG 自成一类:预览走图片通道(`<img>` 里的 SVG 浏览器强制禁脚本、禁外链,
+        // 天然安全),但它同时是文本,源码视图也要能看——归进 text/code 就拿不到
+        // 图片那套缩放平移了。**投递永远是 attachment**,理由见 assets.rs。
+        "svg" => ("image/svg+xml", "svg"),
+        // csv/tsv 从 text 里单拎出来,前端才认得出该画成表格。
+        "csv" => ("text/csv; charset=utf-8", "csv"),
+        "tsv" => ("text/tab-separated-values; charset=utf-8", "csv"),
+        "txt" | "log" => ("text/plain; charset=utf-8", "text"),
         "css" => ("text/css; charset=utf-8", "code"),
         "js" | "mjs" | "cjs" => ("text/javascript; charset=utf-8", "code"),
         "xml" => ("application/xml; charset=utf-8", "code"),

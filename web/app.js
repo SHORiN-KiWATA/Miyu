@@ -4704,13 +4704,16 @@
   }
 
   function artifactSupportsPreview(artifact) {
+    // svg 的 mime 是 image/svg+xml,靠下面这条命中图片通道——`<img>` 里的 SVG
+    // 浏览器强制禁脚本禁外链,既安全又白捡了缩放平移。
     return artifact?.kind === "image"
       || artifact?.mime?.startsWith("image/")
-      || ["markdown", "html", "pdf"].includes(artifact?.kind);
+      || ["markdown", "html", "pdf", "csv"].includes(artifact?.kind);
   }
 
   function artifactSupportsSource(artifact) {
-    return ["markdown", "html", "text", "code", "json"].includes(artifact?.kind)
+    // svg 是图片也是文本,两个视图都要给:光能看不能读,改起来无从下手。
+    return ["markdown", "html", "text", "code", "json", "csv", "svg"].includes(artifact?.kind)
       || artifact?.mime?.startsWith("text/")
       || artifact?.mime?.startsWith("application/json");
   }
@@ -5160,6 +5163,7 @@
     if (artifact?.kind === "markdown") return "file-markdown";
     if (artifact?.kind === "json") return "file-json";
     if (artifact?.kind === "code" || artifact?.kind === "html") return "file-code";
+    if (artifact?.kind === "csv") return "layout-grid";
     return "file-text";
   }
 
@@ -5255,6 +5259,112 @@
     elements.artifactView.replaceChildren(failure);
   }
 
+  /**
+   * 源码视图的高亮语言。Prism 只打包了那十来门（拼装顺序写在
+   * `web/vendor/prism/prism.min.js` 头部），认不出来的传空字符串，
+   * `paint` 会原样留纯文本——正文缺一块颜色无所谓，缺一个字不行。
+   */
+  const ARTIFACT_SOURCE_LANGUAGES = {
+    html: "markup", htm: "markup", xml: "markup", svg: "markup",
+    css: "css", scss: "css",
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript",
+    json: "json", jsonl: "json",
+    md: "markdown", markdown: "markdown",
+    rs: "rust", py: "python", go: "go", lua: "lua", sql: "sql",
+    c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp",
+    sh: "bash", bash: "bash", zsh: "bash", fish: "bash",
+    toml: "toml", yaml: "yaml", yml: "yaml", diff: "diff"
+  };
+
+  function artifactSourceLanguage(artifact) {
+    const name = String(artifact?.name || "");
+    const extension = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    return ARTIFACT_SOURCE_LANGUAGES[extension] || "";
+  }
+
+  /** 表格最多画这么多行。再多浏览器就卡了,剩下的让她去看源码或下载。 */
+  const MAX_TABLE_ROWS = 2000;
+
+  /**
+   * 拆 CSV/TSV。只认最基本的那套规矩：双引号包住的字段里分隔符和换行都算正文，
+   * 连着两个双引号是一个字面量引号。够读她导出的表了，不做各家方言兼容。
+   */
+  function parseDelimited(text, delimiter) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (quoted) {
+        if (char !== '"') { field += char; continue; }
+        if (text[index + 1] === '"') { field += '"'; index += 1; continue; }
+        quoted = false;
+        continue;
+      }
+      if (char === '"') { quoted = true; continue; }
+      if (char === delimiter) { row.push(field); field = ""; continue; }
+      if (char === "\r") continue;
+      if (char === "\n") { row.push(field); rows.push(row); row = []; field = ""; continue; }
+      field += char;
+    }
+    // 最后一行没有换行收尾也要算,否则整张表少一行。
+    if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  /**
+   * CSV/TSV 画成表格。**纯 DOM，一个 HTML 字符串都不产生**——面板里这份内容
+   * 同样出自模型之手，和聊天正文一个待遇（理由见 highlight.js 头注释）。
+   * 外壳复用 markdown-body，表格样式就不用再写一套。
+   */
+  function buildArtifactTable(artifact, text) {
+    const tabbed = /\.tsv$/i.test(artifact.name) || artifact.mime.includes("tab-separated");
+    const rows = parseDelimited(text, tabbed ? "\t" : ",").filter(
+      (row) => row.length > 1 || (row[0] || "").trim() !== ""
+    );
+    const article = document.createElement("article");
+    article.className = "markdown-body artifact-markdown";
+    if (rows.length === 0) {
+      const note = document.createElement("p");
+      note.textContent = "这份表是空的。";
+      article.appendChild(note);
+      return article;
+    }
+    const clipped = rows.length > MAX_TABLE_ROWS + 1;
+    const body = rows.slice(1, clipped ? MAX_TABLE_ROWS + 1 : rows.length);
+    const columns = rows.reduce((most, row) => Math.max(most, row.length), 0);
+    const table = document.createElement("table");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (let index = 0; index < columns; index += 1) {
+      const cell = document.createElement("th");
+      cell.textContent = rows[0][index] ?? "";
+      headRow.appendChild(cell);
+    }
+    head.appendChild(headRow);
+    const tbody = document.createElement("tbody");
+    for (const row of body) {
+      const line = document.createElement("tr");
+      for (let index = 0; index < columns; index += 1) {
+        const cell = document.createElement("td");
+        cell.textContent = row[index] ?? "";
+        line.appendChild(cell);
+      }
+      tbody.appendChild(line);
+    }
+    table.append(head, tbody);
+    article.appendChild(table);
+    if (clipped) {
+      const note = document.createElement("p");
+      note.className = "artifact-table-note";
+      note.textContent = `表太长，只画了前 ${MAX_TABLE_ROWS} 行，共 ${rows.length - 1} 行。完整内容看源码或下载。`;
+      article.appendChild(note);
+    }
+    return article;
+  }
+
   async function renderArtifactSource(artifact, token) {
     let text = await loadArtifactSource(artifact);
     if (token !== state.artifactRenderToken) return;
@@ -5275,6 +5385,9 @@
     pre.className = "artifact-code";
     const code = document.createElement("code");
     code.textContent = text;
+    // 聊天正文里的代码块一直有高亮,这边却是一片纯白——同一个组件接上就是了。
+    // 这份内容已经完整(不是流式),所以 settled=true,当场上色。
+    window.MiyuHighlight?.paint(code, artifactSourceLanguage(artifact), text, true);
     pre.appendChild(code);
     source.append(gutter, pre);
     elements.artifactView.replaceChildren(source);
@@ -5298,8 +5411,27 @@
       frame.className = "artifact-frame";
       frame.src = artifact.url;
       frame.title = artifact.name;
-      frame.setAttribute("sandbox", "");
+      /*
+       * 她写的页面要能动——图表、按钮、切换,不放开脚本这些全是死的。放开的同时
+       * 靠这两样把它关在箱子里:
+       *   · 不给 allow-same-origin：iframe 拿不透明源,cookie / localStorage /
+       *     父页面 DOM 一律 SecurityError。别家(Claude、ChatGPT、LibreChat)给了
+       *     same-origin,所以不得不再买个独立域名来隔离 cookie;我们不给,也就
+       *     不需要独立域。代价是 artifact 里存不住状态,刷新即归零。
+       *   · 不给 allow-popups / allow-forms / allow-top-navigation：这三个各自是
+       *     一条外带通道(window.open、表单提交、top.location),**CSP 管不了,
+       *     只有 sandbox 管得了**。LibreChat 的 CVE-2026-54025 就死在第三条上。
+       * 出站那一半由后端的 CSP 掐(见 assets.rs 的 artifact_csp)。两道各管一半:
+       * sandbox 管权限,CSP 管外泄。
+       */
+      frame.setAttribute("sandbox", "allow-scripts allow-modals");
       elements.artifactView.replaceChildren(frame);
+      return;
+    }
+    if (artifact.kind === "csv") {
+      const text = await loadArtifactSource(artifact);
+      if (token !== state.artifactRenderToken) return;
+      elements.artifactView.replaceChildren(buildArtifactTable(artifact, text));
       return;
     }
     if (artifact.kind === "markdown") {
@@ -5398,11 +5530,15 @@
     elements.artifactTypeLabel.textContent = artifactTypeLabel(artifact);
     // ?download=1 → 后端强制 attachment,markdown/pdf 也直接落盘而不是再开预览。
     elements.artifactDownloadButton.href = `${artifact.url}?download=1`;
-    elements.artifactPreviewButton.parentElement.hidden = isImage;
-    elements.artifactImageActions.hidden = !isImage;
-    elements.artifactImageExternalButton.href = isImage ? artifact.url : "";
-    elements.artifactImageZoomOutButton.disabled = !isImage || state.artifactZoom <= 0.25;
-    elements.artifactImageZoomInButton.disabled = !isImage || state.artifactZoom >= 4;
+    // 两个视图都在才需要切换器。原来这里按「是不是图片」判断,svg 一来就露馅了:
+    // 它既是图片又是文本,两个视图都有,却因为 mime 是 image/* 被整组藏掉,
+    // 源码根本点不到。判据换成「有没有得切」,和具体类型脱钩。
+    const showPicture = isImage && state.artifactMode === "preview";
+    elements.artifactPreviewButton.parentElement.hidden = !(canPreview && canSource);
+    elements.artifactImageActions.hidden = !showPicture;
+    elements.artifactImageExternalButton.href = showPicture ? artifact.url : "";
+    elements.artifactImageZoomOutButton.disabled = !showPicture || state.artifactZoom <= 0.25;
+    elements.artifactImageZoomInButton.disabled = !showPicture || state.artifactZoom >= 4;
     elements.artifactPreviewButton.hidden = !canPreview;
     elements.artifactSourceButton.hidden = !canSource;
     elements.artifactPreviewButton.classList.toggle("active", state.artifactMode === "preview");
@@ -5410,7 +5546,8 @@
     elements.artifactPreviewButton.setAttribute("aria-pressed", String(state.artifactMode === "preview"));
     elements.artifactSourceButton.setAttribute("aria-pressed", String(state.artifactMode === "source"));
     elements.artifactCopyButton.disabled = !canSource && artifact.kind === "pdf";
-    elements.artifactCopyButton.hidden = isImage;
+    // 图片没有文本可复制,但 svg 有——同样不能只看 mime。
+    elements.artifactCopyButton.hidden = isImage && !canSource;
     elements.artifactMaximizeButton.replaceChildren(makeIconSlot(state.artifactMaximized ? "minimize-2" : "maximize-2"));
     elements.artifactMaximizeButton.title = state.artifactMaximized ? "退出全屏" : "全屏显示";
     elements.artifactMaximizeButton.setAttribute("aria-label", elements.artifactMaximizeButton.title);
