@@ -511,6 +511,8 @@ pub(in crate::agent) fn derive_tool_flow(
                             name: call.function.name.clone(),
                             arguments: call.function.arguments.clone(),
                             output: String::new(),
+                            started_ms: None,
+                            finished_ms: None,
                         })
                         .collect(),
                 });
@@ -524,6 +526,10 @@ pub(in crate::agent) fn derive_tool_flow(
                     .find(|call| &call.id == call_id && call.output.is_empty())
                 {
                     call.output = chat_message_text(message).unwrap_or_default();
+                    if let Some((started, finished)) = message.tool_span_ms {
+                        call.started_ms = Some(started);
+                        call.finished_ms = Some(finished);
+                    }
                 }
             }
         }

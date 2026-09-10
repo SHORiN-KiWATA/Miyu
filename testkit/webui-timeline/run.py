@@ -14,7 +14,7 @@ Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二�
   live_collapsed     她一开口,前一条收起、总结行出现,文字形如「Worked for 1.2 s · 2 tools · 1 thought」
   err_marked         失败的那条工具签 is-failure,所在组总结行含「1 err」
   rail_sized         切断后每条时间线的细线有高度(展开态)或缩到 0(收起态)
-  persisted_groups   刷新后从 turn.tool_flow 重建,分组数与实时一致,总结行没有耗时
+  persisted_groups   刷新后从 turn.tool_flow 重建,分组数与实时一致,总结行带落库的耗时(Worked for …)
   no_times           用户消息和助手名字旁都没有时间
   toggle_off_on      设置里关掉「过程自动收起」→ 总结行藏起、全部展开;再开 → 收回
   console_clean      全程无 pageerror / console.error
@@ -139,7 +139,8 @@ def main():
             page.goto(BASE)
             page.wait_for_selector("#composerInput:not([disabled])", timeout=20000)
             page.wait_for_timeout(800)
-            page.fill("#composerInput", "跑一下时间线剧本")
+            # 用户消息里也带一个代码块:用户气泡改中性色后,里面那块深蓝要跟着换
+            page.fill("#composerInput", "跑一下时间线剧本\n\n```kdl\nbinds {\n    Mod+Return { spawn \"kitty\"; }\n}\n```")
             page.click("#sendButton")
 
             # 实时:轮询,抓「第一条切断、第二条运行中」那一刻
@@ -200,7 +201,8 @@ def main():
             again = page.evaluate(GROUPS_JS)
             report["reloaded"] = again
             al = (again or {}).get("lines") or []
-            report["persisted_groups"] = len(al) == 2 and [(l["tools"], l["thoughts"]) for l in al] == [(2, 1), (2, 1)] and all(l["static"] and not l["headHidden"] and not l["open"] for l in al) and all("Worked" not in l["summary"] and l["summary"].startswith("2 tools") for l in al)
+            # 回看的总结行也要有耗时(落库的 started_ms/finished_ms),形如「Worked for 1.2 s · 2 tools · 1 thought」
+            report["persisted_groups"] = len(al) == 2 and [(l["tools"], l["thoughts"]) for l in al] == [(2, 1), (2, 1)] and all(l["static"] and not l["headHidden"] and not l["open"] for l in al) and all(l["summary"].startswith("Worked for") and "2 tools" in l["summary"] for l in al)
             report["persisted_err"] = len(al) == 2 and al[1]["failures"] == 1 and "1 err" in al[1]["summary"]
             # 亮色主题也看一眼(用户日常用亮色)
             page.click("#sidebarThemeButton")
@@ -210,6 +212,12 @@ def main():
             page.evaluate("() => { const last = [...document.querySelectorAll('.assistant-message')].pop(); last.querySelector('.tool-card.is-failure .tool-head')?.click(); }")
             page.wait_for_timeout(600)
             page.screenshot(path=str(OUT / "05b-reloaded-light.png"))
+            page.evaluate("document.getElementById('chatScroll').scrollTop = 0")
+            page.wait_for_timeout(400)
+            page.screenshot(path=str(OUT / "05c-reloaded-light-top.png"))
+            page.evaluate("document.getElementById('chatScroll').scrollTop = 1e9")
+            page.wait_for_timeout(400)
+            page.screenshot(path=str(OUT / "05d-reloaded-light-bottom.png"))
             page.click("#sidebarThemeButton")
             page.wait_for_timeout(400)
 

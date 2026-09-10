@@ -719,7 +719,7 @@
     inner.appendChild(steps);
     wrap.appendChild(inner);
     line.append(rail, head, wrap);
-    line.miyuProc = { rail, head, summary, steps, startedAt: performance.now(), finishedAt: null, closed: false };
+    line.miyuProc = { rail, head, summary, steps, closed: false, lastAppear: 0 };
     const fit = () => procLineFit(line);
     if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(line);
     window.requestAnimationFrame(fit);
@@ -772,6 +772,15 @@
       line = procLineCreate(isStatic);
       blocks.appendChild(line);
     }
+    if (!isStatic && element.classList?.contains("tool-card")) {
+      // 快模型一口气吐几个调用时,几行同一帧出现,淡入叠成一团。按 90ms 错开,
+      // 累计封顶 360ms,再快也只是排着队出场,不会越拖越远。
+      const proc = line.miyuProc;
+      const now = performance.now();
+      const at = Math.min(Math.max(now, proc.lastAppear + 90), now + 360);
+      proc.lastAppear = at;
+      if (at > now) element.style.animationDelay = `${Math.round(at - now)}ms`;
+    }
     line.miyuProc.steps.appendChild(element);
     return line;
   }
@@ -782,7 +791,6 @@
     if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) return;
     const proc = line.miyuProc;
     proc.closed = true;
-    proc.finishedAt = performance.now();
     line.classList.remove("is-live");
     procLineRefresh(line);
     if (state.procCollapse) {
@@ -798,7 +806,17 @@
     const tools = proc.steps.querySelectorAll(":scope > .tool-card").length;
     const thoughts = proc.steps.querySelectorAll(":scope > .reasoning-block").length;
     const errs = proc.steps.querySelectorAll(":scope > .tool-card.is-failure").length;
-    const elapsed = line.classList.contains("is-static") ? "" : formatToolDuration(proc.finishedAt - proc.startedAt);
+    // 「Worked for」= 第一个工具开跑到最后一个工具跑完。实时用 performance.now,
+    // 回看用落库的 Unix 毫秒,差值同一口径,刷新前后数字一致。
+    let first = Infinity;
+    let last = -Infinity;
+    for (const card of proc.steps.querySelectorAll(":scope > .tool-card")) {
+      const timing = card.miyuTiming;
+      if (!timing || timing.startedAt == null || timing.finishedAt == null) continue;
+      first = Math.min(first, timing.startedAt);
+      last = Math.max(last, timing.finishedAt);
+    }
+    const elapsed = Number.isFinite(first) && Number.isFinite(last) ? formatToolDuration(last - first) : "";
     const parts = [];
     const strong = (text) => {
       const b = document.createElement("b");
@@ -822,7 +840,7 @@
       if (thoughts) parts.push(plain(`${thoughts} thought${thoughts > 1 ? "s" : ""}`));
       if (errs) parts.push(plain(`${errs} err${errs > 1 ? "s" : ""}`, "proc-err"));
     } else {
-      parts.push(strong(elapsed ? `Thought for ${elapsed}` : "Thought"));
+      parts.push(strong("Thought"));
     }
     proc.summary.replaceChildren();
     parts.forEach((part, index) => {
@@ -6753,7 +6771,11 @@
     const status = document.createElement("span");
     status.className = "tool-status";
     const statusText = document.createElement("span");
-    statusText.textContent = ok ? "完成" : "失败";
+    const startedMs = Number(call?.started_ms);
+    const finishedMs = Number(call?.finished_ms);
+    const hasSpan = Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs;
+    if (hasSpan) card.miyuTiming = { startedAt: startedMs, finishedAt: finishedMs };
+    statusText.textContent = ok ? (hasSpan ? formatToolDuration(finishedMs - startedMs) || "完成" : "完成") : "失败";
     status.append(makeIconSlot(ok ? "check" : "circle-alert"), statusText);
     head.append(icon, title, status, makeIconSlot("chevron-down", "tool-chevron"));
     head.addEventListener("click", () => {
@@ -7048,6 +7070,7 @@
       }
     });
     updateToolSummary(tool);
+    card.miyuTiming = tool;
     live.tools.set(toolId, tool);
     procLineAttach(live.blocks, card);
     if (isImageTool) {

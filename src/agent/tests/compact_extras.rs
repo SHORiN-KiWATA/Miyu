@@ -11,6 +11,8 @@ fn call(name: &str, arguments: &str) -> ToolFlowCall {
         name: name.to_string(),
         arguments: arguments.to_string(),
         output: "ok".to_string(),
+        started_ms: None,
+        finished_ms: None,
     }
 }
 

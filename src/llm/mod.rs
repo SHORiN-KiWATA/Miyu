@@ -37,6 +37,11 @@ pub struct ChatMessage {
     /// tail is sliced off, and reloaded fossils are replayed as stored.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub transient_context: bool,
+    /// 工具结果消息的执行起止(Unix 毫秒)。只在回合内活着,不上线、不落
+    /// 上下文——回合结束时由 `derive_tool_flow` 抄进 tool_flow 落库,WebUI
+    /// 回看时才有「Worked for 5.4 s」可算;不然刷新一下耗时就没了。
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub tool_span_ms: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +144,7 @@ impl ChatMessage {
             reasoning_content: None,
             thinking_signature: None,
             transient_context: false,
+            tool_span_ms: None,
         }
     }
 

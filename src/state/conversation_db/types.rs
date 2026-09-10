@@ -138,6 +138,11 @@ pub struct ToolFlowCall {
     /// 模型原样产出的 JSON 字符串,不解析不重排(dsh:字节保真)。
     pub arguments: String,
     pub output: String,
+    /// 执行起止(Unix 毫秒)。旧记录和中转线(工具在对面跑)没有,为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

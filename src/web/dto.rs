@@ -99,6 +99,12 @@ pub(in crate::web) struct SafeToolCall {
     /// 这次调用成没成。判定放在这里、不放前端：规则有两条，抄到 JS 里就成了
     /// 第二份真相，改一条忘另一条，同一次调用在实时和回看里会显示成不同颜色。
     pub(in crate::web) ok: bool,
+    /// 执行起止(Unix 毫秒);旧记录、中转线没有。回看时时间线的
+    /// 「Worked for 5.4 s」和每行的耗时都靠这两个数。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::web) started_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::web) finished_ms: Option<u64>,
 }
 
 /// 从落库的输出反推成败。
@@ -142,6 +148,8 @@ impl From<crate::state::ToolFlowRound> for SafeToolRound {
                     name: call.name,
                     arguments: call.arguments,
                     output: call.output,
+                    started_ms: call.started_ms,
+                    finished_ms: call.finished_ms,
                 })
                 .collect(),
         }
