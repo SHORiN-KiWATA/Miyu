@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 /// 打开连接并跑迁移。PRAGMA 套餐照 `message_history` 的成熟配方。
 pub(crate) fn open_database(db_path: &Path) -> Result<Connection> {
@@ -196,6 +196,47 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )
         .context("creating ledger schema")?;
+    }
+
+    // v2：给建于 v1、而且**一个账户都还没建**的账本补上默认账户。
+    //
+    // 「一个都没有」这个条件是要紧的：已经在用账户的人，他那套账户是照着
+    // 自己的钱包配的（可能还是外币的），旁边再堆三个用不上的空账户不是
+    // 帮忙。空账本才是 v1 留下的、真正需要补的那种。
+    //
+    // 种子清单在这里是硬写的一份拷贝，故意不去引用 `books::DEFAULT_ACCOUNTS`：
+    // 迁移是「那一刻发生过什么」的记录，以后往默认清单里加账户，不该让
+    // 这条早就跑完的迁移跟着变样。
+    //
+    // 只跑这一次，所以用户后来删掉的默认账户不会在下次启动时复活。
+    if version < 2 {
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             INSERT INTO ledger_accounts
+                 (account_id, book_id, name, kind, currency,
+                  opening_minor, archived, created_at, updated_at)
+             SELECT 'ac_' || lower(hex(randomblob(6))),
+                    book.book_id, seed.name, seed.kind, book.base_currency,
+                    0, 0,
+                    strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+             FROM ledger_books AS book
+             CROSS JOIN (
+                          SELECT '现金'     AS name, 'cash'    AS kind
+                UNION ALL SELECT '电子支付',        'ewallet'
+                UNION ALL SELECT '交通卡',          'ewallet'
+                UNION ALL SELECT '信用卡',          'credit'
+                UNION ALL SELECT '银行卡',          'bank'
+             ) AS seed
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM ledger_accounts AS have
+                 WHERE have.book_id = book.book_id
+             );
+
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )
+        .context("seeding default ledger accounts")?;
     }
     Ok(())
 }

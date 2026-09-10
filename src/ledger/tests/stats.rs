@@ -88,12 +88,9 @@ fn summary_nets_income_against_expense() {
 #[test]
 fn transfers_move_money_without_touching_income_or_expense() {
     let (_dir, db, book) = setup();
-    let cash = db
-        .create_account(&book.book_id, "现金", AccountKind::Cash, None, None)
-        .unwrap();
-    let bank = db
-        .create_account(&book.book_id, "银行卡", AccountKind::Bank, None, None)
-        .unwrap();
+    // 两个都是建账本时铺好的默认账户。
+    let cash = db.resolve_account(&book.book_id, "现金").unwrap();
+    let bank = db.resolve_account(&book.book_id, "银行卡").unwrap();
     db.add_entry(NewEntry {
         book_id: book.book_id.clone(),
         kind: EntryKind::Transfer,

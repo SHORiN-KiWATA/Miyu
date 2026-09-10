@@ -1,7 +1,7 @@
 {
   "name": "manage_ledger",
   "display_name": "账本管理",
-  "description": "Manage ledger books, accounts, categories and budgets.\nA book holds its own accounts, categories and budgets, and every total is reported in the book's currency. New books start with a set of default categories. Budgets are monthly limits in the book's currency; spending in a sub-category counts towards its parent. Entries themselves are recorded with ledger. Display details such as account type, opening balance and category icons are set in the dashboard.",
+  "description": "Manage ledger books, accounts, categories and budgets.\nA book holds its own accounts, categories and budgets, and every total is reported in the book's currency. New books start with a set of default categories and accounts, so create_category and create_account are only for what that set does not cover — and recording an entry under an unknown category name already creates that category. Budgets are monthly limits in the book's currency; spending in a sub-category counts towards its parent. Entries themselves are recorded with ledger. Display details such as account type, opening balance and category icons are set in the dashboard.",
   "parameters": {
     "type": "object",
     "properties": {

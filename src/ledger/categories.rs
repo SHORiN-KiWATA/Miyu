@@ -125,6 +125,25 @@ impl LedgerDb {
         )
     }
 
+    /// 同 [`Self::resolve_category`]，但「这本账里没有这个分类」返回 `None`
+    /// 而不是报错。记一笔时用它：没有就现建一个，比把错误甩回模型、让它
+    /// 自己想起还有 `manage_ledger` 这回事要少一整轮。
+    pub fn resolve_category_opt(
+        &self,
+        book_id: &str,
+        query: &str,
+        direction: Option<Direction>,
+    ) -> Result<Option<CategoryRecord>> {
+        let categories = self.list_categories(book_id, direction, false)?;
+        super::books::resolve_one_opt(
+            query,
+            &categories,
+            |category| category.category_id.as_str(),
+            |category| category.name.as_str(),
+            "category",
+        )
+    }
+
     pub fn create_category(
         &self,
         book_id: &str,

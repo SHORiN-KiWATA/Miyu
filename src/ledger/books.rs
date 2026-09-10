@@ -4,11 +4,28 @@
 //! 分类和预算，互不干扰。只有一本时所有操作默认落它，模型不必每次指定；
 //! 有多本而调用方没说清楚时**报错列出候选，绝不替用户猜**。
 
-use super::money::{format_amount, parse_amount, validate_currency};
+use super::money::{convert_minor, format_amount, parse_amount, parse_rate, validate_currency};
 use super::types::*;
 use super::{local_day_now, new_id, now_rfc3339, LedgerDb};
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+
+/// 新账本开箱自带的账户。记一笔时「从哪个口袋出的」是个常问项，让用户
+/// 先做一轮配置才能回答它，是把配置成本摊到了每一次记账上。
+///
+/// 都按账本目标币种建：那样余额直接用账目行上冻结的 `base_amount_minor`，
+/// 一次多余的换算都不必做。要日元卡就自己建一个，[`LedgerDb::account_balance`]
+/// 会按记账当天的汇率折给它。
+///
+/// 交通卡挂 `Ewallet` 而不是 `Other`：预付卡本来就是电子钱包的一种，
+/// 为它单开一个 `AccountKind` 得动库里的 CHECK 约束，不值当。
+const DEFAULT_ACCOUNTS: &[(&str, AccountKind)] = &[
+    ("现金", AccountKind::Cash),
+    ("电子支付", AccountKind::Ewallet),
+    ("交通卡", AccountKind::Ewallet),
+    ("信用卡", AccountKind::Credit),
+    ("银行卡", AccountKind::Bank),
+];
 
 const BOOK_COLUMNS: &str = "book_id, name, base_currency, archived, created_at, updated_at";
 const ACCOUNT_COLUMNS: &str =
@@ -54,6 +71,33 @@ pub(crate) fn resolve_one<T: Clone>(
     name_of: impl Fn(&T) -> &str,
     what: &str,
 ) -> Result<T> {
+    match resolve_one_opt(query, items, id_of, &name_of, what)? {
+        Some(hit) => Ok(hit),
+        None => {
+            let all: Vec<String> = items.iter().map(|item| name_of(item).to_string()).collect();
+            if all.is_empty() {
+                bail!("no {what} exists yet");
+            }
+            bail!(
+                "no {what} matches {query:?}; the ones that exist: {}",
+                all.join(", ")
+            )
+        }
+    }
+}
+
+/// 与 [`resolve_one`] 同一套四级匹配，但把「一个都没命中」降级成 `None`。
+///
+/// 分出这个变体，是因为「没有这个分类」和「这个名字对上了好几个分类」
+/// 该走两条路：前者可以顺手建一个，后者绝不能——在一个已经含混的名字上
+/// 再加一条，只会让下次更含混。歧义仍然是错误，文案原样保留。
+pub(crate) fn resolve_one_opt<T: Clone>(
+    query: &str,
+    items: &[T],
+    id_of: impl Fn(&T) -> &str,
+    name_of: impl Fn(&T) -> &str,
+    what: &str,
+) -> Result<Option<T>> {
     let query = query.trim();
     if query.is_empty() {
         bail!("{what} is required");
@@ -61,42 +105,35 @@ pub(crate) fn resolve_one<T: Clone>(
     let lower = query.to_lowercase();
 
     if let Some(hit) = items.iter().find(|item| id_of(item) == query) {
-        return Ok(hit.clone());
+        return Ok(Some(hit.clone()));
     }
     let by_prefix: Vec<&T> = items
         .iter()
         .filter(|item| id_of(item).starts_with(query))
         .collect();
     if by_prefix.len() == 1 {
-        return Ok(by_prefix[0].clone());
+        return Ok(Some(by_prefix[0].clone()));
     }
     let by_name: Vec<&T> = items
         .iter()
         .filter(|item| name_of(item).to_lowercase() == lower)
         .collect();
     if by_name.len() == 1 {
-        return Ok(by_name[0].clone());
+        return Ok(Some(by_name[0].clone()));
     }
     let by_contains: Vec<&T> = items
         .iter()
         .filter(|item| name_of(item).to_lowercase().contains(&lower))
         .collect();
     if by_contains.len() == 1 {
-        return Ok(by_contains[0].clone());
+        return Ok(Some(by_contains[0].clone()));
     }
 
     // 一个都没命中与命中多个是两回事，报错必须说清是哪一种。把「这是全部
     // 候选」写成「匹配了 9 条」，模型会照着去挑一个本就不存在的东西
     // （09-09 工具层测试抓到）。
     if by_contains.is_empty() {
-        let all: Vec<String> = items.iter().map(|item| name_of(item).to_string()).collect();
-        if all.is_empty() {
-            bail!("no {what} exists yet");
-        }
-        bail!(
-            "no {what} matches {query:?}; the ones that exist: {}",
-            all.join(", ")
-        );
+        return Ok(None);
     }
     let candidates: Vec<String> = by_contains
         .iter()
@@ -155,6 +192,12 @@ impl LedgerDb {
             super::categories::seed_default_categories(tx, &book.book_id)?;
             Ok(())
         })?;
+        // 账户在事务外补：`create_account` 各自开事务，套不进来。分类不同,
+        // 分类是账本的必需件，账本建好了却没有分类是个不该存在的半成品；
+        // 账户少几个只是不方便,不值得为它把账本回滚掉。
+        if let Err(error) = self.ensure_default_accounts(&book.book_id) {
+            tracing::warn!(%error, book = %book.name, "默认账户没能铺全,账本本身可用");
+        }
         Ok(book)
     }
 
@@ -248,6 +291,28 @@ impl LedgerDb {
     }
 
     // ── 账户 ────────────────────────────────────────────────
+
+    /// 给一本账补齐还缺的默认账户，已经存在同名的跳过。
+    ///
+    /// 幂等，所以既能在建账本时铺，也能对早就建好的账本补一次。用户自己
+    /// 建的账户（比如一张日元的 Suica）原样留着——这里只加，从不删也不改。
+    pub fn ensure_default_accounts(&self, book_id: &str) -> Result<usize> {
+        let book = self.get_book(book_id)?;
+        let existing: Vec<String> = self
+            .list_accounts(book_id, true)?
+            .into_iter()
+            .map(|account| account.name)
+            .collect();
+        let mut added = 0;
+        for (name, kind) in DEFAULT_ACCOUNTS {
+            if existing.iter().any(|have| have == name) {
+                continue;
+            }
+            self.create_account(book_id, name, *kind, Some(&book.base_currency), None)?;
+            added += 1;
+        }
+        Ok(added)
+    }
 
     pub fn create_account(
         &self,
@@ -361,29 +426,75 @@ impl LedgerDb {
         })
     }
 
-    /// 账户余额 = 初始余额 + 流入 − 流出，只算该账户自己币种的账目。
+    /// 账户余额 = 初始余额 + 流入 − 流出，跨币种的账**按记账当时的汇率
+    /// 折成账户自己的币种**再加减。
     ///
-    /// 跨币种的转账不在 v1 的能力范围内（那需要成对记两笔），所以这里
-    /// 只统计币种相符的行，避免把日元和人民币直接相加。
-    pub fn account_balance_minor(&self, account: &AccountRecord) -> Result<i64> {
+    /// 折算金额有三条取值路径，依次尝试：账目本币与账户同币种（直接用原
+    /// 值）、账户币种正好是账本目标币种（用账目行上冻结的
+    /// `base_amount_minor`）、两者都不是（拿记账那天的 `ledger_rates` 快照
+    /// 把 base 再折一次）。三条都是落库时或当天的快照——绝不拿今天的汇率
+    /// 去改一笔旧账的数额，这是 [`super::rates`] 定下的规矩。
+    ///
+    /// 三条路都走不通的账目不参与合计，改为计数报出来：拿一个猜的汇率把
+    /// 数字凑齐，比明说「还有 3 笔没算」要糟得多。
+    pub fn account_balance(&self, account: &AccountRecord) -> Result<AccountBalance> {
         self.with_conn(|conn| {
-            let inflow: i64 = conn.query_row(
-                "SELECT COALESCE(SUM(amount_minor), 0) FROM ledger_entries
-                 WHERE deleted_at IS NULL AND currency = ?2
-                   AND ((kind = 'income' AND account_id = ?1)
-                        OR (kind = 'transfer' AND to_account_id = ?1))",
-                params![account.account_id, account.currency],
+            let base_currency: String = conn.query_row(
+                "SELECT base_currency FROM ledger_books WHERE book_id = ?1",
+                params![account.book_id],
                 |row| row.get(0),
             )?;
-            let outflow: i64 = conn.query_row(
-                "SELECT COALESCE(SUM(amount_minor), 0) FROM ledger_entries
-                 WHERE deleted_at IS NULL AND currency = ?2
-                   AND ((kind = 'expense' AND account_id = ?1)
-                        OR (kind = 'transfer' AND account_id = ?1))",
-                params![account.account_id, account.currency],
-                |row| row.get(0),
+            let mut statement = conn.prepare(
+                "SELECT kind, amount_minor, currency, base_amount_minor, occurred_day,
+                        account_id = ?1
+                 FROM ledger_entries
+                 WHERE deleted_at IS NULL AND (account_id = ?1 OR to_account_id = ?1)",
             )?;
-            Ok(account.opening_minor + inflow - outflow)
+            let rows = statement.query_map(params![account.account_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)? != 0,
+                ))
+            })?;
+
+            let mut balance = AccountBalance {
+                minor: account.opening_minor,
+                currency: account.currency.clone(),
+                unconverted_count: 0,
+            };
+            for row in rows {
+                let (kind, amount_minor, currency, base_amount_minor, day, is_source) = row?;
+                let Some(amount) = amount_in_account_currency(
+                    conn,
+                    account,
+                    &base_currency,
+                    amount_minor,
+                    &currency,
+                    base_amount_minor,
+                    &day,
+                )?
+                else {
+                    balance.unconverted_count += 1;
+                    continue;
+                };
+                // 转账在 SQL 里两端都会命中，靠 is_source 分辨这一头是转出
+                // 还是转入；收支只会挂在 account_id 上。
+                let inflow = match kind.as_str() {
+                    "income" => true,
+                    "expense" => false,
+                    _ => !is_source,
+                };
+                if inflow {
+                    balance.minor += amount;
+                } else {
+                    balance.minor -= amount;
+                }
+            }
+            Ok(balance)
         })
     }
 
@@ -421,6 +532,60 @@ fn list_books_conn(conn: &Connection, include_archived: bool) -> Result<Vec<Book
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(params![i64::from(include_archived)], book_from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 把一笔账目的金额折成某个账户的币种，折不出来时返回 `None`。
+///
+/// 三条路径的取舍见 [`LedgerDb::account_balance`] 的文档。
+fn amount_in_account_currency(
+    conn: &Connection,
+    account: &AccountRecord,
+    base_currency: &str,
+    amount_minor: i64,
+    currency: &str,
+    base_amount_minor: Option<i64>,
+    day: &str,
+) -> Result<Option<i64>> {
+    if currency.eq_ignore_ascii_case(&account.currency) {
+        return Ok(Some(amount_minor));
+    }
+    // 换算还欠着（`rate_status = 'pending'`）的账连账本口径都还没有，
+    // 更没法折到第三种币上。补算汇率之后它会自己回到合计里。
+    let Some(base_amount_minor) = base_amount_minor else {
+        return Ok(None);
+    };
+    if account.currency.eq_ignore_ascii_case(base_currency) {
+        return Ok(Some(base_amount_minor));
+    }
+    let Some(rate) = rate_between(conn, day, base_currency, &account.currency)? else {
+        return Ok(None);
+    };
+    Ok(Some(convert_minor(
+        base_amount_minor,
+        base_currency,
+        &account.currency,
+        rate,
+    )?))
+}
+
+/// 找某一天 `from → to` 的汇率快照。反向的那条也认，取倒数——汇率本来
+/// 就是双向的，存过 JPY→CNY 就不该为 CNY→JPY 再打一次网络请求。
+fn rate_between(conn: &Connection, day: &str, from: &str, to: &str) -> Result<Option<f64>> {
+    const SQL: &str = "SELECT rate FROM ledger_rates WHERE day = ?1 AND base = ?2 AND target = ?3";
+    let direct: Option<String> = conn
+        .query_row(SQL, params![day, from, to], |row| row.get(0))
+        .optional()?;
+    if let Some(rate) = direct {
+        return Ok(Some(parse_rate(&rate)?));
+    }
+    let reverse: Option<String> = conn
+        .query_row(SQL, params![day, to, from], |row| row.get(0))
+        .optional()?;
+    match reverse {
+        // `parse_rate` 已经拦掉了零与负数，倒数不会炸。
+        Some(rate) => Ok(Some(1.0 / parse_rate(&rate)?)),
+        None => Ok(None),
+    }
 }
 
 /// 账户余额的人类可读形式，面板与工具都用它。
