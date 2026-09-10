@@ -146,6 +146,25 @@ def main():
                 page.wait_for_selector("#composerInput")
                 page.wait_for_timeout(800)
 
+            # 会话内换模型(仅本会话):stub-b(50k)→ stub-a(100k),上下文条应立刻变 100k
+            page.click("#modelButton")
+            page.wait_for_selector(".model-menu-item")
+            items = page.query_selector_all(".model-menu-item")
+            for item in items:
+                text = item.inner_text()
+                if "stub-a" in text or "stub-b" in text:
+                    item.click()  # 勾上 a、取消 b
+                    page.wait_for_timeout(150)
+            page.click(".model-confirm")
+            page.wait_for_timeout(1800)
+            ctx4 = page.text_content("#contextNumbers")
+            report["ctx_text_after_model_switch"] = ctx4
+            report["ctx_after_model_switch"] = "100" in (ctx4 or "")
+            api("PUT", f"/api/sessions/{session_id}/models", {"models": [{"provider_id": "stub", "model": "stub-b"}]})
+            page.reload()
+            page.wait_for_selector("#composerInput")
+            page.wait_for_timeout(1200)
+
             # 按钮偏移:人为撑高 dock(模拟后台任务条出现),看内联 bottom 是否跟上
             page.wait_for_selector("#composerInput")
             page.evaluate("""() => {
@@ -251,10 +270,10 @@ def main():
                 except subprocess.TimeoutExpired:
                     p.kill()
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    keys = ["ctx_after_reload", "ctx_after_settings", "enter_newline", "ctrl_enter_sends", "usage_stacked", "jump_offset_synced", "autoscroll_kept"]
+    keys = ["ctx_after_reload", "ctx_after_settings", "ctx_after_model_switch", "enter_newline", "ctrl_enter_sends", "usage_stacked", "jump_offset_synced", "autoscroll_kept"]
     for k in keys:
         print(f"{TAG:4} {k:20} {report.get(k)}")
-    print("details:", json.dumps({k: report.get(k) for k in ["ctx_text_initial", "ctx_text_after_reload", "ctx_text_after_settings", "jump_offset", "autoscroll", "usage_layout", "enter_value"]}, ensure_ascii=False))
+    print("details:", json.dumps({k: report.get(k) for k in ["ctx_text_initial", "ctx_text_after_reload", "ctx_text_after_settings", "ctx_text_after_model_switch", "jump_offset", "autoscroll", "usage_layout", "enter_value"]}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -63,6 +63,11 @@ class Repl:
                                      env=ENV, cwd=str(HOME), close_fds=True, preexec_fn=os.setsid)
         os.close(slave)
         self.raw = bytearray()
+        # 边收边喂给一个 pyte 屏幕:光标位置查询(ESC[6n)按真实光标应答。
+        # 固定答 1;1 会让「挂起活动区 → println → 按光标位置重新挂回」这类
+        # 流程在测具里错位,而真终端里是对的。
+        self.live_screen = pyte.Screen(COLS, ROWS)
+        self.live_stream = pyte.ByteStream(self.live_screen)
         self._stop = False
         threading.Thread(target=self._pump, daemon=True).start()
 
@@ -78,9 +83,15 @@ class Repl:
             self.raw += chunk
             self.log.write(chunk)
             self.log.flush()
+            try:
+                self.live_stream.feed(chunk)
+            except Exception:
+                pass
             buf = (buf + chunk)[-64:]
             if b"\x1b[6n" in buf:
-                os.write(self.master, b"\x1b[1;1R")
+                row = self.live_screen.cursor.y + 1
+                col = self.live_screen.cursor.x + 1
+                os.write(self.master, f"\x1b[{row};{col}R".encode())
                 buf = buf.replace(b"\x1b[6n", b"")
             if b"\x1b[c" in buf or b"\x1b[0c" in buf:
                 os.write(self.master, b"\x1b[?6c")

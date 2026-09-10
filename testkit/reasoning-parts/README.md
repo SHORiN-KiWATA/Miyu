@@ -24,3 +24,17 @@ MODE=seq        BIN=target/release/miyu python3 testkit/reasoning-parts/repro_op
 
 产物在 `~/.cache/miyu-wrap-repro-openai/<MODE>/`:`raw.bin`(PTY 原始字节)、`screen.txt`。
 桩(`stub_reasoning.py`)另有 `long` / `job` 两种剧本,供 `testkit/webui-fixes` 用。
+
+## `/models` 结果行位置(repl_models_probe.py)
+
+```sh
+BIN=target/release/miyu python3 testkit/reasoning-parts/repl_models_probe.py
+```
+
+敲 `/models stub-model` 与 `/models default`,断言两条结果行都独占一行、在输入框之上。
+修前:「当前会话已恢复跟随全局」被画在输入框那一行上(`┃ 1u当前会话已恢复…`),
+「当前会话模型: …」整个被活动区盖掉;修后两条都在正文区、顺序正确。
+
+**PTY 夹具答光标位置要按真实光标答**(`Repl` 边收边喂 pyte,ESC[6n 回当前坐标):
+固定答 `1;1` 会让「挂起活动区 → println → 按光标重新挂回」这类流程在测具里错位,
+真终端里却是对的——旧的 repl-smoke/claude-code 夹具就是固定答 1;1。

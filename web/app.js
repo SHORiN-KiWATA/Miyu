@@ -8676,6 +8676,8 @@
       state.modelSelectionSubmitting = false;
       closeModelMenu();
       setSessionModelOverride(sessionId, payload?.model_override);
+      // 换了模型池,窗口大小也跟着换;不拉的话上下文条要到跑完一轮才纠正。
+      refreshSessionContext(sessionId);
       showToast(follow ? "本会话已恢复跟随全局" : "本会话模型已更新（下一轮生效）");
     } catch (error) {
       state.modelMenuError = error.message || "模型设置未保存";

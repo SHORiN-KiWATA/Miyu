@@ -605,12 +605,18 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     // Switches this session's pinned model; the change takes
                     // effect from the next turn without a daemon reload.
                     let argument = command_args.trim();
+                    // 选择器与它的结果行都是直接往 stdout 打的(println):活动区
+                    // 还挂着时它们会落在输入框下面、活动区也不知道多了几行,
+                    // 于是「已恢复跟随全局」孤零零留在输入框底下。先收起活动区,
+                    // 打完再按真实光标位置重新挂回去。
+                    synchronized_terminal_update(CursorAfterUpdate::Shown, || live_repl.suspend())?;
                     let result = run_models_for_session(
                         paths,
                         parse_models_argument(argument),
                         Some(&active_session_id),
                     )
                     .await;
+                    synchronized_terminal_update(CursorAfterUpdate::Shown, || live_repl.resume())?;
                     if let Err(error) = result {
                         repl_note(&mut live_repl, &format!("\x1b[31m{error:#}\x1b[0m\n"))?;
                         continue;
