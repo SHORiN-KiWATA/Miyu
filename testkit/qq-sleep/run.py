@@ -170,6 +170,18 @@ def main():
         print(f"{'✓' if status == 200 else '✗'} PUT 清空 → {status}")
         time.sleep(1.5)
         results["awake_guest_group_at"] = expect(ws, "醒来·游客群@", g("在吗", GUEST), True, wait=20)
+        # 反向:醒着 → 热改成睡眠 → 立刻生效,不重启 daemon
+        again = json.loads(json.dumps(cfg["config"]))
+        again["platforms"]["qq"]["sleep_hours"] = sleep_hours
+        status, body = api("PUT", "/api/config", {"config": again, "prompts": cfg["prompts"]})
+        results["put_sleep_again_ok"] = status == 200
+        time.sleep(1.5)
+        results["hot_sleep_guest_group_at"] = expect(ws, "热改睡眠·游客群@", g("在吗", GUEST), False)
+        results["hot_sleep_admin_private"] = expect(ws, "热改睡眠·管理员私聊", p("在吗", ADMIN), True, wait=20)
+        good = json.loads(json.dumps(cfg["config"]))
+        good["platforms"]["qq"]["sleep_hours"] = ""
+        api("PUT", "/api/config", {"config": good, "prompts": cfg["prompts"]})
+        time.sleep(1.0)
 
         from playwright.sync_api import sync_playwright
         with sync_playwright() as pw:
