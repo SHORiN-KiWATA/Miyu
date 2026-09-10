@@ -291,6 +291,32 @@
     inviteCreate: document.getElementById("inviteCreate"),
     inviteFresh: document.getElementById("inviteFresh"),
     inviteRows: document.getElementById("inviteRows"),
+    personaList: document.getElementById("personaList"),
+    personaCreate: document.getElementById("personaCreate"),
+    oobe: document.getElementById("oobe"),
+    oobeSteps: document.getElementById("oobeSteps"),
+    oobeSkip: document.getElementById("oobeSkip"),
+    oobePanes: document.getElementById("oobePanes"),
+    oobePersonaForm: document.getElementById("oobePersonaForm"),
+    oobeAvatarInput: document.getElementById("oobeAvatarInput"),
+    oobeAvatarPreview: document.getElementById("oobeAvatarPreview"),
+    oobeName: document.getElementById("oobeName"),
+    oobeDesc: document.getElementById("oobeDesc"),
+    oobeTemplates: document.getElementById("oobeTemplates"),
+    oobePrompt: document.getElementById("oobePrompt"),
+    oobeBoardInput: document.getElementById("oobeBoardInput"),
+    oobeBoardPreview: document.getElementById("oobeBoardPreview"),
+    oobeBoardHint: document.getElementById("oobeBoardHint"),
+    oobeMemory: document.getElementById("oobeMemory"),
+    oobePlugins: document.getElementById("oobePlugins"),
+    oobeProfile: document.getElementById("oobeProfile"),
+    oobeDoneAvatar: document.getElementById("oobeDoneAvatar"),
+    oobeDoneTitle: document.getElementById("oobeDoneTitle"),
+    oobeDoneText: document.getElementById("oobeDoneText"),
+    oobeError: document.getElementById("oobeError"),
+    oobeBack: document.getElementById("oobeBack"),
+    oobeNext: document.getElementById("oobeNext"),
+    oobeNextLabel: document.getElementById("oobeNextLabel"),
     accountRows: document.getElementById("accountRows"),
     loginError: document.getElementById("loginError"),
     loginSubmit: document.getElementById("loginSubmit"),
@@ -5796,6 +5822,11 @@
       state.nearBottom = true;
       state.followOutput = true;
       elements.jumpBottomButton.hidden = true;
+      // 先同步钉到底:replaceChildren 之后 scrollTop 被钳成 0,只等下一帧再滚
+      // 的话会画出一帧顶部——手机上每轮结束整段重建都闪一下(09-10 沙盒实测
+      // 采样到 scrollTop 291→0→291)。rAF 那次是布局稳定后的最终校正。
+      armProgrammaticScroll();
+      elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
       window.requestAnimationFrame(() => {
         armProgrammaticScroll();
         elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
@@ -6248,11 +6279,40 @@
     live.currentText = null;
   }
 
+  /// 流式渲染时把没闭合的行内标记先补上:模型正在输出 `` `sudo pacman -Syu` ``,
+  /// 闭合反引号没到之前整段按普通文字排版,一到就换成代码样式——每次这么
+  /// 一换,那一行前后的字全部重排,看起来就是「字在跳」(09-10 沙盒逐帧取证)。
+  /// 只补三样:未闭合的围栏代码块、行内反引号、`**` 粗体;单个 `*`/`_` 与列表
+  /// 和数学冲突,不碰。回合结束后按落库原文重画,这里的补丁不进任何存档。
+  function stabilizeStreamingMarkdown(raw) {
+    const text = String(raw || "");
+    if (!text) return text;
+    const lines = text.split("\n");
+    let fenceOpen = false;
+    let tailStart = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenceOpen = !fenceOpen;
+        // 围栏一关,尾巴从它后面算:围栏里的反引号不参与行内配对
+        if (!fenceOpen) tailStart = index + 1;
+      } else if (!fenceOpen && !line.trim()) tailStart = index + 1;
+    }
+    if (fenceOpen) return `${text}\n\`\`\``;
+    const tail = lines.slice(tailStart).join("\n");
+    let patched = text;
+    const backticks = (tail.match(/`/g) || []).length;
+    if (backticks % 2 === 1) patched += "`";
+    const bolds = (tail.match(/\*\*/g) || []).length;
+    if (bolds % 2 === 1) patched += "**";
+    return patched;
+  }
+
   function scheduleMarkdownRender(block) {
     if (block.renderFrame) return;
     block.renderFrame = window.requestAnimationFrame(() => {
       block.renderFrame = null;
-      renderMarkdown(block.element, block.raw);
+      renderMarkdown(block.element, stabilizeStreamingMarkdown(block.raw));
       contentAdded(block.element);
     });
   }
@@ -6277,7 +6337,7 @@
     live.assistantText += text;
     live.copyButton.hidden = !live.assistantText.trim();
     if (startsText) {
-      renderMarkdown(live.currentText.element, live.currentText.raw);
+      renderMarkdown(live.currentText.element, stabilizeStreamingMarkdown(live.currentText.raw));
       promoteTypingIndicator(live);
     } else {
       scheduleMarkdownRender(live.currentText);
@@ -8452,6 +8512,8 @@
 
   function showBlockedState(unauthorized, message = "") {
     state.blocked = true;
+    document.body.classList.toggle("is-login", Boolean(unauthorized));
+    document.body.classList.toggle("is-blocked", true);
     state.viewRunningTurnId = null;
     clearViewSyncTimer();
     disposeAllLiveRuns();
@@ -8500,6 +8562,7 @@
 
   function applyBootstrap(snapshot) {
     state.blocked = false;
+    document.body.classList.remove("is-login", "is-blocked");
     clearViewSyncTimer();
     disposeAllLiveRuns();
     state.bootId = String(snapshot?.boot_id || "");
@@ -8512,6 +8575,7 @@
       state.capabilities = snapshot?.capabilities && typeof snapshot.capabilities === "object" ? snapshot.capabilities : {};
     state.account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
     applyRoleVisibility();
+    if (state.account?.oobe_pending && !oobeState.open) window.setTimeout(() => openOobe({ reason: "first" }), 350);
     state.sessions = Array.isArray(snapshot?.sessions) ? snapshot.sessions : [];
     state.currentSessionId = typeof snapshot?.current_session_id === "string" && snapshot.current_session_id ? snapshot.current_session_id : null;
     state.sessionMenuFor = null;
@@ -8626,6 +8690,7 @@
     const multiUser = Boolean(state.capabilities?.multi_user);
     for (const element of document.querySelectorAll("[data-admin-only]")) element.hidden = !admin;
     for (const element of document.querySelectorAll("[data-multi-user-only]")) element.hidden = !multiUser;
+    for (const element of document.querySelectorAll("[data-member-only]")) element.hidden = admin || !multiUser;
     if (!admin && consoleIsOpen() && isAdminOnlyPanel(state.consolePanel)) setConsolePanel("usage");
   }
 
@@ -8664,7 +8729,7 @@
     };
     if (!invite) return fail("请输入邀请码", elements.registerInvite);
     if (!username) return fail("请输入用户名", elements.registerUsername);
-    if (password.length < 6) return fail("密码至少 6 位", elements.registerPassword);
+    if (!password) return fail("请输入密码", elements.registerPassword);
     elements.registerError.hidden = true;
     setRegisterSubmitting(true);
     try {
@@ -8675,10 +8740,6 @@
       elements.registerPassword.value = "";
       elements.registerInvite.value = "";
       await loadBootstrap();
-      if (!state.blocked) {
-        consoleOpen("account");
-        showToast("欢迎!先在这里写下希望她如何认知你,也可以直接返回聊天。", "info");
-      }
     } catch (error) {
       fail(error.message || "注册失败", elements.registerInvite);
     } finally {
@@ -8866,7 +8927,8 @@
           // 之后来的新回合就不会把回执顶下去。
           anchorTurnId: commandAnchorTurnId(),
           // /pop、/compact 这类要重排上下文的命令不能插在运行中的回合上。
-          isRunning: () => [...state.liveRuns.values()].some((entry) => entry && !entry.ended),
+          // 只看当前查看的会话:别的会话在跑不该挡这里的 /reset /compact /pop(09-10 沙盒实测)
+          isRunning: () => conversationRunning(),
           // /pop 无参数时的轮次多选器。
           openPopPicker: () => openPopPicker(),
         });
@@ -9745,7 +9807,10 @@
     } catch (_) {
       // 档案读不到就留空,保存时再报
     }
-    if (!isAdmin()) return;
+    if (!isAdmin()) {
+      loadPersonaCard();
+      return;
+    }
     elements.inviteFresh.hidden = true;
     try {
       const [accounts, invitesResponse, usageResponse] = await Promise.all([
@@ -9831,7 +9896,7 @@
       reset.className = "secondary-button acct-row-action";
       reset.textContent = "重设密码";
       reset.addEventListener("click", () => {
-        const password = window.prompt(`给 ${account.username} 设一个新密码(至少 6 位):`);
+        const password = window.prompt(`给 ${account.username} 设一个新密码:`);
         if (password == null) return;
         patchAccount(account.id, { password }, reset);
       });
@@ -9899,6 +9964,369 @@
       showAccountError(error.message || "保存失败");
     } finally {
       elements.accountSave.disabled = false;
+    }
+  }
+
+  /* ── 欢迎引导 / 成员人格(阶段 8) ── */
+  const OOBE_TEMPLATES = [
+    { label: "温柔陪伴", prompt: "你是{name},一个温柔、有耐心的伙伴。说话自然,像朋友聊天,不用敬语也不油腻。先听懂对方在说什么,再给具体的回应;对方情绪低落时先接住情绪,再谈办法。不要长篇大论,能一句话说清就一句话。" },
+    { label: "直白搭档", prompt: "你是{name},一个说话直接、有主见的搭档。有问题直接指出,给判断不给套话;需要取舍时先说你的选择和理由。语气随意,可以开玩笑,但不敷衍。" },
+    { label: "专业顾问", prompt: "你是{name},一位专业、克制的顾问。回答先给结论,再给依据;不确定就说不确定,并说明怎么核实。用词准确,不堆形容词,列表只在确实并列时用。" },
+    { label: "自己写", prompt: "" },
+  ];
+  const oobeState = { open: false, step: 1, mode: "private", editing: null, avatarFile: null, boardFile: null, plugins: [], busy: false, reason: "first" };
+
+  function oobeShowError(message) {
+    elements.oobeError.textContent = message || "";
+    elements.oobeError.hidden = !message;
+  }
+
+  function oobeSetStep(step) {
+    oobeState.step = step;
+    for (const pane of elements.oobePanes.querySelectorAll(".oobe-pane")) {
+      const active = Number(pane.dataset.oobeStep) === step;
+      pane.classList.toggle("is-active", active);
+      if (active) {
+        pane.style.animation = "none";
+        void pane.offsetWidth; // 重新触发入场动画
+        pane.style.animation = "";
+      }
+    }
+    for (const item of elements.oobeSteps.querySelectorAll("li")) {
+      const n = Number(item.dataset.step);
+      item.classList.toggle("on", n === step);
+      item.classList.toggle("done", n < step);
+    }
+    const last = step === 3;
+    elements.oobeBack.hidden = step === 1 || step === 4;
+    elements.oobeNext.hidden = step === 4;
+    elements.oobeSkip.hidden = step === 4 || oobeState.reason !== "first";
+    elements.oobeNextLabel.textContent = last ? (oobeState.editing ? "保存" : "开始聊天") : "下一步";
+    oobeShowError("");
+    if (step === 1) window.requestAnimationFrame(() => elements.oobeName.focus());
+    if (step === 3) window.requestAnimationFrame(() => elements.oobeProfile.focus());
+  }
+
+  function oobeSetMode(mode) {
+    oobeState.mode = mode;
+    for (const option of elements.oobe.querySelectorAll(".oobe-option")) {
+      const on = option.dataset.personaMode === mode;
+      option.classList.toggle("is-on", on);
+      option.setAttribute("aria-checked", on ? "true" : "false");
+    }
+    elements.oobePersonaForm.hidden = mode !== "private";
+  }
+
+  function oobeRenderTemplates() {
+    elements.oobeTemplates.replaceChildren();
+    for (const template of OOBE_TEMPLATES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = template.label;
+      button.addEventListener("click", () => {
+        for (const other of elements.oobeTemplates.children) other.classList.remove("is-on");
+        button.classList.add("is-on");
+        if (template.prompt) {
+          elements.oobePrompt.value = template.prompt.replaceAll("{name}", elements.oobeName.value.trim() || "她");
+        } else {
+          elements.oobePrompt.value = "";
+          elements.oobePrompt.focus();
+        }
+      });
+      elements.oobeTemplates.appendChild(button);
+    }
+  }
+
+  function oobeRenderPlugins(options, enabled) {
+    elements.oobePlugins.replaceChildren();
+    const on = new Set(enabled || options.map((option) => option.id));
+    for (const option of options) {
+      const label = document.createElement("label");
+      label.className = "oobe-plugin";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = option.id;
+      input.checked = on.has(option.id);
+      const text = document.createElement("span");
+      const title = document.createElement("b");
+      title.textContent = option.label || option.id;
+      text.appendChild(title);
+      text.append(option.hint || "");
+      label.append(input, text);
+      elements.oobePlugins.appendChild(label);
+    }
+    if (!options.length) elements.oobePlugins.innerHTML = `<p class="u-hint">管理员没有放行任何插件;她只有核心能力。</p>`;
+  }
+
+  function oobeSelectedPlugins() {
+    return [...elements.oobePlugins.querySelectorAll("input:checked")].map((input) => input.value);
+  }
+
+  function previewImageFile(file, image) {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    image.onload = () => URL.revokeObjectURL(url);
+    image.src = url;
+    image.hidden = false;
+  }
+
+  /// reason: first(注册后)/create(账号页新建)/edit(改一个已有的)
+  async function openOobe({ reason = "first", persona = null } = {}) {
+    if (oobeState.open || isAdmin()) return;
+    oobeState.open = true;
+    oobeState.reason = reason;
+    oobeState.editing = persona ? persona.slug : null;
+    oobeState.avatarFile = null;
+    oobeState.boardFile = null;
+    elements.oobe.hidden = false;
+    document.body.classList.add("is-oobe");
+    elements.oobeName.value = persona?.name || "";
+    elements.oobeDesc.value = persona?.description || "";
+    elements.oobePrompt.value = "";
+    elements.oobeAvatarPreview.hidden = true;
+    elements.oobeAvatarPreview.removeAttribute("src");
+    elements.oobeBoardPreview.hidden = true;
+    elements.oobeBoardPreview.removeAttribute("src");
+    elements.oobeMemory.checked = persona ? persona.memory !== false : true;
+    elements.oobeProfile.value = "";
+    oobeRenderTemplates();
+    oobeSetMode(reason === "first" ? "private" : "private");
+    elements.oobe.querySelector(".oobe-choice").hidden = reason !== "first";
+    let options = [];
+    try {
+      const data = await apiRequest("/api/account/personas").then((response) => response.json());
+      options = data.plugins || [];
+      elements.oobeProfile.value = data.prompt || "";
+      if (data.member_personas === false && reason !== "first") {
+        showToast("管理员关闭了成员自建人格", "error");
+        closeOobe();
+        return;
+      }
+      if (data.member_personas === false) oobeSetMode("shared");
+      if (persona) {
+        elements.oobePrompt.value = persona.prompt || "";
+        if (persona.avatar_url) { elements.oobeAvatarPreview.src = `${persona.avatar_url}&v=${Date.now()}`; elements.oobeAvatarPreview.hidden = false; }
+        if (persona.board_image_url) { elements.oobeBoardPreview.src = `${persona.board_image_url}&v=${Date.now()}`; elements.oobeBoardPreview.hidden = false; }
+      }
+    } catch (error) {
+      oobeShowError(error.message || "载入失败");
+    }
+    oobeRenderPlugins(options, persona ? persona.plugins : null);
+    oobeSetStep(1);
+  }
+
+  function closeOobe() {
+    oobeState.open = false;
+    elements.oobe.hidden = true;
+    document.body.classList.remove("is-oobe");
+  }
+
+  async function uploadPersonaImage(slug, file, board) {
+    if (!file) return;
+    await apiRequest(`/api/account/personas/${encodeURIComponent(slug)}/image${board ? "?board=1" : ""}`, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  }
+
+  async function oobeFinish() {
+    if (oobeState.busy) return;
+    oobeState.busy = true;
+    elements.oobeNext.disabled = true;
+    elements.oobeNext.classList.add("is-loading");
+    try {
+      let slug = null;
+      let displayName = "Miyu";
+      if (oobeState.mode === "private") {
+        const name = elements.oobeName.value.trim();
+        const prompt = elements.oobePrompt.value.trim();
+        if (!name) { oobeSetStep(1); throw new Error("给她起个名字"); }
+        if (!prompt) { oobeSetStep(1); throw new Error("写一段设定,或点一个模板"); }
+        const body = {
+          name, prompt,
+          description: elements.oobeDesc.value.trim(),
+          memory: elements.oobeMemory.checked,
+          plugins: oobeSelectedPlugins(),
+          activate: true,
+        };
+        let persona;
+        if (oobeState.editing) {
+          const response = await apiRequest(`/api/account/personas/${encodeURIComponent(oobeState.editing)}`, { method: "PUT", body: JSON.stringify(body) });
+          persona = (await response.json()).persona;
+        } else {
+          const response = await apiRequest("/api/account/personas", { method: "POST", body: JSON.stringify(body) });
+          persona = (await response.json()).persona;
+        }
+        slug = persona.slug;
+        displayName = persona.name;
+        await uploadPersonaImage(slug, oobeState.avatarFile, false);
+        await uploadPersonaImage(slug, oobeState.boardFile, true);
+      }
+      const profile = elements.oobeProfile.value;
+      await apiRequest("/api/account", { method: "PATCH", body: JSON.stringify({ profile }) });
+      await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug, oobe_done: true }) });
+      accountState.profile = profile;
+      elements.oobeDoneTitle.textContent = oobeState.editing ? `${displayName} 已更新` : `${displayName} 准备好了`;
+      elements.oobeDoneText.textContent = oobeState.mode === "private"
+        ? "新会话会用这个人格。想改设定、换头像,随时在控制台的账号页里。"
+        : "你会和大家共用 Miyu;想要自己的人格,随时在账号页里创建。";
+      const avatar = oobeState.avatarFile ? URL.createObjectURL(oobeState.avatarFile) : (slug ? `/api/persona/avatar?scope=${encodeURIComponent(slug)}` : "/assets/miyu-logo.png");
+      elements.oobeDoneAvatar.onerror = () => { elements.oobeDoneAvatar.hidden = true; };
+      elements.oobeDoneAvatar.src = avatar;
+      elements.oobeDoneAvatar.hidden = false;
+      oobeSetStep(4);
+      await loadBootstrap();
+      window.setTimeout(() => {
+        closeOobe();
+        if (consoleIsOpen()) loadAccountPanel();
+        else if (state.sessions.length) focusComposerIfDesktop();
+      }, 1400);
+    } catch (error) {
+      oobeShowError(error.message || "保存失败");
+    } finally {
+      oobeState.busy = false;
+      elements.oobeNext.disabled = false;
+      elements.oobeNext.classList.remove("is-loading");
+    }
+  }
+
+  function bindOobeEvents() {
+    for (const option of elements.oobe.querySelectorAll(".oobe-option")) {
+      option.addEventListener("click", () => oobeSetMode(option.dataset.personaMode));
+    }
+    elements.oobeAvatarInput.addEventListener("change", () => {
+      oobeState.avatarFile = elements.oobeAvatarInput.files?.[0] || null;
+      previewImageFile(oobeState.avatarFile, elements.oobeAvatarPreview);
+    });
+    elements.oobeBoardInput.addEventListener("change", () => {
+      oobeState.boardFile = elements.oobeBoardInput.files?.[0] || null;
+      previewImageFile(oobeState.boardFile, elements.oobeBoardPreview);
+    });
+    elements.oobeName.addEventListener("input", () => {
+      const on = elements.oobeTemplates.querySelector("button.is-on");
+      const template = on ? OOBE_TEMPLATES[[...elements.oobeTemplates.children].indexOf(on)] : null;
+      if (template?.prompt) elements.oobePrompt.value = template.prompt.replaceAll("{name}", elements.oobeName.value.trim() || "她");
+    });
+    elements.oobeBack.addEventListener("click", () => oobeSetStep(Math.max(1, oobeState.step - 1)));
+    elements.oobeNext.addEventListener("click", () => {
+      if (oobeState.step === 1 && oobeState.mode === "private") {
+        if (!elements.oobeName.value.trim()) return oobeShowError("给她起个名字");
+        if (!elements.oobePrompt.value.trim()) return oobeShowError("写一段设定,或点一个模板");
+      }
+      if (oobeState.step === 1 && oobeState.mode === "shared") return oobeSetStep(3);
+      if (oobeState.step < 3) return oobeSetStep(oobeState.step + 1);
+      oobeFinish();
+    });
+    elements.oobeSkip.addEventListener("click", async () => {
+      try {
+        await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug: null, oobe_done: true }) });
+      } catch (_) {}
+      closeOobe();
+      showToast("随时可以在控制台的账号页里创建自己的人格", "info");
+    });
+  }
+
+  async function loadPersonaCard() {
+    if (!elements.personaList) return;
+    try {
+      const data = await apiRequest("/api/account/personas").then((response) => response.json());
+      renderPersonaList(data);
+    } catch (error) {
+      elements.personaList.innerHTML = `<p class="u-hint">载入失败:${escapeText(error.message || error)}</p>`;
+    }
+  }
+
+  function escapeText(value) {
+    const span = document.createElement("span");
+    span.textContent = String(value);
+    return span.innerHTML;
+  }
+
+  function renderPersonaList(data) {
+    const list = elements.personaList;
+    list.replaceChildren();
+    elements.personaCreate.hidden = data.member_personas === false;
+    const rows = [{ slug: null, name: "Miyu", description: "管理员发布的共享人格", shared: true }, ...(data.personas || [])];
+    for (const persona of rows) {
+      const row = document.createElement("div");
+      row.className = "persona-row";
+      const active = (data.active || null) === (persona.slug || null);
+      row.classList.toggle("is-active", active);
+      if (persona.avatar_url || persona.shared) {
+        const image = document.createElement("img");
+        image.src = persona.shared ? "/assets/miyu-logo.png" : `${persona.avatar_url}&v=${Date.now()}`;
+        image.alt = "";
+        row.appendChild(image);
+      } else {
+        const initial = document.createElement("div");
+        initial.className = "persona-initial";
+        initial.textContent = String(persona.name || "?").slice(0, 1);
+        row.appendChild(initial);
+      }
+      const text = document.createElement("div");
+      const title = document.createElement("b");
+      title.textContent = persona.name + (active ? "(当前)" : "");
+      const sub = document.createElement("small");
+      sub.textContent = persona.description || (persona.shared ? "" : `记忆${persona.memory ? "开" : "关"} · ${(persona.plugins || []).length} 个插件`);
+      text.append(title, sub);
+      row.appendChild(text);
+      const actions = document.createElement("div");
+      actions.className = "persona-row-actions";
+      if (!active) {
+        const use = document.createElement("button");
+        use.type = "button";
+        use.className = "secondary-button acct-row-action";
+        use.textContent = "使用";
+        use.addEventListener("click", async () => {
+          use.disabled = true;
+          try {
+            await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug: persona.slug, oobe_done: true }) });
+            await loadBootstrap();
+            loadPersonaCard();
+            showToast(`新会话将使用 ${persona.name}`, "success");
+          } catch (error) {
+            showToast(error.message || "切换失败", "error");
+            use.disabled = false;
+          }
+        });
+        actions.appendChild(use);
+      }
+      if (!persona.shared) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "secondary-button acct-row-action";
+        edit.textContent = "编辑";
+        edit.addEventListener("click", async () => {
+          try {
+            const detail = await apiRequest("/api/account/personas").then((response) => response.json());
+            const full = (detail.personas || []).find((item) => item.slug === persona.slug) || persona;
+            // 提示词不在列表里:按 slug 再取一次文件内容
+            const promptResponse = await apiRequest(`/api/account/personas/${encodeURIComponent(persona.slug)}/prompt`);
+            full.prompt = (await promptResponse.json()).prompt || "";
+            openOobe({ reason: "edit", persona: full });
+          } catch (error) {
+            showToast(error.message || "载入失败", "error");
+          }
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary-button acct-row-action";
+        remove.textContent = "删除";
+        remove.addEventListener("click", async () => {
+          if (!window.confirm(`删除人格「${persona.name}」?它的记忆一起删,会话保留。`)) return;
+          try {
+            await apiRequest(`/api/account/personas/${encodeURIComponent(persona.slug)}`, { method: "DELETE" });
+            await loadBootstrap();
+            loadPersonaCard();
+          } catch (error) {
+            showToast(error.message || "删除失败", "error");
+          }
+        });
+        actions.append(edit, remove);
+      }
+      row.appendChild(actions);
+      list.appendChild(row);
     }
   }
 
@@ -10515,6 +10943,8 @@
     elements.accountSave.addEventListener("click", saveAccount);
     elements.accountLogout.addEventListener("click", logout);
     elements.inviteCreate.addEventListener("click", createInvite);
+    elements.personaCreate.addEventListener("click", () => openOobe({ reason: "create" }));
+    bindOobeEvents();
     elements.newChatButton.addEventListener("click", requestNewConversation);
     elements.retryBootstrapButton.addEventListener("click", loadBootstrap);
     elements.resetConfirmButton.addEventListener("click", resetConversation);

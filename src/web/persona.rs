@@ -45,14 +45,26 @@ pub(in crate::web) async fn persona_avatar(
     headers: HeaderMap,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let (config, prompts) = {
         let manager = state.manager.lock().unwrap();
         let prompts =
             read_prompt_documents(&manager.config, &state.paths).map_err(ApiError::internal)?;
         (manager.config.clone(), prompts)
     };
-    let path = if let Some(path) = query.get("path").filter(|p| !p.is_empty()) {
+    let path = if let Some(scope) = query.get("scope").filter(|s| !s.is_empty()) {
+        // 成员私有人格的图:只给本人
+        let persona = (!identity.admin)
+            .then(|| member_persona::persona_for_scope(&state.paths, &identity.username, scope))
+            .flatten()
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona not found"))?;
+        let path = if query.contains_key("board") {
+            persona.board_path()
+        } else {
+            persona.avatar_path()
+        };
+        path.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona avatar not found"))?
+    } else if let Some(path) = query.get("path").filter(|p| !p.is_empty()) {
         managed_persona_asset_path(&state.paths, path).ok_or_else(|| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -109,6 +121,39 @@ pub(in crate::web) async fn persona_avatar(
         .headers_mut()
         .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(response)
+}
+
+/// 成员当前私有人格的身份卡;没有就 None(用共享 Miyu 的)。
+pub(in crate::web) fn member_persona_identity(
+    paths: &MiyuPaths,
+    identity: &WebIdentity,
+) -> Option<PersonaIdentity> {
+    if identity.admin || identity.username.is_empty() {
+        return None;
+    }
+    let persona = member_persona::active_persona(paths, &identity.username)?;
+    let scope = persona.scope();
+    Some(PersonaIdentity {
+        name: persona.meta.name.clone(),
+        avatar_url: persona
+            .avatar_path()
+            .map(|_| format!("/api/persona/avatar?scope={scope}")),
+        board_image_url: persona
+            .board_path()
+            .map(|_| format!("/api/persona/avatar?scope={scope}&board=1")),
+        board_title: if persona.meta.board_title.trim().is_empty() {
+            DEFAULT_BOARD_TITLE.to_string()
+        } else {
+            persona.meta.board_title.clone()
+        },
+        board_subtitle: if persona.meta.board_subtitle.trim().is_empty() {
+            DEFAULT_BOARD_SUBTITLE.to_string()
+        } else {
+            persona.meta.board_subtitle.clone()
+        },
+        composer_placeholder: default_composer_placeholder(&persona.meta.name),
+        starter_prompts: DEFAULT_STARTER_PROMPTS.map(str::to_string).to_vec(),
+    })
 }
 
 pub(in crate::web) fn persona_identity(

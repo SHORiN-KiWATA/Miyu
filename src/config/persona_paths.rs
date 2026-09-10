@@ -105,6 +105,36 @@ impl AppConfig {
         self.prompts_dir_path(paths).join(name)
     }
 
+    // ── 成员私有人格(阶段 8):目录即人格 ──
+
+    /// 回合里被指到成员私有人格时的目录。
+    pub fn private_persona_dir(&self) -> Option<PathBuf> {
+        self.prompt
+            .private_persona_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+    }
+
+    /// 私有人格的 scope 名:`home-<用户>-<slug>`,由目录最后两级算出;会话表、
+    /// 记忆状态目录都用它,与共享人格的 scope 天然不撞(共享的没有 `home-` 前缀
+    /// 也可能撞——用户自己起名 `home-xxx` 的概率忽略)。
+    pub fn private_persona_scope(dir: &std::path::Path) -> Option<String> {
+        let slug = dir.file_name()?.to_str()?;
+        let username = dir.parent()?.parent()?.file_name()?.to_str()?;
+        Some(persona_scope_name(&format!("home-{username}-{slug}")))
+    }
+
+    fn private_scope_matches(&self, persona: &str) -> bool {
+        let Some(dir) = self.private_persona_dir() else {
+            return false;
+        };
+        let persona = persona.trim();
+        persona == self.prompt.active_persona.trim()
+            || Self::private_persona_scope(&dir).as_deref() == Some(persona)
+    }
+
     pub fn validate_persona_files(&self, paths: &MiyuPaths) -> Result<()> {
         if self
             .prompt
@@ -146,6 +176,11 @@ impl AppConfig {
     }
 
     pub fn persona_memory_data_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+        if self.private_scope_matches(persona) {
+            if let Some(dir) = self.private_persona_dir() {
+                return dir;
+            }
+        }
         paths.personas_dir().join(persona_scope_name(persona))
     }
 
@@ -157,6 +192,11 @@ impl AppConfig {
     }
 
     pub fn persona_skills_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+        if self.private_scope_matches(persona) {
+            if let Some(dir) = self.private_persona_dir() {
+                return dir.join("skills");
+            }
+        }
         paths
             .skills_dir
             .join("personas")
@@ -164,6 +204,11 @@ impl AppConfig {
     }
 
     pub fn persona_scripts_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+        if self.private_scope_matches(persona) {
+            if let Some(dir) = self.private_persona_dir() {
+                return dir.join("scripts");
+            }
+        }
         paths
             .scripts_dir
             .join("personas")
@@ -187,6 +232,11 @@ impl AppConfig {
     /// Sanitized scope name of the active persona; also the namespace key for
     /// sessions and per-persona state directories.
     pub fn active_persona_scope(&self) -> String {
+        if let Some(dir) = self.private_persona_dir() {
+            if let Some(scope) = Self::private_persona_scope(&dir) {
+                return scope;
+            }
+        }
         persona_scope_name(self.prompt.active_persona.trim())
     }
 
@@ -227,6 +277,11 @@ impl AppConfig {
     }
 
     pub fn active_persona_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+        if let Some(dir) = self.private_persona_dir() {
+            let path = dir.join("persona.md");
+            return std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()));
+        }
         if !self.prompt.active_persona.trim().is_empty() {
             let path = self.persona_path(paths, self.prompt.active_persona.trim());
             if path.exists() {

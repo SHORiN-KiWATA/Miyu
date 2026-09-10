@@ -31,6 +31,7 @@ mod dto;
 mod event_map;
 mod goal_driver;
 mod link_preview;
+mod member_persona;
 mod ownership;
 mod persona;
 mod prompt_files;

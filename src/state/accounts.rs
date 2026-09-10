@@ -105,12 +105,12 @@ pub fn invite_code_hash(code: &str) -> String {
     hex::encode(Sha256::digest(normalized.as_bytes()))
 }
 
+/// 不限长度(用户裁定):只挡空密码与超长(1024 是 HTTP 层同一条护栏)。
 pub fn validate_password(password: &str) -> Result<()> {
-    let count = password.chars().count();
-    if count < 6 {
-        bail!("password must be at least 6 characters");
+    if password.is_empty() {
+        bail!("password must not be empty");
     }
-    if count > 1_024 {
+    if password.chars().count() > 1_024 {
         bail!("password is too long");
     }
     Ok(())

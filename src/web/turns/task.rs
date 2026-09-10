@@ -207,6 +207,28 @@ async fn run_turn_task_inner(
             candidate.display_content.chars().take(80).collect()
         }
     };
+    // 成员会话挂在私有人格上(阶段 8):提示词/清单/记忆/技能/脚本全部跟着
+    // `home/<用户>/personas/<slug>` 走。改的是本回合的配置副本;工具面按它建
+    // (资源缓存键含这个目录)。
+    let mut member_persona_applied = false;
+    if profile.is_none() && !store.usage_account().is_empty() {
+        let owner = store.usage_account().to_string();
+        let scope = store
+            .session_record(&session_id)
+            .ok()
+            .flatten()
+            .map(|record| record.persona)
+            .unwrap_or_default();
+        if let Some(account) = base_store.account_by_id(&owner).ok().flatten() {
+            if let Some(persona) =
+                member_persona::persona_for_scope(&paths, &account.username, &scope)
+            {
+                member_persona::apply_to_config(&mut config, &persona);
+                member_persona_applied = true;
+            }
+        }
+    }
+    let _ = member_persona_applied;
     let warming = !turn_engine.is_ready();
     if warming {
         turn_engine.set(TurnEngineState::INITIALIZING);

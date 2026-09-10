@@ -50,10 +50,9 @@ pub(in crate::web) fn member_current_session(
     state: &DaemonState,
     owner: &str,
 ) -> std::result::Result<String, String> {
-    let persona = active_persona_scope(state);
     let sessions = state
         .state_store
-        .list_local_sessions_for_owner(&persona, owner)
+        .list_owner_sessions(owner)
         .map_err(|error| safe_error_message(&error))?;
     if let Some(overview) = sessions
         .iter()
@@ -61,12 +60,29 @@ pub(in crate::web) fn member_current_session(
     {
         return Ok(overview.record.session_id.clone());
     }
+    let persona = member_session_persona(state, owner);
     let record = state
         .state_store
         .create_session_for_owner(&persona, "", crate::state::USER_SESSION_KIND, None, owner)
         .map_err(|error| safe_error_message(&error))?;
     publish_session_created(state, &record);
     Ok(record.session_id)
+}
+
+/// 成员新会话挂哪个人格:settings 里指着自己的私有人格就用它的 scope,否则共享 Miyu。
+pub(in crate::web) fn member_session_persona(state: &DaemonState, owner: &str) -> String {
+    let username = state
+        .state_store
+        .account_by_id(owner)
+        .ok()
+        .flatten()
+        .map(|account| account.username);
+    if let Some(username) = username {
+        if let Some(persona) = member_persona::active_persona(&state.paths, &username) {
+            return persona.scope();
+        }
+    }
+    active_persona_scope(state)
 }
 
 pub(in crate::web) fn publish_session_created(
@@ -122,7 +138,7 @@ pub(in crate::web) async fn create_session_http(
         let record = state
             .state_store
             .create_session_for_owner(
-                &active_persona_scope(&state),
+                &member_session_persona(&state, identity.owner_key()),
                 &name,
                 crate::state::USER_SESSION_KIND,
                 None,
@@ -390,9 +406,12 @@ pub(in crate::web) fn resolve_local_session_ref_with_kinds(
     // 人格过滤只约束按名寻址与当前指针:显式 id 是不可猜测的能力凭据,
     // 且 dev 会话(保留人格 "dev")必须能被 dev REPL 按 id 操作——否则
     // 起回合/切换/指针全部 404(验收问题二:dev 首启即被踢回默认会话)。
+    // 成员的会话可能挂在私有人格上:归属对得上就不看人格。
+    let member_owned = owner.is_some_and(|owner| !owner.is_empty() && record.owner == owner);
     let persona_ok = record.persona == persona
         || record.persona == crate::state::DEV_PERSONA
-        || matches!(target, ipc::SessionRef::Id { .. });
+        || matches!(target, ipc::SessionRef::Id { .. })
+        || member_owned;
     let owner_ok = owner.is_none_or(|owner| record.owner == owner);
     if !persona_ok || !owner_ok || !kinds.contains(&record.kind.as_str()) || is_platform {
         return Err(t("session not found", "找不到该会话").to_string());
@@ -482,8 +501,13 @@ pub(in crate::web) fn sessions_with_dev(
     persona: &str,
     owner: &str,
 ) -> anyhow::Result<Vec<crate::state::SessionOverview>> {
-    let mut rows = store.list_local_sessions_for_owner(persona, owner)?;
-    if persona != crate::state::DEV_PERSONA {
+    // 成员(owner 非空)名下不分人格:他的会话可能挂在自己的私有人格上。
+    let mut rows = if owner.is_empty() {
+        store.list_local_sessions_for_owner(persona, owner)?
+    } else {
+        store.list_owner_sessions(owner)?
+    };
+    if owner.is_empty() && persona != crate::state::DEV_PERSONA {
         rows.extend(store.list_local_sessions_for_owner(crate::state::DEV_PERSONA, owner)?);
     }
     // 手动排序键优先(v28,越小越靠前);同键退回最近活跃。

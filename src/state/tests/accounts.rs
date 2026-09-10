@@ -56,9 +56,7 @@ fn invite_registers_once_and_disabled_accounts_cannot_log_in() {
     assert!(store
         .register_with_invite(&code, "bad name", "", "alice-pass")
         .is_err());
-    assert!(store
-        .register_with_invite(&code, "alice", "", "short")
-        .is_err());
+    assert!(store.register_with_invite(&code, "alice", "", "").is_err());
     let alice = store
         .register_with_invite(&code.to_lowercase(), "alice", "爱丽丝", "alice-pass")
         .unwrap();

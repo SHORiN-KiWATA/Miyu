@@ -356,6 +356,63 @@ def main():
         member_deltas = [k for k, _ in member_events if k in ("assistant.delta", "run.completed")]
         check("成员 SSE 收到自己回合的增量", bool(member_deltas), str(len(member_deltas)))
 
+        # 9. 成员私有人格(阶段 8 OOBE)
+        member = Client()
+        assert member.login("alice-pass", "alice")[0] == 204
+        status, data = member.call("GET", "/api/account/personas")
+        check("成员人格列表(空)+ 可勾插件", status == 200 and data.get("personas") == [] and data.get("plugins"),
+              json.dumps(data)[:160])
+        status, boot = member.call("GET", "/api/bootstrap")
+        check("注册后引导待做", boot.get("account", {}).get("oobe_pending") is True, json.dumps(boot.get("account")))
+        status, data = member.call("POST", "/api/account/personas",
+                                   {"name": "小满", "description": "测试人格", "prompt": "你是小满,一只会说话的橘猫,每句话结尾带喵。",
+                                    "memory": False, "plugins": ["files", "usage_query", "not-a-plugin"], "activate": True})
+        persona = data.get("persona", {})
+        check("成员建人格", status == 201 and persona.get("name") == "小满" and persona.get("memory") is False,
+              json.dumps(data)[:200])
+        check("插件白名单过滤掉未知 id", set(persona.get("plugins", [])) == {"files", "usage_query"}, json.dumps(persona.get("plugins")))
+        slug = persona.get("slug")
+        pdir = HOME / f"home/alice/personas/{slug}"
+        check("人格目录落在 home/alice/personas", pdir.is_dir() and (pdir / "persona.md").is_file()
+              and (pdir / "persona.toml").is_file(), str(pdir))
+        png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc000000301010018dd8db00000000049454e44ae426082")
+        import http.client as _hc
+        conn = _hc.HTTPConnection("127.0.0.1", PORT, timeout=20)
+        conn.request("PUT", f"/api/account/personas/{slug}/image", body=png,
+                     headers={"Cookie": member.cookie, "Content-Type": "image/png", "Origin": f"http://127.0.0.1:{PORT}"})
+        resp = conn.getresponse(); body = resp.read(); conn.close()
+        check("上传头像", resp.status == 200 and b'"avatar_url"' in body, f"{resp.status}")
+        status, boot = member.call("GET", "/api/bootstrap")
+        check("bootstrap 的人格身份是小满", boot.get("persona", {}).get("name") == "小满"
+              and boot.get("account", {}).get("persona", {}).get("slug") == slug
+              and boot.get("account", {}).get("oobe_pending") is False, json.dumps(boot.get("persona"))[:160])
+        status, raw = member.call("GET", f"/api/persona/avatar?scope={persona.get('scope')}", raw=True)
+        check("成员头像可取", status == 200 and raw[:4] == b"\x89PNG", str(status))
+        status, raw = admin.call("GET", f"/api/persona/avatar?scope={persona.get('scope')}", raw=True)
+        check("管理员取成员头像 404", status == 404, str(status))
+        status, created = member.call("POST", "/api/sessions", {"name": "小满的会话"})
+        sid = created.get("session", {}).get("session_id")
+        check("成员新会话挂在私有人格 scope 上", status == 201 and bool(sid), str(status))
+        before = len(STUB_SYSTEM_DUMP.read_text().splitlines()) if STUB_SYSTEM_DUMP.exists() else 0
+        run_turn(member, sid, "你是谁")
+        lines = STUB_SYSTEM_DUMP.read_text().splitlines()[before:]
+        systems = [json.loads(line)["system"] for line in lines if line.strip()]
+        check("成员回合的系统提示词是私有人格设定", any("会说话的橘猫" in s for s in systems), str(len(systems)))
+        check("私有人格回合不带共享人格提示词", not any("Miyu" in s.split("<current-user-profile>")[0] and "橘猫" not in s for s in systems))
+        status, view = member.call("GET", f"/api/sessions/{sid}/turns")
+        check("私有人格会话回合落库且成员可见", status == 200 and len(view.get("turns", [])) == 1, str(status))
+        status, data = member.call("PUT", "/api/account/active-persona", {"slug": None})
+        check("切回共享 Miyu", status == 200 and data.get("active") is None, json.dumps(data))
+        status, boot = member.call("GET", "/api/bootstrap")
+        check("切回后 bootstrap 人格是 Miyu", boot.get("persona", {}).get("name") == "Miyu", json.dumps(boot.get("persona"))[:100])
+        status, listing = member.call("GET", "/api/sessions")
+        ids = {item["session_id"] for item in listing.get("sessions", [])}
+        check("切换人格后旧会话仍在成员列表里", sid in ids, str(len(ids)))
+        status, _ = member.call("DELETE", f"/api/account/personas/{slug}")
+        check("删除人格", status == 204 and not pdir.exists(), str(status))
+        status, _ = admin.call("POST", "/api/account/personas", {"name": "x", "prompt": "y"})
+        check("管理员不走私有人格接口", status == 400, str(status))
+
         # 8. 停用/恢复
         status, _ = admin.call("PATCH", f"/api/admin/accounts/{member_id}", {"disabled": True})
         check("管理员停用成员", status == 200, str(status))
@@ -374,6 +431,7 @@ def main():
         status, _ = member.call("POST", "/api/auth/logout")
         status2, _ = member.call("GET", "/api/bootstrap")
         check("退出登录后 401", status == 204 and status2 == 401, f"{status} {status2}")
+        status, _ = admin.call("PATCH", f"/api/admin/accounts/{member_id}", {"disabled": False})
         status, _ = admin_named.call("PATCH", f"/api/admin/accounts/{me.get('account', {}).get('account_id')}",
                                      {"disabled": True})
         # 最后一个管理员不能停用自己

@@ -17,4 +17,6 @@ BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/layo
 - SSE 归属检查:两条流同时开着,各跑一轮,看对方会话 id 有没有漏进来;成员流里应有
   自己回合的 `assistant.delta` / `run.completed`。
 - 用量断言读 `MIYU_HOME/state/usage-history.jsonl` 的 `acct` 列:成员回合是账号 id,管理员回合空。
+- `cross_session_probe.py`:会话 A 在跑(桩 400 行慢流)时对 B 做 reset/改名/起回合/compact/pop/改模型/建删会话都该照常;桩的 long 模式见到用户消息里有 "short" 只出 3 行。
+- `jump_probe.py`:对着任意跑着的 daemon(缺省沙盒 8388)发一句话,每 60ms 采样正文气泡位置/文本长度/行内 code 数与滚动位置,逐帧录像;`MOBILE=1` 换手机视口。09-10 用它坐实「字会跳」= 行内反引号/粗体闭合瞬间整行重排。
 - 产物在 `~/.cache/miyu-multi-user/`(daemon.log、report.json、截图)。

@@ -118,7 +118,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse({"content": t, "reasoning_content": ""})
         elif MODE == "long":
             # 80 行短句,慢速流出:给自动滚动走查用(回合要跑几秒,中途有整段重建)。
-            for i in range(int(os.environ.get("STUB_LINES", "80"))):
+            # 用户消息里带 "short" 就只出 3 行(跨会话探针要一长一短两个回合)。
+            # 用户消息后面还挂着 <runtime …> 之类的尾巴消息,不能只看最后一条
+            users = []
+            for m in body.get("messages", []):
+                if m.get("role") == "user":
+                    c = m.get("content")
+                    users.append("".join(p.get("text", "") for p in c if isinstance(p, dict)) if isinstance(c, list) else (c or ""))
+            lines = 3 if any("short" in u for u in users) else int(os.environ.get("STUB_LINES", "80"))
+            for i in range(lines):
                 self._sse({"content": f"第 {i + 1} 行,用来把页面撑长的填充文字。\n"})
         else:
             for t in TEXT:

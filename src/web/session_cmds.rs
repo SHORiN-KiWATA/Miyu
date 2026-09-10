@@ -623,7 +623,9 @@ pub(in crate::web) fn require_local_web_session(
                 && record.kind == "user"
                 && record.owner == identity.owner_key()
                 && (record.persona == active_persona_scope(state)
-                    || record.persona == crate::state::DEV_PERSONA) =>
+                    || record.persona == crate::state::DEV_PERSONA
+                    // 成员的会话可能挂在自己的私有人格上(阶段 8)
+                    || !record.owner.is_empty()) =>
         {
             Ok(record)
         }

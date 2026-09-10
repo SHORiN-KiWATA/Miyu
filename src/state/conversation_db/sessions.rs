@@ -252,9 +252,24 @@ impl ConversationDb {
         self.list_sessions_filtered(persona, true, None)
     }
 
+    /// 某个成员名下的全部本地会话,不分人格(成员的会话可能挂在自己的私有
+    /// 人格上,阶段 8)。
+    pub fn list_owner_sessions(&self, owner: &str) -> Result<Vec<SessionOverview>> {
+        self.list_sessions_query(None, true, Some(owner))
+    }
+
     pub(crate) fn list_sessions_filtered(
         &self,
         persona: &str,
+        local_only: bool,
+        owner: Option<&str>,
+    ) -> Result<Vec<SessionOverview>> {
+        self.list_sessions_query(Some(persona), local_only, owner)
+    }
+
+    fn list_sessions_query(
+        &self,
+        persona: Option<&str>,
         local_only: bool,
         owner: Option<&str>,
     ) -> Result<Vec<SessionOverview>> {
@@ -269,7 +284,7 @@ impl ConversationDb {
                         AND hidden = 0 AND is_summary = 0
                       ORDER BY seq DESC LIMIT 1) AS last_user_content
              FROM sessions
-             WHERE persona = ?1 AND kind = 'user'
+             WHERE (?1 IS NULL OR persona = ?1) AND kind = 'user'
                AND (?2 = 0 OR NOT EXISTS (
                     SELECT 1 FROM platform_session_bindings
                     WHERE platform_session_bindings.session_id = sessions.session_id

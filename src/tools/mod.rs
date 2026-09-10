@@ -105,14 +105,18 @@ pub fn register_ask_question(registry: &mut ToolRegistry) {
 
 static SCRIPT_DISPLAY_NAMES: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 
+/// 合并登记,不整表替换:同一个 daemon 里 normal / dev / 受限三张表先后都会
+/// 登记(TurnResourceCache 一次建三张),dev 表没有脚本、受限表只有 external
+/// 脚本,后登记的把先登记的冲掉,WebUI 里属主脚本就显示成裸 id(09-10 沙盒
+/// 实测 battery_care / gpustoggle)。名字只增不减:改名后旧名残留无害。
 pub fn register_script_display_names(registry: &ToolRegistry) {
-    let mut map = HashMap::new();
+    let mut guard = SCRIPT_DISPLAY_NAMES.write().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
     for name in registry.tool_names() {
         if let Some(dn) = registry.display_name(&name) {
             map.insert(name, dn);
         }
     }
-    *SCRIPT_DISPLAY_NAMES.write().unwrap() = Some(map);
 }
 
 pub fn readable_tool_name(name: &str) -> String {
@@ -787,6 +791,27 @@ pub(crate) fn build_tool_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 显示名表是合并登记的:normal 之后再登记一张没有脚本的 dev 表,属主脚本的
+    /// 名字不能被冲掉(09-10 沙盒实测 battery_care 变裸 id 的根因)。
+    #[test]
+    fn script_display_names_survive_registering_a_registry_without_them() {
+        let mut with_scripts = ToolRegistry::new();
+        with_scripts.register(
+            ToolSpec::new(
+                "battery_care_probe_test",
+                "probe",
+                serde_json::json!({"type": "object"}),
+                |_| async { Ok(String::new()) },
+            )
+            .with_display_name("电池养护"),
+        );
+        register_script_display_names(&with_scripts);
+        assert_eq!(readable_tool_name("battery_care_probe_test"), "电池养护");
+        let without_scripts = ToolRegistry::new();
+        register_script_display_names(&without_scripts);
+        assert_eq!(readable_tool_name("battery_care_probe_test"), "电池养护");
+    }
 
     /// 内置工具 schema 的 token 预算:每件工具的 description + parameters 折成的
     /// token 数封顶。这份东西每轮都进上下文(full 模式)或按需拉入(stub),膨胀

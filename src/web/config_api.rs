@@ -201,7 +201,8 @@ pub(in crate::web) async fn get_thinking_variants(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
-    require_admin(&headers, &state)?;
+    // 只读:成员的模型菜单也要显示档位;改档位仍是管理员的事。
+    require_auth(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
     let options =
         active_thinking_variant_options(&config, &state.paths).map_err(ApiError::internal)?;

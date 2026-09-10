@@ -14,7 +14,7 @@ pub(crate) use provider_ops::detect_provider_renames;
 mod tool_plugins;
 pub(crate) use defaults::*;
 pub(crate) use paths::*;
-pub use persona_manifest::PersonaManifest;
+pub use persona_manifest::{PersonaManifest, PLUGIN_IDS};
 pub(crate) use platform::*;
 pub(crate) use platform_plugins::*;
 pub(crate) use pool_ref::*;
@@ -103,6 +103,9 @@ pub struct AppConfig {
     pub model_tiers: ModelTiersConfig,
     #[serde(default, skip_serializing_if = "PlatformsConfig::is_empty")]
     pub platforms: PlatformsConfig,
+    /// 多用户(阶段 5/8):成员能用什么。
+    #[serde(default)]
+    pub accounts: AccountsConfig,
     /// 语音前端(`miyu-voice` 进程):唤醒词、本地识别、听写、提示音。
     #[serde(default)]
     pub voice: VoiceConfig,
@@ -654,6 +657,12 @@ pub struct PromptConfig {
     pub active_persona: String,
     #[serde(default)]
     pub active_identity: String,
+    /// 成员的私有人格目录(`home/<用户>/personas/<slug>`),**只在回合里由
+    /// daemon 填**,不写进配置文件。填了之后:提示词读 `persona.md`,记忆/清单/
+    /// 技能/脚本都在这个目录下,`active_persona_scope()` 变成 `home-<用户>-<slug>`。
+    /// 参与序列化是为了进 TurnResourceCache 的键(工具面随人格清单变)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_persona_dir: Option<String>,
     /// 防失忆提醒(自动蒸馏,见 persona_hint 模块)。08-16 起改为
     /// 化石注入:每隔 `persona_reminder_interval` 轮进一次历史,纯追加
     /// 不再掰前缀缓存。A/B 实证干净体制下预设对话已足够→默认禁用。
@@ -876,7 +885,42 @@ impl Default for AppConfig {
             model_tiers: ModelTiersConfig::default(),
             platforms: PlatformsConfig::default(),
             voice: VoiceConfig::default(),
+            accounts: AccountsConfig::default(),
         }
+    }
+}
+
+/// 管理员给成员划的边界:成员自建人格能勾哪些插件、能不能自建人格。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountsConfig {
+    /// 成员人格可启用的插件 id 白名单;None = 全部(见 `PLUGIN_IDS`)。
+    pub member_plugins: Option<Vec<String>>,
+    /// 成员能否创建自己的人格(关了就只能用共享的 Miyu)。
+    pub member_personas: bool,
+}
+
+impl Default for AccountsConfig {
+    fn default() -> Self {
+        Self {
+            member_plugins: None,
+            member_personas: true,
+        }
+    }
+}
+
+impl AccountsConfig {
+    /// 成员可勾的插件:白名单 ∩ 已知 id。
+    pub fn allowed_member_plugins(&self) -> Vec<String> {
+        crate::config::PLUGIN_IDS
+            .iter()
+            .filter(|id| {
+                self.member_plugins
+                    .as_ref()
+                    .is_none_or(|list| list.iter().any(|item| item == *id))
+            })
+            .map(|id| id.to_string())
+            .collect()
     }
 }
 
@@ -888,6 +932,7 @@ impl Default for PromptConfig {
             user_identity_file: default_user_identity_file(),
             active_persona: String::new(),
             active_identity: String::new(),
+            private_persona_dir: None,
             persona_reminder: false,
             persona_reminder_interval: default_persona_reminder_interval(),
         }

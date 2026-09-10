@@ -1087,6 +1087,27 @@
       ],
     },
     {
+      id: "accounts",
+      title: "成员账号",
+      fields: [
+        {
+          path: "accounts.member_personas",
+          label: "成员可以创建自己的人格",
+          hint: "关掉后成员只能用共享的 Miyu",
+          kind: "toggle",
+          default: true,
+        },
+        {
+          path: "accounts.member_plugins",
+          label: "成员人格可启用的插件",
+          hint: "留空 = 全部。可选 id:files, usage_query, alarm, exchange_rate, archlinux, api_quota, print_image, memes, platform_outreach, web_images, deep_research, image_generation, knowledge_base, package_advisor, diagnostics, ledger, scripts",
+          kind: "string-list",
+          nullable: true,
+          default: null,
+        },
+      ],
+    },
+    {
       id: "platforms",
       title: "通讯平台",
       fields: [

@@ -74,7 +74,7 @@
 - [x] 管理台闸:`/api/dash/*`、`/api/config`(GET/PUT)、思考档位、全局模型、供应商拉模型、语音、QQ 历史、记忆重置、清空统计、账号/邀请码 → `require_admin`;成员 403。前端 `data-admin-only` 隐藏侧栏设置按钮与控制台十个管理面板,成员只剩「数据统计(自己的)」与「账号」
 - [x] 事件流按归属过滤(`web/ownership.rs`):`session_id` → 归属;无则 `run_id` → 活跃回合表/`run.started` 反查;两者都没有的全局事件只给管理员。管理员也看不到成员会话的事件
 - [x] 账号面板:改显示名/密码、退出登录;管理员生成/作废邀请码、停用/恢复成员、重设密码、30 天按人用量;登录页加用户名 + 「注册账号」表单
-- [~] OOBE:第二步「希望 AI 如何认知你」已落(注册成功即打开账号页,textarea 写 `home/<user>/profile.md`;通讯平台受众本就不注入档案);第一步「专属人格」(成员私有 persona、按会话选人格)未做——依赖按人拆库与会话级人格指针
+- [x] OOBE 三步引导(注册成功即全屏引导,有动画):①人格——直接用 Miyu 或创建自己的(名字/简介/模板或自写设定/头像/看板图);②功能——记忆开关 + 管理员白名单里的插件(`accounts.member_plugins`、`accounts.member_personas`,设置页可改);③认知——`home/<user>/profile.md`。成员私有人格 = `home/<user>/personas/<slug>/{persona.md,persona.json,persona.toml,avatar.*,board.*,memory/,skills/,scripts/}`,会话表 scope `home-<user>-<slug>`,回合里 `prompt.private_persona_dir` 覆盖(提示词/清单/记忆/技能/脚本全跟目录,资源缓存键含它);`/api/account/personas*`、`/api/account/active-persona`;账号页人格卡可切换/编辑/删除;头像走 `/api/persona/avatar?scope=`(只给本人)
 - [x] `home/<user>/profile.md` 注入:成员回合把 `prompt.user_identity_file` 指到自己的档案(task.rs,只改 Agent 的配置副本,资源缓存键不变);管理员读 `home/<admin>/profile.md`
 - [ ] 三个钩子:信任枚举 Member(今天=Owner)、回合上下文必填 principal、run_command spawn 处沙盒策略参数(默认完全放开)——principal 已落(成员回合必带);另两个未动
 - [x] 测具 `testkit/multi-user/e2e.py`:隔离 daemon + 桩模型,登录/邀请/注册/归属/管理台闸/用量按人/SSE 归属/停用恢复

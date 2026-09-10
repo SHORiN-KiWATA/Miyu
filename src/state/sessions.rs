@@ -260,6 +260,11 @@ impl StateStore {
         self.conv_db.list_local_sessions_for_owner(persona, owner)
     }
 
+    /// 成员名下全部会话(不分人格)。
+    pub fn list_owner_sessions(&self, owner: &str) -> Result<Vec<SessionOverview>> {
+        self.conv_db.list_owner_sessions(owner)
+    }
+
     pub fn is_platform_session(&self, session_id: &str) -> Result<bool> {
         self.conv_db.is_platform_session(session_id)
     }

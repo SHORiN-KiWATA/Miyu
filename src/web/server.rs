@@ -334,6 +334,23 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/api/auth/logout", post(auth_logout))
         .route("/api/auth/register", post(auth_register))
         .route("/api/account", get(account_me).patch(account_update))
+        .route(
+            "/api/account/personas",
+            get(account_personas).post(account_persona_create),
+        )
+        .route(
+            "/api/account/personas/{slug}",
+            put(account_persona_update).delete(account_persona_delete),
+        )
+        .route(
+            "/api/account/personas/{slug}/prompt",
+            get(account_persona_prompt),
+        )
+        .route(
+            "/api/account/personas/{slug}/image",
+            put(account_persona_image).delete(account_persona_image_delete),
+        )
+        .route("/api/account/active-persona", put(account_active_persona))
         .route("/api/admin/accounts", get(admin_list_accounts))
         .route(
             "/api/admin/accounts/{account_id}",
@@ -752,10 +769,13 @@ pub(in crate::web) async fn bootstrap(
         .iter()
         .map(|overview| session_overview_json(overview, &current_session_id))
         .collect();
-    let persona = persona_identity(
-        &config,
-        &read_prompt_documents(&config, &state.paths).map_err(ApiError::internal)?,
-    );
+    let persona = member_persona_identity(&state.paths, &identity).unwrap_or_else(|| {
+        persona_identity(
+            &config,
+            &read_prompt_documents(&config, &state.paths)
+                .unwrap_or_else(|_| PromptDocuments::default()),
+        )
+    });
     let redo_candidate = if active_run_id.is_none() {
         store
             .redo_candidate()
@@ -790,7 +810,7 @@ pub(in crate::web) async fn bootstrap(
         runs,
         persona,
         redo_candidate,
-        account: identity_json(&identity),
+        account: account_bootstrap_json(&state, &identity),
     })
     .into_response();
     response

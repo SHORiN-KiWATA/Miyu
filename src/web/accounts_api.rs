@@ -18,6 +18,26 @@ fn account_json(account: &crate::state::Account) -> Value {
     })
 }
 
+/// bootstrap 里的账号块:身份 + 当前人格 + 引导是否待做。
+pub(in crate::web) fn account_bootstrap_json(state: &DaemonState, identity: &WebIdentity) -> Value {
+    let mut value = identity_json(identity);
+    if !identity.admin && !identity.username.is_empty() {
+        let settings = member_persona::load_settings(&state.paths, &identity.username);
+        let active = member_persona::active_persona(&state.paths, &identity.username);
+        value["oobe_pending"] = json!(!settings.oobe_done);
+        value["persona"] = match active {
+            Some(persona) => {
+                json!({ "slug": persona.slug, "name": persona.meta.name, "private": true })
+            }
+            None => json!({ "slug": null, "name": "Miyu", "private": false }),
+        };
+    } else {
+        value["oobe_pending"] = json!(false);
+        value["persona"] = json!({ "slug": null, "name": "Miyu", "private": false });
+    }
+    value
+}
+
 pub(in crate::web) fn identity_json(identity: &WebIdentity) -> Value {
     json!({
         "account_id": identity.account_id,
@@ -362,4 +382,340 @@ pub(in crate::web) async fn admin_usage_accounts(
         "accounts": accounts,
     }))
     .into_response())
+}
+
+// ── 成员的私有人格(阶段 8,OOBE) ──
+
+fn member_username(identity: &WebIdentity) -> std::result::Result<String, ApiError> {
+    if identity.admin || identity.username.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "private personas are for member accounts; the admin edits the shared persona in settings",
+        ));
+    }
+    Ok(identity.username.clone())
+}
+
+fn plugin_label(id: &str) -> (&'static str, &'static str) {
+    match id {
+        "files" => ("文件", "读写工作区文件"),
+        "usage_query" => ("用量查询", "问她用了多少 token"),
+        "alarm" => ("闹钟", "定时提醒"),
+        "exchange_rate" => ("汇率", "货币换算"),
+        "archlinux" => ("Arch Linux", "AUR 查询、Arch 新闻"),
+        "api_quota" => ("API 额度", "查供应商余额"),
+        "print_image" => ("看图", "把图片给她看"),
+        "memes" => ("表情包", "用表情包回复"),
+        "platform_outreach" => ("外发", "从对话里给通讯平台发消息"),
+        "web_images" => ("搜图", "网络找图"),
+        "deep_research" => ("深度研究", "多轮检索写报告"),
+        "image_generation" => ("生图", "AI 画图"),
+        "knowledge_base" => ("知识库", "查管理员的知识库"),
+        "package_advisor" => ("软件推荐", "推荐与安装软件"),
+        "diagnostics" => ("系统诊断", "看系统信息"),
+        "ledger" => ("记账", "记账本"),
+        "scripts" => ("脚本工具", "管理员装的脚本工具"),
+        _ => ("", ""),
+    }
+}
+
+fn persona_json(persona: &member_persona::PrivatePersona) -> Value {
+    let scope = persona.scope();
+    json!({
+        "slug": persona.slug,
+        "name": persona.meta.name,
+        "description": persona.meta.description,
+        "board_title": persona.meta.board_title,
+        "board_subtitle": persona.meta.board_subtitle,
+        "created_at": persona.meta.created_at,
+        "memory": persona.manifest.subsystems.memory,
+        "plugins": persona.manifest.plugins.enabled.clone().unwrap_or_default(),
+        "avatar_url": persona.avatar_path().map(|_| format!("/api/persona/avatar?scope={scope}")),
+        "board_image_url": persona.board_path().map(|_| format!("/api/persona/avatar?scope={scope}&board=1")),
+        "scope": scope,
+    })
+}
+
+/// 成员的人格列表 + 可勾的插件 + 当前用的。
+pub(in crate::web) async fn account_personas(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    let identity = require_identity(&headers, &state)?;
+    let config = state.manager.lock().unwrap().config.clone();
+    let options = config
+        .accounts
+        .allowed_member_plugins()
+        .iter()
+        .map(|id| {
+            let (label, hint) = plugin_label(id);
+            json!({ "id": id, "label": if label.is_empty() { id.as_str() } else { label }, "hint": hint })
+        })
+        .collect::<Vec<_>>();
+    if identity.admin || identity.username.is_empty() {
+        return Ok(Json(json!({
+            "personas": [],
+            "active": null,
+            "member_personas": false,
+            "plugins": options,
+        }))
+        .into_response());
+    }
+    let personas = member_persona::list_personas(&state.paths, &identity.username)
+        .map_err(ApiError::internal)?;
+    let settings = member_persona::load_settings(&state.paths, &identity.username);
+    Ok(Json(json!({
+        "personas": personas.iter().map(persona_json).collect::<Vec<_>>(),
+        "active": settings.active_persona,
+        "member_personas": config.accounts.member_personas,
+        "plugins": options,
+        "prompt": std::fs::read_to_string(profile_file_for(&state.paths, &identity)).unwrap_or_default(),
+    }))
+    .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::web) struct PersonaRequest {
+    #[serde(default)]
+    pub(in crate::web) slug: Option<String>,
+    pub(in crate::web) name: String,
+    #[serde(default)]
+    pub(in crate::web) description: String,
+    pub(in crate::web) prompt: String,
+    #[serde(default)]
+    pub(in crate::web) board_title: String,
+    #[serde(default)]
+    pub(in crate::web) board_subtitle: String,
+    #[serde(default = "default_true_flag")]
+    pub(in crate::web) memory: bool,
+    #[serde(default)]
+    pub(in crate::web) plugins: Option<Vec<String>>,
+    /// 建完就切成当前人格(引导里默认 true)。
+    #[serde(default = "default_true_flag")]
+    pub(in crate::web) activate: bool,
+}
+
+fn default_true_flag() -> bool {
+    true
+}
+
+fn random_slug() -> String {
+    format!("p{}", hex::encode(rand::random::<[u8; 3]>()))
+}
+
+pub(in crate::web) async fn account_persona_create(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<PersonaRequest>,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    let config = state.manager.lock().unwrap().config.clone();
+    if !config.accounts.member_personas {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "the admin has turned off member personas",
+        ));
+    }
+    let slug = request
+        .slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|slug| !slug.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(random_slug);
+    if member_persona::load_persona(&state.paths, &username, &slug)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
+        .is_some()
+    {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "a persona with this id already exists",
+        ));
+    }
+    let plugins = request
+        .plugins
+        .clone()
+        .unwrap_or_else(|| config.accounts.allowed_member_plugins());
+    let draft = member_persona::PersonaDraft {
+        name: &request.name,
+        description: &request.description,
+        prompt: &request.prompt,
+        board_title: &request.board_title,
+        board_subtitle: &request.board_subtitle,
+        memory: request.memory,
+        plugins,
+    };
+    let persona =
+        member_persona::create_or_update_persona(&config, &state.paths, &username, &slug, &draft)
+            .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+    if request.activate {
+        let mut settings = member_persona::load_settings(&state.paths, &username);
+        settings.active_persona = Some(slug.clone());
+        // 自己建了人格就不用再引导了
+        settings.oobe_done = true;
+        member_persona::save_settings(&state.paths, &username, &settings)
+            .map_err(ApiError::internal)?;
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "persona": persona_json(&persona) })),
+    )
+        .into_response())
+}
+
+pub(in crate::web) async fn account_persona_update(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Json(request): Json<PersonaRequest>,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    let config = state.manager.lock().unwrap().config.clone();
+    let existing = member_persona::load_persona(&state.paths, &username, &slug)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona not found"))?;
+    let plugins = request.plugins.clone().unwrap_or_else(|| {
+        existing
+            .manifest
+            .plugins
+            .enabled
+            .clone()
+            .unwrap_or_default()
+    });
+    let draft = member_persona::PersonaDraft {
+        name: &request.name,
+        description: &request.description,
+        prompt: &request.prompt,
+        board_title: &request.board_title,
+        board_subtitle: &request.board_subtitle,
+        memory: request.memory,
+        plugins,
+    };
+    let persona =
+        member_persona::create_or_update_persona(&config, &state.paths, &username, &slug, &draft)
+            .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+    Ok(Json(json!({ "persona": persona_json(&persona) })).into_response())
+}
+
+/// 某个人格的提示词全文(编辑用;列表里不带,免得每次都拉几十 KB)。
+pub(in crate::web) async fn account_persona_prompt(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    let persona = member_persona::load_persona(&state.paths, &username, &slug)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona not found"))?;
+    let prompt = persona.prompt().map_err(ApiError::internal)?;
+    Ok(Json(json!({ "prompt": prompt })).into_response())
+}
+
+pub(in crate::web) async fn account_persona_delete(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    member_persona::delete_persona(&state.paths, &username, &slug)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// 头像 / 看板图:请求体就是图片字节(`?board=1` 是看板);DELETE 去掉。
+pub(in crate::web) async fn account_persona_image(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    let persona = member_persona::load_persona(&state.paths, &username, &slug)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona not found"))?;
+    let stem = if query.contains_key("board") {
+        "board"
+    } else {
+        "avatar"
+    };
+    member_persona::store_image(&persona.dir, stem, &body)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let persona = member_persona::load_persona(&state.paths, &username, &slug)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona not found"))?;
+    Ok(Json(json!({ "persona": persona_json(&persona) })).into_response())
+}
+
+pub(in crate::web) async fn account_persona_image_delete(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    let persona = member_persona::load_persona(&state.paths, &username, &slug)
+        .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "persona not found"))?;
+    member_persona::remove_image(
+        &persona.dir,
+        if query.contains_key("board") {
+            "board"
+        } else {
+            "avatar"
+        },
+    );
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::web) struct ActivePersonaRequest {
+    /// None / null = 共享 Miyu。
+    #[serde(default)]
+    pub(in crate::web) slug: Option<String>,
+    /// 顺手把引导标成做完。
+    #[serde(default)]
+    pub(in crate::web) oobe_done: Option<bool>,
+}
+
+pub(in crate::web) async fn account_active_persona(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<ActivePersonaRequest>,
+) -> std::result::Result<Response, ApiError> {
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let username = member_username(&identity)?;
+    if let Some(slug) = request.slug.as_deref() {
+        if member_persona::load_persona(&state.paths, &username, slug)
+            .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?
+            .is_none()
+        {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "persona not found"));
+        }
+    }
+    let mut settings = member_persona::load_settings(&state.paths, &username);
+    settings.active_persona = request.slug.clone();
+    if let Some(done) = request.oobe_done {
+        settings.oobe_done = done;
+    }
+    member_persona::save_settings(&state.paths, &username, &settings)
+        .map_err(ApiError::internal)?;
+    Ok(
+        Json(json!({ "active": settings.active_persona, "oobe_done": settings.oobe_done }))
+            .into_response(),
+    )
 }
