@@ -1,6 +1,7 @@
 mod defaults;
 mod io;
 mod paths;
+mod persona_manifest;
 mod persona_paths;
 mod platform;
 mod platform_ops;
@@ -13,6 +14,7 @@ pub(crate) use provider_ops::detect_provider_renames;
 mod tool_plugins;
 pub(crate) use defaults::*;
 pub(crate) use paths::*;
+pub use persona_manifest::PersonaManifest;
 pub(crate) use platform::*;
 pub(crate) use platform_plugins::*;
 pub(crate) use pool_ref::*;

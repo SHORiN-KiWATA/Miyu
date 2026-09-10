@@ -32,6 +32,10 @@ pub struct ToolDescription {
     /// 天生长跑的工具，如 run_command/task/deep_research）。
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// 场所信任位:`"trust": "external"` 的工具也给不可信入口(QQ 群、远端
+    /// WebUI 成员)。缺省只给属主。受限注册表就是按这个位从全量面上筛出来的。
+    #[serde(default)]
+    pub trust: crate::tools::ToolTrust,
 }
 
 #[derive(Debug, Clone, Deserialize)]

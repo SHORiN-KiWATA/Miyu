@@ -1,5 +1,6 @@
 {
   "name": "get_exchange_rate",
+  "trust": "external",
   "display_name": "汇率查询",
   "description": "Query exchange rates between currencies.",
   "parameters": {

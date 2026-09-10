@@ -26,7 +26,9 @@ pub fn register(registry: &mut ToolRegistry) {
                 bail!("load_tools must be executed through the active tool registry")
             },
         )
-        .with_display_name("加载"),
+        .with_display_name("加载")
+        // 常驻于所有场所:不可信入口也要能按需拉契约。
+        .with_trust(crate::tools::ToolTrust::External),
     );
 }
 

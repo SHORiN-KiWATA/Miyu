@@ -44,7 +44,7 @@ mod web_images;
 pub mod workspace;
 
 use crate::agent::AgentMode;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, PersonaManifest};
 use crate::i18n::{is_zh, text as t};
 use crate::paths::MiyuPaths;
 use std::collections::HashMap;
@@ -61,7 +61,6 @@ pub(crate) use scripts::{
     scripts_dashboard_register, scripts_dashboard_source,
 };
 pub(crate) use skills::{apply_skill_refresh, prepare_skill_refresh};
-pub use skills::{register_authoring as register_skill_authoring, register_skills};
 
 /// 把「一串字符串」参数收成 Vec，容忍模型真会传的几种形状。
 ///
@@ -398,56 +397,125 @@ fn install_builtin_guards(registry: &mut ToolRegistry, config: &AppConfig) {
     registry.add_guard(requires_prior_guard());
 }
 
-pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+/// 场所声明的两件事之一:谁在说话。Owner=属主类入口(终端、本机 WebUI、
+/// 语音);External=不可信入口(QQ 群、远端 WebUI 成员),只拿 `Trust: external`
+/// 的工具;Internal=判官/子代理,工具面与 Owner 相同、提示词另算。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceTrust {
+    Owner,
+    External,
+    Internal,
+}
+
+/// 场所:信任 + 能力。能力位今天只有「能弹问题」(ask_question 需要面板);
+/// 浏览器(artifact/share)那两件仍由 WebUI 层按会话追加,因为要会话 id 与库。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Surface {
+    pub trust: SurfaceTrust,
+    pub interactive_questions: bool,
+}
+
+impl Surface {
+    pub const fn owner(interactive_questions: bool) -> Self {
+        Self {
+            trust: SurfaceTrust::Owner,
+            interactive_questions,
+        }
+    }
+
+    pub const fn external() -> Self {
+        Self {
+            trust: SurfaceTrust::External,
+            interactive_questions: false,
+        }
+    }
+}
+
+/// 一条流水线装出任何场所、任何 persona 的工具面(09-10 分层架构阶段 4,取代
+/// builtin_registry / dev_registry / restricted_platform_registry 三张各写一遍):
+///
+/// 1. **core**:今天的 dev 那套——命令与后台任务、补丁编辑、todo、goal、web
+///    抓取/搜索、看图、MCP、task 子代理、load_tools。不看 persona。
+/// 2. **扩展**:按 persona 清单启用。子系统(记忆、技能、语音)与插件(其余
+///    注册单元,id 见 config::PLUGIN_IDS)各自受 config 的机器级开关约束——
+///    persona 只能在「本机装了的」里挑。
+/// 3. **场所**:External 只留 `trust == External` 的工具,再做平台专属的描述
+///    修饰;`interactive_questions` 决定给不给 ask_question。
+///
+/// 注册顺序沿用旧表(task 的快照点、cross_hints 收尾都在原位),定义按名排序,
+/// 所以三个面的 tools 数组与合并前逐字节相同(`shape_tests` 钉着)。
+pub fn compose_registry(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    manifest: &PersonaManifest,
+    surface: Surface,
+) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.set_default_timeout_secs(config.tools.default_timeout_secs);
     install_builtin_guards(&mut registry, config);
-    default_tools::register(
-        &mut registry,
-        config.skills.allow_command_execution,
-        config,
-        paths,
-    );
+    let external = surface.trust == SurfaceTrust::External;
+    let plugin = |id: &str| manifest.plugin_enabled(id);
+
+    // ── core ──
+    if plugin("files") {
+        // 读检索(read/glob/grep)、check_os_info、trash_path 一整套。
+        default_tools::register(
+            &mut registry,
+            config.skills.allow_command_execution,
+            config,
+            paths,
+        );
+    } else {
+        // 只挂 run_command:coreutils 干得更好的都不注册(dev 验收三轮裁剪)。
+        default_tools::register_run_command(&mut registry, config.skills.allow_command_execution);
+    }
     jobs::register_management(&mut registry);
-    usage_query::register(
-        &mut registry,
-        paths
-            .state_dir
-            .join(crate::state::usage::USAGE_HISTORY_FILE),
-        config.clone(),
-    );
-    // 编辑器只留 apply_patch(聚合增/改/删,diff 渲染载体);write_file/
-    // edit_file/edit_string 与 dev 同步退场(验收四轮:normal 也去冗余)。
+    if plugin("usage_query") {
+        usage_query::register(
+            &mut registry,
+            paths
+                .state_dir
+                .join(crate::state::usage::USAGE_HISTORY_FILE),
+            config.clone(),
+        );
+    }
+    // 编辑器只留 apply_patch(聚合增/改/删,diff 渲染载体)。
     apply_patch::register(&mut registry);
     todowrite::register(&mut registry, paths.clone());
     goal::register(&mut registry, paths.clone());
-    alarm::register(&mut registry, paths.clone());
+    if plugin("alarm") {
+        alarm::register(&mut registry, paths.clone());
+    }
     web::register_fetch(&mut registry);
     // 插件关就不注册:关掉的插件仍然常驻一份完整契约,是三个面都白背的
     // 纯浪费(08-17 实测 get_exchange_rate 311 字符)。
-    if config.plugins.exchange_rate.enabled {
+    if plugin("exchange_rate") && config.plugins.exchange_rate.enabled {
         exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     }
-    if config.plugins.archlinux.enabled {
+    if plugin("archlinux") && config.plugins.archlinux.enabled {
         archlinux::register(&mut registry, paths);
     }
-    if config.plugins.api_quota.enabled {
+    if plugin("api_quota") && config.plugins.api_quota.enabled {
         api_quota::register(&mut registry, config.plugins.api_quota.clone());
     }
-    vision::register_print(&mut registry, config.clone());
-    if config.plugins.memes.enabled {
+    if plugin("print_image") {
+        vision::register_print(&mut registry, config.clone());
+    }
+    if plugin("memes") && config.plugins.memes.enabled {
         memes::register(&mut registry, config.clone(), paths.clone());
     }
-    if config.voice.enabled {
-        voice_chat::register(&mut registry);
+    if manifest.subsystems.voice {
+        if config.voice.enabled {
+            voice_chat::register(&mut registry);
+        }
+        if config.voice.tts.is_active() {
+            voice_speak::register(&mut registry);
+        }
     }
-    if config.voice.tts.is_active() {
-        voice_speak::register(&mut registry);
-    }
-    // 本地会话专属:平台会话有 send_message_to_user,不在 restricted 注册表里重复。
-    // 只在 QQ 的 ws 已连上时注册(TurnResources 的缓存键带了连接位,连上/掉线
-    // 会各自重建一份)。
-    if config.platforms.terminal_outreach
+    // 本地会话专属:平台会话有 send_message_to_user。只在 QQ 的 ws 已连上时
+    // 注册(TurnResources 的缓存键带了连接位,连上/掉线会各自重建一份)。
+    if plugin("platform_outreach")
+        && config.platforms.terminal_outreach
         && config.platforms.qq.enabled
         && platform_outreach::qq_connected()
     {
@@ -456,49 +524,102 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());
     }
-    if config.plugins.web_images.enabled {
+    if plugin("web_images") && config.plugins.web_images.enabled {
         web_images::register(&mut registry, config.clone(), paths.clone(), true);
     }
-    if config.plugins.deep_research.enabled {
+    if plugin("deep_research") && config.plugins.deep_research.enabled {
         let research_tools = registry.clone();
         deep_research::register(&mut registry, config.clone(), paths.clone(), research_tools);
     }
     if config.plugins.vision.enabled {
+        // 看图对 coding 也是刚需(UI 截图排错、设计稿、测试产出的图表);
+        // 聊天模型不带眼睛时由 vision 插件路由给专用视觉模型。
         vision::register(&mut registry, config.clone(), paths.clone(), true);
     }
-    if config.plugins.image_generation.enabled {
+    if plugin("image_generation") && config.plugins.image_generation.enabled {
         image_generation::register(&mut registry, config.clone(), paths.clone());
     }
-    if config.plugins.knowledge_base.enabled {
+    if plugin("knowledge_base") && config.plugins.knowledge_base.enabled {
         knowledge_base::register(&mut registry, config.clone(), paths.clone());
     }
-    if config.plugins.package_advisor.enabled {
+    if plugin("package_advisor") && config.plugins.package_advisor.enabled {
         package_advisor::register(&mut registry, paths.clone());
     }
-    if config.plugins.diagnostics.enabled {
+    if plugin("diagnostics") && config.plugins.diagnostics.enabled {
         diagnostics::register(&mut registry, config.clone());
     }
-    if config.memory_config().enabled {
+    // 记忆整套按 persona 清单构造:关着就一件工具都不注册(联想注入、日记、
+    // 前言在 agent 侧同样按清单裁决)。
+    if manifest.memory_enabled(config) {
         memory::register(&mut registry, config.clone(), paths.clone());
     }
-    // claude_code 委托工具已移除(08-21 用户裁定);中转供应商那条线不受影响。
-    let mut task_tools = registry.clone();
     // 子代理拿的是这一刻的快照,指路句也得按它自己的工具面补。
+    let mut task_tools = registry.clone();
     cross_hints::apply(&mut task_tools);
     task::register(&mut registry, config.clone(), paths.clone(), task_tools);
-    // 记账只进这张表(以及 WebUI 走的同一张)。受限平台注册表里没有它——
-    // 注册位置就是权限边界:QQ 群里的模型上下文里连工具名都不存在。
-    ledger::register(&mut registry, config.clone(), paths.clone());
-    scripts::register(&mut registry, config, paths);
+    // 记账:注册位置就是权限边界——不可信场所连工具名都不存在(trust 缺省 Owner)。
+    if plugin("ledger") {
+        ledger::register(&mut registry, config.clone(), paths.clone());
+    }
+    if plugin("scripts") {
+        // 不可信场所只收头部写了 `Trust: external` 的脚本;范围记在注册表上,
+        // 热刷新走同一条 replace_script_tools 时照样过滤。
+        if external {
+            scripts::register_external(&mut registry, config, paths);
+        } else {
+            scripts::register(&mut registry, config, paths);
+        }
+    }
     if config.mcp.enabled {
         mcp::register(&mut registry, config.clone());
+    }
+    if manifest.subsystems.skills && config.skills.enabled {
+        if let Err(error) = skills::register_skills(&mut registry, config, paths) {
+            tracing::warn!(error = %error, "failed to register skills");
+        }
+        skills::register_authoring(&mut registry, config.clone(), paths.clone());
+    }
+    if surface.interactive_questions {
+        ask_question::register(&mut registry);
     }
     // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
     // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
     // 必须仍然可执行,否则模型模仿历史会撞未知工具。
     load_tools::register(&mut registry);
+
+    // ── 场所 ──
+    if external {
+        registry.retain_trust(ToolTrust::External);
+        if registry.contains("generate_image") {
+            // 静态英文追加,所有平台会话字节一致,不影响本地注册表的描述。
+            registry.amend_description(
+                "generate_image",
+                " In messaging-platform conversations at most one image is generated per user request; the limit is enforced automatically.",
+            );
+        }
+    }
     cross_hints::apply(&mut registry);
     registry
+}
+
+/// 属主面、当前人格的全量工具目录(旧 `builtin_registry`)。
+pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+    let manifest = PersonaManifest::load(config, paths, &config.active_persona_scope());
+    compose_registry(config, paths, &manifest, Surface::owner(false))
+}
+
+/// dev persona 的工具目录:core 之上一件不挂(旧 `dev_registry`)。
+pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+    let manifest = PersonaManifest::load(config, paths, crate::state::DEV_PERSONA);
+    compose_registry(config, paths, &manifest, Surface::owner(false))
+}
+
+/// 不可信场所的工具面(旧 `restricted_platform_registry`):同一条流水线,
+/// 末尾按 `Trust: external` 筛。以前是一张硬编码白名单,现在权限位写在每件
+/// 工具自己的清单里(内置在 descriptions/*.json,脚本在头部)。
+pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+    let manifest = PersonaManifest::load(config, paths, &config.active_persona_scope());
+    compose_registry(config, paths, &manifest, Surface::external())
 }
 
 pub fn register_webui_artifact_tools(
@@ -617,107 +738,6 @@ pub fn effective_tools_loading_mode(config: &AppConfig) -> String {
     if any { "stub" } else { global }.to_string()
 }
 
-/// Build/Dev 模式工具目录:极简开发形态,"模型可见表面积最小化"。
-/// 只注册:run_command+后台任务管理、apply_patch(唯一编辑器,聚合
-/// 增/改/删文件,存在意义=diff 渲染)、todo、goal、task 子代理、web
-/// 检索与 MCP。读检索(read_file/glob/grep)、check_os_info、
-/// trash_path、知识库、多余编辑器都不注册——bash+coreutils 干得更好
-/// (验收三轮裁剪)。人格/娱乐/平台类一概不存在。记忆工具**注册**,
-/// 但作用域切到保留人格 "dev" 的独立命名空间(`dev_scoped`)。
-/// ask_question 等界面胶水与 normal 同路,由 daemon/CLI 按 surface 追加。
-pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
-    registry.set_default_timeout_secs(config.tools.default_timeout_secs);
-    install_builtin_guards(&mut registry, config);
-    // 验收三轮裁剪定稿:凡 coreutils 干得更好的都不注册——读检索
-    // (read_file/glob/grep)、check_os_info、trash_path、知识库全砍;
-    // 编辑只留 apply_patch(Add/Update/Delete File 全聚合,留它是为了
-    // diff 渲染),write_file/edit_file/edit_string 一并退场。
-    default_tools::register_run_command(&mut registry, config.skills.allow_command_execution);
-    jobs::register_management(&mut registry);
-    apply_patch::register(&mut registry);
-    todowrite::register(&mut registry, paths.clone());
-    goal::register(&mut registry, paths.clone());
-    web::register_fetch(&mut registry);
-    if config.plugins.web.enabled {
-        web::register(&mut registry, config.plugins.web.clone());
-    }
-    if config.plugins.vision.enabled {
-        // 看图对 coding 是刚需(UI 截图排错、设计稿、测试产出的图表);
-        // 聊天模型不带眼睛时由 vision 插件路由给专用视觉模型。
-        vision::register(&mut registry, config.clone(), paths.clone(), true);
-    }
-    // 记忆整套退场(09-09 用户裁定,推翻 08-16 的"dev 也要有记忆"):
-    // remember_fact/recall_memories/search_evicted_context 三件不注册,配置
-    // 层的 `dev_scoped()` 同时关掉联想注入、自动日记与 system 里的
-    // `<associative-memory>` 前言。编码回合的记忆是代码库本身,不是日记。
-    let task_tools = registry.clone();
-    task::register(&mut registry, config.clone(), paths.clone(), task_tools);
-    if config.mcp.enabled {
-        mcp::register(&mut registry, config.clone());
-    }
-    // 写代码时「跑完把结果发我手机」是真需求(09-05 用户拍板):dev 也给
-    // send_qq_message,条件与 normal 一致(终端外发开着、QQ 连着)。speak
-    // 不给——dev 提示词极简、没有语音协议,编码回合里开口念代码只是噪音。
-    if config.platforms.terminal_outreach
-        && config.platforms.qq.enabled
-        && platform_outreach::qq_connected()
-    {
-        platform_outreach::register(&mut registry, config);
-    }
-    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
-    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
-    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
-    load_tools::register(&mut registry);
-    cross_hints::apply(&mut registry);
-    registry
-}
-
-/// Tools exposed to an untrusted messaging-platform conversation. This list
-/// deliberately excludes shell, filesystem, local-image inspection, memory,
-/// knowledge-base, MCP, and tools that persist arbitrary downloads. Scripts
-/// come in only when their header says `Trust: external`(09-10 分层架构).
-/// `generate_image` is the one Writes exception: it only saves its own API
-/// output under the plugin's output directory, never an arbitrary host path.
-pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
-    registry.set_default_timeout_secs(config.tools.default_timeout_secs);
-    web::register_fetch(&mut registry);
-    // 插件关就不注册:关掉的插件仍然常驻一份完整契约,是三个面都白背的
-    // 纯浪费(08-17 实测 get_exchange_rate 311 字符)。
-    if config.plugins.exchange_rate.enabled {
-        exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
-    }
-    if config.plugins.web.enabled {
-        web::register(&mut registry, config.plugins.web.clone());
-    }
-    if config.plugins.memes.enabled {
-        memes::register_chat(&mut registry, config.clone(), paths.clone());
-    }
-    if config.plugins.image_generation.enabled {
-        image_generation::register(&mut registry, config.clone(), paths.clone());
-        // 静态英文追加,所有平台会话字节一致,不影响本地注册表的描述。
-        registry.amend_description(
-            "generate_image",
-            " In messaging-platform conversations at most one image is generated per user request; the limit is enforced automatically.",
-        );
-    }
-    if config.skills.enabled {
-        if let Err(error) = skills::register_skills(&mut registry, config, paths) {
-            tracing::warn!(error = %error, "failed to register skills for restricted platform registry");
-        }
-    }
-    // 脚本按信任位进场:头部写了 `Trust: external` 的才给不可信场所。
-    // 注册位置不再是脚本唯一的权限边界,清单自己说能不能出去。
-    scripts::register_external(&mut registry, config, paths);
-    // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
-    // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
-    // 必须仍然可执行,否则模型模仿历史会撞未知工具。
-    load_tools::register(&mut registry);
-    cross_hints::apply(&mut registry);
-    registry
-}
-
 /// 按模式与配置组装工具注册表：REPL、daemon、WebUI、子代理都从这里拿。
 ///
 /// 组装顺序有意义，不是随手排的：
@@ -741,27 +761,25 @@ pub(crate) fn build_tool_registry(
     mode: AgentMode,
     interactive_questions: bool,
 ) -> anyhow::Result<ToolRegistry> {
-    let mut registry = if config.tools.enabled {
-        match mode {
-            AgentMode::Normal => builtin_registry(config, paths),
-            AgentMode::Dev => dev_registry(config, paths),
-        }
+    // mode 只剩「哪个 persona」这一层含义:Dev = 保留人格 "dev"(清单默认
+    // core_only),Normal = 当前人格。真正裁决工具面的是 persona 清单。
+    let persona = match mode {
+        AgentMode::Dev => crate::state::DEV_PERSONA.to_string(),
+        AgentMode::Normal => config.active_persona_scope(),
+    };
+    let registry = if config.tools.enabled {
+        let manifest = PersonaManifest::load(config, paths, &persona);
+        compose_registry(
+            config,
+            paths,
+            &manifest,
+            Surface::owner(interactive_questions),
+        )
     } else {
         ToolRegistry::new()
     };
-    // 技能面只给 normal(09-09):dev 没有 manage_skill,拿到 load_skill 也
-    // 只能加载「怎么写 Miyu 技能」;而这里传的 config 未经 dev_scoped,
-    // persona 根解析成默认人格——dev 实际看见的是人格侧技能(实测清单里
-    // 是抖音下载与显卡直通),自己的 skills/personas/dev 反而从没被扫。
-    // 修作用域也只会让 dev 看见一个空目录,所以整件退场;dev 要用技能,
-    // 在 config/dev-prompt.md 里自己写一行路径即可,不占每轮字节。
-    if config.tools.enabled && config.skills.enabled && mode == AgentMode::Normal {
-        register_skills(&mut registry, config, paths)?;
-        register_skill_authoring(&mut registry, config.clone(), paths.clone());
-    }
-    if config.tools.enabled && interactive_questions {
-        register_ask_question(&mut registry);
-    }
+    // 最后登记脚本工具的显示名——要在所有注册之后,否则新注册的脚本在渲染层
+    // 会显示成原始工具名。
     register_script_display_names(&registry);
     Ok(registry)
 }
@@ -1412,7 +1430,6 @@ mod tier_schema_probe {
         }
     }
 }
-
 
 /// 三张注册表的形状指纹(09-10 分层架构阶段 4 的安全网):名字 → 定义 JSON 的
 /// sha256。三表合一之后 normal/dev/受限三个面的 tools 数组必须逐字节不变——

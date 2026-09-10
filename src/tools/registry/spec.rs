@@ -378,6 +378,7 @@ impl ToolSpec {
             if desc.timeout_seconds.is_some() {
                 self.timeout_seconds = desc.timeout_seconds;
             }
+            self.trust = desc.trust;
         }
         self
     }

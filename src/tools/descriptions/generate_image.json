@@ -1,5 +1,6 @@
 {
   "name": "generate_image",
+  "trust": "external",
   "display_name": "生成图片",
   "description": "Generate an image from a text prompt; pass reference_images (array of image paths) for image-to-image. Uses the configured OpenAI image API. On messaging platforms a reference must be an image attached this turn, a context_image_N from chat history, or a trusted avatar URL. Returns the local path of the generated image. Delivery differs by host: follow the assistant_instruction field in the result. On messaging platforms images are not delivered automatically and must be sent with send_message_to_user; local sessions display them automatically.",
   "parameters": {

@@ -7,6 +7,7 @@
 //! 过期就从 token 0 重算。
 
 use crate::agent::*;
+use crate::config::PersonaManifest;
 
 /// 会按会话状态增删的工具(dev 专用):建表时判据还不存在,原件抓在
 /// `Agent` 上,每回合由 `apply_situational_tools` 决定挂不挂。
@@ -77,7 +78,8 @@ impl Agent {
                 paths,
                 mode,
             ),
-            config.memory_config().enabled,
+            PersonaManifest::load(&config, paths, &config.active_persona_scope())
+                .memory_enabled(&config),
         );
         let tools_enabled = config.tools.enabled;
         let max_tool_rounds = config.tools.max_rounds;
@@ -95,7 +97,10 @@ impl Agent {
         // 记忆关着就不建库(dev 走这条):`init`/`identity` 都会顺手创建
         // 库文件并跑一次衰减,而这条路上没有任何东西会去读它。库身份只被
         // 写日记/redo 的一致性校验用,那两处在关闭时先一步早退。
-        let (memory_database_id, memory_generation) = if config.memory_config().enabled {
+        // 记忆子系统按 persona 清单构造:清单关着就不建库、不注入、不写日记。
+        let manifest = PersonaManifest::load(&config, paths, &config.active_persona_scope());
+        let memory_enabled = manifest.memory_enabled(&config);
+        let (memory_database_id, memory_generation) = if memory_enabled {
             memory.init()?;
             memory.identity()?
         } else {

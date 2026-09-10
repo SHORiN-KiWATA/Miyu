@@ -70,6 +70,14 @@ impl ToolRegistry {
         self.guards.push(guard);
     }
 
+    /// 场所过滤:只留信任等级够的工具。定义按名排序,所以过滤后的 tools 数组
+    /// 与「只注册这些」逐字节相同。
+    pub fn retain_trust(&mut self, trust: ToolTrust) {
+        self.tools.retain(|_, tool| tool.trust == trust);
+        self.script_tool_names
+            .retain(|name| self.tools.contains_key(name));
+    }
+
     pub fn set_script_scope(&mut self, scope: ScriptScope) {
         self.script_scope = scope;
     }

@@ -1,5 +1,6 @@
 {
   "name": "manage_meme",
+  "trust": "external",
   "display_name": "管理表情包",
   "description": "Manage this persona's meme library. action=add imports a local image, action=update edits metadata in the writable overlay, action=delete removes a user meme or disables a built-in one; only hard_delete=true deletes the file permanently.",
   "parameters": {

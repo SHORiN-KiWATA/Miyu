@@ -293,6 +293,16 @@ impl Agent {
         if !self.config.prompt.persona_reminder {
             return None;
         }
+        if !crate::config::PersonaManifest::load(
+            &self.config,
+            &self.paths,
+            &self.config.active_persona_scope(),
+        )
+        .subsystems
+        .persona_reminder
+        {
+            return None;
+        }
         match persona_hint::resolve(&self.config, &self.paths, &self.client).await {
             Ok(reminder) => reminder,
             Err(error) => {

@@ -1,5 +1,6 @@
 {
   "name": "use_meme",
+  "trust": "external",
   "display_name": "表情包",
   "description": "Send a meme. action=search finds candidates by scene, mood, tags, or visual content; action=show sends one and renders it in the terminal (GIFs preview as a static frame). Search first unless the user gave an exact id.",
   "parameters": {

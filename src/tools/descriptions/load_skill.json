@@ -1,5 +1,6 @@
 {
   "name": "load_skill",
+  "trust": "external",
   "display_name": "加载技能",
   "description": "",
   "parameters": {
