@@ -78,7 +78,10 @@ pub(in crate::web) async fn redo_turn(
     require_mutation(&headers, &state)?;
     require_local_web_session(&state, &headers, &session_id)?;
     let mode = parse_mode(request.mode.as_deref().unwrap_or("normal"))?;
-    let store = state.state_store.pinned_for_turn(&session_id);
+    let store = state
+        .stores
+        .for_session(&session_id)
+        .pinned_for_turn(&session_id);
     let candidate = store
         .redo_candidate()
         .map_err(ApiError::internal)?
@@ -325,7 +328,7 @@ pub(in crate::web) async fn create_turn(
         .map_err(ApiError::internal)?;
     // A running turn in the *target* session gets the message as a queued
     // follow-up (composer tray UX); other sessions run in parallel.
-    let target_store = state.state_store.pinned(&session_id);
+    let target_store = state.stores.for_session(&session_id).pinned(&session_id);
     let prepared = prepare_web_attachments(&target_store, &display_content, &attachment_ids)?;
     if let Some(receipt) = queue_into_running_session(
         &state,
@@ -419,7 +422,7 @@ pub(in crate::web) async fn queue_prompt(
     let identity = require_identity(&headers, &state)?;
     let session_id = resolve_turn_session(&state, Some(identity.owner_key()), request.session_id)
         .map_err(session_api_error)?;
-    let store = state.state_store.pinned(&session_id);
+    let store = state.stores.for_session(&session_id).pinned(&session_id);
     let prepared = prepare_web_attachments(&store, &display_content, &attachment_ids)?;
     // 前端把续轮挂成 live 之后,第二条起走这里;续轮要报 Owner,写死 External
     // 会被 enqueue_turn_update 的 audience 校验挡成 409。

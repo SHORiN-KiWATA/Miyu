@@ -44,8 +44,8 @@ fn default_search_limit() -> usize {
 /// 单文件上传上限:配置里 max_file_size_kb 默认 1 MB,这里给个硬顶。
 pub(in crate::web) const KB_UPLOAD_LIMIT: usize = 8 * 1024 * 1024;
 
-fn kb(state: &DaemonState) -> std::result::Result<KnowledgeBase, ApiError> {
-    let config = state.manager.lock().unwrap().config.clone();
+fn kb(state: &DaemonState, identity: &WebIdentity) -> std::result::Result<KnowledgeBase, ApiError> {
+    let config = super::dash_config_for(state, identity, "")?;
     KnowledgeBase::new(config, state.paths.clone())
         .map_err(|error| ApiError::internal(safe_error_message(&error)))
 }
@@ -77,8 +77,8 @@ pub(in crate::web) async fn dash_kb_overview(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let kb = kb(&state)?;
+    let identity = require_identity(&headers, &state)?;
+    let kb = kb(&state, &identity)?;
     let overview = blocking(move || kb.dashboard_overview()).await?;
     Ok(Json(overview))
 }
@@ -88,8 +88,8 @@ pub(in crate::web) async fn dash_kb_file(
     headers: HeaderMap,
     Query(query): Query<FileQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let kb = kb(&state)?;
+    let identity = require_identity(&headers, &state)?;
+    let kb = kb(&state, &identity)?;
     let page =
         blocking_user(move || kb.dashboard_read(&query.name, query.start, query.lines)).await?;
     Ok(Json(page))
@@ -100,14 +100,14 @@ pub(in crate::web) async fn dash_kb_search(
     headers: HeaderMap,
     Query(query): Query<SearchQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let text = query.q.trim().to_string();
     if text.is_empty() {
         return Ok(Json(
             json!({ "ok": true, "query": "", "total_matches": 0, "results": [] }),
         ));
     }
-    let kb = kb(&state)?;
+    let kb = kb(&state, &identity)?;
     let limit = Some(query.limit.clamp(1, 50));
     let result = match query.by.as_str() {
         "name" => blocking(move || kb.find_by_name_readonly(&text, limit)).await?,
@@ -126,11 +126,12 @@ pub(in crate::web) async fn dash_kb_upload(
     Query(query): Query<NameQuery>,
     body: Bytes,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     if body.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty file"));
     }
-    let kb = kb(&state)?;
+    let kb = kb(&state, &identity)?;
     let name = query.name;
     let stored = blocking_user(move || kb.dashboard_import(&name, &body)).await?;
     Ok(Json(json!({ "ok": true, "name": stored })))
@@ -141,8 +142,9 @@ pub(in crate::web) async fn dash_kb_delete(
     headers: HeaderMap,
     Query(query): Query<NameQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let kb = kb(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let kb = kb(&state, &identity)?;
     blocking_user(move || kb.dashboard_remove(&query.name)).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -151,8 +153,9 @@ pub(in crate::web) async fn dash_kb_reindex_start(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let kb = kb(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let kb = kb(&state, &identity)?;
     let result = blocking_user(move || kb.dashboard_reindex()).await?;
     Ok(Json(result))
 }
@@ -161,8 +164,8 @@ pub(in crate::web) async fn dash_kb_reindex_status(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let kb = kb(&state)?;
+    let identity = require_identity(&headers, &state)?;
+    let kb = kb(&state, &identity)?;
     let status = blocking(move || {
         let mut status = kb.dashboard_reindex_status()?;
         let overview = kb.dashboard_overview()?;
@@ -179,8 +182,9 @@ pub(in crate::web) async fn dash_kb_reindex_unlock(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let kb = kb(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let kb = kb(&state, &identity)?;
     let cleared = blocking(move || kb.dashboard_clear_stale_lock()).await?;
     Ok(Json(json!({ "ok": true, "cleared": cleared })))
 }

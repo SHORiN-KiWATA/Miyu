@@ -74,7 +74,7 @@
 - [x] 管理台闸:`/api/dash/*`、`/api/config`(GET/PUT)、思考档位、全局模型、供应商拉模型、语音、QQ 历史、记忆重置、清空统计、账号/邀请码 → `require_admin`;成员 403。前端 `data-admin-only` 隐藏侧栏设置按钮与控制台十个管理面板,成员只剩「数据统计(自己的)」与「账号」
 - [x] 事件流按归属过滤(`web/ownership.rs`):`session_id` → 归属;无则 `run_id` → 活跃回合表/`run.started` 反查;两者都没有的全局事件只给管理员。管理员也看不到成员会话的事件
 - [x] 账号面板:改显示名/密码、退出登录;管理员生成/作废邀请码、停用/恢复成员、重设密码、30 天按人用量;登录页加用户名 + 「注册账号」表单
-- [x] OOBE 三步引导(注册成功即全屏引导,有动画):①人格——直接用 Miyu 或创建自己的(名字/简介/模板或自写设定/头像/看板图);②功能——记忆开关 + 管理员白名单里的插件(`accounts.member_plugins`、`accounts.member_personas`,设置页可改);③认知——`home/<user>/profile.md`。成员私有人格 = `home/<user>/personas/<slug>/{persona.md,persona.json,persona.toml,avatar.*,board.*,memory/,skills/,scripts/}`,会话表 scope `home-<user>-<slug>`,回合里 `prompt.private_persona_dir` 覆盖(提示词/清单/记忆/技能/脚本全跟目录,资源缓存键含它);`/api/account/personas*`、`/api/account/active-persona`;账号页人格卡可切换/编辑/删除;头像走 `/api/persona/avatar?scope=`(只给本人)
+- [x] OOBE 三步引导(注册成功即全屏引导,有动画):①人格——直接用 Miyu 或创建自己的(名字/简介/自写设定可留空/头像/看板图,措辞不假定性别);②功能——记忆开关 + 管理员白名单里的插件(`accounts.member_plugins`、`accounts.member_personas`,设置页可改;视觉分析/读写文件/用量是核心常开不做开关,外发 `platform_outreach` 永不给成员;全局脚本逐个勾选 → `PersonaManifest.plugins.scripts` 白名单,注册时过滤);③认知——`home/<user>/profile.md`。激活人格时把成员名下空会话改挂到私有 scope(没有就新建),否则「建了 Eris 还是 Miyu 在答」。成员私有人格 = `home/<user>/personas/<slug>/{persona.md,persona.json,persona.toml,avatar.*,board.*,memory/,skills/,scripts/}`,会话表 scope `home-<user>-<slug>`,回合里 `prompt.private_persona_dir` 覆盖(提示词/清单/记忆/技能/脚本全跟目录,资源缓存键含它);`/api/account/personas*`、`/api/account/active-persona`;账号页人格卡可切换/编辑/删除;头像走 `/api/persona/avatar?scope=`(只给本人)
 - [x] `home/<user>/profile.md` 注入:成员回合把 `prompt.user_identity_file` 指到自己的档案(task.rs,只改 Agent 的配置副本,资源缓存键不变);管理员读 `home/<admin>/profile.md`
 - [ ] 三个钩子:信任枚举 Member(今天=Owner)、回合上下文必填 principal、run_command spawn 处沙盒策略参数(默认完全放开)——principal 已落(成员回合必带);另两个未动
 - [x] 测具 `testkit/multi-user/e2e.py`:隔离 daemon + 桩模型,登录/邀请/注册/归属/管理台闸/用量按人/SSE 归属/停用恢复
@@ -88,7 +88,7 @@
 - [x] 会话 id 不变;memory.db 不动;`MiyuPaths` 不加字段(六十处测试夹具),按标记现算 `personas_dir/artifacts_dir/ledger_dir/shared_files_dir/profile_file/conversation_db_dir/identities_dir`
 - [x] `miyu layout`(干跑计划)/`--apply`/`--rollback`(搬回并写 `.home-layout-off`,同一二进制不再自动搬,`--apply` 撤销);中断靠 journal 接续/回滚
 - [x] 导出/导入:registry 新增 home/personas/extensions 单元,`.home-layout-v1` 随档案走
-- [ ] 按人拆库(成员各自 `home/<user>/conversation.db`):今天成员会话仍在管理员库里靠 owner 列区分;StateStore 单库假设贯穿 actor/事件/队列,另立一版
+- [x] 按人拆库(成员各自 `home/<user>/conversation.db`,阶段 8):`runtime/stores.rs` `StoreRegistry`——管理员库 + 按账号懒开的成员库(`StateStore::open_member`,artifact 也落成员家里;附件本体/用量账本/账号表仍在 state 与管理员库);web 层按登录身份取库(`for_identity/for_owner`),actor 与事件归属只有会话 id 就 `for_session/owner_of_session`(先查管理员库、再查开过的成员库、最后按账号表开一遍,结果缓存);会话 id 全局唯一(时间戳+随机)所以查到即定。知识库/记账对成员 = `home/<user>/{kb,ledger}`(`AppConfig::member_home_dir`),记忆/知识库/记账 dashboard 对成员开放(`dash_config_for`)
 - [x] 测具:单测 `paths::tests::home`(搬/回滚/冲突零写入/新装/路径解析)、`config::tests::paths::home_layout_marker_redirects_identity_and_persona_paths`;真二进制 `testkit/multi-user/layout_e2e.py`(新装→跑一轮→回滚→老布局起 daemon→再搬→同会话回合还在)
 - 验证:隔离 home 上跑迁移前后 tools 指纹、会话列表、记忆召回逐一相等
 

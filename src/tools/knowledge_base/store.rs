@@ -99,6 +99,18 @@ pub(in crate::tools::knowledge_base) fn kb_root(
     }
 }
 
+/// 成员的知识库在自己家目录 `home/<用户>/kb`(「开知识库」= 自己的资料库);
+/// 管理员/终端按插件配置。
+pub(in crate::tools::knowledge_base) fn kb_root_for(
+    config: &crate::config::AppConfig,
+    paths: &MiyuPaths,
+) -> PathBuf {
+    match config.member_home_dir() {
+        Some(home) => home.join("kb"),
+        None => kb_root(&config.plugins.knowledge_base, paths),
+    }
+}
+
 pub(in crate::tools::knowledge_base) fn normalize_relative_path(value: &str) -> Result<String> {
     let path = Path::new(value.trim());
     if path.is_absolute() {

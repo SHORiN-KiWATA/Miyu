@@ -44,6 +44,29 @@ pub fn register(registry: &mut ToolRegistry, config: &crate::config::AppConfig, 
 
 /// 不可信场所的脚本面:只收头部写了 `Trust: external` 的脚本,不给 manage_script。
 /// 范围记在注册表上,热刷新走同一条 replace_script_tools 时照样过滤。
+/// 全局层(`extensions/scripts` 顶层)能被成员人格勾选的脚本:id、显示名、描述。
+/// 内置脚本只给默认人格,成员的私有人格本就扫不到,不列。
+pub(crate) fn list_global_scripts(paths: &MiyuPaths) -> Vec<(String, String, String)> {
+    match scan_scripts(&[paths.scripts_dir.as_path()]) {
+        Ok(result) => result
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let display = if entry.display_name.trim().is_empty() {
+                    entry.id.clone()
+                } else {
+                    entry.display_name.clone()
+                };
+                (entry.id, display, entry.description)
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(error = %error, "listing global scripts for persona options failed");
+            Vec::new()
+        }
+    }
+}
+
 pub fn register_external(
     registry: &mut ToolRegistry,
     config: &crate::config::AppConfig,

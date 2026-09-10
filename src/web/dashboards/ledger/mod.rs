@@ -142,8 +142,18 @@ pub(in crate::web) struct BudgetBody {
     amount: String,
 }
 
-fn open(state: &DaemonState) -> std::result::Result<LedgerDb, ApiError> {
-    LedgerDb::open(&state.paths).map_err(|error| ApiError::internal(safe_error_message(&error)))
+fn open(state: &DaemonState, identity: &WebIdentity) -> std::result::Result<LedgerDb, ApiError> {
+    LedgerDb::open_at(&ledger_db_path(state, identity)?)
+        .map_err(|error| ApiError::internal(safe_error_message(&error)))
+}
+
+/// 成员的账本在自己家目录;管理员用根布局那份。
+pub(in crate::web) fn ledger_db_path(
+    state: &DaemonState,
+    identity: &WebIdentity,
+) -> std::result::Result<PathBuf, ApiError> {
+    let config = super::dash_config_for(state, identity, "")?;
+    Ok(LedgerDb::db_path_for(&config, &state.paths))
 }
 
 fn bad_request(error: anyhow::Error) -> ApiError {
@@ -232,10 +242,10 @@ pub(in crate::web) async fn dash_ledger_overview(
     headers: HeaderMap,
     Query(query): Query<OverviewQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let paths = state.paths.clone();
+    let identity = require_identity(&headers, &state)?;
+    let db_path = ledger_db_path(&state, &identity)?;
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        let db = LedgerDb::open(&paths)?;
+        let db = LedgerDb::open_at(&db_path)?;
         let books = db.list_books(false)?;
         let (book, requested_missing) = db.resolve_book_for_display(opt(&query.book))?;
         let period = period_or_now(&query.period);
@@ -367,10 +377,10 @@ pub(in crate::web) async fn dash_ledger_entries(
     headers: HeaderMap,
     Query(query): Query<EntriesQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let paths = state.paths.clone();
+    let identity = require_identity(&headers, &state)?;
+    let db_path = ledger_db_path(&state, &identity)?;
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        let db = LedgerDb::open(&paths)?;
+        let db = LedgerDb::open_at(&db_path)?;
         let book = match opt(&query.book) {
             Some(value) => db.resolve_book(Some(value))?,
             None => db.ensure_default_book()?,

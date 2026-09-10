@@ -74,6 +74,10 @@ pub struct PluginSelection {
     /// 缺省(None)= 本机装了的、config 开着的全部;写了就是白名单。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<Vec<String>>,
+    /// 脚本工具按 id 的白名单(阶段 8:成员人格逐个勾脚本);None = 全部。
+    /// 只在 `scripts` 插件开着时有意义。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scripts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +116,7 @@ impl PersonaManifest {
             },
             plugins: PluginSelection {
                 enabled: Some(vec!["platform_outreach".to_string()]),
+                scripts: None,
             },
         }
     }

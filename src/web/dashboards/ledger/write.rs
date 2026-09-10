@@ -10,13 +10,14 @@ pub(in crate::web) async fn dash_ledger_create_entry(
     headers: HeaderMap,
     Json(body): Json<EntryBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     // 锁不能跨 await 持有，配置先取出来。
     let rate_config = {
         let manager = state.manager.lock().unwrap();
         manager.config.plugins.exchange_rate.clone()
     };
-    let db = open(&state)?;
+    let db = open(&state, &identity)?;
     let book = pick_book(&db, &body.book)?;
 
     let kind = match opt(&body.kind) {
@@ -126,10 +127,11 @@ pub(in crate::web) async fn dash_ledger_update_entry(
     Path(entry_id): Path<String>,
     Json(body): Json<EntryPatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let paths = state.paths.clone();
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db_path = ledger_db_path(&state, &identity)?;
     let value = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        let db = LedgerDb::open(&paths)?;
+        let db = LedgerDb::open_at(&db_path)?;
         let entry = db
             .get_entry(&entry_id)?
             .ok_or_else(|| anyhow::anyhow!("entry {entry_id} not found"))?;
@@ -180,8 +182,9 @@ pub(in crate::web) async fn dash_ledger_delete_entry(
     headers: HeaderMap,
     Path(entry_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     db.delete_entry(&entry_id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -191,8 +194,9 @@ pub(in crate::web) async fn dash_ledger_restore_entry(
     headers: HeaderMap,
     Path(entry_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     db.restore_entry(&entry_id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -202,8 +206,9 @@ pub(in crate::web) async fn dash_ledger_create_book(
     headers: HeaderMap,
     Json(body): Json<BookBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     let currency = validate_currency(&body.currency).map_err(bad_request)?;
     let book = db.create_book(&body.name, &currency).map_err(bad_request)?;
     Ok(Json(json!({
@@ -217,8 +222,9 @@ pub(in crate::web) async fn dash_ledger_create_account(
     headers: HeaderMap,
     Json(body): Json<AccountBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     let book = pick_book(&db, &body.book)?;
     let kind = AccountKind::parse(opt(&body.kind).unwrap_or("other")).map_err(bad_request)?;
     let account = db
@@ -238,8 +244,9 @@ pub(in crate::web) async fn dash_ledger_create_category(
     headers: HeaderMap,
     Json(body): Json<CategoryBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     let book = pick_book(&db, &body.book)?;
     let direction =
         Direction::parse(opt(&body.direction).unwrap_or("expense")).map_err(bad_request)?;
@@ -260,8 +267,9 @@ pub(in crate::web) async fn dash_ledger_set_budget(
     headers: HeaderMap,
     Json(body): Json<BudgetBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     let book = pick_book(&db, &body.book)?;
     let amount_minor = parse_amount(&body.amount, &book.base_currency).map_err(bad_request)?;
     let category_id = match opt(&body.category) {
@@ -283,8 +291,9 @@ pub(in crate::web) async fn dash_ledger_delete_budget(
     headers: HeaderMap,
     Path(budget_id): Path<String>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let db = open(&state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let db = open(&state, &identity)?;
     db.delete_budget(&budget_id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -295,12 +304,13 @@ pub(in crate::web) async fn dash_ledger_backfill_rates(
     headers: HeaderMap,
     Query(query): Query<OverviewQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let rate_config = {
         let manager = state.manager.lock().unwrap();
         manager.config.plugins.exchange_rate.clone()
     };
-    let db = open(&state)?;
+    let db = open(&state, &identity)?;
     let book = pick_book(&db, &query.book)?;
     let pending = db
         .pending_rate_entries(&book.book_id, 50)

@@ -19,6 +19,7 @@ mod questions;
 mod run;
 mod session_ops;
 mod state;
+mod stores;
 mod turn_update;
 
 pub(crate) use actor::*;
@@ -29,6 +30,7 @@ pub(crate) use questions::*;
 pub(crate) use run::*;
 pub(crate) use session_ops::*;
 pub(crate) use state::*;
+pub(crate) use stores::*;
 pub(crate) use turn_update::*;
 
 use axum::http::StatusCode;

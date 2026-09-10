@@ -10,8 +10,8 @@ use crate::ledger::money::{format_amount, parse_amount};
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
 
-pub(super) async fn list(args: Value, paths: MiyuPaths) -> Result<String> {
-    let db = open_db(&paths)?;
+pub(super) async fn list(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<String> {
+    let db = open_db(&config, &paths)?;
     let book = resolve_book(&db, &args)?;
 
     let kind = match opt_str(&args, "kind") {
@@ -77,8 +77,8 @@ pub(super) async fn list(args: Value, paths: MiyuPaths) -> Result<String> {
     .to_string())
 }
 
-pub(super) async fn summary(args: Value, paths: MiyuPaths) -> Result<String> {
-    let db = open_db(&paths)?;
+pub(super) async fn summary(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<String> {
+    let db = open_db(&config, &paths)?;
     let book = resolve_book(&db, &args)?;
     let period = match opt_str(&args, "period") {
         Some(value) => value.to_string(),
@@ -132,8 +132,8 @@ pub(super) async fn summary(args: Value, paths: MiyuPaths) -> Result<String> {
     Ok(result.to_string())
 }
 
-pub(super) async fn update(args: Value, paths: MiyuPaths) -> Result<String> {
-    let db = open_db(&paths)?;
+pub(super) async fn update(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<String> {
+    let db = open_db(&config, &paths)?;
     let book = resolve_book(&db, &args)?;
     let entry = db.resolve_entry(&book.book_id, required_str(&args, "id")?)?;
 
@@ -195,8 +195,8 @@ pub(super) async fn update(args: Value, paths: MiyuPaths) -> Result<String> {
     Ok(result.to_string())
 }
 
-pub(super) async fn delete(args: Value, paths: MiyuPaths) -> Result<String> {
-    let db = open_db(&paths)?;
+pub(super) async fn delete(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<String> {
+    let db = open_db(&config, &paths)?;
     let book = resolve_book(&db, &args)?;
     let entry = db.resolve_entry(&book.book_id, required_str(&args, "id")?)?;
     db.delete_entry(&entry.entry_id)?;

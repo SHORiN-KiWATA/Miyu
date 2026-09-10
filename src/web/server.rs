@@ -112,10 +112,12 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     let memory_organizer = MemoryOrganizer::spawn()?;
     let memory_organizer_handle = memory_organizer.handle();
     memory_organizer_handle.wake(config.clone(), paths.clone(), state_store.clone());
+    let stores = StoreRegistry::new(state_store.clone(), paths.clone());
     let (actor_tx, actor_join) = spawn_actor(
         config,
         paths.clone(),
         state_store.clone(),
+        stores.clone(),
         manager.clone(),
         events.clone(),
         questions.clone(),
@@ -143,6 +145,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         web_bind: bind_ip,
         paths,
         manager,
+        stores,
         state_store,
         events,
         questions,
@@ -667,8 +670,11 @@ pub(in crate::web) async fn bootstrap(
     let identity = require_identity(&headers, &state)?;
     let metadata_config = state.manager.lock().unwrap().config.clone();
     crate::models_cache::ensure_active_metadata(&state.paths, &metadata_config);
-    state
-        .state_store
+    let own_store = state
+        .stores
+        .for_identity(&identity)
+        .map_err(ApiError::internal)?;
+    own_store
         .recover_stale_turns()
         .map_err(ApiError::internal)?;
     // 归属(阶段 5):成员的「当前会话」是自己名下最近的一条(没有就建);
@@ -680,9 +686,9 @@ pub(in crate::web) async fn bootstrap(
             .map_err(session_api_error)?
             .into()
     };
-    let store = state.state_store.pinned(&current_session);
+    let store = own_store.pinned(&current_session);
     let owned_sessions = sessions_with_dev(
-        &state.state_store,
+        &own_store,
         &metadata_config.active_persona_scope(),
         identity.owner_key(),
     )

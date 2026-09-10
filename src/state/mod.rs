@@ -214,11 +214,21 @@ impl StateStore {
     }
 
     pub fn new(paths: &MiyuPaths) -> Result<Self> {
+        Self::new_at(paths, &paths.conversation_db_dir(), paths.artifacts_dir())
+    }
+
+    /// 成员自己的会话库:`home/<用户>/conversation.db`,artifact 也落他家里;
+    /// 附件本体、用量账本仍在 state(机器级)。
+    pub fn open_member(paths: &MiyuPaths, username: &str) -> Result<Self> {
+        let home = paths.user_home_dir(username);
+        crate::paths::ensure_private_dir(&paths.homes_dir())?;
+        crate::paths::ensure_private_dir(&home)?;
+        Self::new_at(paths, &home, home.join("artifacts"))
+    }
+
+    fn new_at(paths: &MiyuPaths, db_dir: &Path, artifacts_dir: PathBuf) -> Result<Self> {
         let state_dir = paths.state_dir.clone();
-        let conv_db = Arc::new(ConversationDb::open_at(
-            &paths.conversation_db_dir(),
-            &state_dir,
-        )?);
+        let conv_db = Arc::new(ConversationDb::open_at(db_dir, &state_dir)?);
         let platform_access = shared_platform_access_index(&state_dir, &conv_db)?;
         let session_id = Arc::new(std::sync::RwLock::new(Arc::<str>::from(
             conv_db.resolve_current_session()?,
@@ -237,7 +247,7 @@ impl StateStore {
         conv_db.discard_stale_queued_prompts(&queue_session_id, queue_owner_pid)?;
         Ok(Self {
             state_dir,
-            artifacts_dir: paths.artifacts_dir(),
+            artifacts_dir,
             shared_files_dir: paths.shared_files_dir(),
             conv_db,
             platform_access,

@@ -399,22 +399,22 @@ fn member_username(identity: &WebIdentity) -> std::result::Result<String, ApiErr
 fn plugin_label(id: &str) -> (&'static str, &'static str) {
     match id {
         "files" => ("文件", "读写工作区文件"),
-        "usage_query" => ("用量查询", "问她用了多少 token"),
+        "usage_query" => ("用量查询", "对话里问用了多少 token"),
         "alarm" => ("闹钟", "定时提醒"),
         "exchange_rate" => ("汇率", "货币换算"),
         "archlinux" => ("Arch Linux", "AUR 查询、Arch 新闻"),
         "api_quota" => ("API 额度", "查供应商余额"),
-        "print_image" => ("看图", "把图片给她看"),
+        "print_image" => ("视觉分析", "看图片和截图"),
         "memes" => ("表情包", "用表情包回复"),
         "platform_outreach" => ("外发", "从对话里给通讯平台发消息"),
         "web_images" => ("搜图", "网络找图"),
         "deep_research" => ("深度研究", "多轮检索写报告"),
         "image_generation" => ("生图", "AI 画图"),
-        "knowledge_base" => ("知识库", "查管理员的知识库"),
+        "knowledge_base" => ("知识库", "自己的资料库,对话里能查"),
         "package_advisor" => ("软件推荐", "推荐与安装软件"),
         "diagnostics" => ("系统诊断", "看系统信息"),
         "ledger" => ("记账", "记账本"),
-        "scripts" => ("脚本工具", "管理员装的脚本工具"),
+        "scripts" => ("脚本工具", "逐个勾选"),
         _ => ("", ""),
     }
 }
@@ -430,6 +430,7 @@ fn persona_json(persona: &member_persona::PrivatePersona) -> Value {
         "created_at": persona.meta.created_at,
         "memory": persona.manifest.subsystems.memory,
         "plugins": persona.manifest.plugins.enabled.clone().unwrap_or_default(),
+        "scripts": persona.manifest.plugins.scripts.clone(),
         "avatar_url": persona.avatar_path().map(|_| format!("/api/persona/avatar?scope={scope}")),
         "board_image_url": persona.board_path().map(|_| format!("/api/persona/avatar?scope={scope}&board=1")),
         "scope": scope,
@@ -443,14 +444,18 @@ pub(in crate::web) async fn account_personas(
 ) -> std::result::Result<Response, ApiError> {
     let identity = require_identity(&headers, &state)?;
     let config = state.manager.lock().unwrap().config.clone();
-    let options = config
-        .accounts
-        .allowed_member_plugins()
+    let options = member_persona::member_selectable_plugins(&config)
         .iter()
         .map(|id| {
             let (label, hint) = plugin_label(id);
             json!({ "id": id, "label": if label.is_empty() { id.as_str() } else { label }, "hint": hint })
         })
+        .collect::<Vec<_>>();
+    let scripts = crate::tools::list_global_scripts(&state.paths)
+        .into_iter()
+        .map(
+            |(id, display, description)| json!({ "id": id, "label": display, "hint": description }),
+        )
         .collect::<Vec<_>>();
     if identity.admin || identity.username.is_empty() {
         return Ok(Json(json!({
@@ -458,6 +463,7 @@ pub(in crate::web) async fn account_personas(
             "active": null,
             "member_personas": false,
             "plugins": options,
+            "scripts": scripts,
         }))
         .into_response());
     }
@@ -469,6 +475,7 @@ pub(in crate::web) async fn account_personas(
         "active": settings.active_persona,
         "member_personas": config.accounts.member_personas,
         "plugins": options,
+        "scripts": scripts,
         "prompt": std::fs::read_to_string(profile_file_for(&state.paths, &identity)).unwrap_or_default(),
     }))
     .into_response())
@@ -491,6 +498,9 @@ pub(in crate::web) struct PersonaRequest {
     pub(in crate::web) memory: bool,
     #[serde(default)]
     pub(in crate::web) plugins: Option<Vec<String>>,
+    /// 勾了哪些脚本;None = 全部。
+    #[serde(default)]
+    pub(in crate::web) scripts: Option<Vec<String>>,
     /// 建完就切成当前人格(引导里默认 true)。
     #[serde(default = "default_true_flag")]
     pub(in crate::web) activate: bool,
@@ -547,11 +557,13 @@ pub(in crate::web) async fn account_persona_create(
         board_subtitle: &request.board_subtitle,
         memory: request.memory,
         plugins,
+        scripts: request.scripts.clone(),
     };
     let persona =
         member_persona::create_or_update_persona(&config, &state.paths, &username, &slug, &draft)
             .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error.to_string()))?;
     if request.activate {
+        retarget_member_sessions(&state, &identity, &persona.scope());
         let mut settings = member_persona::load_settings(&state.paths, &username);
         settings.active_persona = Some(slug.clone());
         // 自己建了人格就不用再引导了
@@ -595,6 +607,10 @@ pub(in crate::web) async fn account_persona_update(
         board_subtitle: &request.board_subtitle,
         memory: request.memory,
         plugins,
+        scripts: request
+            .scripts
+            .clone()
+            .or_else(|| existing.manifest.plugins.scripts.clone()),
     };
     let persona =
         member_persona::create_or_update_persona(&config, &state.paths, &username, &slug, &draft)
@@ -714,8 +730,59 @@ pub(in crate::web) async fn account_active_persona(
     }
     member_persona::save_settings(&state.paths, &username, &settings)
         .map_err(ApiError::internal)?;
+    let scope = match request.slug.as_deref() {
+        Some(slug) => member_persona::load_persona(&state.paths, &username, slug)
+            .ok()
+            .flatten()
+            .map(|persona| persona.scope())
+            .unwrap_or_else(|| active_persona_scope(&state)),
+        None => active_persona_scope(&state),
+    };
+    retarget_member_sessions(&state, &identity, &scope);
     Ok(
         Json(json!({ "active": settings.active_persona, "oobe_done": settings.oobe_done }))
             .into_response(),
     )
+}
+
+/// 切了人格,成员那些还没聊过的空会话跟着换人格;一个空的都没有就新建一条,
+/// 这样「新建了 Eris,回到聊天还是 Miyu」不会再发生(09-10 反馈)。有历史的
+/// 会话保持原人格——它们的对话是按那个人格聊出来的。
+fn retarget_member_sessions(state: &DaemonState, identity: &WebIdentity, scope: &str) {
+    let owner = identity.owner_key();
+    if owner.is_empty() {
+        return;
+    }
+    let Ok(store) = state.stores.for_owner(owner) else {
+        return;
+    };
+    let Ok(sessions) = store.list_owner_sessions(owner) else {
+        return;
+    };
+    let mut has_empty_on_scope = false;
+    for overview in sessions.iter().filter(|overview| overview.turn_count == 0) {
+        if overview.record.persona == scope {
+            has_empty_on_scope = true;
+            continue;
+        }
+        if store
+            .set_session_persona(&overview.record.session_id, scope)
+            .is_ok()
+        {
+            has_empty_on_scope = true;
+            state.events.publish(
+                "session.updated",
+                json!({ "session_id": overview.record.session_id, "persona": scope }),
+            );
+        }
+    }
+    if has_empty_on_scope {
+        return;
+    }
+    if let Ok(record) =
+        store.create_session_for_owner(scope, "", crate::state::USER_SESSION_KIND, None, owner)
+    {
+        state.stores.note_session_owner(&record.session_id, owner);
+        publish_session_created(state, &record);
+    }
 }

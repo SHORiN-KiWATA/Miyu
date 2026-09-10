@@ -56,7 +56,7 @@ pub use registry::{
     ToolPermission, ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec, ToolTrust,
 };
 pub(crate) use scripts::{
-    apply_script_refresh, prepare_script_refresh, scripts_dashboard_delete,
+    apply_script_refresh, list_global_scripts, prepare_script_refresh, scripts_dashboard_delete,
     scripts_dashboard_disable, scripts_dashboard_enable, scripts_dashboard_overview,
     scripts_dashboard_register, scripts_dashboard_source,
 };
@@ -566,6 +566,11 @@ pub fn compose_registry(
         ledger::register(&mut registry, config.clone(), paths.clone());
     }
     if plugin("scripts") {
+        // 人格清单可以按 id 勾脚本(成员人格的引导里逐个勾);白名单记在注册表上,
+        // 热刷新照样过滤。
+        if let Some(ids) = &manifest.plugins.scripts {
+            registry.set_script_allowlist(ids);
+        }
         // 不可信场所只收头部写了 `Trust: external` 的脚本;范围记在注册表上,
         // 热刷新走同一条 replace_script_tools 时照样过滤。
         if external {

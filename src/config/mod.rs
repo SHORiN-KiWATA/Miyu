@@ -898,6 +898,11 @@ pub struct AccountsConfig {
     pub member_plugins: Option<Vec<String>>,
     /// 成员能否创建自己的人格(关了就只能用共享的 Miyu)。
     pub member_personas: bool,
+    /// 成员的家目录 `home/<用户>`,**只在回合/面板里由 daemon 填**,不写进配置
+    /// 文件:知识库、账本这些「人的资料」按它分家。参与序列化是为了进
+    /// TurnResourceCache 的键(工具捕获的路径随它变)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<String>,
 }
 
 impl Default for AccountsConfig {
@@ -905,7 +910,27 @@ impl Default for AccountsConfig {
         Self {
             member_plugins: None,
             member_personas: true,
+            home_dir: None,
         }
+    }
+}
+
+impl AppConfig {
+    /// 这份配置是替哪个成员跑的:家目录(None = 管理员/终端,资料在根布局的
+    /// 管理员家目录)。私有人格目录在 `home/<用户>/personas/<slug>` 下,没显式
+    /// 填家目录时从它推。
+    pub fn member_home_dir(&self) -> Option<PathBuf> {
+        if let Some(dir) = self
+            .accounts
+            .home_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty())
+        {
+            return Some(PathBuf::from(dir));
+        }
+        let persona = self.private_persona_dir()?;
+        persona.parent()?.parent().map(Path::to_path_buf)
     }
 }
 

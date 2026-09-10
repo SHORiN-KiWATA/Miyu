@@ -146,7 +146,7 @@
               <label for="registerDisplayName">显示名(可选)</label>
               <div class="login-input">
                 <span class="icon-slot" data-icon="smile" aria-hidden="true"><span class="icon-fallback">☺</span></span>
-                <input id="registerDisplayName" name="display_name" type="text" autocomplete="nickname" spellcheck="false" placeholder="她怎么称呼你">
+                <input id="registerDisplayName" name="display_name" type="text" autocomplete="nickname" spellcheck="false" placeholder="AI 怎么称呼你">
               </div>
               <label for="registerPassword">密码</label>
               <div class="login-input">
@@ -332,11 +332,11 @@
             <span class="icon-slot" data-icon="user" aria-hidden="true"><span class="icon-fallback">@</span></span>
             <span>账号</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="memory" data-admin-only>
+          <button class="con-rail-item" type="button" data-console-panel="memory">
             <span class="icon-slot" data-icon="brain" aria-hidden="true"><span class="icon-fallback">◎</span></span>
             <span>记忆</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="kb" data-admin-only>
+          <button class="con-rail-item" type="button" data-console-panel="kb">
             <span class="icon-slot" data-icon="book-open" aria-hidden="true"><span class="icon-fallback">▤</span></span>
             <span>知识库</span>
           </button>
@@ -364,7 +364,7 @@
             <span class="icon-slot" data-icon="file-code" aria-hidden="true"><span class="icon-fallback">▶</span></span>
             <span>脚本</span>
           </button>
-          <button class="con-rail-item" type="button" data-console-panel="ledger" data-admin-only>
+          <button class="con-rail-item" type="button" data-console-panel="ledger">
             <span class="icon-slot" data-icon="wallet" aria-hidden="true"><span class="icon-fallback">¥</span></span>
             <span>记账</span>
           </button>
@@ -459,7 +459,7 @@
             </div>
             <label class="acct-profile">
               <span>希望 AI 如何认知你</span>
-              <textarea id="accountProfile" rows="6" maxlength="20000" placeholder="她该怎么称呼你、你的习惯与偏好、希望她记住的事……只在 WebUI 与终端里生效,QQ 等通讯平台不会看到。"></textarea>
+              <textarea id="accountProfile" rows="6" maxlength="20000" placeholder="怎么称呼你、你的习惯与偏好、希望它记住的事"></textarea>
             </label>
             <div class="acct-actions">
               <button class="login-submit" id="accountSave" type="button">保存</button>
@@ -472,7 +472,7 @@
           </div>
           <div class="u-card" data-member-only hidden>
             <div class="u-card-head">
-              <h3>我的人格</h3><span class="u-hint">她是谁、能做什么;新会话用当前选中的那个</span>
+              <h3>我的人格</h3><span class="u-hint">新会话用当前选中的那个</span>
               <button class="secondary-button acct-head-action" id="personaCreate" type="button">
                 <span class="icon-slot" data-icon="user-plus" aria-hidden="true"><span class="icon-fallback">+</span></span>
                 <span>新建人格</span>
@@ -638,14 +638,14 @@
         </header>
         <div class="oobe-panes" id="oobePanes">
           <section class="oobe-pane is-active" data-oobe-step="1">
-            <h1>先决定她是谁</h1>
-            <p>可以直接用管理员发布的 Miyu,也可以创建一个只属于你的人格。</p>
+            <h1>先决定它是谁</h1>
+            <p>直接用管理员发布的 Miyu,或者创建一个只属于你的人格。</p>
             <div class="oobe-choice" role="radiogroup">
               <button type="button" class="oobe-option" data-persona-mode="shared" role="radio" aria-checked="false">
-                <b>直接用 Miyu</b><span>管理员调好的共享人格;她会记住你,但设定不能改</span>
+                <b>直接用 Miyu</b><span>管理员维护的共享人格,设定不可改</span>
               </button>
               <button type="button" class="oobe-option is-on" data-persona-mode="private" role="radio" aria-checked="true">
-                <b>创建我的人格</b><span>自己起名、写设定、传头像;记忆只属于你</span>
+                <b>创建我的人格</b><span>自己起名、写设定、传头像;记忆和资料只属于你</span>
               </button>
             </div>
             <div class="oobe-persona" id="oobePersonaForm">
@@ -657,11 +657,10 @@
                 </label>
                 <div class="oobe-fields">
                   <label>名字<input id="oobeName" type="text" maxlength="40" placeholder="比如:小满" autocomplete="off"></label>
-                  <label>一句话简介<input id="oobeDesc" type="text" maxlength="120" placeholder="她是什么样的人" autocomplete="off"></label>
+                  <label>一句话简介<input id="oobeDesc" type="text" maxlength="120" placeholder="可留空" autocomplete="off"></label>
                 </div>
               </div>
-              <div class="oobe-templates" id="oobeTemplates"></div>
-              <label class="oobe-prompt">设定(她会照着这段来当自己)
+              <label class="oobe-prompt">设定(可留空)
                 <textarea id="oobePrompt" rows="7" placeholder="用第二人称写:你是……"></textarea>
               </label>
               <label class="oobe-board" title="点击选看板图">
@@ -672,17 +671,21 @@
             </div>
           </section>
           <section class="oobe-pane" data-oobe-step="2">
-            <h1>她能做什么</h1>
-            <p>勾上想让她用的功能;管理员没放行的不会出现在这里。</p>
+            <h1>能做什么</h1>
+            <p>勾上要用的功能。</p>
             <label class="oobe-toggle">
               <input type="checkbox" id="oobeMemory" checked>
-              <b>长期记忆</b><span>记住你们聊过的事,下次接着聊</span>
+              <b>长期记忆</b><span>记住聊过的事,下次接着聊</span>
             </label>
             <div class="oobe-plugins" id="oobePlugins"></div>
+            <div class="oobe-scripts" id="oobeScriptsWrap" hidden>
+              <h2 class="oobe-subhead">脚本工具</h2>
+              <div class="oobe-plugins" id="oobeScripts"></div>
+            </div>
           </section>
           <section class="oobe-pane" data-oobe-step="3">
-            <h1>希望她怎么认识你</h1>
-            <p>叫你什么、你的习惯与偏好、希望她记住的事。只在网页与终端里生效,通讯平台不会看到。</p>
+            <h1>希望它怎么认识你</h1>
+            <p>叫你什么、你的习惯与偏好、希望它记住的事。</p>
             <textarea id="oobeProfile" rows="8" placeholder="比如:叫我阿满。我在东京做前端,喜欢直接的建议,不要客套。"></textarea>
           </section>
           <section class="oobe-pane" data-oobe-step="4">

@@ -16,6 +16,7 @@ pub(in crate::web) async fn actor_loop(
     mut config: AppConfig,
     paths: MiyuPaths,
     state_store: StateStore,
+    stores: StoreRegistry,
     manager: Arc<Mutex<ManagerState>>,
     events: EventHub,
     questions: QuestionBroker,
@@ -48,8 +49,12 @@ pub(in crate::web) async fn actor_loop(
                 let _ = state_store.recover_stale_turns();
                 // 会话模式定死的最终防线:无论谁构造的 StartTurn(ipc/唤醒/
                 // goal 驱动器),都按会话记录重derive 一次。
-                let mode = turn_mode_for_session(&state_store, &session_id, mode);
-                let store = state_store.pinned_for_turn(&session_id);
+                // 会话在谁的库里就用谁的(阶段 8:成员各一份);base_store 仍是
+                // 管理员库(账号表、分享清单在那)。
+                let session_store = stores.for_session(&session_id);
+                let _ = session_store.recover_stale_turns();
+                let mode = turn_mode_for_session(&session_store, &session_id, mode);
+                let store = session_store.pinned_for_turn(&session_id);
                 // Per-turn workspace: a workspace bound to the session wins,
                 // otherwise the calling client's cwd, otherwise the daemon
                 // process cwd. The resolved path scopes the whole turn task.
@@ -115,8 +120,9 @@ pub(in crate::web) async fn actor_loop(
                 mode,
                 cancel,
             } => {
-                let _ = state_store.recover_stale_turns();
-                let store = state_store.pinned_for_turn(&session_id);
+                let session_store = stores.for_session(&session_id);
+                let _ = session_store.recover_stale_turns();
+                let store = session_store.pinned_for_turn(&session_id);
                 let workspace = store
                     .session_record(&session_id)
                     .ok()
@@ -226,11 +232,12 @@ pub(in crate::web) async fn actor_loop(
                 let _ = reply.send(result);
             }
             ActorCommand::ResetConversation { session_id, reply } => {
+                let session_store = stores.for_session(&session_id);
                 let result = reset_actor_conversation(
                     &mut agent,
                     &config,
                     &paths,
-                    &state_store,
+                    &session_store,
                     &manager,
                     &events,
                     &session_id,
@@ -258,11 +265,12 @@ pub(in crate::web) async fn actor_loop(
                 let _ = reply.send(result);
             }
             ActorCommand::ClearSessionContent { session_id, reply } => {
+                let session_store = stores.for_session(&session_id);
                 let result = clear_actor_session_content(
                     &mut agent,
                     &config,
                     &paths,
-                    &state_store,
+                    &session_store,
                     &manager,
                     &session_id,
                 );
@@ -304,7 +312,7 @@ pub(in crate::web) async fn actor_loop(
             }
             ActorCommand::Undo { session_id, reply } => {
                 let result = (|| -> std::result::Result<Value, AdminFailure> {
-                    let store = state_store.pinned(&session_id);
+                    let store = stores.for_session(&session_id).pinned(&session_id);
                     let (removed, prompt) = store
                         .undo_last_turn()
                         .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
@@ -328,7 +336,7 @@ pub(in crate::web) async fn actor_loop(
                     if turn_ids.is_empty() {
                         return Ok(json!({ "turns": 0, "archived": false }));
                     }
-                    let store = state_store.pinned(&session_id);
+                    let store = stores.for_session(&session_id).pinned(&session_id);
                     let turns = store
                         .oldest_evictable_visible_turns(usize::MAX)
                         .map_err(|error| AdminFailure::Internal(safe_error_message(&error)))?;
@@ -400,7 +408,7 @@ pub(in crate::web) async fn actor_loop(
                 // 它的 &mut 借用没法跨 spawn),多一次装配换回并发。
                 let mut config = config.clone();
                 let paths = paths.clone();
-                let state_store = state_store.clone();
+                let state_store = stores.for_session(&session_id);
                 let manager = manager.clone();
                 let events = events.clone();
                 tokio::task::spawn_local(async move {
@@ -672,6 +680,7 @@ pub(in crate::web) fn spawn_actor(
     config: AppConfig,
     paths: MiyuPaths,
     state_store: StateStore,
+    stores: StoreRegistry,
     manager: Arc<Mutex<ManagerState>>,
     events: EventHub,
     questions: QuestionBroker,
@@ -697,6 +706,7 @@ pub(in crate::web) fn spawn_actor(
                 config,
                 paths,
                 state_store,
+                stores,
                 manager,
                 events,
                 questions,

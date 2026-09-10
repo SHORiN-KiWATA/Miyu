@@ -33,10 +33,11 @@ impl EventOwnerFilter {
         if let Some(allowed) = self.sessions.get(session_id) {
             return *allowed;
         }
-        let allowed = match self.state.state_store.session_record(session_id) {
-            Ok(Some(record)) => record.owner == self.owner,
+        // 会话在谁的库里(阶段 8 按人分库),就是谁的。
+        let allowed = match self.state.stores.owner_of_session(session_id) {
+            Some(owner) => owner == self.owner,
             // 查不到的会话(刚删/平台会话):管理员放行,成员不给。
-            _ => self.admin,
+            None => self.admin,
         };
         if self.sessions.len() > 4_096 {
             self.sessions.clear();

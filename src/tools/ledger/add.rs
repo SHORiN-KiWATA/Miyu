@@ -11,7 +11,7 @@ use crate::ledger::rates::convert_for_book;
 use crate::ledger::{local_day_now, now_rfc3339};
 
 pub(super) async fn run(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<String> {
-    let db = open_db(&paths)?;
+    let db = open_db(&config, &paths)?;
     // 一本账都没有时先建一本，别让「记一笔」先撞上一道配置题。
     if db.list_books(false)?.is_empty() && opt_str(&args, "book").is_none() {
         db.ensure_default_book()?;

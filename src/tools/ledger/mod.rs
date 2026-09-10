@@ -57,7 +57,8 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: MiyuPaths
             placeholder,
             move |args| {
                 let paths = paths.clone();
-                async move { manage::run(args, paths).await }
+                let config = config.clone();
+                async move { manage::run(args, paths, config).await }
             },
         )
         .writes(),
@@ -71,10 +72,10 @@ async fn run_ledger(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<
         .unwrap_or_default()
     {
         "add" => add::run(args, paths, config).await,
-        "list" => query::list(args, paths).await,
-        "summary" => query::summary(args, paths).await,
-        "update" => query::update(args, paths).await,
-        "delete" => query::delete(args, paths).await,
+        "list" => query::list(args, paths, config).await,
+        "summary" => query::summary(args, paths, config).await,
+        "update" => query::update(args, paths, config).await,
+        "delete" => query::delete(args, paths, config).await,
         other => bail!("unknown action: {other}; expected add, list, summary, update or delete"),
     }
 }
@@ -82,8 +83,8 @@ async fn run_ledger(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<
 // ── 共享零件 ────────────────────────────────────────────────
 
 /// 打开账本库。每次调用现开连接：账本操作低频，连接池是纯粹的复杂度。
-pub(super) fn open_db(paths: &MiyuPaths) -> Result<LedgerDb> {
-    LedgerDb::open(paths)
+pub(super) fn open_db(config: &AppConfig, paths: &MiyuPaths) -> Result<LedgerDb> {
+    LedgerDb::open_for(config, paths)
 }
 
 /// 取字符串参数，去空白后为空视作没给。

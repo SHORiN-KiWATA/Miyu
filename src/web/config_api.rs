@@ -274,7 +274,8 @@ pub(in crate::web) async fn get_session_models_http(
     require_auth(&headers, &state)?;
     let record = require_local_web_session(&state, &headers, &session_id)?;
     let model_override = state
-        .state_store
+        .stores
+        .for_session(&record.session_id)
         .session_model_override(&record.session_id)
         .map_err(ApiError::internal)?;
     Ok(Json(SessionModelsResponse { model_override }))

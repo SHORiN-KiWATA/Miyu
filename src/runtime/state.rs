@@ -37,7 +37,10 @@ pub(crate) struct DaemonState {
     pub(crate) web_bind: IpAddr,
     pub(crate) paths: MiyuPaths,
     pub(crate) manager: Arc<Mutex<ManagerState>>,
+    /// 管理员的库(账号表、终端/语音会话、遗留数据都在这里)。
     pub(crate) state_store: StateStore,
+    /// 按人分的会话库(阶段 8):成员各一份。
+    pub(crate) stores: StoreRegistry,
     pub(crate) events: EventHub,
     pub(crate) questions: QuestionBroker,
     pub(crate) actor_tx: mpsc::UnboundedSender<ActorCommand>,
@@ -69,6 +72,7 @@ impl DaemonState {
             web_port,
             web_public: false,
             web_bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            stores: StoreRegistry::new(state_store.clone(), paths.clone()),
             paths,
             manager,
             state_store,

@@ -198,7 +198,7 @@ pub(in crate::web) async fn upload_user_attachment(
     let decoded_name = urlencoding::decode(encoded_name)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "attachment filename is invalid"))?;
     let file_name = sanitize_attachment_file_name(&decoded_name)?;
-    let store = state.state_store.pinned(&session_id);
+    let store = state.stores.for_session(&session_id).pinned(&session_id);
     store
         .purge_stale_user_attachments()
         .map_err(ApiError::internal)?;

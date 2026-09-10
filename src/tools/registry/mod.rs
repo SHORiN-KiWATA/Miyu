@@ -40,6 +40,8 @@ pub struct ToolRegistry {
     /// 脚本可见范围:受限平台注册表只收 `Trust: external` 的脚本。热刷新
     /// 走同一条 replace_script_tools,所以范围记在注册表上而不是调用点。
     script_scope: ScriptScope,
+    /// 脚本 id 白名单(persona.toml `[plugins].scripts`);None = 全部。
+    script_allowlist: Option<BTreeSet<String>>,
 }
 
 /// 注册表收哪些脚本。
@@ -80,6 +82,11 @@ impl ToolRegistry {
 
     pub fn set_script_scope(&mut self, scope: ScriptScope) {
         self.script_scope = scope;
+    }
+
+    /// 只收这些 id 的脚本;要在注册脚本之前设,热刷新走同一条过滤。
+    pub fn set_script_allowlist(&mut self, ids: &[String]) {
+        self.script_allowlist = Some(ids.iter().cloned().collect());
     }
 
     pub fn script_scope(&self) -> ScriptScope {
@@ -169,6 +176,13 @@ impl ToolRegistry {
                 bail!("duplicate script id: {}", script.name);
             }
             if self.script_scope == ScriptScope::ExternalOnly && script.trust != ToolTrust::External
+            {
+                continue;
+            }
+            if self
+                .script_allowlist
+                .as_ref()
+                .is_some_and(|allow| !allow.contains(&script.name))
             {
                 continue;
             }

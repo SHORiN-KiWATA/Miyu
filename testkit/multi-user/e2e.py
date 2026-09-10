@@ -17,6 +17,7 @@ BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/e2e.
 import http.client
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -176,6 +177,13 @@ def main():
                                   stderr=subprocess.STDOUT)
         assert wait_http(f"{BASE}/api/health"), "daemon not up"
         time.sleep(1)
+        script_dir = HOME / "extensions/scripts"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        (script_dir / "e2e_hello.py").write_text(
+            "#!/usr/bin/env python3\n# Display name: 打招呼\n# Description: e2e sample script\n"
+            "# Timeout: 5\n# Permission: read-only\n# Parameters:\n# {\"type\": \"object\", \"properties\": {}}\n"
+            "print('hi')\n", "utf-8")
+        (script_dir / "e2e_hello.py").chmod(0o755)
 
         # 0. 家目录布局(阶段 6):新装即新布局
         marker = HOME / ".home-layout-v1"
@@ -260,6 +268,22 @@ def main():
         member_ids = {item["session_id"] for item in listing.get("sessions", [])}
         check("成员列表含自己两条会话", member_session in member_ids and member_current in member_ids
               and admin_session not in member_ids, json.dumps(sorted(member_ids)))
+        member_db = HOME / "home/alice/conversation.db"
+        check("成员有自己的会话库 home/alice/conversation.db", member_db.is_file(), str(member_db))
+        def db_session_ids(path):
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                return {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
+            finally:
+                conn.close()
+        alice_rows = db_session_ids(member_db)
+        admin_rows = db_session_ids(HOME / "home/admin/conversation.db")
+        check("成员会话只落在成员库", member_session in alice_rows and member_current in alice_rows
+              and member_session not in admin_rows and member_current not in admin_rows,
+              f"alice={len(alice_rows)} admin={len(admin_rows)}")
+        check("管理员会话只落在管理员库", admin_session in admin_rows and admin_session not in alice_rows)
+        status, _ = member.call("PATCH", f"/api/sessions/{member_session}", {"name": "改名"})
+        check("成员改名自己的会话(走成员库)", status == 200, str(status))
 
         # 5. 管理台闸
         for path in ["/api/config", "/api/dash/memory/personas", "/api/admin/invites", "/api/admin/accounts",
@@ -362,15 +386,41 @@ def main():
         status, data = member.call("GET", "/api/account/personas")
         check("成员人格列表(空)+ 可勾插件", status == 200 and data.get("personas") == [] and data.get("plugins"),
               json.dumps(data)[:160])
+        plugin_ids = {item["id"] for item in data.get("plugins", [])}
+        check("核心工具(files/print_image)与外发不在可勾清单里",
+              not ({"files", "print_image", "platform_outreach"} & plugin_ids) and "knowledge_base" in plugin_ids,
+              json.dumps(sorted(plugin_ids)))
+        script_ids = {item["id"]: item.get("label") for item in data.get("scripts", [])}
+        check("全局脚本可逐个勾选(带显示名)", script_ids.get("e2e_hello") == "打招呼", json.dumps(script_ids))
+        status, data = member.call("POST", "/api/account/personas",
+                                   {"name": "空白", "prompt": "", "memory": False, "plugins": [], "activate": False})
+        blank = data.get("persona", {})
+        check("允许不写提示词建人格", status == 201 and blank.get("slug"), f"{status} {json.dumps(data)[:120]}")
+        if blank.get("slug"):
+            member.call("DELETE", f"/api/account/personas/{blank['slug']}")
         status, boot = member.call("GET", "/api/bootstrap")
         check("注册后引导待做", boot.get("account", {}).get("oobe_pending") is True, json.dumps(boot.get("account")))
         status, data = member.call("POST", "/api/account/personas",
                                    {"name": "小满", "description": "测试人格", "prompt": "你是小满,一只会说话的橘猫,每句话结尾带喵。",
-                                    "memory": False, "plugins": ["files", "usage_query", "not-a-plugin"], "activate": True})
+                                    "memory": False, "plugins": ["knowledge_base", "ledger", "not-a-plugin"],
+                                    "scripts": ["e2e_hello", "not-a-script"], "activate": True})
         persona = data.get("persona", {})
         check("成员建人格", status == 201 and persona.get("name") == "小满" and persona.get("memory") is False,
               json.dumps(data)[:200])
-        check("插件白名单过滤掉未知 id", set(persona.get("plugins", [])) == {"files", "usage_query"}, json.dumps(persona.get("plugins")))
+        check("插件=核心常开+勾选的,未知 id 被丢",
+              set(persona.get("plugins", [])) == {"files", "print_image", "usage_query", "knowledge_base", "ledger"},
+              json.dumps(persona.get("plugins")))
+        check("脚本白名单原样存下", persona.get("scripts") == ["e2e_hello", "not-a-script"], json.dumps(persona.get("scripts")))
+        # 知识库/记账 dashboard 对成员开放,且落在成员自己家里
+        status, overview = member.call("GET", "/api/dash/kb/overview")
+        check("成员知识库 dashboard 200 且根在 home/alice/kb", status == 200
+              and overview.get("root", "").endswith("home/alice/kb"), f"{status} {overview.get('root')}")
+        status, admin_overview = admin.call("GET", "/api/dash/kb/overview")
+        check("管理员知识库根不在成员家里", status == 200 and not admin_overview.get("root", "").endswith("home/alice/kb"),
+              f"{status} {admin_overview.get('root')}")
+        status, ledger = member.call("GET", "/api/dash/ledger/overview")
+        check("成员记账 dashboard 200", status == 200, f"{status} {json.dumps(ledger)[:100]}")
+        check("成员账本落在 home/alice", (HOME / "home/alice/ledger").exists(), str(HOME / "home/alice/ledger"))
         slug = persona.get("slug")
         pdir = HOME / f"home/alice/personas/{slug}"
         check("人格目录落在 home/alice/personas", pdir.is_dir() and (pdir / "persona.md").is_file()
@@ -390,6 +440,16 @@ def main():
         check("成员头像可取", status == 200 and raw[:4] == b"\x89PNG", str(status))
         status, raw = admin.call("GET", f"/api/persona/avatar?scope={persona.get('scope')}", raw=True)
         check("管理员取成员头像 404", status == 404, str(status))
+        status, boot = member.call("GET", "/api/bootstrap")
+        boot_session = boot.get("current_session_id")
+        conn = sqlite3.connect(f"file:{member_db}?mode=ro", uri=True)
+        try:
+            current_persona = dict(conn.execute("SELECT session_id, persona FROM sessions"))
+        finally:
+            conn.close()
+        check("激活人格后成员当前会话已挂到私有 scope", bool(boot_session) and
+              "home-alice-" in str(current_persona.get(boot_session, "")),
+              f"{boot_session} -> {current_persona.get(boot_session)}")
         status, created = member.call("POST", "/api/sessions", {"name": "小满的会话"})
         sid = created.get("session", {}).get("session_id")
         check("成员新会话挂在私有人格 scope 上", status == 201 and bool(sid), str(status))

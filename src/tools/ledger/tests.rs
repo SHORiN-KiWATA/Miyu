@@ -48,7 +48,10 @@ async fn call_err(args: Value, paths: &MiyuPaths, config: &AppConfig) -> String 
 }
 
 async fn manage(args: Value, paths: &MiyuPaths) -> Value {
-    let raw = manage::run(args, paths.clone()).await.expect("manage call");
+    // 记账管理只拿 config 定「谁的账本」;默认配置 = 管理员那份。
+    let raw = manage::run(args, paths.clone(), AppConfig::default())
+        .await
+        .expect("manage call");
     serde_json::from_str(&raw).expect("tool returns json")
 }
 
@@ -435,6 +438,7 @@ async fn a_budget_belongs_to_its_own_book() {
     let error = manage::run(
         json!({"action": "delete_budget", "book": "工作", "id": id}),
         paths.clone(),
+        AppConfig::default(),
     )
     .await
     .unwrap_err()

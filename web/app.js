@@ -303,7 +303,6 @@
     oobeAvatarPreview: document.getElementById("oobeAvatarPreview"),
     oobeName: document.getElementById("oobeName"),
     oobeDesc: document.getElementById("oobeDesc"),
-    oobeTemplates: document.getElementById("oobeTemplates"),
     oobePrompt: document.getElementById("oobePrompt"),
     oobeBoardInput: document.getElementById("oobeBoardInput"),
     oobeBoardPreview: document.getElementById("oobeBoardPreview"),
@@ -10232,12 +10231,6 @@
   }
 
   /* ── 欢迎引导 / 成员人格(阶段 8) ── */
-  const OOBE_TEMPLATES = [
-    { label: "温柔陪伴", prompt: "你是{name},一个温柔、有耐心的伙伴。说话自然,像朋友聊天,不用敬语也不油腻。先听懂对方在说什么,再给具体的回应;对方情绪低落时先接住情绪,再谈办法。不要长篇大论,能一句话说清就一句话。" },
-    { label: "直白搭档", prompt: "你是{name},一个说话直接、有主见的搭档。有问题直接指出,给判断不给套话;需要取舍时先说你的选择和理由。语气随意,可以开玩笑,但不敷衍。" },
-    { label: "专业顾问", prompt: "你是{name},一位专业、克制的顾问。回答先给结论,再给依据;不确定就说不确定,并说明怎么核实。用词准确,不堆形容词,列表只在确实并列时用。" },
-    { label: "自己写", prompt: "" },
-  ];
   const oobeState = { open: false, step: 1, mode: "private", editing: null, avatarFile: null, boardFile: null, plugins: [], busy: false, reason: "first" };
 
   function oobeShowError(message) {
@@ -10281,26 +10274,6 @@
     elements.oobePersonaForm.hidden = mode !== "private";
   }
 
-  function oobeRenderTemplates() {
-    elements.oobeTemplates.replaceChildren();
-    for (const template of OOBE_TEMPLATES) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = template.label;
-      button.addEventListener("click", () => {
-        for (const other of elements.oobeTemplates.children) other.classList.remove("is-on");
-        button.classList.add("is-on");
-        if (template.prompt) {
-          elements.oobePrompt.value = template.prompt.replaceAll("{name}", elements.oobeName.value.trim() || "她");
-        } else {
-          elements.oobePrompt.value = "";
-          elements.oobePrompt.focus();
-        }
-      });
-      elements.oobeTemplates.appendChild(button);
-    }
-  }
-
   function oobeRenderPlugins(options, enabled) {
     elements.oobePlugins.replaceChildren();
     const on = new Set(enabled || options.map((option) => option.id));
@@ -10319,7 +10292,36 @@
       label.append(input, text);
       elements.oobePlugins.appendChild(label);
     }
-    if (!options.length) elements.oobePlugins.innerHTML = `<p class="u-hint">管理员没有放行任何插件;她只有核心能力。</p>`;
+    if (!options.length) elements.oobePlugins.innerHTML = `<p class="u-hint">没有可选的功能。</p>`;
+  }
+
+  function oobeRenderScripts(scripts, enabled) {
+    const wrap = document.getElementById("oobeScriptsWrap");
+    const container = document.getElementById("oobeScripts");
+    container.replaceChildren();
+    wrap.hidden = !scripts.length;
+    const on = enabled ? new Set(enabled) : null;
+    for (const script of scripts) {
+      const label = document.createElement("label");
+      label.className = "oobe-plugin";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = script.id;
+      input.checked = on ? on.has(script.id) : true;
+      const text = document.createElement("span");
+      const title = document.createElement("b");
+      title.textContent = script.label || script.id;
+      text.appendChild(title);
+      text.append(script.hint || "");
+      label.append(input, text);
+      container.appendChild(label);
+    }
+  }
+
+  function oobeSelectedScripts() {
+    const wrap = document.getElementById("oobeScriptsWrap");
+    if (wrap.hidden) return null;
+    return [...document.querySelectorAll("#oobeScripts input:checked")].map((input) => input.value);
   }
 
   function oobeSelectedPlugins() {
@@ -10353,13 +10355,14 @@
     elements.oobeBoardPreview.removeAttribute("src");
     elements.oobeMemory.checked = persona ? persona.memory !== false : true;
     elements.oobeProfile.value = "";
-    oobeRenderTemplates();
-    oobeSetMode(reason === "first" ? "private" : "private");
+    oobeSetMode("private");
     elements.oobe.querySelector(".oobe-choice").hidden = reason !== "first";
     let options = [];
+    let scripts = [];
     try {
       const data = await apiRequest("/api/account/personas").then((response) => response.json());
       options = data.plugins || [];
+      scripts = data.scripts || [];
       elements.oobeProfile.value = data.prompt || "";
       if (data.member_personas === false && reason !== "first") {
         showToast("管理员关闭了成员自建人格", "error");
@@ -10376,6 +10379,7 @@
       oobeShowError(error.message || "载入失败");
     }
     oobeRenderPlugins(options, persona ? persona.plugins : null);
+    oobeRenderScripts(scripts, persona ? persona.scripts : null);
     oobeSetStep(1);
   }
 
@@ -10405,13 +10409,13 @@
       if (oobeState.mode === "private") {
         const name = elements.oobeName.value.trim();
         const prompt = elements.oobePrompt.value.trim();
-        if (!name) { oobeSetStep(1); throw new Error("给她起个名字"); }
-        if (!prompt) { oobeSetStep(1); throw new Error("写一段设定,或点一个模板"); }
+        if (!name) { oobeSetStep(1); throw new Error("先起个名字"); }
         const body = {
           name, prompt,
           description: elements.oobeDesc.value.trim(),
           memory: elements.oobeMemory.checked,
           plugins: oobeSelectedPlugins(),
+          scripts: oobeSelectedScripts(),
           activate: true,
         };
         let persona;
@@ -10433,8 +10437,8 @@
       accountState.profile = profile;
       elements.oobeDoneTitle.textContent = oobeState.editing ? `${displayName} 已更新` : `${displayName} 准备好了`;
       elements.oobeDoneText.textContent = oobeState.mode === "private"
-        ? "新会话会用这个人格。想改设定、换头像,随时在控制台的账号页里。"
-        : "你会和大家共用 Miyu;想要自己的人格,随时在账号页里创建。";
+        ? "接下来的会话用这个人格。改设定、换头像在控制台的账号页。"
+        : "你用的是共享的 Miyu;想要自己的人格,随时在账号页里创建。";
       const avatar = oobeState.avatarFile ? URL.createObjectURL(oobeState.avatarFile) : (slug ? `/api/persona/avatar?scope=${encodeURIComponent(slug)}` : "/assets/miyu-logo.png");
       elements.oobeDoneAvatar.onerror = () => { elements.oobeDoneAvatar.hidden = true; };
       elements.oobeDoneAvatar.src = avatar;
@@ -10467,16 +10471,10 @@
       oobeState.boardFile = elements.oobeBoardInput.files?.[0] || null;
       previewImageFile(oobeState.boardFile, elements.oobeBoardPreview);
     });
-    elements.oobeName.addEventListener("input", () => {
-      const on = elements.oobeTemplates.querySelector("button.is-on");
-      const template = on ? OOBE_TEMPLATES[[...elements.oobeTemplates.children].indexOf(on)] : null;
-      if (template?.prompt) elements.oobePrompt.value = template.prompt.replaceAll("{name}", elements.oobeName.value.trim() || "她");
-    });
     elements.oobeBack.addEventListener("click", () => oobeSetStep(Math.max(1, oobeState.step - 1)));
     elements.oobeNext.addEventListener("click", () => {
       if (oobeState.step === 1 && oobeState.mode === "private") {
-        if (!elements.oobeName.value.trim()) return oobeShowError("给她起个名字");
-        if (!elements.oobePrompt.value.trim()) return oobeShowError("写一段设定,或点一个模板");
+        if (!elements.oobeName.value.trim()) return oobeShowError("先起个名字");
       }
       if (oobeState.step === 1 && oobeState.mode === "shared") return oobeSetStep(3);
       if (oobeState.step < 3) return oobeSetStep(oobeState.step + 1);
@@ -10487,7 +10485,7 @@
         await apiRequest("/api/account/active-persona", { method: "PUT", body: JSON.stringify({ slug: null, oobe_done: true }) });
       } catch (_) {}
       closeOobe();
-      showToast("随时可以在控制台的账号页里创建自己的人格", "info");
+      showToast("随时可以在账号页里创建自己的人格", "info");
     });
   }
 
@@ -10578,7 +10576,7 @@
         remove.className = "secondary-button acct-row-action";
         remove.textContent = "删除";
         remove.addEventListener("click", async () => {
-          if (!window.confirm(`删除人格「${persona.name}」?它的记忆一起删,会话保留。`)) return;
+          if (!window.confirm(`删除人格「${persona.name}」?记忆一起删,会话保留。`)) return;
           try {
             await apiRequest(`/api/account/personas/${encodeURIComponent(persona.slug)}`, { method: "DELETE" });
             await loadBootstrap();

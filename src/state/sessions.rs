@@ -313,6 +313,10 @@ impl StateStore {
         self.conv_db.create_or_get_platform_session(key, name)
     }
 
+    pub fn set_session_persona(&self, session_id: &str, persona: &str) -> Result<()> {
+        self.conv_db.set_session_persona(session_id, persona)
+    }
+
     pub fn rename_session(&self, session_id: &str, name: &str) -> Result<()> {
         self.conv_db.rename_session(session_id, name)
     }

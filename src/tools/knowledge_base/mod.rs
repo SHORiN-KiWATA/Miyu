@@ -79,7 +79,7 @@ pub struct KnowledgeBase {
 
 impl KnowledgeBase {
     pub fn new(config: AppConfig, paths: MiyuPaths) -> Result<Self> {
-        let root = kb_root(&config.plugins.knowledge_base, &paths);
+        let root = kb_root_for(&config, &paths);
         let files_dir = root.join("files");
         let meta_db = root.join("kb_meta.db");
         let semantic_db = root.join("semantic_index.db");

@@ -97,7 +97,7 @@ use crate::runtime::{
     ActorCommand, AdminFailure, AnswerFailure, ApiError, ContextSnapshot, DaemonState, EventHub,
     EventRecord, IpcRunGuard, LoginFailure, ManagerState, PlatformPersonaResetError,
     PromptDocument, PromptDocuments, QuestionBroker, RedoWebPrompt, RunInfo, RunOperation,
-    SafeQueuedPrompt, SafeUserAttachment, ThinkingVariantUpdate, TurnEngineState,
+    SafeQueuedPrompt, SafeUserAttachment, StoreRegistry, ThinkingVariantUpdate, TurnEngineState,
     TurnResourceCache, TurnUpdateMode, TurnUpdateReceipt, TurnUpdateRequest, WebAuth, WebIdentity,
 };
 use crate::state::{
@@ -310,10 +310,12 @@ impl DaemonState {
         let events = EventHub::new();
         let questions = QuestionBroker::new();
         let turn_engine = TurnEngineState::default();
+        let stores = StoreRegistry::new(state_store.clone(), paths.clone());
         let (actor_tx, actor_join) = spawn_actor(
             config,
             paths.clone(),
             state_store.clone(),
+            stores.clone(),
             manager.clone(),
             events.clone(),
             questions.clone(),
@@ -330,6 +332,7 @@ impl DaemonState {
                 web_bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 paths,
                 manager,
+                stores,
                 state_store,
                 events,
                 questions,

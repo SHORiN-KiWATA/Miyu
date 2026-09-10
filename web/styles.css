@@ -9439,6 +9439,7 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .oobe-toggle { grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 10px; align-items: center; padding: 10px 12px; border-radius: var(--radius); background: var(--surface-2); margin-bottom: 10px; cursor: pointer; }
 .oobe-toggle input { grid-row: 1 / span 2; width: 18px; height: 18px; accent-color: var(--accent); }
 .oobe-toggle b { color: var(--text); font-size: var(--fs-ui); }
+.oobe-subhead { margin: 14px 0 8px; font-size: var(--fs-meta); font-weight: 600; color: var(--text-soft); }
 .oobe-plugins { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
 .oobe-plugin { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: start; padding: 9px 10px; border-radius: var(--radius); background: var(--surface-2); cursor: pointer; font-size: var(--fs-micro); color: var(--text-soft); }
 .oobe-plugin input { margin-top: 2px; accent-color: var(--accent); }

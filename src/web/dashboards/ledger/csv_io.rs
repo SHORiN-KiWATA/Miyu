@@ -27,10 +27,10 @@ pub(in crate::web) async fn dash_ledger_export(
     headers: HeaderMap,
     Query(query): Query<OverviewQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_admin(&headers, &state)?;
-    let paths = state.paths.clone();
+    let identity = require_identity(&headers, &state)?;
+    let db_path = ledger_db_path(&state, &identity)?;
     let (name, body) = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
-        let db = LedgerDb::open(&paths)?;
+        let db = LedgerDb::open_at(&db_path)?;
         let book = match opt(&query.book) {
             Some(value) => db.resolve_book(Some(value))?,
             None => db.ensure_default_book()?,
@@ -82,12 +82,13 @@ pub(in crate::web) async fn dash_ledger_import(
     headers: HeaderMap,
     Json(body): Json<ImportBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let rate_config = {
         let manager = state.manager.lock().unwrap();
         manager.config.plugins.exchange_rate.clone()
     };
-    let db = open(&state)?;
+    let db = open(&state, &identity)?;
     let book = pick_book(&db, &body.book)?;
     let rows = crate::ledger::csv::parse_csv(&body.csv).map_err(bad_request)?;
     if rows.len() > 2000 {

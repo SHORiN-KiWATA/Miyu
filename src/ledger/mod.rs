@@ -58,8 +58,20 @@ impl LedgerDb {
         Self::open_at(&Self::db_path(paths))
     }
 
+    /// 按配置分家:成员的账本在自己家目录里,管理员/终端用根布局那份。
+    pub fn open_for(config: &crate::config::AppConfig, paths: &MiyuPaths) -> Result<Self> {
+        Self::open_at(&Self::db_path_for(config, paths))
+    }
+
     pub fn db_path(paths: &MiyuPaths) -> PathBuf {
         paths.ledger_dir().join("ledger.db")
+    }
+
+    pub fn db_path_for(config: &crate::config::AppConfig, paths: &MiyuPaths) -> PathBuf {
+        match config.member_home_dir() {
+            Some(home) => home.join("ledger").join("ledger.db"),
+            None => Self::db_path(paths),
+        }
     }
 
     /// 直接按路径打开，测试与导入导出用。

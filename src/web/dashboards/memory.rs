@@ -99,13 +99,13 @@ fn default_limit() -> usize {
 }
 
 // 人格作用域配置的取法搬到 dashboards/mod.rs 与脚本面板共用(09-05)。
-use super::persona_scoped_config;
 
 fn memory_store(
     state: &DaemonState,
+    identity: &WebIdentity,
     persona: &str,
 ) -> std::result::Result<crate::memory::MemoryStore, ApiError> {
-    let config = persona_scoped_config(state, persona)?;
+    let config = super::dash_memory_config_for(state, identity, persona)?;
     Ok(crate::memory::MemoryStore::new(&config, &state.paths))
 }
 
@@ -130,7 +130,17 @@ pub(in crate::web) async fn dash_memory_personas(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    if !identity.admin {
+        // 成员:只有自己的私有人格(有记忆库的)
+        let personas = member_persona::list_personas(&state.paths, &identity.username)
+            .map_err(ApiError::internal)?;
+        let active = member_persona::active_persona(&state.paths, &identity.username)
+            .map(|persona| persona.scope())
+            .unwrap_or_default();
+        let names: Vec<String> = personas.iter().map(|persona| persona.scope()).collect();
+        return Ok(Json(json!({ "active": active, "personas": names })));
+    }
     let config = state.manager.lock().unwrap().config.clone();
     let active = crate::config::persona_scope_name(&config.prompt.active_persona);
     let mut names = std::collections::BTreeSet::new();
@@ -153,8 +163,8 @@ pub(in crate::web) async fn dash_memory_stats(
     headers: HeaderMap,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let store = memory_store(&state, &query.persona)?;
+    let identity = require_identity(&headers, &state)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let stats = blocking(move || store.stats_readonly()).await?;
     Ok(Json(stats))
 }
@@ -164,7 +174,7 @@ pub(in crate::web) async fn dash_memory_items(
     headers: HeaderMap,
     Query(params): Query<BrowseParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let table = parse_table(&params.table)?;
     let stage = match params.stage.trim() {
         "" | "all" => None,
@@ -173,7 +183,7 @@ pub(in crate::web) async fn dash_memory_items(
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid stage"))?,
         ),
     };
-    let store = memory_store(&state, &params.persona)?;
+    let store = memory_store(&state, &identity, &params.persona)?;
     let query = BrowseQuery {
         text: params.q,
         status: params.status,
@@ -200,9 +210,9 @@ pub(in crate::web) async fn dash_memory_item(
     Path((table, id)): Path<(String, i64)>,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let table = parse_table(&table)?;
-    let store = memory_store(&state, &query.persona)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let detail = blocking(move || {
         let Some(item) = store.browse_item(table, id)? else {
             return Ok(None);
@@ -237,9 +247,10 @@ pub(in crate::web) async fn dash_memory_patch(
     Query(query): Query<PersonaQuery>,
     Json(body): Json<PatchBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let table = parse_table(&table)?;
-    let store = memory_store(&state, &query.persona)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let patch = BrowsePatch {
         content: body.content,
         status: body.status,
@@ -271,9 +282,10 @@ pub(in crate::web) async fn dash_memory_delete(
     Path((table, id)): Path<(String, i64)>,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let table = parse_table(&table)?;
-    let store = memory_store(&state, &query.persona)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let deleted = blocking(move || store.delete_item(table, id)).await?;
     if !deleted {
         return Err(ApiError::new(
@@ -291,7 +303,8 @@ pub(in crate::web) async fn dash_memory_add_fact(
     Query(query): Query<PersonaQuery>,
     Json(body): Json<AddFactBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     let content = body.content.trim().to_string();
     if content.is_empty() || content.chars().count() > 4000 {
         return Err(ApiError::new(
@@ -304,7 +317,7 @@ pub(in crate::web) async fn dash_memory_add_fact(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "dashboard".to_string());
-    let store = memory_store(&state, &query.persona)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let id = blocking(move || store.remember_fact(&content, &source)).await?;
     if id == 0 {
         return Err(ApiError::new(
@@ -320,8 +333,8 @@ pub(in crate::web) async fn dash_memory_evicted(
     headers: HeaderMap,
     Query(params): Query<EvictedParams>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let store = memory_store(&state, &params.persona)?;
+    let identity = require_identity(&headers, &state)?;
+    let store = memory_store(&state, &identity, &params.persona)?;
     let query = EvictedQuery {
         text: params.q,
         role: params.role,
@@ -342,8 +355,8 @@ pub(in crate::web) async fn dash_memory_evicted_item(
     Path(id): Path<i64>,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin(&headers, &state)?;
-    let store = memory_store(&state, &query.persona)?;
+    let identity = require_identity(&headers, &state)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let item = blocking(move || store.browse_evicted_item(id)).await?;
     item.map(|item| Json(json!({ "ok": true, "item": item })))
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "evicted turn not found"))
@@ -355,8 +368,9 @@ pub(in crate::web) async fn dash_memory_evicted_delete(
     Path(id): Path<i64>,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let store = memory_store(&state, &query.persona)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     let deleted = blocking(move || store.delete_evicted_item(id)).await?;
     if !deleted {
         return Err(ApiError::new(
@@ -372,8 +386,9 @@ pub(in crate::web) async fn dash_memory_evicted_clear(
     headers: HeaderMap,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let store = memory_store(&state, &query.persona)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     blocking(move || store.clear_evicted_context()).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -383,8 +398,9 @@ pub(in crate::web) async fn dash_memory_pending_clear(
     headers: HeaderMap,
     Query(query): Query<PersonaQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let store = memory_store(&state, &query.persona)?;
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let store = memory_store(&state, &identity, &query.persona)?;
     blocking(move || store.clear_pending_events()).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -399,9 +415,10 @@ pub(in crate::web) async fn dash_memory_reset(
     Query(query): Query<PersonaQuery>,
     Json(body): Json<ResetBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    require_admin_mutation(&headers, &state)?;
-    let config = persona_scoped_config(&state, &query.persona)?;
-    let scope = crate::config::persona_scope_name(&config.prompt.active_persona);
+    require_mutation(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
+    let config = super::dash_memory_config_for(&state, &identity, &query.persona)?;
+    let scope = config.active_persona_scope();
     if body.confirm.trim() != scope {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

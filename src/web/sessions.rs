@@ -17,8 +17,12 @@ pub(in crate::web) async fn list_sessions_http(
     let persona = active_persona_scope(&state);
     // 侧栏按模式分组:普通+dev 一起下发,mode 字段区分(问题七)。
     // 归属(阶段 5):各人只看自己名下的;管理员名下 = 遗留 + 终端 + 自己建的。
-    let sessions = sessions_with_dev(&state.state_store, &persona, identity.owner_key())
+    let store = state
+        .stores
+        .for_identity(&identity)
         .map_err(ApiError::internal)?;
+    let sessions =
+        sessions_with_dev(&store, &persona, identity.owner_key()).map_err(ApiError::internal)?;
     let current = current_session_for(&state, &identity, &sessions);
     let sessions = sessions
         .iter()
@@ -50,8 +54,11 @@ pub(in crate::web) fn member_current_session(
     state: &DaemonState,
     owner: &str,
 ) -> std::result::Result<String, String> {
-    let sessions = state
-        .state_store
+    let store = state
+        .stores
+        .for_owner(owner)
+        .map_err(|error| safe_error_message(&error))?;
+    let sessions = store
         .list_owner_sessions(owner)
         .map_err(|error| safe_error_message(&error))?;
     if let Some(overview) = sessions
@@ -61,10 +68,10 @@ pub(in crate::web) fn member_current_session(
         return Ok(overview.record.session_id.clone());
     }
     let persona = member_session_persona(state, owner);
-    let record = state
-        .state_store
+    let record = store
         .create_session_for_owner(&persona, "", crate::state::USER_SESSION_KIND, None, owner)
         .map_err(|error| safe_error_message(&error))?;
+    state.stores.note_session_owner(&record.session_id, owner);
     publish_session_created(state, &record);
     Ok(record.session_id)
 }
@@ -136,7 +143,9 @@ pub(in crate::web) async fn create_session_http(
             .map(|name| name.trim().to_string())
             .unwrap_or_default();
         let record = state
-            .state_store
+            .stores
+            .for_identity(&identity)
+            .map_err(ApiError::internal)?
             .create_session_for_owner(
                 &member_session_persona(&state, identity.owner_key()),
                 &name,
@@ -145,6 +154,9 @@ pub(in crate::web) async fn create_session_http(
                 identity.owner_key(),
             )
             .map_err(ApiError::internal)?;
+        state
+            .stores
+            .note_session_owner(&record.session_id, identity.owner_key());
         publish_session_created(&state, &record);
         let data = json!({ "session": session_record_json(&record) });
         return Ok((StatusCode::CREATED, Json(data)).into_response());
@@ -260,7 +272,7 @@ pub(in crate::web) async fn session_turns_http(
 ) -> std::result::Result<Response, ApiError> {
     require_auth(&headers, &state)?;
     require_local_web_session(&state, &headers, &session_id)?;
-    let store = state.state_store.pinned(&session_id);
+    let store = state.stores.for_session(&session_id).pinned(&session_id);
     let mut assets_by_turn = HashMap::<String, Vec<ImageAsset>>::new();
     for asset in store.load_image_assets().map_err(ApiError::internal)? {
         assets_by_turn
@@ -363,7 +375,10 @@ pub(in crate::web) async fn delete_session_http(
     if let Err(error) = deleted {
         if let Some(record) = &replacement {
             // 没删成就不该多出一个空会话;删不掉也只是留个空壳,不遮原错误。
-            let _ = state.state_store.delete_session(&record.session_id);
+            let _ = state
+                .stores
+                .for_session(&record.session_id)
+                .delete_session(&record.session_id);
             state.events.publish(
                 "session.deleted",
                 json!({ "session_id": record.session_id }),
@@ -382,7 +397,11 @@ fn replacement_for_last_session(
     session_id: &str,
 ) -> std::result::Result<Option<crate::state::SessionRecord>, ApiError> {
     let persona = active_persona_scope(state);
-    let others_remain = sessions_with_dev(&state.state_store, &persona, identity.owner_key())
+    let own_store = state
+        .stores
+        .for_identity(identity)
+        .map_err(ApiError::internal)?;
+    let others_remain = sessions_with_dev(&own_store, &persona, identity.owner_key())
         .map_err(ApiError::internal)?
         .iter()
         .any(|overview| {
@@ -393,8 +412,7 @@ fn replacement_for_last_session(
         return Ok(None);
     }
     // 只在被删的确实是个可见会话时才顶替:id 打错了直接让删除那步报 404。
-    let exists = state
-        .state_store
+    let exists = own_store
         .session_record(session_id)
         .map_err(ApiError::internal)?
         .is_some();
@@ -407,8 +425,7 @@ fn replacement_for_last_session(
     } else {
         member_session_persona(state, identity.owner_key())
     };
-    let record = state
-        .state_store
+    let record = own_store
         .create_session_for_owner(
             &persona,
             "",
@@ -417,6 +434,9 @@ fn replacement_for_last_session(
             identity.owner_key(),
         )
         .map_err(ApiError::internal)?;
+    state
+        .stores
+        .note_session_owner(&record.session_id, identity.owner_key());
     publish_session_created(state, &record);
     Ok(Some(record))
 }
@@ -440,7 +460,15 @@ pub(in crate::web) fn resolve_local_session_ref_with_kinds(
     kinds: &[&str],
     owner: Option<&str>,
 ) -> std::result::Result<crate::state::SessionRecord, String> {
-    let store = &state.state_store;
+    // 归属键给了就用那个人的库(成员自己一份);IPC/桥(None)= 管理员库。
+    let store = match owner {
+        Some(owner) if !owner.is_empty() => state
+            .stores
+            .for_owner(owner)
+            .map_err(|error| safe_error_message(&error))?,
+        _ => state.state_store.clone(),
+    };
+    let store = &store;
     let persona = active_persona_scope(state);
     let record = match target {
         ipc::SessionRef::Current => match owner {
@@ -680,7 +708,7 @@ pub(in crate::web) async fn reset_conversation(
             .to_string(),
     };
     require_local_web_session(&state, &headers, &session_id)?;
-    let store = state.state_store.pinned(&session_id);
+    let store = state.stores.for_session(&session_id).pinned(&session_id);
     if store.has_running_turns().map_err(ApiError::internal)? {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
@@ -998,8 +1026,8 @@ pub(in crate::web) fn session_state_for(
     state: &DaemonState,
     session_id: &str,
 ) -> Result<ipc::SessionState> {
-    let record = state
-        .state_store
+    let session_store = state.stores.for_session(session_id);
+    let record = session_store
         .session_record(session_id)?
         .with_context(|| format!("session not found: {session_id}"))?;
     let current_session_id = state.state_store.session_id();
@@ -1007,7 +1035,7 @@ pub(in crate::web) fn session_state_for(
     // (actor)都套了这条覆盖,快照路此前漏了:打开页面、刷新、切换会话时
     // 上下文条显示的都是全局池的窗口,要跑完一轮才被 run.completed 纠正。
     let mut config = state.manager.lock().unwrap().config.clone();
-    apply_session_model_override_to(&mut config, &state.state_store, session_id);
+    apply_session_model_override_to(&mut config, &session_store, session_id);
     let mut context = if &*current_session_id == session_id {
         state.manager.lock().unwrap().context
     } else {
@@ -1018,7 +1046,7 @@ pub(in crate::web) fn session_state_for(
         } else {
             (config.clone(), AgentMode::Normal)
         };
-        let store = state.state_store.pinned(session_id);
+        let store = session_store.pinned(session_id);
         current_context(&build_session_agent(&config, &state.paths, &store, mode)?)?
     };
     if let Some((window, source)) = config.active_context_window_with_source()? {

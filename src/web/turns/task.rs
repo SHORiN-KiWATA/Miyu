@@ -152,7 +152,7 @@ async fn run_turn_task_inner(
         .as_ref()
         .is_none_or(|profile| profile.text_models.is_none())
     {
-        apply_session_model_override_to(&mut config, &base_store, &session_id);
+        apply_session_model_override_to(&mut config, &store, &session_id);
     }
     // 程序驱动 CLI 的「仅本回合」覆盖。模型池改的是这份私有 config(与会话
     // 覆盖同路,取值有限,TurnResourceCache 扛得住);其余项走 Agent 字段,
@@ -220,6 +220,9 @@ async fn run_turn_task_inner(
             .map(|record| record.persona)
             .unwrap_or_default();
         if let Some(account) = base_store.account_by_id(&owner).ok().flatten() {
+            // 家目录先进配置:知识库、账本按人分家,用共享 Miyu 也一样。
+            config.accounts.home_dir =
+                Some(paths.user_home_dir(&account.username).display().to_string());
             if let Some(persona) =
                 member_persona::persona_for_scope(&paths, &account.username, &scope)
             {

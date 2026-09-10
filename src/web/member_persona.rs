@@ -204,26 +204,54 @@ pub(crate) struct PersonaDraft<'a> {
     pub(crate) board_subtitle: &'a str,
     pub(crate) memory: bool,
     pub(crate) plugins: Vec<String>,
+    /// 勾了哪些脚本(id);None = 脚本工具整体不启用时无所谓,启用时 = 全部。
+    pub(crate) scripts: Option<Vec<String>>,
 }
 
-/// 只留管理员放行的插件;子系统里语音/情绪对成员没意义,一律关。
+/// 成员人格里不摆开关的核心能力:文件读写、视觉分析、用量查询——永远带上。
+pub(crate) const MEMBER_CORE_PLUGINS: &[&str] = &["files", "print_image", "usage_query"];
+/// 成员永远拿不到的:从对话里往通讯平台发消息是管理员的事。
+pub(crate) const MEMBER_NEVER_PLUGINS: &[&str] = &["platform_outreach"];
+
+/// 成员在引导/人格页里能勾的插件:管理员白名单 − 核心常开 − 永不给。
+pub(crate) fn member_selectable_plugins(config: &AppConfig) -> Vec<String> {
+    config
+        .accounts
+        .allowed_member_plugins()
+        .into_iter()
+        .filter(|id| !MEMBER_CORE_PLUGINS.contains(&id.as_str()))
+        .filter(|id| !MEMBER_NEVER_PLUGINS.contains(&id.as_str()))
+        .collect()
+}
+
+/// 只留管理员放行的插件,核心三件常开,外发永不给;子系统里语音/情绪对
+/// 成员没意义,一律关。
 pub(crate) fn manifest_for_member(
     config: &AppConfig,
     memory: bool,
     plugins: &[String],
+    scripts: Option<&[String]>,
 ) -> PersonaManifest {
     let allowed = config.accounts.allowed_member_plugins();
     let mut manifest = PersonaManifest::all();
     manifest.subsystems.memory = memory;
     manifest.subsystems.voice = false;
     manifest.subsystems.emotion = false;
-    manifest.plugins.enabled = Some(
-        plugins
-            .iter()
-            .filter(|id| allowed.iter().any(|item| item == *id))
-            .cloned()
-            .collect(),
-    );
+    let mut enabled: Vec<String> = MEMBER_CORE_PLUGINS
+        .iter()
+        .map(|id| id.to_string())
+        .filter(|id| allowed.iter().any(|item| item == id))
+        .collect();
+    for id in plugins {
+        if allowed.iter().any(|item| item == id)
+            && !MEMBER_NEVER_PLUGINS.contains(&id.as_str())
+            && !enabled.contains(id)
+        {
+            enabled.push(id.clone());
+        }
+    }
+    manifest.plugins.enabled = Some(enabled);
+    manifest.plugins.scripts = scripts.map(|ids| ids.to_vec());
     manifest
 }
 
@@ -239,10 +267,8 @@ pub(crate) fn create_or_update_persona(
     if name.is_empty() || name.chars().count() > 40 {
         bail!("persona name must be 1 to 40 characters");
     }
+    // 设定可以留空:空的时候走内置默认提示词,只有名字和头像是这个人格的。
     let prompt = draft.prompt.trim();
-    if prompt.is_empty() {
-        bail!("persona prompt must not be empty");
-    }
     if prompt.chars().count() > MAX_PROMPT_CHARS {
         bail!("persona prompt is too long");
     }
@@ -267,7 +293,12 @@ pub(crate) fn create_or_update_persona(
     };
     fs::write(dir.join("persona.md"), format!("{prompt}\n"))?;
     fs::write(dir.join("persona.json"), serde_json::to_vec_pretty(&meta)?)?;
-    let manifest = manifest_for_member(config, draft.memory, &draft.plugins);
+    let manifest = manifest_for_member(
+        config,
+        draft.memory,
+        &draft.plugins,
+        draft.scripts.as_deref(),
+    );
     fs::write(dir.join("persona.toml"), manifest.to_toml())?;
     Ok(PrivatePersona {
         username: username.to_string(),

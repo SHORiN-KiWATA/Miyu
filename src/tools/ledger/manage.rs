@@ -6,12 +6,12 @@
 use super::*;
 use crate::ledger::money::{format_amount, parse_amount, validate_currency};
 
-pub(super) async fn run(args: Value, paths: MiyuPaths) -> Result<String> {
+pub(super) async fn run(args: Value, paths: MiyuPaths, config: AppConfig) -> Result<String> {
     let action = args
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let db = open_db(&paths)?;
+    let db = open_db(&config, &paths)?;
     match action {
         "create_book" => create_book(&db, &args),
         "create_account" => create_account(&db, &args),

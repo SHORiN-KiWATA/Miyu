@@ -493,6 +493,11 @@ impl ConversationDb {
         self.update_session_field(session_id, "name", Some(name))
     }
 
+    /// 改会话的人格 scope。只给还没聊过的空会话用(切人格时跟着换)。
+    pub fn set_session_persona(&self, session_id: &str, persona: &str) -> Result<()> {
+        self.update_session_field(session_id, "persona", Some(persona))
+    }
+
     pub fn set_session_workspace(&self, session_id: &str, workspace: Option<&str>) -> Result<()> {
         self.update_session_field(session_id, "workspace", workspace)
     }

@@ -606,12 +606,14 @@ pub(in crate::web) fn require_local_web_session(
     session_id: &str,
 ) -> std::result::Result<crate::state::SessionRecord, ApiError> {
     let identity = require_identity(headers, state)?;
-    let record = state
-        .state_store
+    let store = state
+        .stores
+        .for_identity(&identity)
+        .map_err(ApiError::internal)?;
+    let record = store
         .session_record(session_id)
         .map_err(ApiError::internal)?;
-    let is_platform = state
-        .state_store
+    let is_platform = store
         .is_platform_session(session_id)
         .map_err(ApiError::internal)?;
     match record {
