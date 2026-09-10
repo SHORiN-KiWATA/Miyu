@@ -7,6 +7,7 @@ web/*.js 与 styles.css 编进二进制,所以 WEB 给的是哪个目录,页面�
 Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二进制本身不用重编。
 
 判定项(一轮「思考 → 2 工具 → 说话 → 1 失败工具 → 思考 → 1 工具 → 最终回答」):
+  fold_synced        收起动画逐帧看,线的底端不超过裁剪底边;收完线高 0;开合期间线无 transition
   think_peek         思考内容收着时,思考中那一行里滚着正在想的话(尾部对齐)
   peek_stays_after   想完之后收着的那行里窥视文字还在,展开时藏起
   command_dedup      命令签跑完展开只有「参数」「结果」两块(流式输出已藏),收起态没有输出预览气泡
@@ -220,6 +221,22 @@ def main():
             report["command_panel"] = page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); const c = cards[cards.length - 1]; return { visibleDetails: [...c.querySelectorAll('.tool-detail')].filter(d => !d.hidden).map(d => d.querySelector('.tool-detail-label')?.textContent), preview: c.querySelector('.tool-command-output-preview') ? getComputedStyle(c.querySelector('.tool-command-output-preview')).display : null }; }")
             page.screenshot(path=str(OUT / "04-expanded.png"))
             report["rail_after_expand"] = page.evaluate(GROUPS_JS)["lines"][1]["railHeight"]
+            # 收起动画期间逐帧看:线的底端不能超过 wrap 当前的裁剪底边(内容收到哪线就到哪)
+            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
+            samples = []
+            for _ in range(8):
+                page.wait_for_timeout(45)
+                samples.append(page.evaluate("""() => {
+                  const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1];
+                  const box = l.getBoundingClientRect(); const zoom = l.offsetWidth ? box.width / l.offsetWidth : 1;
+                  const rail = l.querySelector('.proc-rail'); const clip = l.querySelector('.proc-wrap > div').getBoundingClientRect();
+                  const railBottom = parseFloat(rail.style.top || '0') + parseFloat(rail.style.height || '0');
+                  return { railBottom, clipBottom: (clip.bottom - box.top) / zoom, transition: getComputedStyle(rail).transitionDuration };
+                }"""))
+            page.wait_for_timeout(500)
+            final_rail = page.evaluate(GROUPS_JS)["lines"][1]["railHeight"]
+            report["fold_samples"] = samples
+            report["fold_synced"] = all(s["railBottom"] <= s["clipBottom"] + 1.5 for s in samples) and final_rail == 0 and any(s["transition"] == "0s" for s in samples)
 
             # 刷新:回看那份
             page.reload()
@@ -288,7 +305,7 @@ def main():
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
     cp = report.get("command_panel") or {}
     report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") == "none"
-    keys = ["think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    keys = ["fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")
