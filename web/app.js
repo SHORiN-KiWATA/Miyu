@@ -4542,6 +4542,27 @@
     renderUserText(bubble, textContent);
     bubble.hidden = !textContent.trim();
     const attachments = createUserAttachments(attributes.attachments);
+    if (attributes.queued) {
+      // 排队的消息:直接画在对话末尾,像一条已经发出去的,只是左边挂一枚「排队中」小签
+      // 和一个撤下按钮。轮到它时 consumeLiveQueue 会画真的那条,这条随之撤掉。
+      article.classList.add("is-queued");
+      article.dataset.queueId = String(attributes.queueId || "");
+      const badge = document.createElement("span");
+      badge.className = "queue-badge";
+      const label = document.createElement("span");
+      label.textContent = "排队中";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "queue-remove";
+      remove.title = "撤下这条排队消息";
+      remove.setAttribute("aria-label", "撤下这条排队消息");
+      remove.appendChild(makeIconSlot("x"));
+      remove.addEventListener("click", () => removeQueuedPrompt(attributes.queueId));
+      badge.append(label, remove);
+      if (attachments) article.appendChild(attachments);
+      article.append(badge, bubble);
+      return article;
+    }
     const actions = document.createElement("div");
     actions.className = "message-actions";
     if (attributes.revisionTarget) {
@@ -6109,7 +6130,10 @@
       if (!liveViewed(live)) continue;
       // 落库的 running 占位与直播气泡是同一轮:重挂前撤掉占位。
       removeRunningStatus(live.turnId);
-      if (!live.article.isConnected) elements.timeline.appendChild(live.article);
+      if (!live.article.isConnected) {
+        elements.timeline.appendChild(live.article);
+        pinQueuedMessages();
+      }
       if (live.stopButton && !live.stopButton.isConnected) {
         elements.liveStopRail.appendChild(live.stopButton);
         elements.liveStopRail.hidden = false;
@@ -6175,32 +6199,52 @@
     return isSyntheticTurnContent(raw);
   }
 
+  // 排队的消息不再放输入框上方的托盘,直接画在对话末尾(用户气泡 + 「排队中」小签),
+  // 就是它轮到时会出现的位置。这里按 state.queuedPrompts 同步时间线里的占位:
+  // 少了的撤掉,多了的补上,顺序和位置(永远在最后)由 pinQueuedMessages 兜底。
   function renderQueueTray() {
-    // 后台任务完成的自动跟进不是用户消息，不在排队托盘里显示。
+    // 后台任务完成的自动跟进不是用户消息，不画。
     const prompts = (Array.isArray(state.queuedPrompts) ? state.queuedPrompts : [])
       .filter((prompt) => !isJobFollowupContent(prompt?.content) && !isJobFollowupContent(prompt?.display_content));
-    elements.queueTray.replaceChildren();
-    elements.queueTray.hidden = prompts.length === 0;
-    for (const prompt of prompts) {
-      const row = document.createElement("div");
-      row.className = "queue-item";
-      const text = document.createElement("span");
-      const attachmentCount = Array.isArray(prompt?.attachments) ? prompt.attachments.length : 0;
-      const promptText = String(prompt?.content || "").trim();
-      text.textContent = attachmentCount
-        ? `${promptText || "附件消息"} · ${attachmentCount} 个附件`
-        : promptText;
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "queue-remove";
-      remove.title = "移除排队消息";
-      remove.setAttribute("aria-label", "移除排队消息");
-      remove.appendChild(makeIconSlot("x"));
-      remove.addEventListener("click", () => removeQueuedPrompt(prompt.id));
-      row.append(text, remove);
-      elements.queueTray.appendChild(row);
+    if (elements.queueTray) {
+      elements.queueTray.replaceChildren();
+      elements.queueTray.hidden = true;
     }
+    const ids = new Set(prompts.map((prompt) => String(prompt?.id)));
+    for (const node of elements.timeline.querySelectorAll(".user-message.is-queued")) {
+      if (!ids.has(String(node.dataset.queueId))) node.remove();
+    }
+    let added = null;
+    for (const prompt of prompts) {
+      const id = String(prompt?.id);
+      if (queuedMessageNode(id)) continue;
+      const node = createUserMessage(prompt?.content || "", prompt?.submitted_at || new Date(), {
+        queued: true,
+        queueId: id,
+        attachments: prompt?.attachments
+      });
+      if (!node) continue;
+      elements.timeline.appendChild(node);
+      added = node;
+    }
+    pinQueuedMessages();
+    if (added) contentAdded(added);
     updateControlState();
+  }
+
+  function queuedMessageNode(id) {
+    for (const node of elements.timeline.querySelectorAll(".user-message.is-queued")) {
+      if (String(node.dataset.queueId) === String(id)) return node;
+    }
+    return null;
+  }
+
+  // 排队占位永远贴在时间线末尾,按排队顺序:直播气泡后挂进来、回合重建之后都要再钉一次
+  function pinQueuedMessages() {
+    for (const prompt of Array.isArray(state.queuedPrompts) ? state.queuedPrompts : []) {
+      const node = queuedMessageNode(prompt?.id);
+      if (node && node !== elements.timeline.lastElementChild) elements.timeline.appendChild(node);
+    }
   }
 
   async function removeQueuedPrompt(promptId) {
@@ -6505,7 +6549,10 @@
     streamRail.className = "assistant-stream-rail";
     streamRail.hidden = true;
     article.append(header, bubble, meta, streamRail);
-    if (viewed) elements.timeline.appendChild(article);
+    if (viewed) {
+      elements.timeline.appendChild(article);
+      pinQueuedMessages();
+    }
     live.article = article;
     live.blocks = blocks;
     live.headerStatus = status;

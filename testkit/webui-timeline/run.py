@@ -7,6 +7,8 @@ web/*.js 与 styles.css 编进二进制,所以 WEB 给的是哪个目录,页面�
 Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二进制本身不用重编。
 
 判定项(一轮「思考 → 2 工具 → 说话 → 1 失败工具 → 思考 → 1 工具 → 最终回答」):
+  queue_inline       跑着的时候再发一条:作为「排队中」用户气泡出现在时间线末尾(直播气泡之后),托盘不出现
+  queue_settles      第一轮结束、排队那条轮到之后:占位撤掉,真正的用户消息出现
   peek_left_aligned  放得下的窥视文字贴着时间左对齐,不带 is-overflow
   peek_tail_on_overflow 手机宽度放不下时切到尾部可见(is-overflow,右边缘贴槽)
   status_inline      工具行的耗时/失败图标紧跟文字,不在最右边
@@ -97,7 +99,7 @@ def serve_local(route):
 
 
 GROUPS_JS = """() => {
-  const last = [...document.querySelectorAll('.assistant-message')].pop();
+  const last = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop();
   if (!last) return null;
   return {
     live: last.classList.contains('live-assistant'),
@@ -154,6 +156,7 @@ def main():
 
             # 实时:轮询,抓「第一条切断、第二条运行中」那一刻
             t0 = time.time()
+            queued_seen = None
             live_snapshot = None
             shots = 0
             prep_seen = None
@@ -191,6 +194,40 @@ def main():
                 page.wait_for_timeout(250)
             page.wait_for_timeout(1200)
             page.screenshot(path=str(OUT / "03-done.png"))
+            # ── 排队一幕:再发一条让回复流式,流式中再发一条,它该作为「排队中」气泡挂在末尾 ──
+            # (排队消息是步间送达的,在工具回合里发会把过程切成两段,所以单独一幕,不搅和上面的判定)
+            page.fill("#composerInput", "再来一条")
+            page.click("#sendButton")
+            deadline = time.time() + 8
+            while time.time() < deadline and not page.evaluate("Boolean(document.querySelector('.live-assistant'))"):
+                page.wait_for_timeout(100)
+            page.fill("#composerInput", "排队的第二条")
+            page.click("#sendButton")
+            page.wait_for_timeout(500)
+            queued_seen = page.evaluate("""() => {
+              const q = document.querySelector('.user-message.is-queued'); if (!q) return null;
+              const tl = document.getElementById('timeline');
+              return { isLast: tl.lastElementChild === q, badge: q.querySelector('.queue-badge')?.textContent, text: q.querySelector('.user-bubble')?.textContent,
+                       afterLive: Boolean(q.previousElementSibling?.classList.contains('live-assistant')), tray: document.getElementById('queueTray')?.hidden };
+            }""")
+            page.screenshot(path=str(OUT / "03b-queued.png"))
+            deadline = time.time() + 40
+            queue_consumed = None
+            while time.time() < deadline:
+                queue_consumed = page.evaluate("""() => {
+                  const tl = document.getElementById('timeline');
+                  const real = [...tl.querySelectorAll('.user-message:not(.is-queued) .user-bubble')].some((b) => b.textContent.includes('排队的第二条'));
+                  return { placeholders: tl.querySelectorAll('.user-message.is-queued').length, real, live: Boolean(document.querySelector('.live-assistant')) };
+                }""")
+                if queue_consumed["real"] and queue_consumed["placeholders"] == 0 and not queue_consumed["live"]:
+                    break
+                page.wait_for_timeout(300)
+            page.wait_for_timeout(800)
+            page.screenshot(path=str(OUT / "03c-queue-consumed.png"))
+            report["queued_seen"] = queued_seen
+            report["queue_consumed"] = queue_consumed
+            report["queue_inline"] = bool(queued_seen) and queued_seen["isLast"] and queued_seen["afterLive"] and "排队中" in (queued_seen["badge"] or "") and "排队的第二条" in (queued_seen["text"] or "") and queued_seen["tray"] is True
+            report["queue_settles"] = bool(queue_consumed) and queue_consumed["real"] and queue_consumed["placeholders"] == 0 and not queue_consumed["live"]
             done = page.evaluate(GROUPS_JS)
             report["live_snapshot"] = live_snapshot
             report["done"] = done
@@ -200,14 +237,14 @@ def main():
             # 思考收着时,思考中那一行里要有思考文字在滚(display flex、有文字、占了宽度)
             report["think_peek"] = bool(peek_seen) and peek_seen["display"] == "flex" and len(peek_seen["text"]) > 0 and peek_seen["width"] > 40
             # 想完之后窥视文字留着(收着的时候);展开那条就藏
-            report["peek_after"] = page.evaluate("() => { const b = document.querySelector('.assistant-message:last-of-type .proc-steps > .reasoning-block'); if (!b) return null; const p = b.querySelector('.reasoning-peek'); const shown = getComputedStyle(p).display !== 'none' && p.textContent.length > 0; b.open = true; const hiddenWhenOpen = getComputedStyle(p).display === 'none'; b.open = false; return { shown, hiddenWhenOpen }; }")
+            report["peek_after"] = page.evaluate("() => { const b = document.querySelector('.assistant-message:has(.proc-line) .proc-steps > .reasoning-block'); if (!b) return null; const p = b.querySelector('.reasoning-peek'); const shown = getComputedStyle(p).display !== 'none' && p.textContent.length > 0; b.open = true; const hiddenWhenOpen = getComputedStyle(p).display === 'none'; b.open = false; return { shown, hiddenWhenOpen }; }")
             report["peek_stays_after"] = bool(report["peek_after"]) and report["peek_after"]["shown"] and report["peek_after"]["hiddenWhenOpen"]
             # 放得下的窥视文字要贴着时间左对齐(不带 is-overflow、左边缘紧贴槽的左边缘);状态位紧跟文字,不在最右边
             report["peek_fit"] = page.evaluate("""() => {
-              const b = document.querySelector('.assistant-message:last-of-type .proc-steps > .reasoning-block');
+              const b = document.querySelector('.assistant-message:has(.proc-line) .proc-steps > .reasoning-block');
               const slot = b.querySelector('.reasoning-peek'); const text = slot.firstElementChild;
               const s = slot.getBoundingClientRect(), t = text.getBoundingClientRect();
-              const card = document.querySelector('.assistant-message:last-of-type .proc-steps > .tool-card.is-success');
+              const card = document.querySelector('.assistant-message:has(.proc-line) .proc-steps > .tool-card.is-success');
               const title = card.querySelector('.tool-title').getBoundingClientRect(); const status = card.querySelector('.tool-status').getBoundingClientRect();
               return { overflow: slot.classList.contains('is-overflow'), leftGap: t.left - s.left, fits: t.width <= s.width + 1, statusGap: status.left - title.right, rowRight: card.getBoundingClientRect().right - status.right };
             }""")
@@ -227,22 +264,22 @@ def main():
             report["no_times"] = done is not None and not any(s.strip() for s in done["labelSpans"]) and not done["userActionSpans"]
 
             # 展开第二条 + 点开失败那行的详情
-            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
+            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
             page.wait_for_timeout(600)
-            page.evaluate("() => { const last = [...document.querySelectorAll('.assistant-message')].pop(); (last.querySelector('.tool-card.is-failure .tool-head') || last.querySelector('.proc-line:last-of-type .tool-card .tool-head'))?.click(); }")
+            page.evaluate("() => { const last = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop(); (last.querySelector('.tool-card.is-failure .tool-head') || last.querySelector('.proc-line:last-of-type .tool-card .tool-head'))?.click(); }")
             # 同时点开最后那条命令签:展开面板里应只有参数和结果,没有第二份流式输出
-            page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); cards[cards.length - 1]?.querySelector('.tool-head')?.click(); }")
+            page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); cards[cards.length - 1]?.querySelector('.tool-head')?.click(); }")
             page.wait_for_timeout(600)
-            report["command_panel"] = page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); const c = cards[cards.length - 1]; return { visibleDetails: [...c.querySelectorAll('.tool-detail')].filter(d => !d.hidden).map(d => d.querySelector('.tool-detail-label')?.textContent), preview: c.querySelector('.tool-command-output-preview') ? getComputedStyle(c.querySelector('.tool-command-output-preview')).display : null }; }")
+            report["command_panel"] = page.evaluate("() => { const cards = (() => { const ls = [...[...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')]; return ls[ls.length - 1].querySelectorAll('.tool-card'); })(); const c = cards[cards.length - 1]; return { visibleDetails: [...c.querySelectorAll('.tool-detail')].filter(d => !d.hidden).map(d => d.querySelector('.tool-detail-label')?.textContent), preview: c.querySelector('.tool-command-output-preview') ? getComputedStyle(c.querySelector('.tool-command-output-preview')).display : null }; }")
             page.screenshot(path=str(OUT / "04-expanded.png"))
             report["rail_after_expand"] = page.evaluate(GROUPS_JS)["lines"][1]["railHeight"]
             # 收起动画期间逐帧看:线的底端不能超过 wrap 当前的裁剪底边(内容收到哪线就到哪)
-            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
+            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
             samples = []
             for _ in range(8):
                 page.wait_for_timeout(45)
                 samples.append(page.evaluate("""() => {
-                  const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1];
+                  const l = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')[1];
                   const box = l.getBoundingClientRect(); const zoom = l.offsetWidth ? box.width / l.offsetWidth : 1;
                   const rail = l.querySelector('.proc-rail'); const clip = l.querySelector('.proc-wrap > div').getBoundingClientRect();
                   const railBottom = parseFloat(rail.style.top || '0') + parseFloat(rail.style.height || '0');
@@ -267,9 +304,9 @@ def main():
             # 亮色主题也看一眼(用户日常用亮色)
             page.click("#sidebarThemeButton")
             page.wait_for_timeout(500)
-            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
+            page.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')[1]; l.querySelector('.proc-head').click(); }")
             page.wait_for_timeout(700)
-            page.evaluate("() => { const last = [...document.querySelectorAll('.assistant-message')].pop(); last.querySelector('.tool-card.is-failure .tool-head')?.click(); }")
+            page.evaluate("() => { const last = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop(); last.querySelector('.tool-card.is-failure .tool-head')?.click(); }")
             page.wait_for_timeout(600)
             page.screenshot(path=str(OUT / "05b-reloaded-light.png"))
             page.evaluate("document.getElementById('chatScroll').scrollTop = 0")
@@ -303,7 +340,7 @@ def main():
             phone.goto(BASE)
             phone.wait_for_selector("#composerInput", timeout=20000)
             phone.wait_for_timeout(2000)
-            phone.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l?.querySelector('.proc-head')?.click(); }")
+            phone.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message:has(.proc-line)')].pop().querySelectorAll('.proc-line')[1]; l?.querySelector('.proc-head')?.click(); }")
             phone.wait_for_timeout(700)
             phone.screenshot(path=str(OUT / "06-phone.png"))
             # 手机宽度下同一段思考放不下:要切到尾部可见(is-overflow、文字右边缘贴槽的右边缘)
@@ -327,10 +364,11 @@ def main():
         stub.terminate()
     report["errors"] = errors
     report["console_clean"] = not errors
-    (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
     cp = report.get("command_panel") or {}
-    report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") == "none"
-    keys = ["peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    # 回看重建的签压根没有预览元素(None),实时的签有但必须藏着("none")
+    report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") in (None, "none")
+    (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
+    keys = ["queue_inline", "queue_settles", "peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")
