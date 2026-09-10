@@ -58,7 +58,7 @@
 
 - [x] `config::PersonaManifest`(persona.toml:subsystems/plugins,缺省 all,dev 缺省 core_only);记忆按清单构造(setup.rs / parallel.rs 人格提醒同裁决)
 - [x] `tools::compose_registry(config, paths, manifest, surface)`:core → 按清单注册扩展 → 场所按 trust 筛 + ask_question;三个旧名保留为薄包装;形状夹具证明 dev/受限逐字节不变,normal 多 load_skill/manage_skill
-- [ ] `AgentMode` 退场(可删项,需确认:setup / prompt / context / control / tools / cli 各分支)
+- [~] `AgentMode` 退场(用户已批准):工具面与记忆已不再看它(persona 清单裁决),它只剩「哪个 persona」的派生标签(Dev = 保留人格 dev);298 处引用(setup/prompt/context/control/cli/web/footer)的机械替换是独立的一小步,单独提交
 - [~] `tools::Surface { trust, interactive_questions }` 已定;各入口今天仍经 build_tool_registry(mode, interactive)/restricted 包装进入,逐入口改成直接声明 Surface 是下一小步
 - [ ] 会话创建时快照 persona 指针与场所属性;跨端进入不重算工具面;不可用工具报错文案
 - [x] `ask_question` 在 compose 里按 surface.interactive_questions 注册
