@@ -7,6 +7,8 @@ web/*.js 与 styles.css 编进二进制,所以 WEB 给的是哪个目录,页面�
 Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二进制本身不用重编。
 
 判定项(一轮「思考 → 2 工具 → 说话 → 1 失败工具 → 思考 → 1 工具 → 最终回答」):
+  send_scrolls_direct  上滚到顶再发一条:发出去后视口回到底部
+  send_scrolls_queued  上滚到顶再发一条排队消息:同样回到底部
   underscore_intraword 正文里 check_os_info 这类词内下划线原样,只有词边界上的 _…_ 是斜体
   queue_inline       跑着的时候再发一条:作为「排队中」用户气泡出现在时间线末尾(直播气泡之后),托盘不出现
   queue_settles      第一轮结束、排队那条轮到之后:占位撤掉,真正的用户消息出现
@@ -206,14 +208,22 @@ def main():
             report["underscore_intraword"] = u["ems"] == ["这个才是斜体"] and "check_os_info" in u["text"] and "bilibili_live_stream" in u["text"]
             # ── 排队一幕:再发一条让回复流式,流式中再发一条,它该作为「排队中」气泡挂在末尾 ──
             # (排队消息是步间送达的,在工具回合里发会把过程切成两段,所以单独一幕,不搅和上面的判定)
+            at_bottom_js = "() => { const el = document.getElementById('chatScroll'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 8; }"
+            page.evaluate("document.getElementById('chatScroll').scrollTop = 0")
+            page.wait_for_timeout(300)
             page.fill("#composerInput", "再来一条")
             page.click("#sendButton")
             deadline = time.time() + 8
             while time.time() < deadline and not page.evaluate("Boolean(document.querySelector('.live-assistant'))"):
                 page.wait_for_timeout(100)
+            page.wait_for_timeout(900)
+            report["send_scrolls_direct"] = page.evaluate(at_bottom_js)
+            page.evaluate("document.getElementById('chatScroll').scrollTop = 0")
+            page.wait_for_timeout(300)
             page.fill("#composerInput", "排队的第二条")
             page.click("#sendButton")
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(900)
+            report["send_scrolls_queued"] = page.evaluate(at_bottom_js)
             queued_seen = page.evaluate("""() => {
               const q = document.querySelector('.user-message.is-queued'); if (!q) return null;
               const tl = document.getElementById('timeline');
@@ -380,7 +390,7 @@ def main():
     # 回看重建的签压根没有预览元素(None),实时的签有但必须藏着("none")
     report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") in (None, "none")
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
-    keys = ["underscore_intraword", "queue_inline", "queue_settles", "peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    keys = ["send_scrolls_direct", "send_scrolls_queued", "underscore_intraword", "queue_inline", "queue_settles", "peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")

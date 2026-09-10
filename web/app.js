@@ -9143,6 +9143,8 @@
         committedComposerAttachments();
         resizeComposer();
         renderQueueTray();
+        // 自己发的消息就该看着它:哪怕之前上滚过,也回到底部
+        scrollToBottom({ force: true, smooth: true });
         if (!queueing) {
           // 服务端发现该会话已有 turn 在运行并自动转排队：同步该 run 的 live 状态。
           const runningRunId = String(payload?.run_id || "");
@@ -9176,6 +9178,8 @@
         elements.composerInput.value = "";
         committedComposerAttachments();
         resizeComposer();
+        // 自己发的消息就该看着它:哪怕之前上滚过,也回到底部
+        scrollToBottom({ force: true, smooth: true });
         updateRuntimeUsage();
         updateConversationChrome();
         renderSessionList();
