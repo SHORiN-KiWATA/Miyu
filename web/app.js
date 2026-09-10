@@ -79,6 +79,7 @@
     "pause": [["rect", { x: "14", y: "4", width: "4", height: "16", rx: "1" }], ["rect", { x: "6", y: "4", width: "4", height: "16", rx: "1" }]],
     "play": [["polygon", { points: "6 3 20 12 6 21 6 3" }]],
     "x": [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]],
+    "undo-2": [["path", { d: "M9 14 4 9l5-5" }], ["path", { d: "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" }]],
     "circle-alert": [["circle", { cx: "12", cy: "12", r: "10" }], ["line", { x1: "12", x2: "12", y1: "8", y2: "12" }], ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16" }]],
     "circle-help": [["circle", { cx: "12", cy: "12", r: "10" }], ["path", { d: "M9.09 9a3 3 0 1 1 5.83 1c0 2-3 3-3 3" }], ["path", { d: "M12 17h.01" }]],
     "circle-stop": [["circle", { cx: "12", cy: "12", r: "10" }], ["rect", { width: "6", height: "6", x: "9", y: "9", rx: "1" }]],
@@ -776,6 +777,14 @@
       proc.rail.style.transition = "";
       procLineFit(line);
     }, 420);
+    // ResizeObserver 是这一帧布局完才回调,线会慢内容一帧;开合期间每帧自己量一次,
+    // 读 rect 会拿到过渡当前值,写回去落在同一帧里。
+    const tick = () => {
+      if (!proc.folding) return;
+      procLineFit(line);
+      window.requestAnimationFrame(tick);
+    };
+    window.requestAnimationFrame(tick);
     procLineFit(line);
   }
 
@@ -3914,8 +3923,8 @@
         }
       }
       const strongMarker = text.startsWith("**", index) ? "**" : text.startsWith("__", index) ? "__" : null;
-      if (strongMarker) {
-        const end = text.indexOf(strongMarker, index + 2);
+      if (strongMarker && !(strongMarker === "__" && isWordChar(text[index - 1]))) {
+        const end = strongMarker === "__" ? underscoreCloser(text, index + 2, "__") : text.indexOf(strongMarker, index + 2);
         if (end > index + 2 && text.slice(index + 2, end).trim()) {
           flushPlain(index);
           const strong = document.createElement("strong");
@@ -3926,9 +3935,9 @@
           continue;
         }
       }
-      if (text[index] === "*" || text[index] === "_") {
+      if (text[index] === "*" || (text[index] === "_" && !isWordChar(text[index - 1]))) {
         const marker = text[index];
-        const end = text.indexOf(marker, index + 1);
+        const end = marker === "_" ? underscoreCloser(text, index + 1, "_") : text.indexOf(marker, index + 1);
         if (end > index + 1 && text.slice(index + 1, end).trim()) {
           flushPlain(index);
           const emphasis = document.createElement("em");
@@ -4162,6 +4171,21 @@
       return null; // 未闭合:保持原文(流式中)
     }
     return null;
+  }
+
+  // 字母、数字、下划线算词内字符:下划线强调两头都不能挨着它们(CommonMark 的 intraword 规则)
+  function isWordChar(ch) {
+    return Boolean(ch) && /[\p{L}\p{N}_]/u.test(ch);
+  }
+
+  // 找下划线强调的闭合位:闭合的 _ 后面不能紧跟词内字符,否则继续往后找
+  function underscoreCloser(text, from, marker) {
+    let end = text.indexOf(marker, from);
+    while (end !== -1) {
+      if (!isWordChar(text[end + marker.length])) return end;
+      end = text.indexOf(marker, end + 1);
+    }
+    return -1;
   }
 
   function renderMarkdown(container, source) {
@@ -4498,9 +4522,9 @@
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "queue-remove";
-      remove.title = "撤下这条排队消息";
-      remove.setAttribute("aria-label", "撤下这条排队消息");
-      remove.appendChild(makeIconSlot("x"));
+      remove.title = "撤回这条排队消息";
+      remove.setAttribute("aria-label", "撤回这条排队消息");
+      remove.appendChild(makeIconSlot("undo-2"));
       remove.addEventListener("click", () => removeQueuedPrompt(attributes.queueId));
       badge.append(label, remove);
       if (attachments) article.appendChild(attachments);
