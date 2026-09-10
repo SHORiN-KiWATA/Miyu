@@ -7,6 +7,9 @@ web/*.js 与 styles.css 编进二进制,所以 WEB 给的是哪个目录,页面�
 Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二进制本身不用重编。
 
 判定项(一轮「思考 → 2 工具 → 说话 → 1 失败工具 → 思考 → 1 工具 → 最终回答」):
+  peek_left_aligned  放得下的窥视文字贴着时间左对齐,不带 is-overflow
+  peek_tail_on_overflow 手机宽度放不下时切到尾部可见(is-overflow,右边缘贴槽)
+  status_inline      工具行的耗时/失败图标紧跟文字,不在最右边
   fold_synced        收起动画逐帧看,线的底端不超过裁剪底边;收完线高 0;开合期间线无 transition
   think_peek         思考内容收着时,思考中那一行里滚着正在想的话(尾部对齐)
   peek_stays_after   想完之后收着的那行里窥视文字还在,展开时藏起
@@ -199,6 +202,18 @@ def main():
             # 想完之后窥视文字留着(收着的时候);展开那条就藏
             report["peek_after"] = page.evaluate("() => { const b = document.querySelector('.assistant-message:last-of-type .proc-steps > .reasoning-block'); if (!b) return null; const p = b.querySelector('.reasoning-peek'); const shown = getComputedStyle(p).display !== 'none' && p.textContent.length > 0; b.open = true; const hiddenWhenOpen = getComputedStyle(p).display === 'none'; b.open = false; return { shown, hiddenWhenOpen }; }")
             report["peek_stays_after"] = bool(report["peek_after"]) and report["peek_after"]["shown"] and report["peek_after"]["hiddenWhenOpen"]
+            # 放得下的窥视文字要贴着时间左对齐(不带 is-overflow、左边缘紧贴槽的左边缘);状态位紧跟文字,不在最右边
+            report["peek_fit"] = page.evaluate("""() => {
+              const b = document.querySelector('.assistant-message:last-of-type .proc-steps > .reasoning-block');
+              const slot = b.querySelector('.reasoning-peek'); const text = slot.firstElementChild;
+              const s = slot.getBoundingClientRect(), t = text.getBoundingClientRect();
+              const card = document.querySelector('.assistant-message:last-of-type .proc-steps > .tool-card.is-success');
+              const title = card.querySelector('.tool-title').getBoundingClientRect(); const status = card.querySelector('.tool-status').getBoundingClientRect();
+              return { overflow: slot.classList.contains('is-overflow'), leftGap: t.left - s.left, fits: t.width <= s.width + 1, statusGap: status.left - title.right, rowRight: card.getBoundingClientRect().right - status.right };
+            }""")
+            pf = report["peek_fit"]
+            report["peek_left_aligned"] = pf["fits"] and not pf["overflow"] and pf["leftGap"] < 2
+            report["status_inline"] = pf["statusGap"] < 16 and pf["rowRight"] > 80
             # 思考中的节点是原子图标(svg 显示、跳动点隐藏、宽 16px);「准备」签在时间线里、无底色、线长到了它
             report["think_node"] = bool(think_seen) and think_seen["svgShown"] and not think_seen["dotsShown"] and 15 <= think_seen["width"] <= 19
             report["prep_row"] = bool(prep_seen) and prep_seen["inSteps"] and prep_seen["bg"] in ("rgba(0, 0, 0, 0)", "transparent") and prep_seen["railHeight"] > 20
@@ -291,6 +306,16 @@ def main():
             phone.evaluate("() => { const l = [...document.querySelectorAll('.assistant-message')].pop().querySelectorAll('.proc-line')[1]; l?.querySelector('.proc-head')?.click(); }")
             phone.wait_for_timeout(700)
             phone.screenshot(path=str(OUT / "06-phone.png"))
+            # 手机宽度下同一段思考放不下:要切到尾部可见(is-overflow、文字右边缘贴槽的右边缘)
+            report["peek_overflow"] = phone.evaluate("""() => {
+              const b = [...document.querySelectorAll('.proc-steps > .reasoning-block:not([open])')].pop();
+              if (!b) return null;
+              const slot = b.querySelector('.reasoning-peek'); const text = slot.firstElementChild;
+              const s = slot.getBoundingClientRect(), t = text.getBoundingClientRect();
+              return { overflow: slot.classList.contains('is-overflow'), rightGap: s.right - t.right, wider: t.width > s.width };
+            }""")
+            po = report["peek_overflow"]
+            report["peek_tail_on_overflow"] = bool(po) and po["wider"] and po["overflow"] and abs(po["rightGap"]) < 2
             browser.close()
     finally:
         if daemon:
@@ -305,7 +330,7 @@ def main():
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
     cp = report.get("command_panel") or {}
     report["command_dedup"] = cp.get("visibleDetails") == ["参数", "结果"] and cp.get("preview") == "none"
-    keys = ["fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    keys = ["peek_left_aligned", "peek_tail_on_overflow", "status_inline", "fold_synced", "think_peek", "peek_stays_after", "command_dedup", "think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")
