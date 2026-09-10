@@ -1,7 +1,7 @@
 {
   "name": "artifact",
   "display_name": "编辑预览文件",
-  "description": "Create or edit deliverable files in the WebUI Artifact workspace via patch (*** Begin Patch / *** End Patch). Paths are plain artifact file names. Use for reports, documents, and standalone files the user should inspect, not routine source edits. Publish an existing local file with present_artifact; read entries with read using artifact: paths.",
+  "description": "Create or edit deliverable files in the WebUI Artifact workspace via patch (*** Begin Patch / *** End Patch). Paths are plain artifact file names. Use for reports, documents, and standalone files the user should inspect, not routine source edits. Publish an existing local file with present_artifact; read entries with read using artifact: paths. HTML entries run their scripts in a sandboxed frame that has no network access. Charts and interactive pages work with ECharts at /vendor/echarts/echarts.min.js, KaTeX at /vendor/katex/katex.min.js, Prism at /vendor/prism/prism.min.js. External CDNs, fetch, and remote images are blocked.",
   "parameters": {
     "type": "object",
     "properties": {

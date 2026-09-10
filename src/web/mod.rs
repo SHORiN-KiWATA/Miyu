@@ -113,10 +113,12 @@ use anyhow::{bail, Context, Result};
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
-    COOKIE, HOST, ORIGIN, REFERRER_POLICY, RETRY_AFTER, SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT_ENCODING, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
+    ACCESS_CONTROL_MAX_AGE, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LENGTH,
+    CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, HOST, ORIGIN, REFERRER_POLICY, RETRY_AFTER,
+    SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
 };
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
@@ -169,6 +171,13 @@ const KATEX_JS: &str = include_str!("../../web/vendor/katex/katex.min.js");
 // 拼装顺序,换版本照那个顺序重拼即可。
 const PRISM_JS: &str = include_str!("../../web/vendor/prism/prism.min.js");
 const KATEX_CSS: &str = include_str!("../../web/vendor/katex/katex.min.css");
+// Apache ECharts 6.1.0(vendored,Apache-2.0):artifact 里画图表用的。
+// **存的是 gzip 后的字节**(1096KB → 359KB),响应直接带 Content-Encoding: gzip
+// 发出去,服务端不解压。更新照做:
+//   curl -sL https://cdn.jsdelivr.net/npm/echarts@<版本>/dist/echarts.min.js \
+//     | gzip -9 -n > web/vendor/echarts/echarts.min.js.gz
+// `-n` 不能少——带上文件名和时间戳的话每次压出来的字节都不一样,构建就不可复现了。
+const ECHARTS_JS_GZ: &[u8] = include_bytes!("../../web/vendor/echarts/echarts.min.js.gz");
 static KATEX_FONTS: &[(&str, &[u8])] = &[
     (
         "KaTeX_AMS-Regular.woff2",

@@ -4511,6 +4511,13 @@ body[data-color-scheme="matugen"] .tool-card.is-command {
   font-size: 12px;
 }
 
+/* 表太长时那句「只画了前 N 行」——是旁注不是正文，压下去。 */
+.artifact-markdown .artifact-table-note {
+  margin-top: 14px;
+  font-size: 12.7273px;
+  opacity: 0.62;
+}
+
 .artifact-markdown .code-toolbar {
   font-size: 10.9091px;
 }

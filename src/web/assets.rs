@@ -52,6 +52,109 @@ pub(in crate::web) fn embedded_asset(
     response
 }
 
+/// artifact 的 iframe 拿的是**不透明源**,浏览器把它当成一个公网页面;它去读本机
+/// 的 `/vendor/` 就成了「公网访问内网」,被 Private Network Access 拦下,报
+/// `Permission was denied for this request to access the loopback address space`。
+/// CSP 里把来源写得再对也没用——这道拦截在 CSP 之前。放行要两样:这组响应头,
+/// 以及能应付浏览器为此强制发起的 OPTIONS 预检(见 `vendor_preflight`)。
+///
+/// **这组头只配挂在 /vendor/ 这类公开第三方库上**(Apache/MIT 的 JS、字体,不含
+/// 任何用户数据)。`Allow-Origin: *` 是对全网开放读取,任何带数据的接口都不能用。
+fn allow_sandboxed_frames(headers: &mut HeaderMap) {
+    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    headers.insert(
+        HeaderName::from_static("access-control-allow-private-network"),
+        HeaderValue::from_static("true"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, OPTIONS"),
+    );
+    headers.insert(ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+}
+
+pub(in crate::web) async fn vendor_preflight() -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    allow_sandboxed_frames(response.headers_mut());
+    response
+}
+
+/// `/vendor/` 下的静态库。与 `embedded_asset` 的差别只有那组放行头。
+pub(in crate::web) fn vendor_asset(
+    headers: &HeaderMap,
+    content: &'static [u8],
+    content_type: &'static str,
+) -> Response {
+    let mut response = embedded_asset(headers, content, content_type);
+    allow_sandboxed_frames(response.headers_mut());
+    response
+}
+
+/// 仓库里存的就是 gzip 后的字节,直接原样发出去、让浏览器自己解——服务端不碰
+/// 压缩解压,省下的是二进制体积(ECharts 1096KB → 359KB)。
+///
+/// 万一对方不收 gzip(现实中几乎不存在,但 `Accept-Encoding` 是可以不带的),
+/// 现场解一次再发,总好过甩给它一坨解不开的字节。
+pub(in crate::web) fn vendor_gzip_asset(
+    headers: &HeaderMap,
+    gzipped: &'static [u8],
+    content_type: &'static str,
+) -> Response {
+    if !accepts_gzip(headers) {
+        if let Some(plain) = inflate(gzipped) {
+            let mut response = finish_asset_response(plain.into_response(), content_type);
+            response
+                .headers_mut()
+                .insert(axum::http::header::ETAG, build_etag().clone());
+            allow_sandboxed_frames(response.headers_mut());
+            mark_encoding_varies(response.headers_mut());
+            return response;
+        }
+    }
+    let mut response = vendor_asset(headers, gzipped, content_type);
+    if response.status() == StatusCode::OK {
+        response
+            .headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    mark_encoding_varies(response.headers_mut());
+    response
+}
+
+/// 同一个 URL 会按 `Accept-Encoding` 发出两种字节(压缩的和现解的),而这里所有
+/// 资源共用一个按构建号算的 ETag——不声明 Vary,中间的缓存就可能把压缩版回给
+/// 一个不收压缩的客户端。现实中浏览器全都收 gzip,这条是给代理和 curl 兜底的。
+fn mark_encoding_varies(headers: &mut HeaderMap) {
+    headers.insert(
+        axum::http::header::VARY,
+        HeaderValue::from_static("accept-encoding"),
+    );
+}
+
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get(ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|part| {
+                part.split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .eq_ignore_ascii_case("gzip")
+            })
+        })
+}
+
+fn inflate(gzipped: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(gzipped)
+        .read_to_end(&mut out)
+        .ok()?;
+    Some(out)
+}
+
 pub(in crate::web) async fn index_asset(headers: HeaderMap) -> Response {
     // Version the asset references so browsers and intermediaries can never
     // serve a stale app.js/styles.css after an upgrade.
@@ -247,8 +350,10 @@ pub(in crate::web) async fn highlight_js_asset(headers: HeaderMap) -> Response {
     )
 }
 
+// 这几条都走 `vendor_asset`:除了主界面自己在用,artifact 的沙箱 iframe 也要取得到
+// (见 `allow_sandboxed_frames`)。
 pub(in crate::web) async fn prism_js_asset(headers: HeaderMap) -> Response {
-    embedded_asset(
+    vendor_asset(
         &headers,
         PRISM_JS.as_bytes(),
         "text/javascript; charset=utf-8",
@@ -256,7 +361,7 @@ pub(in crate::web) async fn prism_js_asset(headers: HeaderMap) -> Response {
 }
 
 pub(in crate::web) async fn katex_js_asset(headers: HeaderMap) -> Response {
-    embedded_asset(
+    vendor_asset(
         &headers,
         KATEX_JS.as_bytes(),
         "text/javascript; charset=utf-8",
@@ -264,7 +369,7 @@ pub(in crate::web) async fn katex_js_asset(headers: HeaderMap) -> Response {
 }
 
 pub(in crate::web) async fn katex_css_asset(headers: HeaderMap) -> Response {
-    embedded_asset(&headers, KATEX_CSS.as_bytes(), "text/css; charset=utf-8")
+    vendor_asset(&headers, KATEX_CSS.as_bytes(), "text/css; charset=utf-8")
 }
 
 pub(in crate::web) async fn katex_font_asset(
@@ -272,9 +377,13 @@ pub(in crate::web) async fn katex_font_asset(
     Path(font): Path<String>,
 ) -> Response {
     match KATEX_FONTS.iter().find(|(name, _)| *name == font) {
-        Some((_, bytes)) => embedded_asset(&headers, bytes, "font/woff2"),
+        Some((_, bytes)) => vendor_asset(&headers, bytes, "font/woff2"),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+pub(in crate::web) async fn echarts_js_asset(headers: HeaderMap) -> Response {
+    vendor_gzip_asset(&headers, ECHARTS_JS_GZ, "text/javascript; charset=utf-8")
 }
 
 pub(in crate::web) async fn wallpaper_asset(headers: HeaderMap) -> Response {
@@ -597,11 +706,15 @@ pub(in crate::web) async fn artifact_asset(
     };
     // `?download=1` 强制 attachment:预览按钮走 inline,下载按钮拿到的必须
     // 是真下载,不能又弹一个预览页。
+    //
+    // **svg 刻意不在这个名单里。** 它进得了预览面板(那边是 `<img>`,浏览器强制
+    // 禁掉 SVG 里的脚本和外链),但直接导航过去就是在 WebUI 自己的域下渲染一份
+    // 模型写的活性文档——那是 XSS。同一个判断在 shared_files.rs 里也写着。
     let force_download = query.download.as_deref() == Some("1");
     let inline = !force_download
         && matches!(
             artifact.asset.kind.as_str(),
-            "markdown" | "text" | "code" | "json" | "pdf" | "html"
+            "markdown" | "text" | "code" | "json" | "csv" | "pdf" | "html"
         );
     let disposition = format!(
         "{}; filename*=UTF-8''{}",
@@ -623,15 +736,78 @@ pub(in crate::web) async fn artifact_asset(
     response
         .headers_mut()
         .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    if artifact.asset.kind == "html" {
+    if let Some(policy) = artifact_csp(artifact.asset.kind.as_str(), &headers) {
         response.headers_mut().insert(
             CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(
-                "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:",
-            ),
+            HeaderValue::from_str(&policy).map_err(ApiError::internal)?,
         );
     }
     Ok(response)
+}
+
+/// 活性内容(html / svg)的出站策略。**这是外泄的唯一一道闸**——iframe 的
+/// `sandbox` 属性只管权限(脚本能不能跑、能不能提交表单),完全不限制网络请求。
+/// 两道各管一半,缺一不可。
+///
+/// html 放开脚本(不放开的话图表、按钮、切换全是死的),但出站三条路全掐:
+/// `connect-src 'none'` 掐 fetch/XHR/WebSocket,`img-src` 不含外域掐像素外带,
+/// `script-src` 不含外域掐 CDN。
+///
+/// **WebRTC 那条封不住,而且这里刻意不写 `webrtc 'block'`。** Chromium 151 和
+/// Firefox 153 都不认这个指令(实测 `RTCPeerConnection` 照样构造得出来),写上去
+/// 唯一的效果是每开一份 HTML artifact 就往控制台丢一条
+/// `Unrecognized Content-Security-Policy directive 'webrtc'`——拿一条常驻报错
+/// 换一个不生效的防护不划算。等浏览器认了再加回来。
+/// (Claude 的生产 CSP 里有这条,同样是不生效的。)
+///
+/// svg 只走 `<img>`,压根不需要脚本,所以维持最严:一行 JS 都不给。
+fn artifact_csp(kind: &str, headers: &HeaderMap) -> Option<String> {
+    const STRICT: &str =
+        "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:";
+    match kind {
+        "svg" => Some(STRICT.to_string()),
+        "html" => Some(match request_origin(headers) {
+            // 不透明源下 `'self'` 匹配不上任何东西(它匹配文档自己的源,而不透明源
+            // 与谁都不相等),所以本机来源必须逐字写进去,页面才加载得到 /vendor/ 的库。
+            Some(origin) => format!(
+                "sandbox allow-scripts allow-modals; \
+                 default-src 'none'; \
+                 script-src 'unsafe-inline' 'unsafe-eval' {origin}; \
+                 style-src 'unsafe-inline' {origin}; \
+                 font-src data: {origin}; \
+                 img-src data: blob: {origin}; \
+                 media-src data: blob: {origin}; \
+                 connect-src 'none'; form-action 'none'; frame-src 'none'; \
+                 object-src 'none'; base-uri 'none'"
+            ),
+            // 拿不到可信的 Host 就退回最严,宁可页面画不出来也不放开一个拼错的来源。
+            None => STRICT.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// 从 `Host` 头还原本次请求的来源。**Host 是请求方可控的**,要逐字节拼进 CSP,
+/// 所以字符集按白名单卡死——放进一个分号就等于让调用方改写整条策略。
+fn request_origin(headers: &HeaderMap) -> Option<String> {
+    let host = headers.get(HOST)?.to_str().ok()?;
+    let shaped = host.len() <= 260
+        && !host.is_empty()
+        && host.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+        });
+    if !shaped {
+        return None;
+    }
+    // 反代在前面时 daemon 自己仍是 http,scheme 只能问转发头。
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| *value == "https")
+        .unwrap_or("http");
+    Some(format!("{scheme}://{host}"))
 }
 
 pub(in crate::web) fn resolve_persona_asset_path(

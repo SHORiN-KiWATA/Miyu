@@ -313,10 +313,28 @@ pub(in crate::web) fn router(state: DaemonState) -> Router {
         .route("/linkcards.js", get(linkcards_js_asset))
         .route("/todos.js", get(todos_js_asset))
         .route("/highlight.js", get(highlight_js_asset))
-        .route("/vendor/prism/prism.min.js", get(prism_js_asset))
-        .route("/vendor/katex/katex.min.js", get(katex_js_asset))
-        .route("/vendor/katex/katex.min.css", get(katex_css_asset))
-        .route("/vendor/katex/fonts/{font}", get(katex_font_asset))
+        // artifact 的沙箱 iframe 也来这里取库,而它是不透明源——浏览器会为此强制
+        // 发 OPTIONS 预检,所以每条都得配一个 options 分支,漏一条那个库就加载不上。
+        .route(
+            "/vendor/prism/prism.min.js",
+            get(prism_js_asset).options(vendor_preflight),
+        )
+        .route(
+            "/vendor/katex/katex.min.js",
+            get(katex_js_asset).options(vendor_preflight),
+        )
+        .route(
+            "/vendor/katex/katex.min.css",
+            get(katex_css_asset).options(vendor_preflight),
+        )
+        .route(
+            "/vendor/katex/fonts/{font}",
+            get(katex_font_asset).options(vendor_preflight),
+        )
+        .route(
+            "/vendor/echarts/echarts.min.js",
+            get(echarts_js_asset).options(vendor_preflight),
+        )
         .route("/api/media", get(media_stream))
         // WebUI 链接卡片:元数据与缩略图都由 daemon 代抓,浏览器不直连第三方
         // (CSP img-src/connect-src 都是 'self',放宽等于给远程像素追踪开门)。
