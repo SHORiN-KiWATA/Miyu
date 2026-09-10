@@ -243,6 +243,7 @@ impl PlatformsConfig {
         self.qq.group_chats.migrate_legacy_rate_limits();
         self.qq.admin_users.sort_unstable();
         self.qq.admin_users.dedup();
+        self.qq.sleep_hours = self.qq.sleep_hours.trim().to_string();
         self.qq.private_chats.whitelist.sort_unstable();
         self.qq.private_chats.whitelist.dedup();
         self.qq.group_chats.whitelist.sort_unstable();
@@ -707,6 +708,65 @@ pub struct OneBotConfig {
     pub asset_base_url: String,
     /// Replies longer than this are split into multiple messages. 0 = never split.
     pub max_reply_chars: usize,
+    /// 睡眠时间「HH:MM-HH:MM」(本机时区,可跨午夜,如 `23:00-07:00`),空 = 不睡。
+    /// 时段内只有管理员(私聊与群聊)和私聊白名单(仅私聊)的消息还会触发回合;
+    /// 其余消息、文件上传、撤回、戳一戳等一律当没看见——不进历史、不概率插话。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sleep_hours: String,
+}
+
+/// 解析睡眠时间「HH:MM-HH:MM」。空串 = 不睡(Ok(None));格式不对给出可读错误。
+pub fn parse_sleep_hours(text: &str) -> std::result::Result<Option<SleepWindow>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let invalid = || {
+        crate::i18n::text(
+            "sleep hours must look like HH:MM-HH:MM, e.g. 23:00-07:00",
+            "睡眠时间格式应为 HH:MM-HH:MM,例如 23:00-07:00",
+        )
+        .to_string()
+    };
+    let (start, end) = text
+        .split_once(['-', '~', '～', '–', '—'])
+        .ok_or_else(invalid)?;
+    let parse = |part: &str| {
+        let (hour, minute) = part.trim().split_once([':', '：']).ok_or_else(invalid)?;
+        let hour: u32 = hour.trim().parse().map_err(|_| invalid())?;
+        let minute: u32 = minute.trim().parse().map_err(|_| invalid())?;
+        chrono::NaiveTime::from_hms_opt(hour, minute, 0).ok_or_else(invalid)
+    };
+    let window = SleepWindow {
+        start: parse(start)?,
+        end: parse(end)?,
+    };
+    if window.start == window.end {
+        return Err(crate::i18n::text(
+            "sleep hours start and end must differ",
+            "睡眠时间的起止不能相同",
+        )
+        .to_string());
+    }
+    Ok(Some(window))
+}
+
+/// 解析后的睡眠时段。`start > end` 表示跨午夜。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleepWindow {
+    pub start: chrono::NaiveTime,
+    pub end: chrono::NaiveTime,
+}
+
+impl SleepWindow {
+    /// `now` 落在时段内?区间左闭右开:`23:00-07:00` 从 23:00:00 起算,07:00:00 醒。
+    pub fn contains(&self, now: chrono::NaiveTime) -> bool {
+        if self.start < self.end {
+            self.start <= now && now < self.end
+        } else {
+            now >= self.start || now < self.end
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -870,6 +930,7 @@ impl Default for OneBotConfig {
             plugins: PlatformPluginsConfig::new(),
             asset_base_url: String::new(),
             max_reply_chars: 3000,
+            sleep_hours: String::new(),
         }
     }
 }
@@ -877,6 +938,17 @@ impl Default for OneBotConfig {
 impl OneBotConfig {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// 配置里的睡眠时段;没配或写错都当没睡(写错在加载校验时已经拦下)。
+    pub fn sleep_window(&self) -> Option<SleepWindow> {
+        parse_sleep_hours(&self.sleep_hours).ok().flatten()
+    }
+
+    /// 此刻(本机时区)是否在睡眠时间内。
+    pub fn is_sleeping_at(&self, now: chrono::NaiveTime) -> bool {
+        self.sleep_window()
+            .is_some_and(|window| window.contains(now))
     }
 
     /// 一个会话的回合并发闸值。覆盖优先级:按会话 > 按会话类型 > QQ 默认;
