@@ -9688,6 +9688,30 @@ body.miyu-paused *::after {
 .assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-chevron {
   color: var(--proc-soft);
 }
+/* 窥视槽:思考收着时,思考的尾巴放在标题行剩下的空间里。正在想就跟着滚,想完了也留着;
+   尾部对齐——文字比槽宽时从左边溢出被裁掉,再加一层左侧渐隐,看起来就是新字从右边推进来。
+   展开时才藏(内容就在下面)。 */
+.reasoning-peek {
+  display: none;
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--proc-think);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  line-height: 1.5;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px);
+  mask-image: linear-gradient(to right, transparent, #000 32px);
+}
+.reasoning-peek > span {
+  flex: none;
+  white-space: nowrap;
+}
+.assistant-blocks .proc-steps > .reasoning-block:not([open]) > summary .reasoning-peek {
+  display: flex;
+}
 .assistant-blocks .proc-steps > .reasoning-block > .reasoning-text {
   margin: 0 8px 6px var(--proc-indent);
   padding: 0;
