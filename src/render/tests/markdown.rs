@@ -309,3 +309,13 @@ fn title_url_line_leaves_markdown_links_alone() {
         "{output}"
     );
 }
+
+#[test]
+fn bare_url_stops_before_cjk_full_stop_followed_by_text() {
+    // 09-10 截图原句:句号后面还有整段中文,地址只到斜杠为止。
+    let output = render_inline("干净地址 http://127.0.0.1:3080/。昨天那次认证签的 cookie token。");
+    assert!(
+        output.contains(&format!("{URL_STYLE}http://127.0.0.1:3080/{RESET}。昨天")),
+        "{output}"
+    );
+}

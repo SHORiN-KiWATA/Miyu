@@ -242,15 +242,72 @@ pub(in crate::web) async fn delete_session_http(
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
     require_local_web_session(&state, &session_id)?;
-    let data = handle_session_command(
+    // 删的是侧栏里最后一个会话时,顶替的新会话由这里建,不留给客户端:
+    // 每个开着这个会话的页面(桌面 + 手机、两个标签页)都会收到
+    // session.deleted 并各自兜底新建,删一个凭空多出两个(09-10 复现)。
+    // 先建后删,`session.created` 就排在 `session.deleted` 前面到达,
+    // 其它客户端兜底时列表里已经有它,不会再自己 POST 一个。
+    let replacement = replacement_for_last_session(&state, &session_id)?;
+    let deleted = handle_session_command(
         &state,
         IpcCommand::DeleteSession {
             target: ipc::SessionRef::Id { id: session_id },
         },
     )
-    .await
-    .map_err(session_api_error)?;
-    Ok(Json(data).into_response())
+    .await;
+    if let Err(error) = deleted {
+        if let Some(record) = &replacement {
+            // 没删成就不该多出一个空会话;删不掉也只是留个空壳,不遮原错误。
+            let _ = state.state_store.delete_session(&record.session_id);
+            state.events.publish(
+                "session.deleted",
+                json!({ "session_id": record.session_id }),
+            );
+        }
+        return Err(session_api_error(error));
+    }
+    Ok(Json(json!({ "fallback": replacement.as_ref().map(session_record_json) })).into_response())
+}
+
+/// `session_id` 是不是侧栏里最后一个会话(普通 + dev 分组,终端集成会话不算);
+/// 是的话先建一个空会话顶上,并广播 `session.created`。
+fn replacement_for_last_session(
+    state: &DaemonState,
+    session_id: &str,
+) -> std::result::Result<Option<crate::state::SessionRecord>, ApiError> {
+    let persona = active_persona_scope(state);
+    let others_remain = sessions_with_dev(&state.state_store, &persona)
+        .map_err(ApiError::internal)?
+        .iter()
+        .any(|overview| {
+            let id = overview.record.session_id.as_str();
+            id != session_id && id != crate::state::DEFAULT_SESSION_ID
+        });
+    if others_remain {
+        return Ok(None);
+    }
+    // 只在被删的确实是个可见会话时才顶替:id 打错了直接让删除那步报 404。
+    let exists = state
+        .state_store
+        .session_record(session_id)
+        .map_err(ApiError::internal)?
+        .is_some();
+    if !exists {
+        return Ok(None);
+    }
+    let record = state
+        .state_store
+        .create_session(&persona, "", crate::state::USER_SESSION_KIND, None)
+        .map_err(ApiError::internal)?;
+    state.events.publish(
+        "session.created",
+        json!({
+            "session_id": record.session_id,
+            "name": record.name,
+            "mode": session_mode_label(&record),
+        }),
+    );
+    Ok(Some(record))
 }
 
 pub(in crate::web) fn resolve_local_session_ref(

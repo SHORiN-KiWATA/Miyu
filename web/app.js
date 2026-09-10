@@ -2539,6 +2539,19 @@
       await loadSessionView(fallback);
       return;
     }
+    // 本地列表空了先跟服务端对一次：删最后一个会话时顶替的新会话由服务端建
+    // （session.created 先于 session.deleted 广播，DELETE 回执里也带着），这里
+    // 通常已经在列表里；SSE 掉过事件才会走到这一步。不这么对一次的话，每个
+    // 开着该会话的页面都会自己 POST 一个，删一个多出两个（09-10 复现）。
+    await refreshSessions();
+    const refreshed = String(state.sessions.find((session) => {
+      const id = String(session?.session_id || "");
+      return id !== excluded && !isTerminalSession(id);
+    })?.session_id || "");
+    if (refreshed) {
+      await loadSessionView(refreshed);
+      return;
+    }
     // 一个可见会话都不剩：直接新建一个顶上。落进空状态的话，用户面对的是一个
     // 不在侧栏里的「幽灵视图」，在里面打字实际写进隐藏的终端集成车道。
     // 不走 createSession()——删除流程还举着 sessionBusy，它会直接返回。
@@ -2569,9 +2582,14 @@
     if (state.sessionBusy) return;
     setSessionBusy(true);
     try {
-      await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       showToast("会话已删除");
       state.sessions = state.sessions.filter((item) => String(item?.session_id) !== String(sessionId));
+      // 删的是最后一个会话时，服务端已经建好顶替的那个并随回执带回；事件
+      // 到达有先后，这里直接收进列表，兜底就不会再去新建。
+      const replacement = (await response.json().catch(() => null))?.fallback;
+      const replacementId = String(replacement?.session_id || "");
+      if (replacementId && !findSession(replacementId)) state.sessions.unshift(replacement);
       renderSessionList();
       if (sessionId === state.viewSessionId) await openFallbackSessionView(sessionId);
     } catch (error) {
