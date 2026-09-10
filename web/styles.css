@@ -9422,6 +9422,10 @@ body.miyu-paused *::after {
   text-align: left;
   cursor: pointer;
   gap: var(--proc-gap);
+  pointer-events: none;
+}
+.proc-head > * {
+  pointer-events: auto;
 }
 .proc-head[hidden] {
   display: none;
@@ -9568,18 +9572,25 @@ body.miyu-paused *::after {
   background: none;
   color: var(--proc-soft);
   gap: var(--proc-gap);
+  /* 判定收到文字本身:整行不接指针,只有节点、文字、耗时接 */
+  pointer-events: none;
+}
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-icon,
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title,
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-status {
+  pointer-events: auto;
 }
 .assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title {
   min-width: 0;
-  max-width: none;
-  flex: 1 1 auto;
+  max-width: 100%;
+  flex: 0 1 auto;
   align-items: baseline;
   padding: 1px 4px;
   border-radius: 5px;
   gap: 5px;
   transition: background-color 0.18s ease;
 }
-.assistant-blocks .proc-steps > .tool-card > .tool-head:hover > .tool-title {
+.assistant-blocks .proc-steps > .tool-card > .tool-head > .tool-title:hover {
   background: var(--surface-2);
 }
 .assistant-blocks .proc-steps > .tool-card .tool-title strong {
@@ -9656,6 +9667,10 @@ body.miyu-paused *::after {
   background: none;
   color: var(--text);
   gap: var(--proc-gap);
+  pointer-events: none;
+}
+.assistant-blocks .proc-steps > .reasoning-block > summary > * {
+  pointer-events: auto;
 }
 .assistant-blocks .proc-steps > .reasoning-block > summary:hover {
   background: none;
@@ -9665,7 +9680,7 @@ body.miyu-paused *::after {
   border-radius: 5px;
   transition: background-color 0.18s ease;
 }
-.assistant-blocks .proc-steps > .reasoning-block > summary:hover .reasoning-title {
+.assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-title:hover {
   background: var(--surface-2);
 }
 .assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-live-status,
@@ -9699,15 +9714,16 @@ body.miyu-paused *::after {
   box-shadow: var(--bubble-shadow);
 }
 .assistant-content .markdown-body code:not(pre code) {
+  border-radius: 8px;
   background: color-mix(in srgb, var(--text) 9%, var(--app-bg));
 }
 .assistant-content .markdown-table-scroll {
-  background: none;
-}
-.assistant-content .markdown-body table {
   border-radius: var(--radius);
   background: var(--surface-1);
   box-shadow: var(--bubble-shadow);
+}
+.assistant-content .markdown-body table {
+  background: none;
 }
 .assistant-content .markdown-body th {
   border-bottom: 1px solid var(--line);
@@ -9734,5 +9750,6 @@ body.miyu-paused *::after {
   --tok-y: inherit;
 }
 .user-bubble > p > code {
+  border-radius: 8px;
   background: color-mix(in srgb, var(--text) 9%, var(--surface-1));
 }
