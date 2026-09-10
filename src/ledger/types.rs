@@ -184,6 +184,18 @@ pub struct AccountRecord {
     pub updated_at: String,
 }
 
+/// 一个账户的余额，连同「有几笔没能算进来」。
+///
+/// 未折算的笔数跟着余额一起走，而不是悄悄丢掉：余额少了一截却没人说一声，
+/// 是这套账本最不该出现的那种错。
+#[derive(Clone, Debug, Serialize)]
+pub struct AccountBalance {
+    /// 账户币种的最小单位。
+    pub minor: i64,
+    pub currency: String,
+    pub unconverted_count: i64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CategoryRecord {
     pub category_id: String,

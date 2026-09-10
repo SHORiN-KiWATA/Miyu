@@ -19,7 +19,12 @@ pub struct PeriodSummary {
     pub income_minor: i64,
     /// 收入减支出，可以是负数。
     pub net_minor: i64,
+    /// 这个月的账目总数，转账也算——它不是收也不是支，但确实是一笔账。
     pub entry_count: i64,
+    /// 其中支出/收入各有几笔。分开报是因为面板上「本月支出」底下那行
+    /// 笔数如果用总数，一记收入就变成了在支出旁边写一个更大的数。
+    pub expense_count: i64,
+    pub income_count: i64,
     /// 待换算、因而没能进上面几个数的账目数。
     pub pending_count: i64,
 }
@@ -132,9 +137,15 @@ impl LedgerDb {
                 let (kind, total, count) = row?;
                 summary.entry_count += count;
                 match kind.as_str() {
-                    "expense" => summary.expense_minor = total,
-                    "income" => summary.income_minor = total,
-                    // 转账在账户之间搬钱，不是收也不是支，只计入笔数。
+                    "expense" => {
+                        summary.expense_minor = total;
+                        summary.expense_count = count;
+                    }
+                    "income" => {
+                        summary.income_minor = total;
+                        summary.income_count = count;
+                    }
+                    // 转账在账户之间搬钱，不是收也不是支，只计入总笔数。
                     _ => {}
                 }
             }

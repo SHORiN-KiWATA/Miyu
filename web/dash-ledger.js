@@ -278,16 +278,39 @@
   function renderCards() {
     const summary = state.overview.summary;
     const unit = currency();
+    const total = (state.overview.budgets || []).find((budget) => budget.scope === "total");
     const cards = [
-      { label: `本月支出 (${unit})`, value: summary.expense_text, hint: `${summary.entries} 笔` },
-      { label: `本月收入 (${unit})`, value: summary.income_text },
+      /* 笔数只数支出笔:这行字挂在「本月支出」底下,用总笔数会让一个月记了
+         几笔收入或转账之后,支出旁边出现一个更大的数。 */
+      { label: `本月支出 (${unit})`, value: summary.expense_text, hint: `${summary.expense_entries} 笔` },
       {
-        label: "结余",
-        value: `${summary.net_negative ? "−" : "+"}${summary.net_text}`,
-        hint: summary.net_negative ? "本月支出多于收入" : undefined,
+        label: `本月收入 (${unit})`,
+        value: summary.income_text,
+        hint: summary.income_entries ? `${summary.income_entries} 笔` : undefined,
       },
     ];
-    const total = (state.overview.budgets || []).find((budget) => budget.scope === "total");
+
+    /* 定了预算就听预算的。只记支出的账本里「收入 − 支出」永远是支出的
+       负数镜像,那一格屏幕换不来任何信息;这时候真正想知道的是额度还剩
+       多少。没设预算才退回净额——那时它至少还说明收支谁大。 */
+    if (total) {
+      const over = total.left_minor < 0;
+      const left = total.limit_minor > 0
+        ? Math.round((total.left_minor / total.limit_minor) * 100)
+        : 0;
+      cards.push({
+        label: over ? "预算超支" : "预算余额",
+        value: `${over ? "−" : ""}${total.left_text}`,
+        hint: over ? `超出额度 ${-left}%` : `还剩 ${left}%`,
+      });
+    } else {
+      cards.push({
+        label: "本月净额",
+        value: `${summary.net_negative ? "−" : "+"}${summary.net_text}`,
+        hint: summary.net_negative ? "本月支出多于收入" : undefined,
+      });
+    }
+
     if (total) {
       const percent = total.limit_minor > 0
         ? Math.round((total.used_minor / total.limit_minor) * 100)

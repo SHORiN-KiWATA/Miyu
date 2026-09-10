@@ -1214,3 +1214,40 @@ fn tts_mimo_provider_uses_its_own_key() {
     assert_eq!(parsed.mimo.voice, "mimo_default");
     assert!(parsed.is_active(), "legacy config keeps MiniMax as default");
 }
+
+#[test]
+fn sleep_hours_parse_and_window() {
+    use crate::config::parse_sleep_hours;
+    use chrono::NaiveTime;
+    let time = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+
+    assert_eq!(parse_sleep_hours("").unwrap(), None);
+    assert_eq!(parse_sleep_hours("   ").unwrap(), None);
+    let cross = parse_sleep_hours("23:00-07:00").unwrap().unwrap();
+    assert!(cross.contains(time(23, 0)));
+    assert!(cross.contains(time(2, 30)));
+    assert!(!cross.contains(time(7, 0)));
+    assert!(!cross.contains(time(12, 0)));
+    let same_day = parse_sleep_hours("13:00～14:30").unwrap().unwrap();
+    assert!(same_day.contains(time(13, 0)));
+    assert!(same_day.contains(time(14, 29)));
+    assert!(!same_day.contains(time(14, 30)));
+    // 全角冒号与 en dash 也认。
+    assert!(parse_sleep_hours("23：00–07：00").is_ok());
+
+    for bad in [
+        "23:00",
+        "25:00-07:00",
+        "23:60-07:00",
+        "abc",
+        "23:00-23:00",
+        "23-07",
+    ] {
+        assert!(parse_sleep_hours(bad).is_err(), "{bad}");
+    }
+    let mut config = AppConfig::default();
+    config.platforms.qq.sleep_hours = "23:00-07:00".into();
+    assert!(config.validate_platforms().is_ok());
+    config.platforms.qq.sleep_hours = "night".into();
+    assert!(config.validate_platforms().is_err());
+}

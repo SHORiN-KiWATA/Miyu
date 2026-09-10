@@ -171,6 +171,36 @@ pub(in crate::platforms::onebot) fn admission_for_access(
     self_id: i64,
     user_id: i64,
 ) -> Admission {
+    admission_for_access_at(
+        config,
+        state,
+        target,
+        self_id,
+        user_id,
+        chrono::Local::now().time(),
+    )
+}
+
+/// 睡眠时间内的拒绝:不限流、不换模型池,单纯当没看见。
+fn asleep() -> Admission {
+    Admission {
+        allowed: false,
+        rate_key: None,
+        rate_limit: PlatformRateLimit::default(),
+        use_non_whitelist_text_models: false,
+    }
+}
+
+/// `now` 是本机时区的墙钟时间,拆出来是为了让睡眠时间可测。
+pub(in crate::platforms::onebot) fn admission_for_access_at(
+    config: &OneBotConfig,
+    state: Option<&StateStore>,
+    target: Target,
+    self_id: i64,
+    user_id: i64,
+    now: chrono::NaiveTime,
+) -> Admission {
+    let sleeping = config.is_sleeping_at(now);
     let account_id = self_id.to_string();
     let user_id_text = user_id.to_string();
     let is_admin = state.map_or_else(
@@ -185,6 +215,11 @@ pub(in crate::platforms::onebot) fn admission_for_access(
                 )
         },
     );
+    // 睡眠时间:管理员在哪都叫得醒;私聊白名单只在私聊里叫得醒;其余一概不理
+    // (群消息不进历史、不概率插话,通知类事件同样走这一闸)。
+    if sleeping && !is_admin && matches!(target, Target::Group { .. }) {
+        return asleep();
+    }
     match target {
         Target::Private { user_id } => {
             if is_admin {
@@ -207,6 +242,9 @@ pub(in crate::platforms::onebot) fn admission_for_access(
                         )
                 },
             );
+            if sleeping && !whitelisted {
+                return asleep();
+            }
             if whitelisted {
                 Admission {
                     allowed: true,

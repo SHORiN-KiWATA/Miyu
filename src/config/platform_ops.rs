@@ -38,6 +38,9 @@ impl AppConfig {
         if qq.reverse_ws_port == 0 {
             bail!("platforms.qq.reverse_ws_port must be between 1 and 65535");
         }
+        if let Err(error) = super::platform::parse_sleep_hours(&qq.sleep_hours) {
+            bail!("platforms.qq.sleep_hours: {error}");
+        }
         for (field, limits) in [
             ("session_limits", Some(qq.session_limits)),
             (

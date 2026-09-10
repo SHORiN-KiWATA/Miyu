@@ -25,6 +25,8 @@ fn consecutive_identical_history_rounds_collapse_on_replay() {
             name: "web_search".to_string(),
             arguments: args.to_string(),
             output: output.to_string(),
+            started_ms: None,
+            finished_ms: None,
         }],
     };
     state
@@ -81,12 +83,16 @@ fn seed_inline_media_turn(state: &StateStore) {
                         name: "vision_analyze".to_string(),
                         arguments: "{\"image\":\"/tmp/a.png\"}".to_string(),
                         output: inline_output.to_string(),
+                        started_ms: None,
+                        finished_ms: None,
                     },
                     crate::state::ToolFlowCall {
                         id: "c2".to_string(),
                         name: "web_search".to_string(),
                         arguments: "{}".to_string(),
                         output: "r".to_string(),
+                        started_ms: None,
+                        finished_ms: None,
                     },
                 ],
             }],
@@ -1182,6 +1188,8 @@ async fn compaction_restores_recent_files_behind_the_checkpoint() {
                     arguments: serde_json::json!({ "path": fixture.display().to_string() })
                         .to_string(),
                     output: "(old contents)".to_string(),
+                    started_ms: None,
+                    finished_ms: None,
                 }],
             }],
         )

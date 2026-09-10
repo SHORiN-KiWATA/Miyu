@@ -148,12 +148,23 @@ pub(super) async fn update(args: Value, paths: MiyuPaths) -> Result<String> {
         patch.note = Some(note.trim().to_string());
         touched = true;
     }
+    // 改分类时跟记一笔一样：没有的分类现建。筛选（list）那边不给这个待遇，
+    // 那里建出来的分类一条账目都挂不上，只会给分类表长草。
+    let mut created_category = None;
     if let Some(category) = opt_str(&args, "category") {
         let direction = match entry.kind {
             EntryKind::Income => Direction::Income,
             _ => Direction::Expense,
         };
-        let resolved = db.resolve_category(&book.book_id, category, Some(direction))?;
+        let resolved = match db.resolve_category_opt(&book.book_id, category, Some(direction))? {
+            Some(found) => found,
+            None => {
+                super::add::ensure_direction_is_free(&db, &book.book_id, category, direction)?;
+                let made = db.create_category(&book.book_id, category, direction, None, None)?;
+                created_category = Some(made.name.clone());
+                made
+            }
+        };
         patch.category_id = Some(Some(resolved.category_id));
         touched = true;
     }
@@ -170,12 +181,18 @@ pub(super) async fn update(args: Value, paths: MiyuPaths) -> Result<String> {
     // 读到的 revision 就在上面几行之前拿的，窗口只有这一次调用的长度。
     // WebUI 那边会把用户看到的版本号原样带回来，防的是跨请求的覆盖。
     let updated = db.update_entry(&entry.entry_id, entry.revision, patch)?;
-    Ok(json!({
+    let mut result = json!({
         "ok": true,
         "book": book.name,
         "entry": entry_json(&db, &updated)?,
-    })
-    .to_string())
+    });
+    if let Some(name) = created_category {
+        result.as_object_mut().unwrap().insert(
+            "created_category".to_string(),
+            json!(format!("{name} (new)")),
+        );
+    }
+    Ok(result.to_string())
 }
 
 pub(super) async fn delete(args: Value, paths: MiyuPaths) -> Result<String> {

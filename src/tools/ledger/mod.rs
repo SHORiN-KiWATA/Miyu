@@ -181,14 +181,25 @@ pub(super) fn budget_json(status: &BudgetStatus) -> Value {
 
 /// 账户在结果里的样子。
 pub(super) fn account_json(db: &LedgerDb, account: &AccountRecord) -> Result<Value> {
-    let balance = db.account_balance_minor(account)?;
-    Ok(json!({
+    let balance = db.account_balance(account)?;
+    let mut value = json!({
         "id": account.account_id,
         "name": account.name,
         "kind": account.kind,
         "currency": account.currency,
-        "balance": format_amount(balance, &account.currency),
-    }))
+        "balance": format_amount(balance.minor, &account.currency),
+    });
+    // 余额少了一截总得说一声，不然模型会拿着一个偏低的数去跟用户对账。
+    if balance.unconverted_count > 0 {
+        value.as_object_mut().unwrap().insert(
+            "balance_note".to_string(),
+            json!(format!(
+                "{} entries are in another currency with no rate yet and are not in this balance",
+                balance.unconverted_count
+            )),
+        );
+    }
+    Ok(value)
 }
 
 /// 把 `YYYY-MM-DD` 解析成（发生时刻, 本地自然日）两列。

@@ -636,10 +636,10 @@ pub(in crate::cli) async fn run_remote_repl(paths: &MiyuPaths, mut mode: AgentMo
                     footer.update_thinking_variant(thinking_summary.as_deref());
                     footer
                         .update_context_window(state.context_window, state.context_window_assumed);
-                    // Push the rebuilt footer into the live editor now; without
-                    // this the on-screen model label stays stale until the next
-                    // input event redraws the editor.
-                    live_repl.set_footer(footer.clone());
+                    // 重绘着推进去:set_footer 只换数据不画,后面那条提示走的
+                    // 输出帧也不重画 footer 行,于是模型标签要等下一次按键才换
+                    // (09-10 用户截图:提示已说「已更新」,footer 仍是旧模型)。
+                    live_repl.refresh_footer(footer.clone())?;
                     repl_note(
                         &mut live_repl,
                         &format!(

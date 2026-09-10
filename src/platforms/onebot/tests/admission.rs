@@ -698,3 +698,48 @@ fn a_private_message_supersedes_a_reply_being_written_but_not_a_running_tool() {
         "群聊在这条路上恒排队"
     );
 }
+
+#[test]
+fn sleep_hours_only_wake_for_admins_and_private_whitelist() {
+    let mut config = OneBotConfig::default();
+    config.admin_users.push(1);
+    config.private_chats.whitelist.push(2);
+    config.group_chats.whitelist.push(10);
+    config.sleep_hours = "23:00-07:00".into();
+    let asleep = chrono::NaiveTime::from_hms_opt(2, 30, 0).unwrap();
+    let awake = chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+    let at =
+        |target, user_id, now| admission_for_access_at(&config, None, target, 100, user_id, now);
+
+    // 睡着:管理员私聊/群聊都行,白名单只有私聊行,其余全拒。
+    assert!(at(Target::Private { user_id: 1 }, 1, asleep).allowed);
+    assert!(at(Target::Group { group_id: 10 }, 1, asleep).allowed);
+    assert!(at(Target::Private { user_id: 2 }, 2, asleep).allowed);
+    assert!(!at(Target::Group { group_id: 10 }, 2, asleep).allowed);
+    assert!(!at(Target::Private { user_id: 3 }, 3, asleep).allowed);
+    assert!(!at(Target::Group { group_id: 10 }, 3, asleep).allowed);
+    assert!(!at(Target::Group { group_id: 11 }, 3, asleep).allowed);
+    // 被拒的不带限流键:睡眠期间的消息不该消耗游客配额。
+    assert!(at(Target::Private { user_id: 3 }, 3, asleep)
+        .rate_key
+        .is_none());
+
+    // 醒着:一切照旧。
+    assert!(at(Target::Private { user_id: 3 }, 3, awake).allowed);
+    assert!(at(Target::Group { group_id: 10 }, 2, awake).allowed);
+    assert!(at(Target::Group { group_id: 11 }, 3, awake).allowed);
+
+    // 没配睡眠时间:半夜也照常。
+    config.sleep_hours.clear();
+    assert!(
+        admission_for_access_at(
+            &config,
+            None,
+            Target::Group { group_id: 11 },
+            100,
+            3,
+            asleep
+        )
+        .allowed
+    );
+}

@@ -2047,6 +2047,15 @@
         default: { max_messages: 5, window_seconds: 300 },
       },
       {
+        path: "sleep_hours",
+        label: "睡眠时间",
+        hint: "HH:MM-HH:MM,可跨午夜(如 23:00-07:00),留空 = 不睡;时段内只有管理员(私聊/群聊)和私聊白名单(仅私聊)的消息还会叫醒她,其余消息一律当没看见",
+        kind: "text",
+        mono: true,
+        placeholder: "23:00-07:00",
+        default: "",
+      },
+      {
         path: "group_chats.whitelist",
         label: "群聊白名单",
         kind: "id-list",

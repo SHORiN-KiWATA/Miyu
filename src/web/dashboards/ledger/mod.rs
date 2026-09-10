@@ -214,6 +214,13 @@ fn budget_dto(status: &BudgetStatus, budget_id: &str) -> Value {
         "limit_text": format_amount(status.limit_minor, &status.currency),
         "used_minor": status.used_minor,
         "used_text": format_amount(status.used_minor, &status.currency),
+        // 剩余在这里算好:前端拿不到币种小数位,自己减完格式化不出正确的
+        // 金额(日元没有小数,人民币有两位)。超支了就是负数,照实报。
+        "left_minor": status.limit_minor - status.used_minor,
+        "left_text": format_amount(
+            (status.limit_minor - status.used_minor).abs(),
+            &status.currency,
+        ),
         "currency": status.currency,
         "state": status.state,
     })
@@ -250,14 +257,15 @@ pub(in crate::web) async fn dash_ledger_overview(
 
         let mut accounts = Vec::new();
         for account in db.list_accounts(&book.book_id, false)? {
-            let balance = db.account_balance_minor(&account)?;
+            let balance = db.account_balance(&account)?;
             accounts.push(json!({
                 "id": account.account_id,
                 "name": account.name,
                 "kind": account.kind,
                 "currency": account.currency,
-                "balance_minor": balance,
-                "balance_text": format_amount(balance, &account.currency),
+                "balance_minor": balance.minor,
+                "balance_text": format_amount(balance.minor, &account.currency),
+                "unconverted": balance.unconverted_count,
             }));
         }
 
@@ -313,6 +321,8 @@ pub(in crate::web) async fn dash_ledger_overview(
                 "net_text": format_amount(summary.net_minor.abs(), &book.base_currency),
                 "net_negative": summary.net_minor < 0,
                 "entries": summary.entry_count,
+                "expense_entries": summary.expense_count,
+                "income_entries": summary.income_count,
                 "pending": summary.pending_count,
             },
             "expense_categories": totals_dto(&expense_totals, &book.base_currency),

@@ -208,6 +208,7 @@
     matugenThemeLink: document.getElementById("matugenThemeLink"),
     reasoningExpandToggle: document.getElementById("reasoningExpandToggle"),
     toolExpandToggle: document.getElementById("toolExpandToggle"),
+    procCollapseToggle: document.getElementById("procCollapseToggle"),
     sessionList: document.getElementById("sessionList"),
     sessionItems: document.getElementById("sessionItems"),
     contextNumbers: document.getElementById("contextNumbers"),
@@ -481,6 +482,8 @@
     matugenAvailable: null,
     reasoningExpanded: false,
     toolExpanded: false,
+    // 过程自动收起:她一开口,前面那串思考+工具收成一行总结。默认开。
+    procCollapse: true,
     finishedTurnArticles: new Map(),
     bootstrapPromise: null,
     resyncing: false,
@@ -592,7 +595,7 @@
    * 免掉一次闪烁。窗口尺寸相关的偏好(侧栏折叠、分栏比例)故意不同步,手机和
    * 台式机本来就该不一样。
    */
-  const UI_PREF_KEYS = ["theme", "colorScheme", "chatFontSize", "reasoningExpanded", "toolExpanded"];
+  const UI_PREF_KEYS = ["theme", "colorScheme", "chatFontSize", "reasoningExpanded", "toolExpanded", "procCollapse"];
 
   function saveUiPref(key, value) {
     if (!UI_PREF_KEYS.includes(key)) return;
@@ -617,6 +620,7 @@
     if (prefs.chatFontSize) setChatFontSize(prefs.chatFontSize);
     if (prefs.reasoningExpanded) setReasoningExpanded(prefs.reasoningExpanded === "true");
     if (prefs.toolExpanded) setToolExpanded(prefs.toolExpanded === "true");
+    if (prefs.procCollapse) setProcCollapse(prefs.procCollapse === "true");
   }
 
   function setTheme(theme, persist = true) {
@@ -720,6 +724,202 @@
       safeStorageSet("miyu.web.toolExpanded", String(state.toolExpanded));
       saveUiPref("toolExpanded", String(state.toolExpanded));
     }
+  }
+
+  function setProcCollapse(value, persist = true) {
+    state.procCollapse = Boolean(value);
+    elements.procCollapseToggle?.setAttribute("aria-checked", String(state.procCollapse));
+    // 对已经切断的时间线即时生效:开 → 露出总结行并收起;关 → 藏掉总结行并展开
+    document.querySelectorAll(".proc-line").forEach((line) => {
+      if (!line.miyuProc?.closed) return;
+      line.miyuProc.head.hidden = !state.procCollapse;
+      procLineSetOpen(line, !state.procCollapse);
+    });
+    if (persist) {
+      safeStorageSet("miyu.web.procCollapse", String(state.procCollapse));
+      saveUiPref("procCollapse", String(state.procCollapse));
+    }
+  }
+
+  /* ─── 过程时间线 ───
+   * 连续的思考块和工具签串成一条时间线(.proc-line):一根 1px 细线穿过图标列的中心,
+   * 图标处断开,图标就是节点。正文、媒体、任何不是思考/工具的东西一出现,就把当前
+   * 时间线「切断」——后面再来工具就另起一条。
+   * 「过程自动收起」开着时,切断那一刻收成一行总结(Worked for 5.4 s · 3 tools);
+   * 关着就保持展开,也不出总结行。运行中(还没切断)永远没有总结行。
+   * 细线是独立元素,起点和终点跟着可见节点走,ResizeObserver 一触发就重算,
+   * 高度交给 CSS transition——新出一行,线就平滑长到那个图标,不是瞬间跳。
+   */
+  function procLineCreate(isStatic) {
+    const line = document.createElement("div");
+    line.className = "proc-line is-live is-open";
+    if (isStatic) line.classList.add("is-static");
+    const rail = document.createElement("i");
+    rail.className = "proc-rail";
+    rail.setAttribute("aria-hidden", "true");
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "proc-head";
+    head.hidden = true;
+    const node = document.createElement("span");
+    node.className = "proc-node";
+    node.appendChild(makeIconSlot("chevron-right", "proc-chevron"));
+    const summary = document.createElement("span");
+    summary.className = "proc-summary";
+    head.append(node, summary);
+    head.addEventListener("click", () => procLineSetOpen(line, !line.classList.contains("is-open")));
+    const wrap = document.createElement("div");
+    wrap.className = "proc-wrap";
+    const inner = document.createElement("div");
+    const steps = document.createElement("div");
+    steps.className = "proc-steps";
+    inner.appendChild(steps);
+    wrap.appendChild(inner);
+    line.append(rail, head, wrap);
+    line.miyuProc = { rail, head, summary, steps, closed: false, batchStart: -Infinity };
+    const fit = () => procLineFit(line);
+    if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(line);
+    window.requestAnimationFrame(fit);
+    return line;
+  }
+
+  const PROC_NODE_SELECTOR = ":scope > .tool-head > .tool-icon, :scope > summary > .reasoning-icon, :scope.tool-preparing-tag > .icon-slot";
+
+  function procLineFit(line) {
+    const proc = line.miyuProc;
+    if (!proc || !line.isConnected) return;
+    const nodes = [];
+    if (!proc.head.hidden) nodes.push(proc.head.querySelector(".proc-node"));
+    if (line.classList.contains("is-open") || proc.folding) {
+      for (const step of proc.steps.children) {
+        const node = step.querySelector(PROC_NODE_SELECTOR);
+        // 隐藏的签(生图签藏着)没有 offsetParent,不算节点
+        if (node && node.offsetParent) nodes.push(node);
+      }
+    }
+    if (!nodes.length) {
+      proc.rail.style.height = "0px";
+      return;
+    }
+    // app 壳 zoom 1.1 下 getBoundingClientRect 是缩放后的坐标,style 里的 px 是缩放前的,
+    // 用容器自己的 rect 宽 / offsetWidth 反推缩放比。
+    const box = line.getBoundingClientRect();
+    const zoom = line.offsetWidth ? box.width / line.offsetWidth : 1;
+    const center = (node) => {
+      const rect = node.getBoundingClientRect();
+      return (rect.top - box.top + rect.height / 2) / zoom;
+    };
+    const first = center(nodes[0]);
+    let last = center(nodes[nodes.length - 1]);
+    // 开合动画进行中:内层在被裁剪,线的终点不能超过当前可见底边,否则内容收完了线还拖在外面
+    const clip = proc.steps.parentElement.getBoundingClientRect();
+    last = Math.min(last, (clip.bottom - box.top) / zoom);
+    proc.rail.style.top = `${first}px`;
+    proc.rail.style.height = `${Math.max(0, last - first)}px`;
+  }
+
+  function procLineSetOpen(line, open) {
+    line.classList.toggle("is-open", open);
+    const proc = line.miyuProc;
+    if (!proc) return;
+    proc.head.setAttribute("aria-expanded", String(open));
+    // 开合期间线逐帧跟裁剪边走,不自己再走一遍 transition(两条曲线叠起来就是线拖在内容后面)。
+    // 收起时节点仍算数,只是被裁剪边钳住;裁剪到头线也就到头了。
+    proc.rail.style.transition = "none";
+    proc.folding = true;
+    window.clearTimeout(proc.foldTimer);
+    proc.foldTimer = window.setTimeout(() => {
+      proc.folding = false;
+      proc.rail.style.transition = "";
+      procLineFit(line);
+    }, 420);
+    procLineFit(line);
+  }
+
+  // 把思考块 / 工具签挂进当前时间线;没有开着的就新起一条
+  function procLineAttach(blocks, element, isStatic = false) {
+    if (!blocks || !element) return null;
+    let line = blocks.lastElementChild;
+    if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) {
+      line = procLineCreate(isStatic);
+      blocks.appendChild(line);
+    }
+    if (!isStatic) {
+      // 快模型一口气吐几个调用:不压着后来的行等,而是让 250ms 窗口内到的行共用
+      // 同一条淡入时间轴(负延迟对齐到窗口起点),几行像一批一起浮起来;窗口过了
+      // 再开新一批。动画还是那条曲线,只是不会一行一行各自蹦。
+      const proc = line.miyuProc;
+      const now = performance.now();
+      if (now - proc.batchStart > 250) proc.batchStart = now;
+      const offset = now - proc.batchStart;
+      if (offset > 0) element.style.animationDelay = `-${Math.round(offset)}ms`;
+    }
+    line.miyuProc.steps.appendChild(element);
+    return line;
+  }
+
+  // 正文/媒体来了:把当前时间线切断
+  function procLineBreak(blocks) {
+    const line = blocks?.lastElementChild;
+    if (!line?.classList?.contains("proc-line") || line.miyuProc?.closed) return;
+    const proc = line.miyuProc;
+    proc.closed = true;
+    line.classList.remove("is-live");
+    procLineRefresh(line);
+    if (state.procCollapse) {
+      proc.head.hidden = false;
+      procLineSetOpen(line, false);
+    }
+  }
+
+  // 总结行文字:Worked for 5.4 s · 3 tools · 1 thought · 1 err(回看的没有耗时)
+  function procLineRefresh(line) {
+    const proc = line?.miyuProc;
+    if (!proc?.closed) return;
+    const tools = proc.steps.querySelectorAll(":scope > .tool-card").length;
+    const thoughts = proc.steps.querySelectorAll(":scope > .reasoning-block").length;
+    const errs = proc.steps.querySelectorAll(":scope > .tool-card.is-failure").length;
+    // 「Worked for」= 第一个工具开跑到最后一个工具跑完。实时用 performance.now,
+    // 回看用落库的 Unix 毫秒,差值同一口径,刷新前后数字一致。
+    let first = Infinity;
+    let last = -Infinity;
+    for (const card of proc.steps.querySelectorAll(":scope > .tool-card")) {
+      const timing = card.miyuTiming;
+      if (!timing || timing.startedAt == null || timing.finishedAt == null) continue;
+      first = Math.min(first, timing.startedAt);
+      last = Math.max(last, timing.finishedAt);
+    }
+    const elapsed = Number.isFinite(first) && Number.isFinite(last) ? formatToolDuration(last - first) : "";
+    const parts = [];
+    const strong = (text) => {
+      const b = document.createElement("b");
+      b.textContent = text;
+      return b;
+    };
+    const plain = (text, className = "") => {
+      const span = document.createElement("span");
+      if (className) span.className = className;
+      span.textContent = text;
+      return span;
+    };
+    if (tools) {
+      const count = `${tools} tool${tools > 1 ? "s" : ""}`;
+      if (elapsed) {
+        parts.push(strong(`Worked for ${elapsed}`));
+        parts.push(plain(count));
+      } else {
+        parts.push(strong(count));
+      }
+      if (thoughts) parts.push(plain(`${thoughts} thought${thoughts > 1 ? "s" : ""}`));
+      if (errs) parts.push(plain(`${errs} err${errs > 1 ? "s" : ""}`, "proc-err"));
+    } else {
+      parts.push(strong("Thought"));
+    }
+    proc.summary.replaceChildren();
+    parts.forEach((part, index) => {
+      if (index) proc.summary.appendChild(plain(" · ", "proc-dot"));
+      proc.summary.appendChild(part);
+    });
   }
 
   function thinkingVariantLabel(variant, short = false) {
@@ -2596,6 +2796,19 @@
       await loadSessionView(fallback);
       return;
     }
+    // 本地列表空了先跟服务端对一次：删最后一个会话时顶替的新会话由服务端建
+    // （session.created 先于 session.deleted 广播，DELETE 回执里也带着），这里
+    // 通常已经在列表里；SSE 掉过事件才会走到这一步。不这么对一次的话，每个
+    // 开着该会话的页面都会自己 POST 一个，删一个多出两个（09-10 复现）。
+    await refreshSessions();
+    const refreshed = String(state.sessions.find((session) => {
+      const id = String(session?.session_id || "");
+      return id !== excluded && !isTerminalSession(id);
+    })?.session_id || "");
+    if (refreshed) {
+      await loadSessionView(refreshed);
+      return;
+    }
     // 一个可见会话都不剩：直接新建一个顶上。落进空状态的话，用户面对的是一个
     // 不在侧栏里的「幽灵视图」，在里面打字实际写进隐藏的终端集成车道。
     // 不走 createSession()——删除流程还举着 sessionBusy，它会直接返回。
@@ -2626,9 +2839,14 @@
     if (state.sessionBusy) return;
     setSessionBusy(true);
     try {
-      await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      const response = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       showToast("会话已删除");
       state.sessions = state.sessions.filter((item) => String(item?.session_id) !== String(sessionId));
+      // 删的是最后一个会话时，服务端已经建好顶替的那个并随回执带回；事件
+      // 到达有先后，这里直接收进列表，兜底就不会再去新建。
+      const replacement = (await response.json().catch(() => null))?.fallback;
+      const replacementId = String(replacement?.session_id || "");
+      if (replacementId && !findSession(replacementId)) state.sessions.unshift(replacement);
       renderSessionList();
       if (sessionId === state.viewSessionId) await openFallbackSessionView(sessionId);
     } catch (error) {
@@ -4327,10 +4545,6 @@
     const attachments = createUserAttachments(attributes.attachments);
     const actions = document.createElement("div");
     actions.className = "message-actions";
-    const time = document.createElement("span");
-    time.textContent = formatTime(timestamp) || "刚刚";
-    time.title = formatDateTime(timestamp);
-    actions.appendChild(time);
     if (attributes.revisionTarget) {
       const edit = makeMessageAction("square-pen", "编辑最后一条消息", () => {
         openRevisionEditor(article, bubble, textContent, attributes.revisionTarget, edit);
@@ -5380,6 +5594,19 @@
     return { title: "", body: raw };
   }
 
+  // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
+  function reasoningPeekText(text) {
+    return String(text || "").replace(/\s+/g, " ").trimEnd().slice(-160);
+  }
+
+  // 写入窥视文字并量一下:放得下就左对齐紧跟着时间;放不下才切到尾部可见 + 左侧渐隐
+  function setReasoningPeek(peek, text) {
+    if (!peek) return;
+    peek.textContent = reasoningPeekText(text);
+    const slot = peek.parentElement;
+    if (slot) slot.classList.toggle("is-overflow", peek.scrollWidth > slot.clientWidth + 1);
+  }
+
   function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
     const details = document.createElement("details");
     details.className = "reasoning-block";
@@ -5410,6 +5637,16 @@
       progressFill.setAttribute("aria-hidden", "true");
       progress.appendChild(progressFill);
     }
+    // 思考内容收着的时候,标题行右边那片空白放思考的尾巴:正在想就跟着滚,想完了
+    // 也留着(回看那份同样有),展开时才让位。尾部对齐,新字从右边推进来,旧字从左边淡出。
+    const slot = document.createElement("span");
+    slot.className = "reasoning-peek";
+    const peek = document.createElement("span");
+    slot.appendChild(peek);
+    summary.appendChild(slot);
+    // 此时还没挂进文档量不到宽度;先写字,挂上后由 fit/下一次 delta 再量
+    peek.textContent = reasoningPeekText(text);
+    window.requestAnimationFrame(() => setReasoningPeek(peek, text));
     summary.appendChild(chevron);
     const body = document.createElement("div");
     body.className = "reasoning-text";
@@ -5423,6 +5660,7 @@
       liveStatus,
       progress,
       body,
+      peek,
       raw: String(text || ""),
       pendingTitle: "",
       summaryOnly,
@@ -5477,10 +5715,7 @@
     const identity = document.createElement("div");
     const name = document.createElement("strong");
     name.textContent = state.persona.name;
-    const time = document.createElement("span");
-    time.textContent = formatTime(timestamp) || "";
-    time.title = formatDateTime(timestamp);
-    identity.append(name, time);
+    identity.append(name);
     header.append(avatar, identity);
     const assistantContent = document.createElement("div");
     assistantContent.className = "assistant-content";
@@ -5496,36 +5731,46 @@
       const roundReasoning = String(round?.assistant_reasoning || "");
       if (roundReasoning.trim() && !reasoningHidden()) {
         const parsed = splitReasoningText(roundReasoning);
-        blocks.appendChild(createReasoningBlock(parsed.body, "已思考", false).element);
+        procLineAttach(blocks, createReasoningBlock(parsed.body, "已思考", false).element, true);
       }
       const roundContent = String(round?.assistant_content || "");
       if (roundContent.trim()) {
         const markdown = document.createElement("div");
         markdown.className = "markdown-body";
         renderMarkdown(markdown, roundContent);
+        procLineBreak(blocks);
         blocks.appendChild(markdown);
       }
       for (const call of Array.isArray(round?.calls) ? round.calls : []) {
-        blocks.appendChild(createPersistedToolCard(call));
+        procLineAttach(blocks, createPersistedToolCard(call), true);
         // share_file 的富预览(播放器/图片/下载条)重建:实时靠 tool.finished
         // 的输出渲染,刷新/切换后从落库的 tool_flow 输出里复原同一份。
         if (window.MiyuShared?.isShareTool(String(call?.name || ""))) {
           const shared = window.MiyuShared.renderCard(String(call?.output || ""));
-          if (shared) blocks.appendChild(shared);
+          if (shared) {
+            procLineBreak(blocks);
+            blocks.appendChild(shared);
+          }
         }
       }
     }
     if (String(reasoning || "").trim() && !reasoningHidden()) {
       const parsed = splitReasoningText(reasoning);
-      blocks.appendChild(createReasoningBlock(parsed.body, "已思考", false).element);
+      procLineAttach(blocks, createReasoningBlock(parsed.body, "已思考", false).element, true);
     }
     if (String(content || "").trim()) {
       const markdown = document.createElement("div");
       markdown.className = "markdown-body";
       renderMarkdown(markdown, content);
+      procLineBreak(blocks);
       blocks.appendChild(markdown);
     }
-    for (const asset of Array.isArray(assets) ? assets : []) blocks.appendChild(createConversationMedia(asset));
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      procLineBreak(blocks);
+      blocks.appendChild(createConversationMedia(asset));
+    }
+    // 回合以工具收尾(没有最终正文)时,最后那条时间线也要切断,否则总结行永远不出
+    procLineBreak(blocks);
     assistantContent.appendChild(blocks);
     assistantContent.classList.toggle("is-slim", !blocks.querySelector(WIDE_BLOCK_SELECTOR));
     article.append(header, assistantContent);
@@ -6327,6 +6572,7 @@
       const element = document.createElement("div");
       element.className = "markdown-body live-text-block";
       const block = { element, raw: "", renderFrame: null };
+      procLineBreak(live.blocks);
       live.blocks.appendChild(element);
       syncBubbleWidth(live.article);
       live.currentText = block;
@@ -6374,7 +6620,7 @@
     // 计时从 reasoning.start 事件算起,而不是签出现的时刻(签是惰性创建的)
     if (live.reasoningClockStart != null) reasoning.startedAt = live.reasoningClockStart;
     reasoning.pendingTitle = normalizeReasoningTitle(live.reasoningTitle);
-    if (!reasoningHidden()) live.blocks.appendChild(reasoning.element);
+    if (!reasoningHidden()) procLineAttach(live.blocks, reasoning.element);
     live.reasoning = reasoning;
     live.reasoningParts.push(reasoning);
     if (live.reasoningTimer) window.clearInterval(live.reasoningTimer);
@@ -6460,6 +6706,8 @@
       const reasoning = ensureLiveReasoning(live);
       reasoning.raw += delta;
       reasoning.body.textContent = reasoning.raw;
+      // 窥视槽只放尾巴:换行折成空格,取最后 160 字,够撑满一行还不至于每个 delta 都重排一大段
+      setReasoningPeek(reasoning.peek, reasoning.raw);
       live.assistantReasoning = collectLiveReasoning(live);
       contentAdded(live);
       return;
@@ -6579,15 +6827,14 @@
     const subject = dedupeToolSubject(tool.titleText, tool.subject);
     if (tool.commandPreview) {
       tool.commandPreview.textContent = tool.commandText || subject || "等待命令";
-      tool.summary.textContent = tool.finishedAt == null
-        ? ""
-        : formatToolDuration(tool.finishedAt - tool.startedAt);
+      tool.summary.textContent = tool.commandText || subject || "";
       return;
     }
     if (subject) details.push(subject);
     if (tool.imageCount) details.push(`${tool.imageCount} 张图片`);
-    if (tool.finishedAt != null) details.push(formatToolDuration(tool.finishedAt - tool.startedAt));
-    tool.summary.textContent = details.filter(Boolean).join(" · ") || (tool.finished ? "无输出" : "等待输出");
+    // 没有主语就空着:「无输出 / 等待输出」是旧芯片时代占摘要位的话,时间线上耗时和转圈
+    // 都在状态位,这里再写字只会让人以为工具真的没输出。
+    tool.summary.textContent = details.filter(Boolean).join(" · ");
   }
 
   function scrollToolOutputToEnd(tool) {
@@ -6659,7 +6906,11 @@
     const status = document.createElement("span");
     status.className = "tool-status";
     const statusText = document.createElement("span");
-    statusText.textContent = ok ? "完成" : "失败";
+    const startedMs = Number(call?.started_ms);
+    const finishedMs = Number(call?.finished_ms);
+    const hasSpan = Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs;
+    if (hasSpan) card.miyuTiming = { startedAt: startedMs, finishedAt: finishedMs };
+    statusText.textContent = ok ? (hasSpan ? formatToolDuration(finishedMs - startedMs) || "完成" : "完成") : "失败";
     status.append(makeIconSlot(ok ? "check" : "circle-alert"), statusText);
     head.append(icon, title, status, makeIconSlot("chevron-down", "tool-chevron"));
     head.addEventListener("click", () => {
@@ -6711,6 +6962,7 @@
     tool.statusIcon.classList.toggle("is-spinning", iconName === "loader-circle");
     tool.card.classList.remove("is-success", "is-failure");
     if (statusClass) tool.card.classList.add(statusClass);
+    procLineRefresh(tool.card.closest(".proc-line"));
   }
 
   function renderCommandOutputPreview(tool) {
@@ -6953,8 +7205,9 @@
       }
     });
     updateToolSummary(tool);
+    card.miyuTiming = tool;
     live.tools.set(toolId, tool);
-    live.blocks.appendChild(card);
+    procLineAttach(live.blocks, card);
     if (isImageTool) {
       const bubble = document.createElement("div");
       bubble.className = "image-gen-bubble";
@@ -6963,6 +7216,7 @@
       label.textContent = toolName === "print_image" ? "正在加载图片" : "正在生成图片";
       if (subjectText) bubble.title = subjectText;
       bubble.appendChild(label);
+      procLineBreak(live.blocks);
       live.blocks.appendChild(bubble);
       startImageGenDots(bubble);
       tool.imagePlaceholder = bubble;
@@ -7042,7 +7296,7 @@
     const label = document.createElement("span");
     label.className = "tool-preparing-label";
     tag.append(makeIconSlot("loader-circle", "is-spinning"), label);
-    live.blocks.appendChild(tag);
+    procLineAttach(live.blocks, tag);
     live.preparingTool = tag;
     renderPreparingLabel(live);
     live.preparingTimer = window.setInterval(() => renderPreparingLabel(live), 200);
@@ -7080,6 +7334,7 @@
             tool.imagePlaceholder.replaceWith(media);
             tool.imagePlaceholder = null;
           } else {
+            procLineBreak(live.blocks);
             live.blocks.appendChild(media);
           }
           // 不自动进 artifact:图片已经在气泡里画出来了,再塞进面板等于同一张
@@ -7176,6 +7431,10 @@
       tool.resultDetail.raw = output.length > MAX_TOOL_OUTPUT_CHARS ? `[较早输出已省略]\n${output.slice(-MAX_TOOL_OUTPUT_CHARS)}` : output;
       tool.resultDetail.content.textContent = tool.resultDetail.raw;
       tool.resultDetail.wrapper.hidden = !tool.resultDetail.raw;
+      if (tool.commandPreview && tool.resultDetail.raw) {
+        tool.stdoutDetail.wrapper.hidden = true;
+        tool.stderrDetail.wrapper.hidden = true;
+      }
       const ok = Boolean(data?.ok);
       resetPreparingWindow(live);
       // 只刷正在看的那个会话——后台会话的 todowrite 不该改屏幕上这块面板。
@@ -7211,7 +7470,8 @@
       if (tool.isImageTool && !ok) {
         tool.card.classList.remove("image-tool-chip");
       }
-      updateToolStatus(tool, ok ? "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
+      // 时间线上成功不打勾不写「完成」,右侧就是耗时;失败才写字
+      updateToolStatus(tool, ok ? formatToolDuration(tool.finishedAt - tool.startedAt) || "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
       updateToolSummary(tool);
       if (tool.liveProgress) {
         if (ok) tool.liveProgress.hidden = true;
@@ -7752,6 +8012,7 @@
     output.hidden = true;
     block.append(title, output);
     const operation = { kind, block, title: title.lastChild, output, raw: "" };
+    procLineBreak(live.blocks);
     live.blocks.appendChild(block);
     syncBubbleWidth(live.article);
     live.contextOperation = operation;
@@ -7922,6 +8183,7 @@
     const text = document.createElement("span");
     text.textContent = String(message || "");
     notice.appendChild(text);
+    procLineBreak(live.blocks);
     live.blocks.appendChild(notice);
   }
 
@@ -7956,8 +8218,9 @@
 
   function consumeLiveQueue(live, data) {
     finalizeLiveReasoning(live);
+    procLineBreak(live.blocks);
     setLiveEndpoint(live, data?.provider_id, data?.model);
-    if (live.headerStatus) live.headerStatus.textContent = "刚刚";
+    if (live.headerStatus) live.headerStatus.textContent = "";
     if (live.meta) live.meta.textContent = "已完成";
 
     const ids = new Set((Array.isArray(data?.prompt_ids) ? data.prompt_ids : []).map(String));
@@ -8081,13 +8344,14 @@
     clearPreparingTool(live);
     clearTypingIndicator(live);
     finalizeLiveReasoning(live);
+    procLineBreak(live.blocks);
     setLiveEndpoint(live, data?.provider_id, data?.model);
     removeLiveStopButton(live);
     state.terminalRunIds.add(runId);
     if (state.terminalRunIds.size > 30) state.terminalRunIds.delete(state.terminalRunIds.values().next().value);
 
     if (kind === "completed") {
-      if (live.headerStatus) live.headerStatus.textContent = "刚刚";
+      if (live.headerStatus) live.headerStatus.textContent = "";
       if (live.meta) {
         const usage = formatUsageMeta({
           turnTotal: effectiveUsageTotal(data?.usage),
@@ -10815,6 +11079,7 @@
     document.querySelectorAll("[data-chat-font]").forEach((button) => button.addEventListener("click", () => setChatFontSize(button.dataset.chatFont)));
     elements.reasoningExpandToggle?.addEventListener("click", () => setReasoningExpanded(!state.reasoningExpanded));
     elements.toolExpandToggle?.addEventListener("click", () => setToolExpanded(!state.toolExpanded));
+    elements.procCollapseToggle?.addEventListener("click", () => setProcCollapse(!state.procCollapse));
     elements.modelButton.addEventListener("click", (event) => {
       event.stopPropagation();
       if (elements.modelMenu.hidden) openModelMenu();
@@ -11023,6 +11288,8 @@
     setChatFontSize(safeStorageGet("miyu.web.chatFontSize") || "15px", false);
     setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") === "true", false);
     setToolExpanded(safeStorageGet("miyu.web.toolExpanded") === "true", false);
+    // 没存过就是开(默认开),所以只认显式的 "false"
+    setProcCollapse(safeStorageGet("miyu.web.procCollapse") !== "false", false);
     const artifactRatio = Number(safeStorageGet("miyu.web.artifactWidthRatio.v2"));
     if (Number.isFinite(artifactRatio) && artifactRatio >= 0.25 && artifactRatio <= 0.9) {
       state.artifactWidthRatio = artifactRatio;

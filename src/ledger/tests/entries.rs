@@ -39,6 +39,71 @@ pub(crate) fn add_simple(
     .expect("add entry")
 }
 
+/// 记一笔外币支出，换算结果已经冻结在账目行上（`rate_status = ok`）。
+pub(crate) fn add_converted(
+    db: &LedgerDb,
+    book: &BookRecord,
+    amount: &str,
+    currency: &str,
+    base_amount_minor: i64,
+    from: Option<&AccountRecord>,
+) -> EntryRecord {
+    let amount_minor = parse_amount(amount, currency).unwrap();
+    db.add_entry(NewEntry {
+        book_id: book.book_id.clone(),
+        kind: EntryKind::Expense,
+        amount_minor,
+        currency: currency.to_string(),
+        base_amount_minor: Some(base_amount_minor),
+        base_currency: book.base_currency.clone(),
+        rate: Some("0.043694".to_string()),
+        rate_source: Some("test".to_string()),
+        rate_at: Some(now_rfc3339()),
+        rate_status: RateStatus::Ok,
+        account_id: from.map(|account| account.account_id.clone()),
+        to_account_id: None,
+        category_id: None,
+        occurred_at: now_rfc3339(),
+        occurred_day: local_day_now(),
+        note: String::new(),
+        merchant: String::new(),
+        source: EntrySource::Chat,
+    })
+    .expect("add entry")
+}
+
+/// 记一笔还没取到汇率的外币支出。
+pub(crate) fn add_pending(
+    db: &LedgerDb,
+    book: &BookRecord,
+    amount: &str,
+    currency: &str,
+    from: Option<&AccountRecord>,
+) -> EntryRecord {
+    let amount_minor = parse_amount(amount, currency).unwrap();
+    db.add_entry(NewEntry {
+        book_id: book.book_id.clone(),
+        kind: EntryKind::Expense,
+        amount_minor,
+        currency: currency.to_string(),
+        base_amount_minor: None,
+        base_currency: book.base_currency.clone(),
+        rate: None,
+        rate_source: None,
+        rate_at: None,
+        rate_status: RateStatus::Pending,
+        account_id: from.map(|account| account.account_id.clone()),
+        to_account_id: None,
+        category_id: None,
+        occurred_at: now_rfc3339(),
+        occurred_day: local_day_now(),
+        note: String::new(),
+        merchant: String::new(),
+        source: EntrySource::Chat,
+    })
+    .expect("add entry")
+}
+
 fn book_with_category(db: &LedgerDb) -> (BookRecord, CategoryRecord) {
     let book = db.create_book("生活", "CNY").unwrap();
     let category = db
@@ -340,9 +405,8 @@ fn entry_resolves_by_id_prefix() {
 fn transfer_between_the_same_account_is_rejected_by_the_schema() {
     let (_dir, db) = temp_db();
     let book = db.create_book("生活", "CNY").unwrap();
-    let cash = db
-        .create_account(&book.book_id, "现金", AccountKind::Cash, None, None)
-        .unwrap();
+    // 建账本时已经铺好了「现金」，直接用。
+    let cash = db.resolve_account(&book.book_id, "现金").unwrap();
 
     let result = db.add_entry(NewEntry {
         book_id: book.book_id.clone(),

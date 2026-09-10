@@ -351,6 +351,15 @@ pub(in crate::config_tui) fn edit_qq(
             ),
             format!(
                 "{}: {}",
+                t("Sleep hours", "睡眠时间"),
+                if qq.sleep_hours.is_empty() {
+                    t("not set", "未设置")
+                } else {
+                    qq.sleep_hours.as_str()
+                }
+            ),
+            format!(
+                "{}: {}",
                 t("Group whitelist", "群聊白名单"),
                 qq.group_chats.whitelist.len()
             ),
@@ -490,48 +499,49 @@ pub(in crate::config_tui) fn edit_qq(
                         &mut config.platforms.qq.private_chats.non_whitelist_rate_limit,
                     )?;
                 }
-                15 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
+                15 if matches!(key, KeyCode::Enter) => edit_qq_sleep_hours(stdout, config)?,
+                16 if matches!(key, KeyCode::Enter) => edit_qq_id_list(
                     stdout,
                     t(" GROUP WHITELIST ", " 群聊白名单 "),
                     t("Group id", "群号"),
                     &mut config.platforms.qq.group_chats.whitelist,
                 )?,
-                16 if matches!(key, KeyCode::Enter) => edit_keyword_list(
+                17 if matches!(key, KeyCode::Enter) => edit_keyword_list(
                     stdout,
                     &mut config.platforms.qq.group_chats.trigger_keywords,
                 )?,
-                17 if matches!(key, KeyCode::Enter) => {
+                18 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
                         stdout,
                         &mut config.platforms.qq.group_chats.whitelist_rate_limit,
                     )?;
                 }
-                18 => {
+                19 => {
                     config.platforms.qq.group_chats.allow_non_whitelist =
                         !config.platforms.qq.group_chats.allow_non_whitelist
                 }
-                19 if matches!(key, KeyCode::Enter) => {
+                20 if matches!(key, KeyCode::Enter) => {
                     edit_platform_rate_limit(
                         stdout,
                         &mut config.platforms.qq.group_chats.non_whitelist_rate_limit,
                     )?;
                 }
-                // 光标就停在开关这一行(20),"并行数量"排在它之后——关掉并行
+                // 光标就停在开关这一行(21),"并行数量"排在它之后——关掉并行
                 // 时那一项消失也不会把光标落到不存在的行上,无需再钳制。
-                20 => {
+                21 => {
                     config.platforms.qq.session_parallel = !config.platforms.qq.session_parallel;
                 }
-                21 if parallel && matches!(key, KeyCode::Enter) => {
+                22 if parallel && matches!(key, KeyCode::Enter) => {
                     edit_platform_session_limits(stdout, &mut config.platforms.qq.session_limits)?
                 }
                 // 尾部三项随"并行数量"是否出现整体顺延一位。
-                index if index == 22 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                index if index == 23 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
                     select_platform_model_routes(stdout, paths, config)?
                 }
-                index if index == 23 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                index if index == 24 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
                     select_platform_plugins(stdout, paths, config)?
                 }
-                index if index == 24 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
+                index if index == 25 - usize::from(!parallel) && matches!(key, KeyCode::Enter) => {
                     edit_qq_advanced(stdout, config)?
                 }
                 _ => {}
@@ -658,6 +668,30 @@ pub(in crate::config_tui) fn edit_qq_token(
         true,
     )? {
         config.platforms.qq.access_token = value.trim().to_string();
+    }
+    Ok(())
+}
+
+/// 睡眠时间「HH:MM-HH:MM」,清空即关闭;格式不对就地提示,不写回。
+pub(in crate::config_tui) fn edit_qq_sleep_hours(
+    stdout: &mut io::Stdout,
+    config: &mut AppConfig,
+) -> Result<()> {
+    let Some(value) = edit_inline_value(
+        stdout,
+        t(
+            " SLEEP HOURS (HH:MM-HH:MM, EMPTY = OFF) ",
+            " 睡眠时间(HH:MM-HH:MM,留空关闭) ",
+        ),
+        &config.platforms.qq.sleep_hours,
+        false,
+    )?
+    else {
+        return Ok(());
+    };
+    match crate::config::parse_sleep_hours(&value) {
+        Ok(_) => config.platforms.qq.sleep_hours = value.trim().to_string(),
+        Err(error) => message(stdout, &error)?,
     }
     Ok(())
 }
