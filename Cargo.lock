@@ -321,15 +321,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
-name = "blake2"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
-dependencies = [
- "digest 0.10.7",
-]
-
-[[package]]
 name = "blake3"
 version = "1.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2081,15 +2072,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9dbbfed4e59ba9750e15ba154fdfd9329cee16ff3df539c2666b70f58cc32105"
 
 [[package]]
-name = "keccak"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
-dependencies = [
- "cpufeatures 0.2.17",
-]
-
-[[package]]
 name = "lazy-regex"
 version = "3.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2331,12 +2313,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "md5"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
-
-[[package]]
 name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2411,14 +2387,12 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "blake2",
  "blake3",
  "bzip2 0.4.4",
  "chrono",
  "clap",
  "cosmic-text",
  "cpal",
- "crc32fast",
  "crossterm 0.28.1",
  "directories",
  "fancy-regex 0.17.0",
@@ -2436,7 +2410,6 @@ dependencies = [
  "json_comments",
  "libc",
  "markup5ever_rcdom",
- "md5",
  "ort",
  "pinyin",
  "pulldown-cmark",
@@ -2455,7 +2428,6 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
- "sha3",
  "sherpa-onnx",
  "tar",
  "tempfile",
@@ -3823,16 +3795,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.3",
-]
-
-[[package]]
-name = "sha3"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
-dependencies = [
- "digest 0.10.7",
- "keccak",
 ]
 
 [[package]]

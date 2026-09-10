@@ -1,0 +1,837 @@
+#!/usr/bin/env python3
+# Id: get_weather
+# Display name: Weather
+# 显示名称: 天气查询
+# Description: Weather lookup. Pass a city, place name, postal code, or airport code. Ask the user when the location is missing.
+# Timeout: 60
+# Group: web
+# Trust: external
+# Permission: read-only
+# Example: {"location":"Tokyo"}
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "location": {
+#       "type": "string",
+#       "description": "Required city, place name, postal code, or airport code. Do not guess; ask the user when it is missing."
+#     },
+#     "query_type": {
+#       "type": "string",
+#       "enum": [
+#         "forecast",
+#         "air_quality",
+#         "historical",
+#         "marine",
+#         "climate",
+#         "elevation"
+#       ],
+#       "description": "Query type. forecast=current weather and forecast, air_quality, historical, marine, climate=climate trends, elevation. Defaults to forecast."
+#     },
+#     "days": {
+#       "type": "integer",
+#       "description": "Number of forecast days, default 3, max 7."
+#     },
+#     "start_date": {
+#       "type": "string",
+#       "description": "Start date, format YYYY-MM-DD. Used by historical and climate."
+#     },
+#     "end_date": {
+#       "type": "string",
+#       "description": "End date, format YYYY-MM-DD. Used by historical and climate; defaults to start_date when omitted."
+#     },
+#     "country_code": {
+#       "type": "string",
+#       "description": "Optional ISO-3166-1 alpha2 country code to disambiguate identically named places, e.g. CN, JP, US."
+#     }
+#   }
+# }
+"""
+天气查询（Open-Meteo，wttr.in 兜底）。从 Rust 内置工具 src/tools/weather 移植而来，
+输出结构与原实现一致：一段中文 summary + 逐字段 JSON。
+
+用法（命令行）：
+    echo '{"location":"Tokyo"}' | get_weather
+    echo '{"location":"北京","query_type":"air_quality"}' | get_weather
+    echo '{"location":"Paris","query_type":"historical","start_date":"2024-01-01"}' | get_weather
+
+工具层（Miyu）调用时把参数打成 JSON 从 stdin 喂进来（同一份也在 MIYU_ARGS_JSON）：
+    {"location":"东京","query_type":"forecast","days":3,"country_code":"JP"}
+"""
+
+import json
+import os
+import socket
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
+CLIMATE_URL = "https://climate-api.open-meteo.com/v1/climate"
+ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
+WTTR_URL = "https://wttr.in/"
+
+UA = "miyu-weather/0.1"
+TIMEOUT = 15  # 每个请求的秒数上限
+
+GEOCODING_CACHE_TTL = 7 * 24 * 60 * 60
+FORECAST_CACHE_TTL = 10 * 60
+MAX_CACHE_ENTRIES = 512
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, fix=""):
+        super().__init__(message)
+        self.fix = fix
+
+
+# ---------------------------------------------------------------- cache
+# Rust 版是常驻进程里的两张内存表；脚本每次都是新进程，所以落成一个 JSON 文件。
+# 语义保持一致：读只判过期，写时清扫过期并封顶条数。
+
+def cache_path():
+    base = os.environ.get("MIYU_SCRIPT_CACHE_DIR") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "miyu-scripts"
+    )
+    return os.path.join(base, "get_weather-cache.json")
+
+
+def load_cache():
+    try:
+        with open(cache_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(cache):
+    path = cache_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # 缓存写不进去不算失败
+
+
+def read_cache(table, key, ttl):
+    entry = load_cache().get(table, {}).get(key)
+    if not isinstance(entry, dict):
+        return None
+    if time.time() - float(entry.get("t", 0)) <= ttl:
+        return entry.get("v")
+    return None
+
+
+def write_cache(table, key, value, ttl):
+    cache = load_cache()
+    now = time.time()
+    entries = {
+        k: e for k, e in cache.get(table, {}).items()
+        if isinstance(e, dict) and now - float(e.get("t", 0)) <= ttl
+    }
+    while len(entries) >= MAX_CACHE_ENTRIES:
+        oldest = min(entries, key=lambda k: float(entries[k].get("t", 0)))
+        del entries[oldest]
+    entries[key] = {"t": now, "v": value}
+    cache[table] = entries
+    save_cache(cache)
+
+
+# ---------------------------------------------------------------- HTTP
+
+def http_get(url, params=None, expect_json=True):
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        raise Failed(f"HTTP status client error ({exc.code}) for url ({url})", "稍后再试") from exc
+    except urllib.error.URLError as exc:
+        raise Failed(f"error sending request for url ({url}): {exc.reason}", "检查网络或代理") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise Failed(f"request timed out after {TIMEOUT}s ({url})", "稍后再试或检查代理") from exc
+    if not expect_json:
+        return body
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"error decoding response body from {url}", "稍后再试") from exc
+
+
+# ---------------------------------------------------------------- args
+
+QUERY_TYPES = {
+    "air_quality": "air_quality", "air-quality": "air_quality", "air": "air_quality", "aqi": "air_quality",
+    "historical": "historical", "history": "historical", "archive": "historical",
+    "marine": "marine", "sea": "marine", "ocean": "marine",
+    "climate": "climate", "climate_change": "climate", "climate-change": "climate",
+    "elevation": "elevation", "altitude": "elevation",
+}
+
+
+def as_str(args, key):
+    value = args.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def parse_request(args):
+    days = args.get("days")
+    if isinstance(days, bool) or not isinstance(days, int) or days < 0:
+        days = 3  # Rust: as_u64() 拿不到就用默认 3
+    country_code = as_str(args, "country_code").upper() or None
+    query_type = QUERY_TYPES.get((args.get("query_type") if isinstance(args.get("query_type"), str) else "forecast").strip().lower(), "forecast")
+    return {
+        "location": as_str(args, "location"),
+        "query_type": query_type,
+        "days": max(1, min(7, days)),
+        "start_date": as_str(args, "start_date") or None,
+        "end_date": as_str(args, "end_date") or None,
+        "country_code": country_code,
+    }
+
+
+# ---------------------------------------------------------------- geocoding
+
+def normalize_location(value):
+    return "".join(value.strip().lower().split())
+
+
+LOCATION_ALIASES = {}
+for _names, _aliases in (
+    (("东京", "東亰", "東京", "东京都", "東京都", "日本东京", "日本東京", "日本东京都",
+      "日本東京都", "东京日本", "東京日本"), ("Tokyo", "東京")),
+    (("纽约", "紐約", "纽约市", "紐約市"), ("New York",)),
+    (("伦敦", "倫敦"), ("London",)),
+    (("巴黎",), ("Paris",)),
+    (("洛杉矶", "洛杉磯"), ("Los Angeles",)),
+    (("旧金山", "舊金山", "三藩市"), ("San Francisco",)),
+    (("首尔", "首爾", "汉城", "漢城"), ("Seoul",)),
+    (("莫斯科",), ("Moscow",)),
+    (("柏林",), ("Berlin",)),
+    (("罗马", "羅馬"), ("Rome",)),
+    (("曼谷",), ("Bangkok",)),
+    (("新加坡",), ("Singapore",)),
+    (("悉尼", "雪梨"), ("Sydney",)),
+    (("墨尔本", "墨爾本"), ("Melbourne",)),
+    (("大阪", "大阪市"), ("Osaka",)),
+    (("京都", "京都市"), ("Kyoto",)),
+    (("名古屋",), ("Nagoya",)),
+    (("神户", "神戶"), ("Kobe",)),
+    (("横滨", "橫濱"), ("Yokohama",)),
+):
+    for _n in _names:
+        LOCATION_ALIASES[_n] = _aliases
+
+
+def geocoding_query_names(location):
+    trimmed = location.strip()
+    names = [trimmed, *LOCATION_ALIASES.get(normalize_location(trimmed), ())]
+    return sorted(set(names))  # Rust: sort + dedup
+
+
+def fetch_geocoding_results(name, country_code):
+    params = [("name", name), ("count", "10"), ("language", "zh"), ("format", "json")]
+    if country_code:
+        params.append(("countryCode", country_code))
+    response = http_get(GEOCODING_URL, params)
+    results = response.get("results") or []
+    out = []
+    for item in results:
+        if not isinstance(item, dict) or "name" not in item or "latitude" not in item or "longitude" not in item:
+            continue  # serde 会整包报错；这里宽松一点，跳过残缺条目
+        out.append({
+            "name": str(item["name"]),
+            "latitude": float(item["latitude"]),
+            "longitude": float(item["longitude"]),
+            "elevation": item.get("elevation"),
+            "feature_code": item.get("feature_code"),
+            "country_code": item.get("country_code"),
+            "country": item.get("country"),
+            "admin1": item.get("admin1"),
+            "admin2": item.get("admin2"),
+            "timezone": item.get("timezone"),
+            "population": item.get("population"),
+        })
+    return out
+
+
+def dedup_locations(locations):
+    seen = set()
+    kept = []
+    for loc in locations:
+        key = (normalize_location(loc["name"]), loc.get("country_code") or "",
+               f"{loc['latitude']:.4f}", f"{loc['longitude']:.4f}")
+        if key not in seen:
+            seen.add(key)
+            kept.append(loc)
+    return kept
+
+
+def geocode_location(request):
+    cache_key = f"{normalize_location(request['location'])}|{request['country_code'] or ''}"
+    cached = read_cache("geocoding", cache_key, GEOCODING_CACHE_TTL)
+    if cached:
+        return cached
+    results = []
+    last_error = None
+    for name in geocoding_query_names(request["location"]):
+        try:
+            results.extend(fetch_geocoding_results(name, request["country_code"]))
+        except Failed as exc:
+            last_error = exc
+    results = dedup_locations(results)
+    if not results:
+        if last_error is not None:
+            raise last_error
+        raise Failed(f"no geocoding results for {request['location']}",
+                     "换个写法（拉丁名、加国家名）或传 country_code")
+    write_cache("geocoding", cache_key, results, GEOCODING_CACHE_TTL)
+    return results
+
+
+FEATURE_SCORE = {"PPLC": 80_000, "PPLA": 60_000, "PPLA2": 50_000, "PPLA3": 40_000, "PPLA4": 30_000, "PPL": 20_000}
+
+
+def location_score(query, loc):
+    q = normalize_location(query)
+    n = normalize_location(loc["name"])
+    score = 0
+    if n == q:
+        score += 1_000_000
+    elif q in n or n in q:
+        score += 100_000
+    score += FEATURE_SCORE.get(loc.get("feature_code"), 0)
+    population = loc.get("population") or 0
+    return score + min(int(population), 10_000_000)
+
+
+def select_location(query, locations):
+    if not locations:
+        return None
+    # Rust max_by_key 取最后一个最大值；Python max 取第一个，这里手动对齐。
+    best = locations[0]
+    best_score = location_score(query, best)
+    for loc in locations[1:]:
+        score = location_score(query, loc)
+        if score >= best_score:
+            best, best_score = loc, score
+    return best
+
+
+def selected_location(request):
+    locations = geocode_location(request)
+    selected = select_location(request["location"], locations)
+    if selected is None:
+        raise Failed(f"no geocoding results for {request['location']}")
+    return locations, selected
+
+
+# ---------------------------------------------------------------- formatting helpers
+
+def fmt_temperature(v):
+    return f"{v:.1f}°C" if v is not None else "未知温度"
+
+
+def fmt_percent(v):
+    return f"{int(v)}%" if v is not None else "未知"
+
+
+def fmt_speed(v):
+    return f"{v:.1f} km/h" if v is not None else "未知风速"
+
+
+def fmt_precipitation(v):
+    return f"{v:.1f} mm" if v is not None else "未知"
+
+
+def fmt_micrograms(v):
+    return f"{v:.1f} µg/m³" if v is not None else "未知"
+
+
+def fmt_number(v):
+    return f"{v:.1f}" if v is not None else "未知"
+
+
+def fmt_count(v):
+    return str(int(v)) if v is not None else "未知"
+
+
+def fmt_meters(v):
+    return f"{v:.1f} m" if v is not None else "未知"
+
+
+def fmt_seconds(v):
+    return f"{v:.1f} s" if v is not None else "未知"
+
+
+def format_location(loc):
+    parts = [loc.get("name"), loc.get("admin1"), loc.get("country")]
+    return "，".join(p for p in parts if isinstance(p, str) and p.strip())
+
+
+WEATHER_CODES = {
+    0: "晴", 1: "大部晴朗", 2: "局部多云", 3: "阴", 45: "雾", 48: "冻雾",
+    51: "小毛毛雨", 53: "中等毛毛雨", 55: "大毛毛雨", 56: "小冻毛毛雨", 57: "大冻毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨", 66: "小冻雨", 67: "大冻雨",
+    71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
+    80: "小阵雨", 81: "中等阵雨", 82: "强阵雨", 85: "小阵雪", 86: "大阵雪",
+    95: "雷暴", 96: "雷暴伴小冰雹", 99: "雷暴伴大冰雹",
+}
+
+
+def weather_code_label(code):
+    return WEATHER_CODES.get(int(code), "未知天气")
+
+
+WIND_DIRS = ["北风", "东北风", "东风", "东南风", "南风", "西南风", "西风", "西北风"]
+
+
+def wind_direction_label(degrees):
+    normalized = float(degrees) % 360.0
+    return WIND_DIRS[int((normalized + 22.5) // 45.0) % 8]
+
+
+def european_aqi_label(v):
+    v = int(v)
+    return "良好" if v <= 20 else "尚可" if v <= 40 else "中等" if v <= 60 else "差" if v <= 80 else "很差" if v <= 100 else "极差"
+
+
+def us_aqi_label(v):
+    v = int(v)
+    return "良好" if v <= 50 else "中等" if v <= 100 else "对敏感人群不健康" if v <= 150 else "不健康" if v <= 200 else "很不健康" if v <= 300 else "危险"
+
+
+def label_or(value, fn, default):
+    return fn(value) if value is not None else default
+
+
+def maybe(value, fn):
+    return fn(value) if value is not None else None
+
+
+def as_f64(value):
+    """serde 把 JSON 整数读成 f64 再写回会变成 360.0；这里对齐。"""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
+
+
+def value_at(values, index):
+    if not isinstance(values, list) or index >= len(values):
+        return None
+    return values[index]
+
+
+def location_json(loc):
+    return {
+        "name": loc["name"], "admin1": loc.get("admin1"), "admin2": loc.get("admin2"),
+        "country": loc.get("country"), "country_code": loc.get("country_code"),
+        "timezone": loc.get("timezone"), "latitude": loc["latitude"], "longitude": loc["longitude"],
+        "population": loc.get("population"),
+    }
+
+
+def alternatives_json(locations):
+    return [location_json(loc) for loc in locations[1:]]
+
+
+def open_meteo_source(note=None):
+    src = {"name": "Open-Meteo", "attribution": "Weather data by Open-Meteo.com (https://open-meteo.com/)"}
+    if note is not None:
+        src["note"] = note
+    return src
+
+
+def dump(obj):
+    # serde_json 不带 preserve_order，键按字母序；缩进 2 空格，和 to_string_pretty 一致。
+    return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def require(obj, *keys):
+    """模仿 serde 对必填字段的检查：缺了就报错，让上层走兜底/报错路径。"""
+    cur = obj
+    for key in keys:
+        if not isinstance(cur, dict) or key not in cur:
+            raise Failed(f"error decoding response body: missing field `{key}`")
+        cur = cur[key]
+    return cur
+
+
+# ---------------------------------------------------------------- forecast
+
+def fetch_forecast(loc, days):
+    cache_key = f"{loc['latitude']:.3f}|{loc['longitude']:.3f}|{days}"
+    cached = read_cache("forecast", cache_key, FORECAST_CACHE_TTL)
+    if cached:
+        return cached
+    response = http_get(FORECAST_URL, [
+        ("latitude", str(loc["latitude"])), ("longitude", str(loc["longitude"])),
+        ("current", "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m"),
+        ("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max"),
+        ("forecast_days", str(days)), ("timezone", "auto"),
+        ("temperature_unit", "celsius"), ("wind_speed_unit", "kmh"), ("precipitation_unit", "mm"),
+    ])
+    require(response, "current", "time")
+    require(response, "daily", "time")
+    write_cache("forecast", cache_key, response, FORECAST_CACHE_TTL)
+    return response
+
+
+def format_today(daily):
+    dates = daily.get("time") or []
+    if not dates:
+        return "今日预报暂无。"
+    condition = label_or(value_at(daily.get("weather_code"), 0), weather_code_label, "未知天气")
+    return (
+        f"今日({dates[0]}){condition}，"
+        f"{fmt_temperature(value_at(daily.get('temperature_2m_min'), 0))}-{fmt_temperature(value_at(daily.get('temperature_2m_max'), 0))}，"
+        f"降水概率{fmt_percent(value_at(daily.get('precipitation_probability_max'), 0))}，"
+        f"降水{fmt_precipitation(value_at(daily.get('precipitation_sum'), 0))}，"
+        f"最大风速{fmt_speed(value_at(daily.get('wind_speed_10m_max'), 0))}。"
+    )
+
+
+def daily_json(daily):
+    out = []
+    for i, date in enumerate(daily.get("time") or []):
+        code = value_at(daily.get("weather_code"), i)
+        out.append({
+            "date": date,
+            "condition": maybe(code, weather_code_label),
+            "weather_code": code,
+            "temperature_min_c": value_at(daily.get("temperature_2m_min"), i),
+            "temperature_max_c": value_at(daily.get("temperature_2m_max"), i),
+            "precipitation_sum_mm": value_at(daily.get("precipitation_sum"), i),
+            "precipitation_probability_max_percent": value_at(daily.get("precipitation_probability_max"), i),
+            "wind_speed_max_kmh": value_at(daily.get("wind_speed_10m_max"), i),
+            "wind_gusts_max_kmh": value_at(daily.get("wind_gusts_10m_max"), i),
+        })
+    return out
+
+
+def get_forecast(request):
+    locations = geocode_location(request)
+    loc = select_location(request["location"], locations)
+    if loc is None:
+        raise Failed(f"no geocoding results for {request['location']}")
+    forecast = fetch_forecast(loc, request["days"])
+    current = forecast["current"]
+    daily = forecast["daily"]
+    condition = label_or(current.get("weather_code"), weather_code_label, "未知天气")
+    summary = (
+        f"{format_location(loc)}：当前{condition}，{fmt_temperature(current.get('temperature_2m'))}，"
+        f"体感{fmt_temperature(current.get('apparent_temperature'))}，湿度{fmt_percent(current.get('relative_humidity_2m'))}，"
+        f"{label_or(current.get('wind_direction_10m'), wind_direction_label, '未知风向')}{fmt_speed(current.get('wind_speed_10m'))}，"
+        f"阵风{fmt_speed(current.get('wind_gusts_10m'))}。{format_today(daily)}"
+    )
+    return dump({
+        "provider": "open_meteo",
+        "resolved_location": {
+            "name": loc["name"], "admin1": loc.get("admin1"), "admin2": loc.get("admin2"),
+            "country": loc.get("country"), "country_code": loc.get("country_code"),
+            "timezone": loc.get("timezone"), "latitude": loc["latitude"], "longitude": loc["longitude"],
+            "elevation_m": loc.get("elevation"),
+        },
+        "alternatives": alternatives_json(locations),
+        "summary": summary,
+        "current": {
+            "time": current["time"],
+            "condition": condition,
+            "is_day": current.get("is_day"),
+            "temperature_c": current.get("temperature_2m"),
+            "apparent_temperature_c": current.get("apparent_temperature"),
+            "humidity_percent": current.get("relative_humidity_2m"),
+            "precipitation_mm": current.get("precipitation"),
+            "cloud_cover_percent": current.get("cloud_cover"),
+            "wind_speed_kmh": current.get("wind_speed_10m"),
+            "wind_direction_degrees": as_f64(current.get("wind_direction_10m")),
+            "wind_direction": maybe(current.get("wind_direction_10m"), wind_direction_label),
+            "wind_gusts_kmh": current.get("wind_gusts_10m"),
+        },
+        "daily": daily_json(daily),
+        "source": open_meteo_source(),
+    })
+
+
+def get_weather_wttr(location, fallback_reason):
+    if not location:
+        raise Failed("wttr.in fallback requires a non-empty location")
+    url = WTTR_URL + urllib.parse.quote(location, safe="") + "?format=%C+%t+%w+%l"
+    text = http_get(url, expect_json=False).strip()
+    if not text:
+        raise Failed("weather response was empty")
+    return dump({
+        "provider": "wttr_in",
+        "mode": "fallback",
+        "fallback_reason": fallback_reason,
+        "summary": f"current weather(condition,temperature,wind,location): {text}",
+        "source": {"name": "wttr.in"},
+    })
+
+
+# ---------------------------------------------------------------- other query types
+
+def get_air_quality(request):
+    locations, loc = selected_location(request)
+    response = http_get(AIR_QUALITY_URL, [
+        ("latitude", str(loc["latitude"])), ("longitude", str(loc["longitude"])),
+        ("current", "european_aqi,us_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,uv_index"),
+        ("forecast_days", str(min(request["days"], 7))), ("timezone", "auto"),
+    ])
+    current = require(response, "current")
+    require(current, "time")
+    eu, us = current.get("european_aqi"), current.get("us_aqi")
+    summary = (
+        f"{format_location(loc)}：当前空气质量 EU AQI {fmt_count(eu)}({label_or(eu, european_aqi_label, '未知')})，"
+        f"US AQI {fmt_count(us)}({label_or(us, us_aqi_label, '未知')})，PM2.5 {fmt_micrograms(current.get('pm2_5'))}，"
+        f"PM10 {fmt_micrograms(current.get('pm10'))}，臭氧{fmt_micrograms(current.get('ozone'))}，"
+        f"NO2 {fmt_micrograms(current.get('nitrogen_dioxide'))}，UV {fmt_number(current.get('uv_index'))}。"
+    )
+    return dump({
+        "provider": "open_meteo",
+        "query_type": "air_quality",
+        "resolved_location": location_json(loc),
+        "alternatives": alternatives_json(locations),
+        "summary": summary,
+        "current": {
+            "time": current["time"],
+            "european_aqi": eu,
+            "european_aqi_label": maybe(eu, european_aqi_label),
+            "us_aqi": us,
+            "us_aqi_label": maybe(us, us_aqi_label),
+            "pm10_ug_m3": current.get("pm10"),
+            "pm2_5_ug_m3": current.get("pm2_5"),
+            "carbon_monoxide_ug_m3": current.get("carbon_monoxide"),
+            "nitrogen_dioxide_ug_m3": current.get("nitrogen_dioxide"),
+            "sulphur_dioxide_ug_m3": current.get("sulphur_dioxide"),
+            "ozone_ug_m3": current.get("ozone"),
+            "uv_index": current.get("uv_index"),
+        },
+        "source": open_meteo_source("空气质量数据包含 CAMS 来源，请在面向用户展示时保留来源说明。"),
+    })
+
+
+def date_range(request, kind):
+    start = request["start_date"]
+    if not start:
+        raise Failed(f"{kind} query requires start_date", "传 start_date（YYYY-MM-DD）")
+    return start, request["end_date"] or start
+
+
+def get_historical(request):
+    start, end = date_range(request, "historical")
+    locations, loc = selected_location(request)
+    response = http_get(ARCHIVE_URL, [
+        ("latitude", str(loc["latitude"])), ("longitude", str(loc["longitude"])),
+        ("start_date", start), ("end_date", end),
+        ("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max"),
+        ("timezone", "auto"), ("temperature_unit", "celsius"), ("wind_speed_unit", "kmh"), ("precipitation_unit", "mm"),
+    ])
+    daily = require(response, "daily")
+    dates = require(daily, "time")
+    first_date = dates[0] if dates else start
+    summary = (
+        f"{format_location(loc)}：历史天气 {start} 至 {end}，首日({first_date})"
+        f"{label_or(value_at(daily.get('weather_code'), 0), weather_code_label, '未知天气')}，"
+        f"{fmt_temperature(value_at(daily.get('temperature_2m_min'), 0))}-{fmt_temperature(value_at(daily.get('temperature_2m_max'), 0))}，"
+        f"降水{fmt_precipitation(value_at(daily.get('precipitation_sum'), 0))}，"
+        f"最大风速{fmt_speed(value_at(daily.get('wind_speed_10m_max'), 0))}。"
+    )
+    rows = []
+    for i, date in enumerate(dates):
+        code = value_at(daily.get("weather_code"), i)
+        rows.append({
+            "date": date,
+            "condition": maybe(code, weather_code_label),
+            "weather_code": code,
+            "temperature_min_c": value_at(daily.get("temperature_2m_min"), i),
+            "temperature_max_c": value_at(daily.get("temperature_2m_max"), i),
+            "precipitation_sum_mm": value_at(daily.get("precipitation_sum"), i),
+            "wind_speed_max_kmh": value_at(daily.get("wind_speed_10m_max"), i),
+        })
+    return dump({
+        "provider": "open_meteo",
+        "query_type": "historical",
+        "resolved_location": location_json(loc),
+        "alternatives": alternatives_json(locations),
+        "start_date": start,
+        "end_date": end,
+        "summary": summary,
+        "daily": rows,
+        "source": open_meteo_source("历史天气基于再分析数据，不等同于站点实测。"),
+    })
+
+
+def get_marine(request):
+    locations, loc = selected_location(request)
+    response = http_get(MARINE_URL, [
+        ("latitude", str(loc["latitude"])), ("longitude", str(loc["longitude"])),
+        ("current", "wave_height,wave_direction,wave_period,sea_surface_temperature,ocean_current_velocity,ocean_current_direction"),
+        ("daily", "wave_height_max,wave_direction_dominant,wave_period_max,swell_wave_height_max"),
+        ("forecast_days", str(min(request["days"], 7))), ("timezone", "auto"), ("length_unit", "metric"),
+    ])
+    current = require(response, "current")
+    require(current, "time")
+    daily = require(response, "daily")
+    dates = require(daily, "time")
+    summary = (
+        f"{format_location(loc)}：当前海况，浪高{fmt_meters(current.get('wave_height'))}，"
+        f"浪向{label_or(current.get('wave_direction'), wind_direction_label, '未知')}，"
+        f"周期{fmt_seconds(current.get('wave_period'))}，海表温度{fmt_temperature(current.get('sea_surface_temperature'))}，"
+        f"洋流{fmt_speed(current.get('ocean_current_velocity'))}，"
+        f"流向{label_or(current.get('ocean_current_direction'), wind_direction_label, '未知')}。"
+    )
+    rows = [{
+        "date": date,
+        "wave_height_max_m": value_at(daily.get("wave_height_max"), i),
+        "wave_direction_dominant_degrees": as_f64(value_at(daily.get("wave_direction_dominant"), i)),
+        "wave_period_max_seconds": value_at(daily.get("wave_period_max"), i),
+        "swell_wave_height_max_m": value_at(daily.get("swell_wave_height_max"), i),
+    } for i, date in enumerate(dates)]
+    return dump({
+        "provider": "open_meteo",
+        "query_type": "marine",
+        "resolved_location": location_json(loc),
+        "alternatives": alternatives_json(locations),
+        "summary": summary,
+        "current": {
+            "time": current["time"],
+            "wave_height_m": current.get("wave_height"),
+            "wave_direction_degrees": as_f64(current.get("wave_direction")),
+            "wave_direction": maybe(current.get("wave_direction"), wind_direction_label),
+            "wave_period_seconds": current.get("wave_period"),
+            "sea_surface_temperature_c": current.get("sea_surface_temperature"),
+            "ocean_current_velocity_kmh": current.get("ocean_current_velocity"),
+            "ocean_current_direction_degrees": as_f64(current.get("ocean_current_direction")),
+            "ocean_current_direction": maybe(current.get("ocean_current_direction"), wind_direction_label),
+        },
+        "daily": rows,
+        "source": open_meteo_source("海洋数据不适合沿岸导航，不能替代航海图书或官方海事预报。"),
+    })
+
+
+def get_climate(request):
+    start, end = date_range(request, "climate")
+    locations, loc = selected_location(request)
+    response = http_get(CLIMATE_URL, [
+        ("latitude", str(loc["latitude"])), ("longitude", str(loc["longitude"])),
+        ("start_date", start), ("end_date", end), ("models", "EC_Earth3P_HR"),
+        ("daily", "temperature_2m_mean,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max"),
+        ("temperature_unit", "celsius"), ("wind_speed_unit", "kmh"), ("precipitation_unit", "mm"),
+    ])
+    daily = require(response, "daily")
+    dates = require(daily, "time")
+    first_date = dates[0] if dates else start
+    summary = (
+        f"{format_location(loc)}：气候趋势 {start} 至 {end}，首日({first_date})"
+        f"平均温度{fmt_temperature(value_at(daily.get('temperature_2m_mean'), 0))}，"
+        f"{fmt_temperature(value_at(daily.get('temperature_2m_min'), 0))}-{fmt_temperature(value_at(daily.get('temperature_2m_max'), 0))}，"
+        f"降水{fmt_precipitation(value_at(daily.get('precipitation_sum'), 0))}，"
+        f"最大风速{fmt_speed(value_at(daily.get('wind_speed_10m_max'), 0))}。"
+    )
+    rows = [{
+        "date": date,
+        "temperature_mean_c": value_at(daily.get("temperature_2m_mean"), i),
+        "temperature_min_c": value_at(daily.get("temperature_2m_min"), i),
+        "temperature_max_c": value_at(daily.get("temperature_2m_max"), i),
+        "precipitation_sum_mm": value_at(daily.get("precipitation_sum"), i),
+        "wind_speed_max_kmh": value_at(daily.get("wind_speed_10m_max"), i),
+    } for i, date in enumerate(dates)]
+    return dump({
+        "provider": "open_meteo",
+        "query_type": "climate",
+        "resolved_location": location_json(loc),
+        "alternatives": alternatives_json(locations),
+        "start_date": start,
+        "end_date": end,
+        "model": "EC_Earth3P_HR",
+        "summary": summary,
+        "daily": rows,
+        "source": open_meteo_source("气候数据是单个 CMIP6 高分辨率气候模型的趋势数据，不等同于实际天气观测；长期判断应比较多个模型。"),
+    })
+
+
+def get_elevation(request):
+    locations, loc = selected_location(request)
+    response = http_get(ELEVATION_URL, [
+        ("latitude", str(loc["latitude"])), ("longitude", str(loc["longitude"])),
+    ])
+    values = require(response, "elevation")
+    elevation = values[0] if isinstance(values, list) and values else None
+    if elevation is None:
+        elevation = loc.get("elevation")
+    text = f"{elevation:.0f} 米" if elevation is not None else "未知"
+    return dump({
+        "provider": "open_meteo",
+        "query_type": "elevation",
+        "resolved_location": location_json(loc),
+        "alternatives": alternatives_json(locations),
+        "summary": f"{format_location(loc)}：海拔{text}。",
+        "elevation_m": elevation,
+        "source": open_meteo_source("海拔数据来自 90 米分辨率数字高程模型。"),
+    })
+
+
+# ---------------------------------------------------------------- entry
+
+def run(args):
+    request = parse_request(args)
+    if not request["location"]:
+        raise Failed(
+            "location is required. Ask the user which city or place to query, then call get_weather again with that location.",
+            "问用户要查哪个城市或地点，再带 location 重新调用",
+        )
+    qt = request["query_type"]
+    if qt == "forecast":
+        try:
+            return get_forecast(request)
+        except Failed as open_meteo_error:
+            try:
+                return get_weather_wttr(request["location"], "open_meteo_fallback")
+            except Failed as wttr_error:
+                raise Failed(
+                    f"weather query failed; open_meteo: {open_meteo_error}; wttr.in: {wttr_error}",
+                    open_meteo_error.fix or wttr_error.fix or "检查地名拼写或稍后再试",
+                ) from wttr_error
+    return {
+        "air_quality": get_air_quality,
+        "historical": get_historical,
+        "marine": get_marine,
+        "climate": get_climate,
+        "elevation": get_elevation,
+    }[qt](request)
+
+
+def fail(error, fix=None, code=1):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+def main():
+    raw = os.environ.get("MIYU_ARGS_JSON") or sys.stdin.read() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(f"arguments are not valid JSON: {exc}", "从 stdin 传一个 JSON 对象，如 {\"location\":\"Tokyo\"}", 2)
+    if not isinstance(args, dict):
+        fail("arguments must be a JSON object", "如 {\"location\":\"Tokyo\"}", 2)
+    try:
+        print(run(args))
+    except Failed as exc:
+        fail(str(exc), exc.fix or None)
+    except Exception as exc:  # noqa: BLE001 —— 工具层不该看到 traceback
+        fail(f"internal error: {type(exc).__name__}: {exc}", "稍后再试；若持续出现请反馈")
+
+
+if __name__ == "__main__":
+    main()

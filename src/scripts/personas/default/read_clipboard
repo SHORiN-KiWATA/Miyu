@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+# Id: read_clipboard
+# Display name: Read clipboard
+# 显示名称: 读取剪贴板
+# Description: Read the current clipboard.
+# Timeout: 30
+# Group: systeminfo
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "preferred_type": {
+#       "type": "string",
+#       "enum": [
+#         "auto",
+#         "text",
+#         "image"
+#       ],
+#       "default": "auto",
+#       "description": "Legacy preference hint; image and file-path content is still detected first. Defaults to auto"
+#     }
+#   }
+# }
+# Example: {}
+"""
+Port of the built-in Rust tool `read_clipboard` (src/tools/clipboard.rs +
+src/clipboard.rs). Linux only; backends in this order: wl-paste, xclip, xsel.
+
+Detection (same as the Rust `clipboard::read_clipboard`):
+  1. list targets (`wl-paste -l`, else `xclip -selection clipboard -t TARGETS -o`)
+  2. uri-list / text target present -> read text; if it is a single existing
+     local path (`file://…`, `/…`, `~/…`) report `image_path` / `video_path`
+     (image, video or PDF extension) or `text_path`; otherwise `text`
+  3. image/* target present -> read the first of png/jpeg/webp/gif/bmp that the
+     holder actually offers (fallback: ask for image/png anyway), write it to
+     <cache>/clipboard_images/<sha256[:16] hex>.<ext>, report `image` and an
+     extra `MIYU-IMAGE:` line so the delivery layer shows it
+  4. nothing usable -> plain text read; still empty -> `empty`
+
+Cache directory: $MIYU_SCRIPT_CACHE_DIR, else ~/.cache/miyu-scripts.
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+
+MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024
+CLIPBOARD_CACHE_MAX_BYTES = 50 * 1024 * 1024
+COMMAND_TIMEOUT = 10
+
+IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg")
+VIDEO_EXTENSIONS = ("mp4", "m4v", "mkv", "mov", "webm", "mpeg", "mpg")
+PDF_EXTENSIONS = ("pdf",)
+IMAGE_MIME_ORDER = ("image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp")
+URI_LIST_TARGETS = ("text/uri-list", "x-special/gnome-copied-files", "application/glfw+clipboard-32678")
+TEXT_TARGETS = ("text/plain", "TEXT", "STRING", "UTF8_STRING")
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, fix=None, extra=None):
+        super().__init__(message)
+        self.fix = fix
+        self.extra = extra or {}
+
+
+def fail(error, fix=None, extra=None, code=1):
+    payload = {"ok": False, "error": error, "fix": fix}
+    payload.update(extra or {})
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- backends
+
+def command_exists(name):
+    """Same test as the Rust `command_exists`: a regular file by that name on PATH."""
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory and os.path.isfile(os.path.join(directory, name)):
+            return True
+    return False
+
+
+def run_capture(cmd, args):
+    """stdout bytes on success with non-empty output, else None (Rust `try_command`)."""
+    try:
+        proc = subprocess.run([cmd, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=COMMAND_TIMEOUT, check=False)
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    return proc.stdout
+
+
+def list_clipboard_targets():
+    for cmd, args in (("wl-paste", ["-l"]),
+                      ("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"])):
+        out = run_capture(cmd, args)
+        if out is None:
+            continue
+        targets = [line.strip() for line in out.decode("utf-8", errors="replace").splitlines()]
+        targets = [t for t in targets if t]
+        if targets:
+            return targets
+    return []
+
+
+def read_clipboard_text():
+    for cmd, args in (("wl-paste", []),
+                      ("xclip", ["-selection", "clipboard", "-o"]),
+                      ("xsel", ["--clipboard", "--output"])):
+        out = run_capture(cmd, args)
+        if out is None:
+            continue
+        text = out.decode("utf-8", errors="replace").strip()
+        if text:
+            return text
+    return None
+
+
+def read_clipboard_image_of(mime):
+    for cmd, args in (("wl-paste", ["-t", mime]),
+                      ("xclip", ["-selection", "clipboard", "-t", mime, "-o"])):
+        out = run_capture(cmd, args)
+        if out is None:
+            continue
+        if len(out) > MAX_CLIPBOARD_IMAGE_BYTES:
+            return None
+        return mime, out
+    return None
+
+
+# ---------------------------------------------------------------- paths
+
+def parse_clipboard_path(text):
+    """(path, is_media) for a single existing local path, else None."""
+    text = text.strip()
+    if not text or "\n" in text or "\r" in text:
+        return None
+    if text.startswith("file://"):
+        raw = urllib.parse.unquote(text[len("file://"):])
+    else:
+        raw = text
+    if raw.startswith("/"):
+        path = raw
+    elif raw.startswith("~/"):
+        home = os.path.expanduser("~")
+        if not home or home == "~":
+            return None
+        path = os.path.join(home, raw[2:])
+    else:
+        return None
+    if not os.path.exists(path):
+        return None
+    ext = os.path.splitext(path)[1][1:].lower()
+    is_media = ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS or ext in PDF_EXTENSIONS
+    return path, is_media
+
+
+def video_mime(path):
+    ext = path.split("?", 1)[0].lower().rsplit(".", 1)[-1]
+    return {"mp4": "video/mp4", "m4v": "video/mp4", "mkv": "video/x-matroska",
+            "mpeg": "video/mpeg", "mpg": "video/mpeg", "mov": "video/mov",
+            "webm": "video/webm"}.get(ext)
+
+
+# ---------------------------------------------------------------- image cache
+
+def cache_dir():
+    base = os.environ.get("MIYU_SCRIPT_CACHE_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "miyu-scripts")
+    return os.path.abspath(base)
+
+
+def cleanup_clipboard_images(directory, max_bytes=CLIPBOARD_CACHE_MAX_BYTES):
+    files, total = [], 0
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return
+    for name in entries:
+        path = os.path.join(directory, name)
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if not (os.path.isfile(path) or os.path.islink(path)):
+            continue
+        total += st.st_size
+        files.append((path, st.st_size, st.st_atime))
+    if total <= max_bytes:
+        return
+    files.sort(key=lambda item: item[2])
+    for path, size, _ in files:
+        if total <= max_bytes:
+            break
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total -= size
+
+
+def write_image_cache_file(mime, data):
+    directory = os.path.join(cache_dir(), "clipboard_images")
+    os.makedirs(directory, exist_ok=True)
+    cleanup_clipboard_images(directory)
+    ext = {"image/png": "png", "image/jpeg": "jpeg", "image/jpg": "jpeg", "image/gif": "gif",
+           "image/webp": "webp", "image/bmp": "bmp", "image/svg+xml": "svg"}.get(mime.strip().lower(), "img")
+    short_hash = hashlib.sha256(data).digest()[:16].hex()
+    path = os.path.join(directory, f"{short_hash}.{ext}")
+    if not os.path.exists(path):
+        with open(path, "wb") as fh:
+            fh.write(data)
+    return path
+
+
+# ---------------------------------------------------------------- detection
+
+def detect():
+    """Return (result_dict, image_line_or_None)."""
+    targets = list_clipboard_targets()
+    has_uri_list = any(t in URI_LIST_TARGETS for t in targets)
+    has_image = any(t.startswith("image/") for t in targets)
+    has_text = any(t in TEXT_TARGETS for t in targets)
+
+    if has_uri_list or has_text:
+        text = read_clipboard_text()
+        if text is not None:
+            if has_uri_list or text.startswith("file://") or text.startswith("/"):
+                parsed = parse_clipboard_path(text)
+                if parsed:
+                    path, is_media = parsed
+                    if is_media:
+                        content_type = "video_path" if video_mime(path) else "image_path"
+                        result = {"ok": True, "kind": "clipboard", "content_type": content_type,
+                                  "source": "clipboard_path", "path": path}
+                        ext = os.path.splitext(path)[1][1:].lower()
+                        image_line = f"MIYU-IMAGE: {os.path.abspath(path)} | clipboard image" if ext in IMAGE_EXTENSIONS else None
+                        return result, image_line
+                    return {"ok": True, "kind": "clipboard", "content_type": "text_path",
+                            "source": "clipboard_path", "path": path}, None
+            if has_text:
+                return text_result(text), None
+
+    if has_image:
+        # Read the format the holder actually declares; a JPEG/WebP-only source
+        # would otherwise be lost. Then fall back to asking for PNG regardless.
+        for mime in IMAGE_MIME_ORDER:
+            if mime not in targets:
+                continue
+            img = read_clipboard_image_of(mime)
+            if img:
+                return image_result(*img)
+        img = read_clipboard_image_of("image/png")
+        if img:
+            return image_result(*img)
+
+    text = read_clipboard_text()
+    if text is not None:
+        return text_result(text), None
+    return {"ok": True, "kind": "clipboard", "content_type": "empty"}, None
+
+
+def text_result(text):
+    return {"ok": True, "kind": "clipboard", "content_type": "text",
+            "text": text, "bytes": len(text.encode("utf-8"))}
+
+
+def image_result(mime, data):
+    path = write_image_cache_file(mime, data)
+    result = {"ok": True, "kind": "clipboard", "content_type": "image", "source": "clipboard_binary",
+              "path": path, "mime": mime, "bytes": len(data), "multimodal_available": True}
+    return result, f"MIYU-IMAGE: {path} | clipboard image"
+
+
+# ---------------------------------------------------------------- main
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw and sys.stdin is not None and not sys.stdin.isatty():
+        raw = sys.stdin.read()
+    raw = (raw or "").strip() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"arguments are not valid JSON: {exc}", "feed a JSON object, {} is enough")
+    if not isinstance(args, dict):
+        raise Failed("arguments must be a JSON object", "{} is enough")
+    return args
+
+
+def main():
+    try:
+        if sys.platform != "linux":
+            raise Failed("read_clipboard currently only supports Linux", None, {"kind": "clipboard"})
+        args = read_args()
+        preferred = args.get("preferred_type")
+        preferred = (preferred.strip() if isinstance(preferred, str) else "auto") or "auto"
+        if preferred not in ("auto", "text", "image"):
+            raise Failed(f"unsupported preferred_type: {preferred}", "use auto, text or image")
+        if preferred == "image":
+            backends, required_tools = ("wl-paste", "xclip"), ["wl-clipboard", "xclip"]
+        else:
+            backends, required_tools = ("wl-paste", "xclip", "xsel"), ["wl-clipboard", "xclip", "xsel"]
+        if not any(command_exists(b) for b in backends):
+            raise Failed("No supported clipboard backend found. Install wl-clipboard, xclip, or xsel.",
+                         f"install one of: {', '.join(required_tools)}",
+                         {"kind": "clipboard", "required_tools": required_tools})
+        # preferred_type is a legacy hint: every value runs the same auto-detection
+        # (exactly as the Rust tool does) so binary clipboard data is never read as text.
+        result, image_line = detect()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if image_line:
+            print(image_line)
+    except Failed as exc:
+        fail(str(exc), exc.fix, exc.extra)
+    except Exception as exc:  # noqa: BLE001
+        fail(f"internal error: {type(exc).__name__}: {exc}")
+
+
+if __name__ == "__main__":
+    main()

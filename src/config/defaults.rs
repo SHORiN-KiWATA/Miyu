@@ -400,10 +400,6 @@ pub(crate) fn default_diagnostics_max_stderr_chars() -> usize {
     4_000
 }
 
-pub(crate) fn default_calculator_backend() -> String {
-    "rust-simple".to_string()
-}
-
 pub(crate) fn default_tool_output_spill_bytes() -> usize {
     50_000
 }

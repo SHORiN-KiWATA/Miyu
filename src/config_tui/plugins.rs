@@ -102,7 +102,7 @@ pub(in crate::config_tui) fn plugin_row(
     fixed + &truncate(description, remaining)
 }
 
-pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
+pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'static str); 12] {
     [
         (
             "web",
@@ -165,14 +165,6 @@ pub(in crate::config_tui) fn plugin_names() -> [(&'static str, &'static str, &'s
             t("AUR status and ArchWiki lookup", "AUR 状态与 ArchWiki 查询"),
         ),
         (
-            "man",
-            t("Online manuals", "在线手册"),
-            t(
-                "Search and read online man pages",
-                "在线 man 手册搜索与读取",
-            ),
-        ),
-        (
             "memory",
             t("Memory", "记忆"),
             t("Long-term memory and association", "长期记忆与联想"),
@@ -204,10 +196,9 @@ pub(in crate::config_tui) fn plugin_enabled(config: &AppConfig, index: usize) ->
         6 => config.plugins.memes.enabled,
         7 => config.plugins.knowledge_base.enabled,
         8 => config.plugins.archlinux.enabled,
-        9 => config.plugins.man.enabled,
-        10 => config.plugins.memory.enabled,
-        11 => config.plugins.package_advisor.enabled,
-        12 => config.plugins.api_quota.enabled,
+        9 => config.plugins.memory.enabled,
+        10 => config.plugins.package_advisor.enabled,
+        11 => config.plugins.api_quota.enabled,
         _ => false,
     }
 }
@@ -224,10 +215,9 @@ pub(in crate::config_tui) fn toggle_plugin(config: &mut AppConfig, index: usize)
         6 => config.plugins.memes.enabled = value,
         7 => config.plugins.knowledge_base.enabled = value,
         8 => config.plugins.archlinux.enabled = value,
-        9 => config.plugins.man.enabled = value,
-        10 => config.plugins.memory.enabled = value,
-        11 => config.plugins.package_advisor.enabled = value,
-        12 => config.plugins.api_quota.enabled = value,
+        9 => config.plugins.memory.enabled = value,
+        10 => config.plugins.package_advisor.enabled = value,
+        11 => config.plugins.api_quota.enabled = value,
         _ => {}
     }
 }
@@ -592,11 +582,7 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
             t("Enabled", "启用"),
             config.plugins.archlinux.enabled,
         )],
-        9 => vec![Field::boolean(
-            t("Enabled", "启用"),
-            config.plugins.man.enabled,
-        )],
-        10 => {
+        9 => {
             let memory = config.memory_config();
             vec![
                 Field::boolean(t("Enabled", "启用"), memory.enabled),
@@ -663,11 +649,11 @@ pub(in crate::config_tui) fn plugin_fields(config: &AppConfig, index: usize) -> 
                 ),
             ]
         }
-        11 => vec![Field::boolean(
+        10 => vec![Field::boolean(
             t("Enabled", "启用"),
             config.plugins.package_advisor.enabled,
         )],
-        12 => vec![Field::boolean(
+        11 => vec![Field::boolean(
             t("Enabled", "启用"),
             config.plugins.api_quota.enabled,
         )],
@@ -808,9 +794,6 @@ pub(in crate::config_tui) fn apply_plugin_fields(
             config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
         }
         9 => {
-            config.plugins.man.enabled = parse_bool_field(&fields[0].value)?;
-        }
-        10 => {
             config.memory = crate::config::MemoryConfig::default();
             config.plugins.memory.enabled = parse_bool_field(&fields[0].value)?;
             config.plugins.memory.evicted_context_enabled = parse_bool_field(&fields[1].value)?;
@@ -840,10 +823,10 @@ pub(in crate::config_tui) fn apply_plugin_fields(
                 fields[15].value.trim().parse::<f64>()?;
             config.plugins.memory.association_dedup = parse_bool_field(&fields[16].value)?;
         }
-        11 => {
+        10 => {
             config.plugins.package_advisor.enabled = parse_bool_field(&fields[0].value)?;
         }
-        12 => {
+        11 => {
             config.plugins.api_quota.enabled = parse_bool_field(&fields[0].value)?;
         }
         _ => {

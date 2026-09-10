@@ -212,7 +212,7 @@ async fn register_rejects_reserved_tool_names_before_writing_index() {
     );
 
     let error = register_script_handler(
-        json!({"action": "register", "id": "get_weather", "path": "weather.sh"}),
+        json!({"action": "register", "id": "run_command", "path": "weather.sh"}),
         &config,
         &paths,
     )

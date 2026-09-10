@@ -1653,12 +1653,6 @@
       description: "AUR 状态与 ArchWiki 查询",
       fields: [enabledField(true)],
     },
-    man: {
-      title: "在线手册",
-      group: "系统工具",
-      description: "在线 man 手册搜索与读取",
-      fields: [enabledField(true)],
-    },
     package_advisor: {
       title: "AUR 审查",
       group: "系统工具",
@@ -1700,28 +1694,6 @@
         },
       ],
     },
-    hash_codec: {
-      title: "哈希与编解码",
-      group: "系统工具",
-      description: "哈希、Base64 等编解码工具",
-      fields: [enabledField(true)],
-    },
-    calculator: {
-      title: "计算器",
-      group: "系统工具",
-      description: "表达式求值",
-      fields: [
-        enabledField(false),
-        {
-          key: "backend",
-          label: "计算后端",
-          hint: "目前仅内置 rust-simple",
-          kind: "select",
-          choices: [{ value: "rust-simple", label: "内置(rust-simple)" }],
-          default: "rust-simple",
-        },
-      ],
-    },
     file_sharing: {
       title: "文件分享",
       group: "系统工具",
@@ -1755,24 +1727,6 @@
           default: true,
         },
       ],
-    },
-    weather: {
-      title: "天气",
-      group: "联网",
-      description: "天气查询",
-      fields: [enabledField(true)],
-    },
-    moegirl: {
-      title: "萌娘百科",
-      group: "联网",
-      description: "萌娘百科条目查询",
-      fields: [enabledField(true)],
-    },
-    xuanxue: {
-      title: "玄学",
-      group: "联网",
-      description: "塔罗、算卦等玄学工具",
-      fields: [enabledField(true)],
     },
     api_quota: {
       title: "大模型额度查询",

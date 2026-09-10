@@ -9,8 +9,6 @@ use crate::config::*;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginsConfig {
     #[serde(default)]
-    pub weather: PluginEnabledConfig,
-    #[serde(default)]
     pub web: WebPluginConfig,
     #[serde(default)]
     pub web_images: WebImagesPluginConfig,
@@ -21,8 +19,6 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub exchange_rate: ExchangeRatePluginConfig,
     #[serde(default)]
-    pub xuanxue: PluginEnabledConfig,
-    #[serde(default)]
     pub image_generation: ImageGenerationPluginConfig,
     #[serde(default)]
     pub print_image: PrintImagePluginConfig,
@@ -32,14 +28,6 @@ pub struct PluginsConfig {
     pub knowledge_base: KnowledgeBasePluginConfig,
     #[serde(default)]
     pub archlinux: PluginEnabledConfig,
-    #[serde(default)]
-    pub man: PluginEnabledConfig,
-    #[serde(default)]
-    pub moegirl: PluginEnabledConfig,
-    #[serde(default)]
-    pub hash_codec: PluginEnabledConfig,
-    #[serde(default)]
-    pub calculator: CalculatorPluginConfig,
     #[serde(default)]
     pub package_advisor: PluginEnabledConfig,
     #[serde(default)]
@@ -439,14 +427,6 @@ pub struct KnowledgeBasePluginConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CalculatorPluginConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_calculator_backend")]
-    pub backend: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsPluginConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -561,23 +541,17 @@ pub(crate) fn normalize_api_quota_provider(config: &mut ApiQuotaProviderConfig) 
 impl Default for PluginsConfig {
     fn default() -> Self {
         Self {
-            weather: PluginEnabledConfig::default(),
             file_sharing: FileSharingPluginConfig::default(),
             web: WebPluginConfig::default(),
             web_images: WebImagesPluginConfig::default(),
             deep_research: DeepResearchPluginConfig::default(),
             vision: VisionPluginConfig::default(),
             exchange_rate: ExchangeRatePluginConfig::default(),
-            xuanxue: PluginEnabledConfig::default(),
             image_generation: ImageGenerationPluginConfig::default(),
             print_image: PrintImagePluginConfig::default(),
             memes: MemesPluginConfig::default(),
             knowledge_base: KnowledgeBasePluginConfig::default(),
             archlinux: PluginEnabledConfig::default(),
-            man: PluginEnabledConfig::default(),
-            moegirl: PluginEnabledConfig::default(),
-            hash_codec: PluginEnabledConfig::default(),
-            calculator: CalculatorPluginConfig::default(),
             package_advisor: PluginEnabledConfig::default(),
             diagnostics: DiagnosticsPluginConfig::default(),
             api_quota: ApiQuotaPluginConfig::default(),
@@ -775,15 +749,6 @@ impl Default for KnowledgeBasePluginConfig {
             semantic_min_score: default_kb_semantic_min_score(),
             keyword_strong_score_threshold: default_kb_keyword_strong_score_threshold(),
             embedding_timeout_seconds: default_kb_embedding_timeout_seconds(),
-        }
-    }
-}
-
-impl Default for CalculatorPluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            backend: default_calculator_backend(),
         }
     }
 }

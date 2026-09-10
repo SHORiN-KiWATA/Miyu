@@ -6,20 +6,13 @@ mod artifact;
 mod share_file;
 pub use share_file::set_share_url_bases;
 mod ask_question;
-mod awacy_query;
-mod calculator;
-mod caniplayonlinux_query;
-mod clipboard;
 mod cross_hints;
 mod deep_research;
-mod deepseek_status;
 mod default_tools;
 pub(crate) use default_tools::TOOL_SUMMARY_PREFIX;
 mod diagnostics;
 pub(crate) mod exchange_rate;
-mod fcitx_wiki;
 pub mod goal;
-mod hash_codec;
 mod html_conversion;
 mod http_response;
 mod image_generation;
@@ -27,16 +20,13 @@ pub mod jobs;
 pub mod knowledge_base;
 mod ledger;
 mod load_tools;
-mod man;
 mod mcp;
 pub(crate) mod memes;
 mod memory;
-mod moegirl;
 pub(crate) mod net_guard;
 mod package_advisor;
 mod patch_preview;
 pub(crate) mod platform_outreach;
-mod protondb_query;
 mod registry;
 mod scripts;
 mod skills;
@@ -49,11 +39,9 @@ pub(crate) use todowrite::{clear_session_todos, session_todos};
 pub mod tool_descriptions;
 pub(crate) mod usage_query;
 pub mod vision;
-mod weather;
 mod web;
 mod web_images;
 pub mod workspace;
-mod xuanxue;
 
 use crate::agent::AgentMode;
 use crate::config::AppConfig;
@@ -258,10 +246,8 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "get_current_time" => t("Current time", "当前时间"),
         "check_issue" => t("Check issue", "检查问题"),
         "check_os_info" => t("System information", "查看系统信息"),
-        "read_clipboard" => t("Read clipboard", "读取剪贴板"),
         "web_search" => t("Web search", "网络搜索"),
         "web_fetch" => t("Fetch webpage", "读取网页"),
-        "fcitx5_input_method_wiki_qurey" => t("Query Fcitx5 Wiki", "查询 Fcitx5 Wiki"),
         "search_web_images" => t("Search images", "搜索图片"),
         "share_file" => t("Share file", "分享文件"),
         "analyze_image" | "vision_analyze" => t("Visual analysis", "视觉分析"),
@@ -291,25 +277,11 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "list_memory" | "list_memories" => t("List memories", "列出记忆"),
         "aur" => t("AUR query", "AUR 查询"),
         "archlinux_official_package_query" => t("Query Arch package", "查询 Arch 官方包"),
-        "query_deepseek_status" => t("Check DeepSeek status", "查询 DeepSeek 状态"),
         "query_api_quota" => t("Query API quota", "查询大模型 API 额度"),
         "pacman_search" => t("Search packages", "搜索软件包"),
         "archwiki_query" => t("Query ArchWiki", "查询 ArchWiki"),
         "archlinux_news" => t("Arch news", "Arch 新闻"),
-        "online_man" => t("Online manual", "在线手册"),
-        "moegirl_query" | "query_moegirl" => t("Query Moegirlpedia", "查询萌娘百科"),
-        "calculate" | "calculator" | "scientific_calculator" => {
-            t("Scientific calculation", "科学计算")
-        }
-        "codec" => t("Encode/decode", "编解码"),
         "exchange_rate" | "get_exchange_rate" => t("Exchange rates", "汇率查询"),
-        "weather" | "get_weather" => t("Weather", "天气查询"),
-        "game_compat" => t("Game compatibility", "游戏兼容性"),
-        "divine" => t("Divination", "占卜"),
-        "divine:zhouyi" => t("I Ching", "六十四卦"),
-        "divine:tarot" => t("Tarot", "塔罗牌"),
-        "divine:fortune" => t("Fortune", "吉凶占"),
-        "divine:dice" => t("Dice roll", "掷骰子"),
         "load_skill" => t("Load skill", "加载技能"),
         "manage_skill" => t("Manage skills", "管理技能"),
         "load_tools" => t("Load", "加载"),
@@ -450,27 +422,15 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     todowrite::register(&mut registry, paths.clone());
     goal::register(&mut registry, paths.clone());
     alarm::register(&mut registry, paths.clone());
-    clipboard::register(&mut registry, paths.clone());
     web::register_fetch(&mut registry);
-    fcitx_wiki::register(&mut registry);
-    weather::register(&mut registry);
-    protondb_query::register(&mut registry, paths.clone());
     // 插件关就不注册:关掉的插件仍然常驻一份完整契约,是三个面都白背的
     // 纯浪费(08-17 实测 get_exchange_rate 311 字符)。
     if config.plugins.exchange_rate.enabled {
         exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     }
-    xuanxue::register(&mut registry);
     if config.plugins.archlinux.enabled {
         archlinux::register(&mut registry, paths);
     }
-    if config.plugins.man.enabled {
-        man::register(&mut registry);
-    }
-    moegirl::register(&mut registry);
-    hash_codec::register(&mut registry);
-    calculator::register(&mut registry);
-    deepseek_status::register(&mut registry);
     if config.plugins.api_quota.enabled {
         api_quota::register(&mut registry, config.plugins.api_quota.clone());
     }
@@ -715,25 +675,19 @@ pub fn dev_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
 
 /// Tools exposed to an untrusted messaging-platform conversation. This list
 /// deliberately excludes shell, filesystem, local-image inspection, memory,
-/// knowledge-base, MCP, scripts, and tools that persist arbitrary downloads.
+/// knowledge-base, MCP, and tools that persist arbitrary downloads. Scripts
+/// come in only when their header says `Trust: external`(09-10 分层架构).
 /// `generate_image` is the one Writes exception: it only saves its own API
 /// output under the plugin's output directory, never an arbitrary host path.
 pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.set_default_timeout_secs(config.tools.default_timeout_secs);
     web::register_fetch(&mut registry);
-    weather::register(&mut registry);
-    protondb_query::register(&mut registry, paths.clone());
     // 插件关就不注册:关掉的插件仍然常驻一份完整契约,是三个面都白背的
     // 纯浪费(08-17 实测 get_exchange_rate 311 字符)。
     if config.plugins.exchange_rate.enabled {
         exchange_rate::register(&mut registry, config.plugins.exchange_rate.clone());
     }
-    xuanxue::register(&mut registry);
-    moegirl::register(&mut registry);
-    hash_codec::register(&mut registry);
-    calculator::register(&mut registry);
-    deepseek_status::register(&mut registry);
     if config.plugins.web.enabled {
         web::register(&mut registry, config.plugins.web.clone());
     }
@@ -1256,9 +1210,6 @@ mod tests {
         assert!(visible
             .iter()
             .any(|definition| definition.function.name == "load_tools"));
-        assert!(!visible
-            .iter()
-            .any(|definition| definition.function.name == "divine"));
     }
 
     /// 09-09 起技能面整体只给 normal:dev 连 `load_skill` 都没有(它在 dev
@@ -1303,11 +1254,32 @@ mod tests {
             .any(|definition| definition.function.name == "create_artifact"));
     }
 
+    /// 内置脚本按头部的 Trust 位进受限注册表:divine(Trust: external)在,
+    /// read_clipboard(只给属主)不在;懒加载的分组照常能 load。
     #[tokio::test]
     async fn restricted_platform_can_load_the_divination_group() {
         let temp = tempfile::tempdir().unwrap();
         let paths = test_paths(temp.path());
+        let bundled =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scripts/personas/default");
+        let system = paths.system_scripts_dir.join("personas/default");
+        std::fs::create_dir_all(&system).unwrap();
+        for name in ["divine", "read_clipboard"] {
+            std::fs::copy(bundled.join(name), system.join(name)).unwrap();
+        }
         let registry = restricted_platform_registry(&AppConfig::default(), &paths);
+        assert!(
+            registry.contains("divine"),
+            "Trust: external 的脚本应进受限注册表"
+        );
+        assert!(
+            !registry.contains("read_clipboard"),
+            "没写 Trust 的脚本只给属主"
+        );
+        let visible = registry.lazy_definitions(&Default::default());
+        assert!(!visible
+            .iter()
+            .any(|definition| definition.function.name == "divine"));
 
         let output = registry
             .call("load_tools", r#"{"names":["group:divination"]}"#)

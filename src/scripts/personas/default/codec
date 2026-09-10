@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+# Id: codec
+# Display name: Encode/decode
+# 显示名称: 编解码
+# Description: Compute hashes or decode base64/hex/url/html/rot13. Encode/decode: op=hash computes hashes, op=decode decodes base64/hex/url/html/rot13. Hash supports md5, sha1, sha224, sha256, sha384, sha512, sha3_224, sha3_256, sha3_384, sha3_512, blake2b, b2sum, blake2s, blake3, crc32, adler32, or all/mainstream for everything; b2sum equals GNU coreutils BLAKE2b-512. To match shell echo, include the trailing newline in input_text.
+# Timeout: 30
+# Group: utility
+# Trust: external
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "op": {
+#       "type": "string",
+#       "enum": [
+#         "hash",
+#         "decode"
+#       ],
+#       "description": "hash computes hashes, decode decodes."
+#     },
+#     "input_text": {
+#       "type": "string",
+#       "description": "Input text bytes. Include the trailing \\n when matching shell commands like echo."
+#     },
+#     "input_format": {
+#       "type": "string",
+#       "enum": [
+#         "text",
+#         "hex",
+#         "base64",
+#         "url",
+#         "html",
+#         "rot13"
+#       ],
+#       "description": "Input encoding. For op=hash, optional: text/hex/base64 (default text); required for op=decode."
+#     },
+#     "algorithms": {
+#       "type": "string",
+#       "description": "op=hash only: algorithm names, comma- or space-separated; all/mainstream means compute them all. Default sha256."
+#     }
+#   },
+#   "required": [
+#     "op",
+#     "input_text"
+#   ]
+# }
+# Example: {"op":"hash","input_text":"arch\n","algorithms":"sha256,b2sum"}
+"""
+Port of the built-in Rust `codec` tool (src/tools/hash_codec.rs).
+
+    op=hash    hash the input bytes with one or more algorithms
+    op=decode  decode base64 / hex / url / html entities / rot13 to text
+
+Arguments arrive as one JSON object on stdin (also MIYU_ARGS_JSON):
+    {"op":"hash","input_text":"arch\\n","algorithms":"sha256,b2sum"}
+    {"op":"decode","input_text":"aGVsbG8=","input_format":"base64"}
+
+blake3 is not in the Python standard library; it is computed only when the
+optional `blake3` package happens to be installed, otherwise it is reported
+in unsupported_algorithms.
+"""
+
+import base64
+import binascii
+import codecs
+import hashlib
+import json
+import os
+import sys
+import urllib.parse
+import zlib
+
+try:  # optional, not part of the standard library
+    import blake3 as _blake3  # type: ignore
+except Exception:  # noqa: BLE001
+    _blake3 = None
+
+ALL_ALGORITHMS = [
+    "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_224", "sha3_256",
+    "sha3_384", "sha3_512", "blake2b", "blake2s", "b2sum", "blake3", "crc32", "adler32",
+]
+
+HASHLIB_NAMES = {
+    "md5": "md5",
+    "sha1": "sha1",
+    "sha224": "sha224",
+    "sha256": "sha256",
+    "sha384": "sha384",
+    "sha512": "sha512",
+    "sha3_224": "sha3_224",
+    "sha3-224": "sha3_224",
+    "sha3_256": "sha3_256",
+    "sha3-256": "sha3_256",
+    "sha3_384": "sha3_384",
+    "sha3-384": "sha3_384",
+    "sha3_512": "sha3_512",
+    "sha3-512": "sha3_512",
+    "blake2b": "blake2b",   # Blake2b512 = default digest size 64
+    "b2sum": "blake2b",
+    "blake2s": "blake2s",   # Blake2s256 = default digest size 32
+}
+
+
+def fail(error, fix=None, code=2):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+def dumps_pretty(value):
+    # serde_json::to_string_pretty without preserve_order: 2-space indent, sorted keys.
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def adler32(data):
+    return zlib.adler32(data) & 0xFFFFFFFF
+
+
+def decode_hex(text):
+    text = text.strip()
+    if len(text) % 2:
+        fail("Odd number of digits", "hex input must have an even number of hex digits")
+    try:
+        return bytes.fromhex(text)
+    except ValueError as exc:
+        fail(f"Invalid hex: {exc}", "hex input may only contain 0-9 a-f A-F")
+
+
+def decode_base64(text):
+    text = text.strip()
+    try:
+        # validate=True rejects non-alphabet characters like the Rust STANDARD engine.
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        fail(f"Invalid base64: {exc}", "standard alphabet (A-Z a-z 0-9 + /) with = padding")
+
+
+def input_bytes(text, fmt):
+    if fmt == "text":
+        return text.encode("utf-8")
+    if fmt == "hex":
+        return decode_hex(text)
+    if fmt == "base64":
+        return decode_base64(text)
+    fail(f"unsupported input_format: {fmt}", "for op=hash use text, hex or base64")
+
+
+def hash_one(name, data):
+    lowered = name.lower()
+    if lowered in HASHLIB_NAMES:
+        return hashlib.new(HASHLIB_NAMES[lowered], data).hexdigest()
+    if lowered == "blake3":
+        if _blake3 is None:
+            return None
+        return _blake3.blake3(data).hexdigest()
+    if lowered == "crc32":
+        return f"{zlib.crc32(data) & 0xFFFFFFFF:08x}"
+    if lowered == "adler32":
+        return f"{adler32(data):08x}"
+    return None
+
+
+def calculate(args):
+    text = args.get("input_text")
+    text = text if isinstance(text, str) else ""
+    fmt = args.get("input_format")
+    fmt = fmt if isinstance(fmt, str) else "text"
+    data = input_bytes(text, fmt)
+    algorithms = args.get("algorithms")
+    algorithms = algorithms if isinstance(algorithms, str) else "sha256"
+    if not algorithms.strip() or algorithms in ("all", "mainstream"):
+        names = list(ALL_ALGORITHMS)
+    else:
+        names = [item for item in algorithms.replace(",", " ").split(" ") if item]
+    results = {}
+    unsupported = []
+    for name in names:
+        digest = hash_one(name, data)
+        if digest is None:
+            lowered = name.lower()
+            unsupported.append(lowered)
+            if lowered == "blake3":
+                digest = "unsupported algorithm: blake3 (needs the optional blake3 package)"
+            else:
+                digest = f"unsupported algorithm: {lowered}"
+        results[name] = digest
+    return dumps_pretty(
+        {
+            "success": not unsupported,
+            "byte_length": len(data),
+            "results": results,
+            "unsupported_algorithms": unsupported,
+        }
+    )
+
+
+def decode(args):
+    text = args.get("input_text")
+    text = text if isinstance(text, str) else ""
+    fmt = args.get("input_format")
+    fmt = fmt if isinstance(fmt, str) else "base64"
+    if fmt == "base64":
+        output = decode_base64(text).decode("utf-8", errors="replace")
+    elif fmt == "hex":
+        output = decode_hex(text).decode("utf-8", errors="replace")
+    elif fmt == "url":
+        # urlencoding::decode: percent-decoding only ('+' stays), strict UTF-8.
+        try:
+            output = urllib.parse.unquote(text, encoding="utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            fail(f"url-decoded bytes are not valid UTF-8: {exc}", "check the percent escapes")
+    elif fmt == "html":
+        output = (
+            text.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", '"')
+            .replace("&#39;", "'")
+        )
+    elif fmt == "rot13":
+        output = codecs.encode(text, "rot_13")
+    else:
+        fail(f"unsupported input_format: {fmt}", "for op=decode use base64, hex, url, html or rot13")
+    return dumps_pretty({"success": True, "decoded_text": output})
+
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw:
+        raw = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    raw = (raw or "").strip() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(f"arguments are not valid JSON: {exc}", 'feed one object, e.g. {"op":"hash","input_text":"abc"}')
+    if not isinstance(args, dict):
+        fail("arguments must be a JSON object", 'e.g. {"op":"hash","input_text":"abc"}')
+    return args
+
+
+def main():
+    args = read_args()
+    op = args.get("op")
+    op = op if isinstance(op, str) else ""
+    if op == "hash":
+        print(calculate(args))
+    elif op == "decode":
+        print(decode(args))
+    else:
+        fail(f"unknown op: {op}; expected hash or decode", "pass op=hash or op=decode")
+
+
+if __name__ == "__main__":
+    main()

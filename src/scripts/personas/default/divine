@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+# Id: divine
+# Display name: Divination
+# 显示名称: 占卜
+# Description: Divination: I Ching, tarot, fortune and dice. Random divination: method zhouyi casts an I Ching hexagram, tarot draws cards, fortune tells luck, dice rolls dice. The tool only produces the random result; the interpretation is yours.
+# Timeout: 30
+# Group: divination
+# Trust: external
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "method": {
+#       "type": "string",
+#       "enum": [
+#         "zhouyi",
+#         "tarot",
+#         "fortune",
+#         "dice"
+#       ],
+#       "description": "Divination method."
+#     },
+#     "count": {
+#       "type": "integer",
+#       "description": "dice only: number of dice, default 1, max 100."
+#     },
+#     "sides": {
+#       "type": "integer",
+#       "description": "dice only: sides per die, default 6, max 1000."
+#     },
+#     "modifier": {
+#       "type": "integer",
+#       "description": "dice only: optional modifier added to the total."
+#     }
+#   },
+#   "required": [
+#     "method"
+#   ]
+# }
+# Example: {"method":"dice","count":2,"sides":6}
+"""
+Port of the built-in Rust `divine` tool (src/tools/xuanxue.rs).
+
+Four "shake once, do not interpret" divinations in one tool:
+    zhouyi   pick one of the 64 hexagrams
+    tarot    pick one of the 78 cards plus upright/reversed
+    fortune  pick one of the 7 luck grades with its one-line meaning
+    dice     roll `count` d`sides` and add `modifier`
+
+Arguments arrive as one JSON object on stdin (also MIYU_ARGS_JSON):
+    {"method":"dice","count":2,"sides":20,"modifier":3}
+"""
+
+import json
+import os
+import secrets
+import sys
+
+ZHOUYI_HEXAGRAMS = [
+    "乾为天", "坤为地", "水雷屯", "山水蒙", "水天需", "天水讼", "地水师", "水地比",
+    "风天小畜", "天泽履", "地天泰", "天地否", "天火同人", "火天大有", "地山谦", "雷地豫",
+    "泽雷随", "山风蛊", "地泽临", "风地观", "火雷噬嗑", "山火贲", "山地剥", "地雷复",
+    "天雷无妄", "山天大畜", "山雷颐", "泽风大过", "坎为水", "离为火", "泽山咸", "雷风恒",
+    "天山遁", "雷天大壮", "火地晋", "地火明夷", "风火家人", "火泽睽", "水山蹇", "雷水解",
+    "山泽损", "风雷益", "泽天夬", "天风姤", "泽地萃", "地风升", "泽水困", "水风井",
+    "泽火革", "火风鼎", "震为雷", "艮为山", "风山渐", "雷泽归妹", "雷火丰", "火山旅",
+    "巽为风", "兑为泽", "风水涣", "水泽节", "风泽中孚", "雷山小过", "水火既济", "火水未济",
+]
+
+TAROT_CARDS = [
+    # Major arcana
+    "愚者", "魔术师", "女祭司", "皇后", "皇帝", "教皇", "恋人", "战车", "力量", "隐士",
+    "命运之轮", "正义", "倒吊人", "死神", "节制", "恶魔", "高塔", "星星", "月亮", "太阳",
+    "审判", "世界",
+    # Wands
+    "权杖王牌", "权杖二", "权杖三", "权杖四", "权杖五", "权杖六", "权杖七", "权杖八",
+    "权杖九", "权杖十", "权杖侍从", "权杖骑士", "权杖王后", "权杖国王",
+    # Cups
+    "圣杯王牌", "圣杯二", "圣杯三", "圣杯四", "圣杯五", "圣杯六", "圣杯七", "圣杯八",
+    "圣杯九", "圣杯十", "圣杯侍从", "圣杯骑士", "圣杯王后", "圣杯国王",
+    # Swords
+    "宝剑王牌", "宝剑二", "宝剑三", "宝剑四", "宝剑五", "宝剑六", "宝剑七", "宝剑八",
+    "宝剑九", "宝剑十", "宝剑侍从", "宝剑骑士", "宝剑王后", "宝剑国王",
+    # Pentacles
+    "星币王牌", "星币二", "星币三", "星币四", "星币五", "星币六", "星币七", "星币八",
+    "星币九", "星币十", "星币侍从", "星币骑士", "星币王后", "星币国王",
+]
+
+TAROT_ORIENTATIONS = ["正位", "逆位"]
+
+FORTUNE_DIVINATIONS = [
+    ("大吉", "运势的最高峰，万事亨通，求财、姻缘、事业皆极顺遂。"),
+    ("吉", "稳健的吉利状态。运势持久。"),
+    ("中吉", "非常不错的好运，虽不如大吉猛烈，但平稳且有上升空间。"),
+    ("小吉", "有小小的福气或幸运，平淡中带有喜悦，不宜过分强求大富大贵。"),
+    ("末吉", "吉利的末尾。意味着目前处于谷底。"),
+    ("凶", "运势不佳，容易遇到阻碍或犯错，需要格外小心谨慎、反省自身。"),
+    ("大凶", "最差、最险恶的运势。多伴随口舌、破财或灾祸。"),
+]
+
+METHODS = ("zhouyi", "tarot", "fortune", "dice")
+
+# The Rust tool draws from the OS-seeded thread_rng; secrets is the closest
+# stdlib equivalent (uniform choice/range from the OS entropy pool).
+_rng = secrets.SystemRandom()
+
+
+def fail(error, fix=None, code=2):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+def as_u64(value):
+    """serde_json Value::as_u64: only non-negative integers count; floats,
+    bools, strings and negatives fall through to the default."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def as_i64(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def roll_dice(args):
+    count = as_u64(args.get("count"))
+    sides = as_u64(args.get("sides"))
+    modifier = as_i64(args.get("modifier"))
+    count = clamp(1 if count is None else count, 1, 100)
+    sides = clamp(6 if sides is None else sides, 2, 1000)
+    modifier = 0 if modifier is None else modifier
+    rolls = [_rng.randint(1, sides) for _ in range(count)]
+    total = sum(rolls)
+    # serde_json without preserve_order emits keys sorted; mirror that.
+    return json.dumps(
+        {
+            "ok": True,
+            "count": count,
+            "sides": sides,
+            "rolls": rolls,
+            "total": total,
+            "modifier": modifier,
+            "modified_total": total + modifier,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def divine(args):
+    method = args.get("method")
+    method = method if isinstance(method, str) else ""
+    if method == "zhouyi":
+        return _rng.choice(ZHOUYI_HEXAGRAMS)
+    if method == "tarot":
+        return f"{_rng.choice(TAROT_CARDS)}（{_rng.choice(TAROT_ORIENTATIONS)}）"
+    if method == "fortune":
+        luck, meaning = _rng.choice(FORTUNE_DIVINATIONS)
+        return f"{luck}：{meaning}"
+    if method == "dice":
+        return roll_dice(args)
+    fail(
+        f"unknown method: {method}; expected zhouyi, tarot, fortune or dice",
+        "pass method as one of zhouyi, tarot, fortune, dice",
+    )
+
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw:
+        raw = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    raw = (raw or "").strip() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(f"arguments are not valid JSON: {exc}", 'feed one object, e.g. {"method":"tarot"}')
+    if not isinstance(args, dict):
+        fail("arguments must be a JSON object", 'e.g. {"method":"zhouyi"}')
+    return args
+
+
+def main():
+    args = read_args()
+    if len(sys.argv) > 1 and "method" not in args:
+        # Convenience for running by hand: `divine tarot` / `divine dice 3 20`.
+        args["method"] = sys.argv[1]
+        if len(sys.argv) > 2 and sys.argv[2].isdigit():
+            args["count"] = int(sys.argv[2])
+        if len(sys.argv) > 3 and sys.argv[3].isdigit():
+            args["sides"] = int(sys.argv[3])
+    print(divine(args))
+
+
+if __name__ == "__main__":
+    main()

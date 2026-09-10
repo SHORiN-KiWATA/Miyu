@@ -28,11 +28,9 @@ anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 blake3 = "1.5"
-blake2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
-crc32fast = "1.4"
 crossterm = "0.28"
 directories = "5.0"
 hex = "0.4"
@@ -49,7 +47,6 @@ fst = "0.4"
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 if-addrs = "0.13"
 libc = "0.2"
-md5 = "0.7"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 # Local embedding inference. ONNX Runtime is loaded at runtime from the system
 # library (`onnxruntime-cpu` on Arch); nothing is downloaded at build time, so
@@ -67,7 +64,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
 sha2 = "0.10"
-sha3 = "0.10"
 termimad = "0.34"
 tempfile = "3.15"
 tar = "0.4"

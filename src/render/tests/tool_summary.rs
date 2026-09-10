@@ -641,12 +641,12 @@ fn tool_subject_extracts_safe_operation_targets() {
         "{}{}{}",
         t("Web search", "网络搜索"),
         t(", ", "、"),
-        t("Weather", "天气查询")
+        t("Exchange rates", "汇率查询")
     );
     assert_eq!(
         tool_subject(
-            "load_tools:web_search,get_weather",
-            r#"{"names":["web_search","get_weather"]}"#
+            "load_tools:web_search,get_exchange_rate",
+            r#"{"names":["web_search","get_exchange_rate"]}"#
         )
         .as_deref(),
         Some(expected_load_tools_subject.as_str())
@@ -759,7 +759,6 @@ fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
         ("read_file", "Read file", "读取文件"),
         ("check_issue", "Check issue", "检查问题"),
         ("check_os_info", "System information", "查看系统信息"),
-        ("get_weather", "Weather", "天气查询"),
         ("get_exchange_rate", "Exchange rates", "汇率查询"),
         ("vision_analyze", "Visual analysis", "视觉分析"),
         ("use_meme", "Meme", "表情包"),
@@ -776,14 +775,7 @@ fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
             "搜索旧上下文",
         ),
         ("aur", "AUR query", "AUR 查询"),
-        ("online_man", "Online manual", "在线手册"),
-        (
-            "fcitx5_input_method_wiki_qurey",
-            "Query Fcitx5 Wiki",
-            "查询 Fcitx5 Wiki",
-        ),
         ("install_aur_package", "Install AUR package", "安装 AUR 包"),
-        ("divine", "Divination", "占卜"),
         ("manage_skill", "Manage skills", "管理技能"),
         ("recall_memories", "Recall memories", "召回记忆"),
     ] {

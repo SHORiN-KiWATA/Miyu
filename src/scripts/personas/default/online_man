@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+# Id: online_man
+# Display name: Online manual
+# 显示名称: 在线手册
+# Description: Online Linux manuals. action=search searches; action=read fetches a man page. Search uses Arch manual pages; read supports Arch man pages and man7.org. For normal reading set max_chars to at least 8000; lower it only for excerpts.
+# Timeout: 90
+# Group: linux-docs
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "action": {
+#       "type": "string",
+#       "enum": [
+#         "search",
+#         "read"
+#       ],
+#       "description": "search to search, read to fetch a page."
+#     },
+#     "query": {
+#       "type": "string",
+#       "description": "Required for action=search: search terms."
+#     },
+#     "name": {
+#       "type": "string",
+#       "description": "Required for action=read: man page name."
+#     },
+#     "section": {
+#       "type": "string",
+#       "description": "Optional manual section number."
+#     },
+#     "language": {
+#       "type": "string",
+#       "description": "Optional language, default en."
+#     },
+#     "limit": {
+#       "type": "integer",
+#       "description": "search only: maximum number of results, default 10."
+#     },
+#     "source": {
+#       "type": "string",
+#       "enum": [
+#         "auto",
+#         "arch",
+#         "man7"
+#       ],
+#       "description": "read only: source site, default auto."
+#     },
+#     "max_chars": {
+#       "type": "integer",
+#       "description": "read only: maximum number of characters to return."
+#     }
+#   },
+#   "required": [
+#     "action"
+#   ]
+# }
+# Example: {"action":"read","name":"ls","max_chars":8000}
+"""
+Port of the built-in Rust tool `online_man` (src/tools/man.rs).
+
+    {"action":"search","query":"systemd","limit":10}
+    {"action":"read","name":"ls","section":"1","source":"auto","max_chars":16000}
+
+search: GET https://man.archlinux.org/search?q=…&lang=… and pull the `/man/…`
+links out of the HTML the same way the Rust did (first path segment before
+the first dot, de-duplicated by substring).
+read:   try https://man.archlinux.org/man/<name>.<sec>.<lang>.txt over the
+sections 1 8 5 7 2 3 4 6 (or the given one), then
+https://man7.org/linux/man-pages/man<S>/<name>.<sec>.html rendered to text.
+"""
+
+import json
+import os
+import socket
+import sys
+import textwrap
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+
+ARCH_BASE = "https://man.archlinux.org"
+MAN7_BASE = "https://man7.org/linux/man-pages"
+UA = "miyu-online-man/0.1 (+https://github.com/shorinkiwata/Miyu)"
+TIMEOUT = 15
+MAX_HTML_RESPONSE_BYTES = 5 * 1024 * 1024
+TEXT_WIDTH = 120
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, fix=None):
+        super().__init__(message)
+        self.fix = fix
+
+
+def fail(error, fix=None, code=1):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- HTTP
+
+def fetch_text(url):
+    """GET url; any non-2xx / network failure raises Failed (the Rust
+    `error_for_status()?` semantics: the caller treats it as 'not here')."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            body = resp.read(MAX_HTML_RESPONSE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise Failed(f"HTTP {exc.code} for {url}") from exc
+    except urllib.error.URLError as exc:
+        raise Failed(f"cannot reach {url}: {exc.reason}", "check network or proxy") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise Failed(f"timeout ({TIMEOUT}s) fetching {url}", "retry later") from exc
+    if len(body) > MAX_HTML_RESPONSE_BYTES:
+        raise Failed(f"response too large for {url}")
+    return body.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------- helpers
+
+def required(args, key):
+    value = args.get(key)
+    value = value.strip() if isinstance(value, str) else ""
+    if not value:
+        raise Failed(f"{key} is required")
+    return value
+
+
+def str_arg(args, key, default):
+    value = args.get(key)
+    return value if isinstance(value, str) else default
+
+
+def uint_arg(args, key):
+    """serde `as_u64`: only a non-negative integer counts; anything else = absent."""
+    value = args.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def clip(text, max_chars):
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...[truncated]"
+
+
+# ---------------------------------------------------------------- HTML -> text (man7)
+
+class _TextRenderer(HTMLParser):
+    """Small stand-in for html2text::from_read(html, width): <pre> kept
+    verbatim, other block elements become paragraphs wrapped to `width`,
+    script/style dropped, entities unescaped."""
+
+    BLOCK = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "table",
+             "ul", "ol", "dl", "dt", "dd", "section", "article", "header", "footer",
+             "nav", "blockquote", "hr", "br"}
+    SKIP = {"script", "style", "head", "title", "noscript"}
+
+    def __init__(self, width):
+        super().__init__(convert_charrefs=True)
+        self.width = width
+        self.parts = []
+        self.buffer = []
+        self.pre_depth = 0
+        self.skip_depth = 0
+
+    def _flush(self):
+        text = "".join(self.buffer)
+        self.buffer = []
+        if self.pre_depth:
+            self.parts.append(text.rstrip("\n") + "\n")
+            return
+        text = " ".join(text.split())
+        if text:
+            self.parts.append(textwrap.fill(text, self.width) + "\n\n")
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip_depth += 1
+            return
+        if tag == "pre":
+            self._flush()
+            self.pre_depth += 1
+        elif tag in self.BLOCK and not self.pre_depth:
+            self._flush()
+            if tag == "hr":
+                self.parts.append("-" * min(self.width, 40) + "\n\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if tag == "pre":
+            self._flush()
+            self.pre_depth = max(0, self.pre_depth - 1)
+            self.parts.append("\n")
+        elif tag in self.BLOCK and not self.pre_depth:
+            self._flush()
+
+    def handle_data(self, data):
+        if self.skip_depth:
+            return
+        self.buffer.append(data)
+
+    def text(self):
+        self._flush()
+        out = "".join(self.parts)
+        # Collapse runs of blank lines the way html2text does.
+        while "\n\n\n" in out:
+            out = out.replace("\n\n\n", "\n\n")
+        return out.strip("\n") + "\n"
+
+
+def html_to_text(html, width=TEXT_WIDTH):
+    parser = _TextRenderer(width)
+    parser.feed(html)
+    parser.close()
+    return parser.text()
+
+
+# ---------------------------------------------------------------- actions
+
+def search(args):
+    query = required(args, "query")
+    section = str_arg(args, "section", "").strip()
+    language = str_arg(args, "language", "en").strip()
+    limit = uint_arg(args, "limit")
+    limit = min(10 if limit is None else limit, 50)
+    url = f"{ARCH_BASE}/search?q={urllib.parse.quote(query, safe='')}&lang={urllib.parse.quote(language, safe='')}"
+    if section:
+        url += f"&section={urllib.parse.quote(section, safe='')}"
+    html = fetch_text(url)
+    results = []
+    for line in html.splitlines():
+        pos = line.find("/man/")
+        if pos != -1:
+            tail = line[pos + 5:]
+            # Cut at the href closer so `">systemd(1)</a>` never rides along.
+            href_end = len(tail)
+            for stop in ('"', "'", "<", ">"):
+                idx = tail.find(stop)
+                if idx != -1 and idx < href_end:
+                    href_end = idx
+            href = tail[:href_end]
+            end = href.find(".")
+            name = (href if end == -1 else href[:end]).strip("/")
+            if name and not any(name in item for item in results):
+                results.append(f"- {name}: {ARCH_BASE}/man/{href}")
+        if len(results) >= limit:
+            break
+    if not results:
+        return f"No man page search results for {query}"
+    return "\n".join(results)
+
+
+def get_page(args):
+    name = required(args, "name")
+    section = str_arg(args, "section", "").strip()
+    source = str_arg(args, "source", "auto")
+    language = str_arg(args, "language", "en")
+    max_chars = uint_arg(args, "max_chars")
+    max_chars = 16_000 if max_chars is None else max(2_000, min(max_chars, 100_000))
+    sections = [section] if section else ["1", "8", "5", "7", "2", "3", "4", "6"]
+    try_arch = source in ("auto", "arch")
+    try_man7 = source in ("auto", "man7")
+    if try_arch:
+        for sec in sections:
+            url = f"{ARCH_BASE}/man/{name}.{sec}.{language}.txt"
+            try:
+                text = fetch_text(url)
+            except Failed:
+                continue
+            return clip(f"Source: {url}\n\n{text}", max_chars)
+    if try_man7:
+        for sec in sections:
+            sec_initial = sec[:1] or "1"
+            url = f"{MAN7_BASE}/man{sec_initial}/{name}.{sec}.html"
+            try:
+                html = fetch_text(url)
+            except Failed:
+                continue
+            text = html_to_text(html, TEXT_WIDTH)
+            return clip(f"Source: {url}\n\n{text}", max_chars)
+    raise Failed(f"man page not found: {name}",
+                 "check the spelling, try action=search, or give section/source explicitly")
+
+
+# ---------------------------------------------------------------- main
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw and sys.stdin is not None and not sys.stdin.isatty():
+        raw = sys.stdin.read()
+    raw = (raw or "").strip() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"arguments are not valid JSON: {exc}", 'feed a JSON object such as {"action":"read","name":"ls"}')
+    if not isinstance(args, dict):
+        raise Failed("arguments must be a JSON object", '{"action":"read","name":"ls"}')
+    return args
+
+
+def main():
+    try:
+        args = read_args()
+        action = str_arg(args, "action", "")
+        if action == "search":
+            out = search(args)
+        elif action == "read":
+            out = get_page(args)
+        else:
+            raise Failed(f"unknown action: {action}; expected search or read",
+                         'pass {"action":"search","query":"…"} or {"action":"read","name":"…"}')
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    except Failed as exc:
+        fail(str(exc), exc.fix)
+    except Exception as exc:  # noqa: BLE001 — the tool layer must not see a traceback
+        fail(f"internal error: {type(exc).__name__}: {exc}")
+
+
+if __name__ == "__main__":
+    main()

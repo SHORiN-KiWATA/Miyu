@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+# Id: scientific_calculator
+# Display name: Scientific calculation
+# 显示名称: 科学计算
+# Description: Scientific calculator. Evaluates one numeric expression with + - * / % ^, parentheses, functions sin cos tan asin acos atan sqrt abs ln log log10 exp floor ceil round and constants pi e tau. No symbolic calculus.
+# Timeout: 30
+# Group: utility
+# Trust: external
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "expression": {
+#       "type": "string",
+#       "description": "Arithmetic expression to evaluate, e.g. sin(pi/2) + 2^10."
+#     }
+#   },
+#   "required": [
+#     "expression"
+#   ]
+# }
+# Example: {"expression":"sqrt(2) * sin(pi/4)"}
+"""
+Port of the built-in Rust `scientific_calculator` tool (src/tools/calculator.rs).
+
+A small recursive-descent parser over the expression bytes (no eval):
+
+    expression := term (('+' | '-') term)*
+    term       := power (('*' | '/' | '%') power)*
+    power      := unary ('^' power)?           right-associative
+    unary      := ('+' | '-') unary | primary
+    primary    := '(' expression ')' | ident '(' expression ')' | ident | number
+
+Arithmetic follows IEEE-754 like the Rust f64 code: division by zero gives
+inf/nan instead of raising, invalid domains give nan, and non-finite results
+are emitted as JSON null (what serde_json does with NaN/inf).
+
+Arguments arrive as one JSON object on stdin (also MIYU_ARGS_JSON):
+    {"expression":"2^10 + sqrt(16)"}
+"""
+
+import json
+import math
+import os
+import re
+import sys
+
+MAX_EXPRESSION_BYTES = 4000
+INF = float("inf")
+NAN = float("nan")
+
+
+def fail(error, fix=None, code=2):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+class ParseError(ValueError):
+    pass
+
+
+# ---------------------------------------------------------------- IEEE helpers
+
+def f_div(a, b):
+    try:
+        return a / b
+    except ZeroDivisionError:
+        if math.isnan(a) or a == 0.0:
+            return NAN
+        return math.copysign(INF, a) * math.copysign(1.0, b)
+
+
+def f_rem(a, b):
+    try:
+        return math.fmod(a, b)
+    except ValueError:
+        return NAN
+
+
+def f_pow(a, b):
+    try:
+        return math.pow(a, b)
+    except OverflowError:
+        return INF
+    except ValueError:
+        return NAN
+
+
+def f_mul(a, b):
+    return a * b  # overflow yields inf without raising
+
+
+def guard(func):
+    """Run a math.* function with Rust f64 semantics: domain error -> nan,
+    overflow -> inf."""
+    def wrapped(x):
+        try:
+            return func(x)
+        except ValueError:
+            return NAN
+        except OverflowError:
+            return INF
+    return wrapped
+
+
+def f_ln(x):
+    if math.isnan(x) or x < 0:
+        return NAN
+    if x == 0:
+        return -INF
+    if math.isinf(x):
+        return INF
+    return math.log(x)
+
+
+def f_log10(x):
+    if math.isnan(x) or x < 0:
+        return NAN
+    if x == 0:
+        return -INF
+    if math.isinf(x):
+        return INF
+    return math.log10(x)
+
+
+def f_sqrt(x):
+    if math.isnan(x) or x < 0:
+        return NAN
+    return math.sqrt(x)
+
+
+def f_floor(x):
+    if not math.isfinite(x):
+        return x
+    return float(math.floor(x))
+
+
+def f_ceil(x):
+    if not math.isfinite(x):
+        return x
+    return float(math.ceil(x))
+
+
+def f_round(x):
+    """Rust f64::round: half-way cases away from zero (Python's round is
+    banker's rounding, so do it by hand)."""
+    if not math.isfinite(x):
+        return x
+    magnitude = abs(x)
+    whole = math.floor(magnitude)
+    if magnitude - whole >= 0.5:
+        whole += 1
+    return math.copysign(float(whole), x)
+
+
+FUNCTIONS = {
+    "sin": guard(math.sin),
+    "cos": guard(math.cos),
+    "tan": guard(math.tan),
+    "asin": guard(math.asin),
+    "acos": guard(math.acos),
+    "atan": guard(math.atan),
+    "sqrt": f_sqrt,
+    "abs": abs,
+    "ln": f_ln,
+    "log": f_log10,
+    "log10": f_log10,
+    "exp": guard(math.exp),
+    "floor": f_floor,
+    "ceil": f_ceil,
+    "round": f_round,
+}
+
+CONSTANTS = {
+    "pi": math.pi,
+    "e": math.e,
+    "tau": math.tau,
+}
+
+
+# ---------------------------------------------------------------- parser
+
+class Parser:
+    def __init__(self, text):
+        self.input = text.encode("utf-8")
+        self.pos = 0
+
+    def parse(self):
+        value = self.expression()
+        self.skip_ws()
+        if self.pos != len(self.input):
+            raise ParseError(f"unexpected token at byte {self.pos}")
+        return value
+
+    def expression(self):
+        value = self.term()
+        while True:
+            self.skip_ws()
+            if self.consume(ord("+")):
+                value = value + self.term()
+            elif self.consume(ord("-")):
+                value = value - self.term()
+            else:
+                return value
+
+    def term(self):
+        value = self.power()
+        while True:
+            self.skip_ws()
+            if self.consume(ord("*")):
+                value = f_mul(value, self.power())
+            elif self.consume(ord("/")):
+                value = f_div(value, self.power())
+            elif self.consume(ord("%")):
+                value = f_rem(value, self.power())
+            else:
+                return value
+
+    def power(self):
+        value = self.unary()
+        self.skip_ws()
+        if self.consume(ord("^")):
+            return f_pow(value, self.power())
+        return value
+
+    def unary(self):
+        self.skip_ws()
+        if self.consume(ord("+")):
+            return self.unary()
+        if self.consume(ord("-")):
+            return -self.unary()
+        return self.primary()
+
+    def primary(self):
+        self.skip_ws()
+        if self.consume(ord("(")):
+            value = self.expression()
+            self.skip_ws()
+            if not self.consume(ord(")")):
+                raise ParseError("expected )")
+            return value
+        byte = self.peek()
+        if byte is not None and chr(byte).isascii() and chr(byte).isalpha():
+            ident = self.ident()
+            self.skip_ws()
+            if self.consume(ord("(")):
+                arg = self.expression()
+                self.skip_ws()
+                if not self.consume(ord(")")):
+                    raise ParseError("expected ) after function argument")
+                return apply_function(ident, arg)
+            return constant(ident)
+        return self.number()
+
+    def number(self):
+        self.skip_ws()
+        start = self.pos
+        while True:
+            byte = self.peek()
+            if byte is None:
+                break
+            ch = chr(byte)
+            if not (ch.isascii() and ch.isdigit() or ch in ".eE+-"):
+                break
+            if ch in "+-" and self.pos > start:
+                prev = chr(self.input[self.pos - 1])
+                if prev not in "eE":
+                    break
+            self.pos += 1
+        if start == self.pos:
+            raise ParseError(f"expected number at byte {self.pos}")
+        literal = self.input[start:self.pos].decode("utf-8")
+        try:
+            return parse_float_literal(literal)
+        except ValueError:
+            raise ParseError("invalid float literal") from None
+
+    def ident(self):
+        start = self.pos
+        while True:
+            byte = self.peek()
+            if byte is None:
+                break
+            ch = chr(byte)
+            if not (ch.isascii() and (ch.isalnum() or ch == "_")):
+                break
+            self.pos += 1
+        return self.input[start:self.pos].decode("utf-8").lower()
+
+    def skip_ws(self):
+        while True:
+            byte = self.peek()
+            if byte is None or chr(byte) not in " \t\n\r\x0c":
+                break
+            self.pos += 1
+
+    def consume(self, byte):
+        if self.peek() == byte:
+            self.pos += 1
+            return True
+        return False
+
+    def peek(self):
+        if self.pos < len(self.input):
+            return self.input[self.pos]
+        return None
+
+
+_FLOAT_LITERAL = re.compile(r"^[0-9]*\.?[0-9]*(?:[eE][+-]?[0-9]+)?$")
+
+
+def parse_float_literal(literal):
+    """Rust's f64::from_str on the digit/./e/+/- run. Python's float() is
+    looser (allows '_', 'inf', 'nan', surrounding whitespace) so validate the
+    shape first; anything the regex rejects is what Rust would reject too."""
+    if not _FLOAT_LITERAL.match(literal) or literal in ("", ".", "e", "E"):
+        raise ValueError(literal)
+    mantissa = literal.split("e")[0].split("E")[0]
+    if mantissa in ("", "."):
+        raise ValueError(literal)
+    return float(literal)
+
+
+def apply_function(name, value):
+    func = FUNCTIONS.get(name)
+    if func is None:
+        raise ParseError(f"unknown function: {name}")
+    return float(func(value))
+
+
+def constant(name):
+    value = CONSTANTS.get(name)
+    if value is None:
+        raise ParseError(f"unknown constant: {name}")
+    return value
+
+
+# ---------------------------------------------------------------- output
+
+def format_float(value):
+    """serde_json prints f64 through ryu: shortest round-trip digits, `2.0`
+    for integral values, exponent without '+' or leading zeros (1e21, 1e-7).
+    Python's repr matches except for the exponent spelling."""
+    text = repr(value)
+    if "e" in text:
+        mantissa, exponent = text.split("e")
+        sign = "-" if exponent.startswith("-") else ""
+        digits = exponent.lstrip("+-").lstrip("0") or "0"
+        text = f"{mantissa}e{sign}{digits}"
+    return text
+
+
+def render(operation, expression, value):
+    # serde_json::to_string_pretty without preserve_order: sorted keys,
+    # 2-space indent; NaN/inf become null.
+    result_text = "null" if not math.isfinite(value) else format_float(value)
+    lines = [
+        "{",
+        f'  "expression": {json.dumps(expression, ensure_ascii=False)},',
+        f'  "operation": {json.dumps(operation, ensure_ascii=False)},',
+        f'  "result": {result_text},',
+        '  "success": true',
+        "}",
+    ]
+    return "\n".join(lines)
+
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw:
+        raw = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    raw = (raw or "").strip() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(f"arguments are not valid JSON: {exc}", 'feed one object, e.g. {"expression":"1+1"}')
+    if not isinstance(args, dict):
+        fail("arguments must be a JSON object", 'e.g. {"expression":"1+1"}')
+    return args
+
+
+def main():
+    args = read_args()
+    if len(sys.argv) > 1 and "expression" not in args:
+        args["expression"] = " ".join(sys.argv[1:])  # `scientific_calculator "2^10"` by hand
+    expression = args.get("expression")
+    expression = expression.strip() if isinstance(expression, str) else ""
+    operation = args.get("operation")
+    operation = operation if isinstance(operation, str) else "evaluate"
+    if operation != "evaluate":
+        fail("rust-simple calculator only supports operation=evaluate for now", "drop operation or set it to evaluate")
+    if not expression or len(expression.encode("utf-8")) > MAX_EXPRESSION_BYTES:
+        fail("expression is empty or too long", f"give a non-empty expression under {MAX_EXPRESSION_BYTES} bytes")
+    try:
+        value = Parser(expression).parse()
+    except ParseError as exc:
+        fail(str(exc), "check operators, parentheses and function names (sin cos tan asin acos atan sqrt abs ln log log10 exp floor ceil round; constants pi e tau)")
+    print(render(operation, expression, value))
+
+
+if __name__ == "__main__":
+    main()

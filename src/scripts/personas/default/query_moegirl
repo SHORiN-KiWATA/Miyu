@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+# Id: query_moegirl
+# Display name: Query Moegirlpedia
+# 显示名称: 查询萌娘百科
+# Description: Query Moegirlpedia. Use for ACG-related questions.
+# Timeout: 60
+# Group: acg
+# Permission: read-only
+# Trust: external
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "Search keyword; with mode=auto the first hit is fetched as a page"
+#     },
+#     "title": {
+#       "type": "string",
+#       "description": "Exact page title to fetch (mode=page)"
+#     },
+#     "mode": {
+#       "type": "string",
+#       "enum": [
+#         "auto",
+#         "search",
+#         "page"
+#       ],
+#       "description": "auto (default): search then fetch the first hit; search: return candidates only; page: fetch by title"
+#     },
+#     "site": {
+#       "type": "string",
+#       "enum": [
+#         "zh",
+#         "cn",
+#         "uk",
+#         "ja",
+#         ""
+#       ],
+#       "description": "Moegirlpedia site: cn (default), zh, uk or ja"
+#     }
+#   }
+# }
+# Example: {"query":"初音未来"}
+"""
+萌娘百科查询（src/tools/moegirl.rs 的脚本移植）。
+
+    {"query":"初音未来"}                     auto：opensearch 取第一条再抓正文
+    {"title":"初音未来","mode":"page"}       直接抓指定标题的正文
+    {"query":"初音","mode":"search"}         只做 opensearch，原样输出 JSON
+    {"query":"初音未来","site":"uk"}          站点 zh/cn（默认）、uk、ja
+
+正文走 rest.php/v1/page/<title>/html，任何失败都退到 api.php?action=parse
+（zh 的 rest.php 好用而 api.php 被禁，uk 反过来 rest.php 501）。
+HTML 转 Markdown 用标准库 html.parser 仿 htmd 的输出样式。
+"""
+
+import html as _html
+import json
+import os
+import re
+import socket
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+
+MAX_PAGE_BYTES = 512 * 1024
+MAX_HTML_RESPONSE_BYTES = 5 * 1024 * 1024
+MAX_OUTPUT_CHARS = 20_000
+TIMEOUT = 10
+USER_AGENT = "miyu/0.1"
+
+SITES = {
+    "uk": ("https://moegirl.uk", "https://moegirl.uk", "https://moegirl.uk/"),
+    "ja": ("https://ja.moegirl.org", "https://ja.moegirl.org", "https://ja.moegirl.org/"),
+}
+DEFAULT_SITE = ("https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn", "https://zh.moegirl.org.cn/")
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, fix=None):
+        super().__init__(message)
+        self.fix = fix
+
+
+def fail(error, fix=None, code=1):
+    print(json.dumps({"ok": False, "error": str(error), "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- HTML -> Markdown
+# 仿 htmd 默认输出 + html_conversion.rs 的自定义 handler：pre 围栏、s/del 删除线、
+# q 引号、cite 斜体、sub/sup/details/summary 原样保留标签、iframe 变 Embedded content。
+
+_SKIP_CONTAINERS = {"script", "style", "head", "noscript", "template", "title", "svg"}
+_IGNORED_VOID = {"meta", "link", "base", "param", "source", "track", "col", "input", "wbr"}
+_VOID = {"br", "hr", "img"} | _IGNORED_VOID
+_BLOCK_DOUBLE = {"p", "table", "blockquote", "pre", "hr", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6"}
+_BLOCK_SINGLE = {
+    "div", "section", "article", "header", "footer", "main", "aside", "nav", "figure",
+    "figcaption", "dl", "dd", "dt", "address", "center", "form", "fieldset", "tr", "thead",
+    "tbody", "tfoot", "caption",
+}
+_INLINE_WRAP = {
+    "strong": "**", "b": "**", "em": "*", "i": "*", "s": "~~", "del": "~~", "strike": "~~",
+    "q": '"', "cite": "*",
+}
+_PRESERVED = {"sub", "sup", "details", "summary"}
+_CAPTURED = set(_INLINE_WRAP) | _PRESERVED | {
+    "a", "code", "pre", "li", "blockquote", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+}
+_WS = re.compile(r"\s+")
+
+
+class _Buf:
+    __slots__ = ("tag", "attrs", "parts")
+
+    def __init__(self, tag=None, attrs=None):
+        self.tag = tag
+        self.attrs = attrs or {}
+        self.parts = []
+
+    def text(self):
+        return "".join(self.parts)
+
+    def ends_with_newline(self):
+        for part in reversed(self.parts):
+            stripped = part.rstrip(" \t")
+            if stripped:
+                return stripped.endswith("\n")
+        return True  # 空 buffer 视作行首
+
+    def sep(self, n):
+        """保证末尾恰好至少 n 个换行（去掉行尾空格，不多加）。空 buffer 不加。"""
+        while self.parts and not self.parts[-1].strip():
+            self.parts.pop()
+        if not self.parts:
+            return
+        last = self.parts[-1].rstrip(" \t")
+        have = len(last) - len(last.rstrip("\n"))
+        self.parts[-1] = last
+        if have < n:
+            self.parts.append("\n" * (n - have))
+
+
+class HtmlToMarkdown(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Buf()
+        self.stack = []
+        self.skip = 0
+        self.pre = 0
+        self.lists = []      # [ordered, counter]
+        self.tables = []     # rows emitted per table
+        self.rows = []       # cells of the current row per table
+
+    # -- buffer helpers
+    def buf(self):
+        return self.stack[-1] if self.stack else self.root
+
+    def write(self, text, raw=False):
+        if not text:
+            return
+        buf = self.buf()
+        if not raw and not self.pre:
+            text = _WS.sub(" ", text)
+            if buf.ends_with_newline():
+                text = text.lstrip(" ")
+            if not text:
+                return
+        buf.parts.append(text)
+
+    def sep(self, n):
+        self.buf().sep(n)
+
+    def push(self, tag, attrs):
+        self.stack.append(_Buf(tag, attrs))
+
+    def in_li(self):
+        return any(b.tag == "li" for b in self.stack)
+
+    # -- parser callbacks
+    def handle_starttag(self, tag, attrs):
+        if tag in _SKIP_CONTAINERS:
+            self.skip += 1
+            return
+        if self.skip or tag in _IGNORED_VOID:
+            return
+        attrs = dict(attrs)
+        if tag == "br":
+            self.write("\n", raw=True)
+        elif tag == "hr":
+            self.sep(2)
+            self.write("* * *", raw=True)
+            self.sep(2)
+        elif tag == "img":
+            src = (attrs.get("src") or "").strip()
+            if src:
+                alt = (attrs.get("alt") or "").strip()
+                self.write(f"![{alt}]({src})", raw=True)
+        elif tag == "iframe":
+            src = " ".join((attrs.get("src") or "").split())
+            if src:
+                self.sep(2)
+                self.write(f"Embedded content: {src}", raw=True)
+                self.sep(2)
+            self.push(tag, attrs)
+        elif tag == "pre":
+            self.sep(2)
+            self.push(tag, attrs)
+            self.pre += 1
+        elif tag in ("ul", "ol"):
+            self.sep(1 if self.in_li() else 2)
+            start = attrs.get("start")
+            counter = int(start) if start and start.isdigit() else 1
+            self.lists.append([tag == "ol", counter])
+        elif tag == "li":
+            self.sep(1)
+            self.push(tag, attrs)
+        elif tag == "table":
+            self.sep(2)
+            self.tables.append(0)
+            self.rows.append([])
+        elif tag == "tr":
+            if self.rows:
+                self.rows[-1] = []
+        elif tag in ("td", "th"):
+            self.push(tag, attrs)
+        elif tag in _CAPTURED:
+            if tag in ("blockquote", "h1", "h2", "h3", "h4", "h5", "h6"):
+                self.sep(2)
+            self.push(tag, attrs)
+        elif tag == "p":
+            self.sep(2)
+        elif tag in _BLOCK_SINGLE:
+            self.sep(1)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if tag in _SKIP_CONTAINERS:
+            if self.skip:
+                self.skip -= 1
+            return
+        if self.skip or tag in _VOID:
+            return
+        if tag in ("ul", "ol"):
+            if self.lists:
+                self.lists.pop()
+            self.sep(1 if self.in_li() else 2)
+            return
+        if tag == "table":
+            if self.tables:
+                self.tables.pop()
+                self.rows.pop()
+            self.sep(2)
+            return
+        if tag == "tr":
+            self._end_row()
+            return
+        if tag == "p":
+            self.sep(2)
+            return
+        if tag in _BLOCK_SINGLE:
+            self.sep(1)
+            return
+        if not any(b.tag == tag for b in self.stack):
+            return
+        while self.stack:
+            closed = self.stack.pop()
+            self._close(closed)
+            if closed.tag == tag:
+                break
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        self.write(data, raw=bool(self.pre))
+
+    # -- element closers
+    def _close(self, buf):
+        tag, content = buf.tag, buf.text()
+        if tag == "iframe":
+            return
+        if tag == "pre":
+            self.pre -= 1
+            self._emit_pre(buf, content)
+            return
+        if tag == "a":
+            href = (buf.attrs.get("href") or "").strip()
+            self.write(f"[{content}]({href})" if href and content.strip() else content, raw=True)
+        elif tag == "code":
+            if self.pre or not content:
+                self.write(content, raw=True)
+            else:
+                fence = "`" * (max(len(m) for m in re.findall(r"`+", content)) + 1 if "`" in content else 1)
+                self.write(f"{fence}{content}{fence}", raw=True)
+        elif tag in _INLINE_WRAP:
+            self.write(_wrap(content, _INLINE_WRAP[tag]), raw=True)
+        elif tag in _PRESERVED:
+            opening = "<" + tag
+            for name, value in buf.attrs.items():
+                opening += f' {name}="{_html.escape(value or "", quote=True)}"'
+            self.write(f"{opening}>{content}</{tag}>", raw=True)
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            heading = " ".join(content.split())
+            if heading:
+                self.sep(2)
+                self.write("#" * int(tag[1]) + " " + heading, raw=True)
+                self.sep(2)
+        elif tag == "li":
+            self._emit_li(content)
+        elif tag == "blockquote":
+            body = content.strip("\n")
+            if body.strip():
+                self.sep(2)
+                self.write("\n".join("> " + line if line.strip() else ">" for line in body.split("\n")), raw=True)
+                self.sep(2)
+        elif tag in ("td", "th"):
+            if self.rows:
+                self.rows[-1].append(" ".join(content.split()))
+            else:
+                self.write(content, raw=True)
+
+    def _emit_li(self, content):
+        if self.lists:
+            ordered, counter = self.lists[-1]
+            marker = f"{counter}. " if ordered else "- "
+            self.lists[-1][1] = counter + 1
+        else:
+            marker = "- "
+        lines = content.strip("\n").rstrip().split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if not lines:
+            return
+        pad = " " * len(marker)
+        out = [marker + lines[0].strip()]
+        out += [(pad + line) if line.strip() else "" for line in lines[1:]]
+        self.sep(1)
+        self.write("\n".join(out), raw=True)
+        self.sep(1)
+
+    def _emit_pre(self, buf, content):
+        content = content[:-1] if content.endswith("\n") else content
+        if not content:
+            return
+        language = _language_from_classes(buf.attrs.get("class") or "") or (buf.attrs.get("data-lang-hint") or "")
+        runs = re.findall(r"`+", content)
+        fence = "`" * max(3, (max(len(r) for r in runs) + 1) if runs else 0)
+        self.sep(2)
+        self.write(f"{fence}{language}\n{content}\n{fence}", raw=True)
+        self.sep(2)
+
+    def _end_row(self):
+        if not self.rows:
+            return
+        cells = self.rows[-1]
+        self.rows[-1] = []
+        if not cells:
+            return
+        self.sep(1)
+        self.write("| " + " | ".join(cells) + " |", raw=True)
+        self.sep(1)
+        if self.tables[-1] == 0:
+            self.write("| " + " | ".join("---" for _ in cells) + " |", raw=True)
+            self.sep(1)
+        self.tables[-1] += 1
+
+    def result(self):
+        while self.stack:
+            self._close(self.stack.pop())
+        return self.root.text().strip()
+
+
+def _wrap(content, marker):
+    trimmed = content.strip()
+    if not trimmed:
+        return content
+    start = content.find(trimmed)
+    return f"{content[:start]}{marker}{trimmed}{marker}{content[start + len(trimmed):]}"
+
+
+def _language_from_classes(classes):
+    for cls in classes.split():
+        if cls.startswith("language-"):
+            lang = cls[len("language-"):]
+            if lang and all(c.isalnum() or c in "+#._-" for c in lang):
+                return lang
+    return ""
+
+
+def html_to_markdown(text):
+    if len(text.encode("utf-8", "ignore")) > MAX_HTML_RESPONSE_BYTES:
+        raise Failed("HTML input too large (exceeds 5 MiB limit)")
+    parser = HtmlToMarkdown()
+    # <pre><code class="language-x"> 的语言提示：先扫一遍塞进 pre 的属性里。
+    text = re.sub(
+        r"(<pre\b)([^>]*)>\s*<code\b[^>]*class=\"([^\"]*)\"",
+        lambda m: f'{m.group(1)}{m.group(2)} data-lang-hint="{_language_from_classes(m.group(3))}"><code class="{m.group(3)}"',
+        text,
+    )
+    parser.feed(text)
+    parser.close()
+    return parser.result()
+
+
+# ---------------------------------------------------------------- HTTP
+
+def _request(url):
+    return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+
+
+def _describe(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP status error ({exc.code} {exc.reason}) for url ({exc.url})"
+    if isinstance(exc, urllib.error.URLError):
+        return f"error sending request: {exc.reason}"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return f"request timed out after {TIMEOUT}s"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def read_json(url, max_bytes):
+    with urllib.request.urlopen(_request(url), timeout=TIMEOUT) as resp:
+        body = resp.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise Failed("response too large (exceeds configured byte limit)")
+    return json.loads(body.decode("utf-8"))
+
+
+def read_text_prefix(url, max_bytes):
+    """超过 max_bytes 就截断，不整页失败（长条目序章在最前面，取前缀正好）。"""
+    with urllib.request.urlopen(_request(url), timeout=TIMEOUT) as resp:
+        body = resp.read(max_bytes)
+    return body.decode("utf-8", "ignore")
+
+
+# ---------------------------------------------------------------- tool logic
+
+def site_for(value):
+    return SITES.get(value or "", DEFAULT_SITE)
+
+
+def encode(text):
+    return urllib.parse.quote(text, safe="")
+
+
+def clip(value):
+    if len(value) <= MAX_OUTPUT_CHARS:
+        return value
+    return f"{value[:MAX_OUTPUT_CHARS]}\n...[truncated to {MAX_OUTPUT_CHARS} chars]"
+
+
+def fetch_page_via_api(site, title):
+    api, _base, _page = site
+    url = f"{api}/api.php?action=parse&page={encode(title)}&prop=text&format=json"
+    try:
+        data = read_json(url, MAX_HTML_RESPONSE_BYTES)
+    except Failed:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise Failed(_describe(exc), "检查网络，或换 site（zh/uk/ja）再试") from exc
+    html_text = ""
+    if isinstance(data, dict):
+        html_text = ((data.get("parse") or {}).get("text") or {}).get("*") or ""
+    if not html_text.strip():
+        raise Failed("Moegirlpedia page not found or returned empty content",
+                     "用 mode=search 确认条目标题，或换 site")
+    return html_text
+
+
+def fetch_page(site, title):
+    title = title.strip()
+    if not title:
+        raise Failed("query or title is required", '例如 {"query":"初音未来"}')
+    _api, base, page = site
+    url = f"{base}/rest.php/v1/page/{encode(title)}/html"
+    # REST 这一路任何一种失败都要能落到 api.php：两个站点可用性互补。
+    try:
+        html_text = read_text_prefix(url, MAX_PAGE_BYTES)
+    except Exception:  # noqa: BLE001
+        html_text = fetch_page_via_api(site, title)
+    markdown = html_to_markdown(html_text)
+    return f"Source: {page}{encode(title)}\n\n{clip(markdown)}"
+
+
+def query(args):
+    mode = args.get("mode") if isinstance(args.get("mode"), str) else "auto"
+    site = site_for(args.get("site") if isinstance(args.get("site"), str) else "zh")
+    q = (args.get("query") if isinstance(args.get("query"), str) else "").strip()
+    title = (args.get("title") if isinstance(args.get("title"), str) else "").strip()
+    if mode == "search" or (mode == "auto" and not title):
+        keyword = q or title
+        if not keyword:
+            raise Failed("query or title is required", '例如 {"query":"初音未来"}')
+        api = site[0]
+        url = f"{api}/api.php?action=opensearch&search={encode(keyword)}&limit=5&namespace=0&format=json"
+        try:
+            data = read_json(url, MAX_PAGE_BYTES)
+        except Failed:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise Failed(_describe(exc), "检查网络，或换 site（zh/uk/ja）再试") from exc
+        if mode == "search":
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        try:
+            first = data[1][0]
+        except (IndexError, KeyError, TypeError):
+            first = None
+        if isinstance(first, str):
+            return fetch_page(site, first)
+    return fetch_page(site, title or q)
+
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw:
+        if sys.stdin is None or sys.stdin.isatty():
+            raw = "{}"
+        else:
+            raw = sys.stdin.read() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"arguments are not valid JSON: {exc}", '喂一个对象，例如 {"query":"初音未来"}') from exc
+    if not isinstance(args, dict):
+        raise Failed("arguments must be a JSON object", '例如 {"query":"初音未来"}')
+    return args
+
+
+def main():
+    try:
+        print(query(read_args()))
+    except Failed as exc:
+        fail(exc, exc.fix)
+    except Exception as exc:  # noqa: BLE001 —— 工具层不该看到 traceback
+        fail(f"{type(exc).__name__}: {exc}", "稍后再试")
+
+
+if __name__ == "__main__":
+    main()

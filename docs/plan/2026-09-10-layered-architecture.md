@@ -49,10 +49,10 @@
 
 ### 阶段 3 · 迁纯脚本 13 件
 
-- [ ] weather、exchange_rate、xuanxue、moegirl、hash_codec、calculator、fcitx_wiki、protondb、caniplayonlinux、awacy、man、deepseek_status、clipboard 各写成带头部的脚本,放 `extensions/scripts/`
-- [ ] 描述/schema 从 `src/tools/descriptions/*.json` 原样搬进头部,tools 数组字节对比
-- [ ] 内置 Rust 实现退场(可删项,需确认;含 `plugins.{weather,xuanxue,moegirl,hash_codec}` 四个死开关字段)
-- 验证:stub-llm 桩模型跑每件一次;受限平台注册表里的同名工具走 trust 位
+- [x] 十件写成内置脚本 `src/scripts/personas/default/{get_weather,divine,query_moegirl,codec,scientific_calculator,game_compat,fcitx5_input_method_wiki_qurey,online_man,query_deepseek_status,read_clipboard}`(protondb/caniplayonlinux/awacy 合为 game_compat;exchange_rate 留 Rust——记账模块内部调用 fetch_rate)
+- [x] 描述/schema 原样搬进头部(首句 >60 字符的三件改写首句;calculator 的 expression 补了 description)
+- [x] 内置 Rust 实现退场(用户 09-10 确认):12 个模块、10 份 JSON、`plugins.{weather,xuanxue,moegirl,hash_codec,man,calculator}`、配置 TUI 与设置页对应项
+- 验证:子代理逐件真跑(见各脚本报告);受限注册表按 Trust 收脚本有单测;沙箱 daemon `miyu tool-call` 逐件调用见下
 
 ### 阶段 4 · persona 启用集 + 三表合一 + 场所两属性
 

@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+# Id: fcitx5_input_method_wiki_qurey
+# Display name: Query Fcitx5 Wiki
+# 显示名称: 查询 Fcitx5 Wiki
+# Description: Query the official Fcitx5 wiki.
+# Timeout: 60
+# Group: diagnostics
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "Natural language question, e.g. XWayland XIM, Electron input method, GTK_IM_MODULE, LC_CTYPE."
+#     },
+#     "topic": {
+#       "type": "string",
+#       "enum": [
+#         "auto",
+#         "home",
+#         "for_users",
+#         "setup",
+#         "wayland",
+#         "environment_variables",
+#         "xim",
+#         "gtk",
+#         "qt",
+#         "electron_chromium",
+#         "locale"
+#       ],
+#       "description": "Wiki topic; auto (default) picks one from the query"
+#     },
+#     "language": {
+#       "type": "string",
+#       "enum": [
+#         "bilingual",
+#         "zh",
+#         "en"
+#       ],
+#       "description": "Output language: bilingual (default), zh or en"
+#     },
+#     "include_page_excerpt": {
+#       "type": "boolean",
+#       "description": "Fetch and include a clipped excerpt from the official wiki page. Defaults to true."
+#     }
+#   },
+#   "required": []
+# }
+# Example: {"query":"XWayland XMODIFIERS","topic":"auto"}
+"""
+Fcitx5 官方 Wiki 专用查询（src/tools/fcitx_wiki.rs 的脚本移植）。工具 id 按原样保留
+「qurey」拼写——模型已经认得这个名字。
+
+    {"query":"wechat XWayland XMODIFIERS"}                 auto 选主题（这里落到 xim）
+    {"topic":"electron_chromium","language":"zh"}          指定主题，中文包装
+    {"topic":"xim","language":"en","include_page_excerpt":false}
+
+返回一小份官方页面白名单上的双语结构化结论（内置，不联网），并可附上官方页面
+mw-parser-output 正文的 Markdown 摘录（联网，失败不致命，写成 "[fetch failed: …]"）。
+language=en 输出英文结构；zh/bilingual 输出中文键包装（键序与 Rust serde_json 一致：按码点排序）。
+"""
+
+import html as _html
+import json
+import os
+import re
+import socket
+import sys
+import urllib.error
+import urllib.request
+from html.parser import HTMLParser
+
+TOOL_NAME = "fcitx5_input_method_wiki_qurey"
+MAX_PAGE_BYTES = 512 * 1024
+MAX_HTML_RESPONSE_BYTES = 5 * 1024 * 1024
+MAX_EXCERPT_CHARS = 12_000
+TIMEOUT = 12
+USER_AGENT = "miyu/0.1 fcitx5_input_method_wiki_qurey"
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, fix=None):
+        super().__init__(message)
+        self.fix = fix
+
+
+def fail(error, fix=None, code=1):
+    print(json.dumps({"ok": False, "error": str(error), "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- HTML -> Markdown
+# 仿 htmd 默认输出 + html_conversion.rs 的自定义 handler：pre 围栏、s/del 删除线、
+# q 引号、cite 斜体、sub/sup/details/summary 原样保留标签、iframe 变 Embedded content。
+
+_SKIP_CONTAINERS = {"script", "style", "head", "noscript", "template", "title", "svg"}
+_IGNORED_VOID = {"meta", "link", "base", "param", "source", "track", "col", "input", "wbr"}
+_VOID = {"br", "hr", "img"} | _IGNORED_VOID
+_BLOCK_DOUBLE = {"p", "table", "blockquote", "pre", "hr", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6"}
+_BLOCK_SINGLE = {
+    "div", "section", "article", "header", "footer", "main", "aside", "nav", "figure",
+    "figcaption", "dl", "dd", "dt", "address", "center", "form", "fieldset", "tr", "thead",
+    "tbody", "tfoot", "caption",
+}
+_INLINE_WRAP = {
+    "strong": "**", "b": "**", "em": "*", "i": "*", "s": "~~", "del": "~~", "strike": "~~",
+    "q": '"', "cite": "*",
+}
+_PRESERVED = {"sub", "sup", "details", "summary"}
+_CAPTURED = set(_INLINE_WRAP) | _PRESERVED | {
+    "a", "code", "pre", "li", "blockquote", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+}
+_WS = re.compile(r"\s+")
+
+
+class _Buf:
+    __slots__ = ("tag", "attrs", "parts")
+
+    def __init__(self, tag=None, attrs=None):
+        self.tag = tag
+        self.attrs = attrs or {}
+        self.parts = []
+
+    def text(self):
+        return "".join(self.parts)
+
+    def ends_with_newline(self):
+        for part in reversed(self.parts):
+            stripped = part.rstrip(" \t")
+            if stripped:
+                return stripped.endswith("\n")
+        return True  # 空 buffer 视作行首
+
+    def sep(self, n):
+        """保证末尾恰好至少 n 个换行（去掉行尾空格，不多加）。空 buffer 不加。"""
+        while self.parts and not self.parts[-1].strip():
+            self.parts.pop()
+        if not self.parts:
+            return
+        last = self.parts[-1].rstrip(" \t")
+        have = len(last) - len(last.rstrip("\n"))
+        self.parts[-1] = last
+        if have < n:
+            self.parts.append("\n" * (n - have))
+
+
+class HtmlToMarkdown(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Buf()
+        self.stack = []
+        self.skip = 0
+        self.pre = 0
+        self.lists = []      # [ordered, counter]
+        self.tables = []     # rows emitted per table
+        self.rows = []       # cells of the current row per table
+
+    # -- buffer helpers
+    def buf(self):
+        return self.stack[-1] if self.stack else self.root
+
+    def write(self, text, raw=False):
+        if not text:
+            return
+        buf = self.buf()
+        if not raw and not self.pre:
+            text = _WS.sub(" ", text)
+            if buf.ends_with_newline():
+                text = text.lstrip(" ")
+            if not text:
+                return
+        buf.parts.append(text)
+
+    def sep(self, n):
+        self.buf().sep(n)
+
+    def push(self, tag, attrs):
+        self.stack.append(_Buf(tag, attrs))
+
+    def in_li(self):
+        return any(b.tag == "li" for b in self.stack)
+
+    # -- parser callbacks
+    def handle_starttag(self, tag, attrs):
+        if tag in _SKIP_CONTAINERS:
+            self.skip += 1
+            return
+        if self.skip or tag in _IGNORED_VOID:
+            return
+        attrs = dict(attrs)
+        if tag == "br":
+            self.write("\n", raw=True)
+        elif tag == "hr":
+            self.sep(2)
+            self.write("* * *", raw=True)
+            self.sep(2)
+        elif tag == "img":
+            src = (attrs.get("src") or "").strip()
+            if src:
+                alt = (attrs.get("alt") or "").strip()
+                self.write(f"![{alt}]({src})", raw=True)
+        elif tag == "iframe":
+            src = " ".join((attrs.get("src") or "").split())
+            if src:
+                self.sep(2)
+                self.write(f"Embedded content: {src}", raw=True)
+                self.sep(2)
+            self.push(tag, attrs)
+        elif tag == "pre":
+            self.sep(2)
+            self.push(tag, attrs)
+            self.pre += 1
+        elif tag in ("ul", "ol"):
+            self.sep(1 if self.in_li() else 2)
+            start = attrs.get("start")
+            counter = int(start) if start and start.isdigit() else 1
+            self.lists.append([tag == "ol", counter])
+        elif tag == "li":
+            self.sep(1)
+            self.push(tag, attrs)
+        elif tag == "table":
+            self.sep(2)
+            self.tables.append(0)
+            self.rows.append([])
+        elif tag == "tr":
+            if self.rows:
+                self.rows[-1] = []
+        elif tag in ("td", "th"):
+            self.push(tag, attrs)
+        elif tag in _CAPTURED:
+            if tag in ("blockquote", "h1", "h2", "h3", "h4", "h5", "h6"):
+                self.sep(2)
+            self.push(tag, attrs)
+        elif tag == "p":
+            self.sep(2)
+        elif tag in _BLOCK_SINGLE:
+            self.sep(1)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if tag in _SKIP_CONTAINERS:
+            if self.skip:
+                self.skip -= 1
+            return
+        if self.skip or tag in _VOID:
+            return
+        if tag in ("ul", "ol"):
+            if self.lists:
+                self.lists.pop()
+            self.sep(1 if self.in_li() else 2)
+            return
+        if tag == "table":
+            if self.tables:
+                self.tables.pop()
+                self.rows.pop()
+            self.sep(2)
+            return
+        if tag == "tr":
+            self._end_row()
+            return
+        if tag == "p":
+            self.sep(2)
+            return
+        if tag in _BLOCK_SINGLE:
+            self.sep(1)
+            return
+        if not any(b.tag == tag for b in self.stack):
+            return
+        while self.stack:
+            closed = self.stack.pop()
+            self._close(closed)
+            if closed.tag == tag:
+                break
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        self.write(data, raw=bool(self.pre))
+
+    # -- element closers
+    def _close(self, buf):
+        tag, content = buf.tag, buf.text()
+        if tag == "iframe":
+            return
+        if tag == "pre":
+            self.pre -= 1
+            self._emit_pre(buf, content)
+            return
+        if tag == "a":
+            href = (buf.attrs.get("href") or "").strip()
+            self.write(f"[{content}]({href})" if href and content.strip() else content, raw=True)
+        elif tag == "code":
+            if self.pre or not content:
+                self.write(content, raw=True)
+            else:
+                fence = "`" * (max(len(m) for m in re.findall(r"`+", content)) + 1 if "`" in content else 1)
+                self.write(f"{fence}{content}{fence}", raw=True)
+        elif tag in _INLINE_WRAP:
+            self.write(_wrap(content, _INLINE_WRAP[tag]), raw=True)
+        elif tag in _PRESERVED:
+            opening = "<" + tag
+            for name, value in buf.attrs.items():
+                opening += f' {name}="{_html.escape(value or "", quote=True)}"'
+            self.write(f"{opening}>{content}</{tag}>", raw=True)
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            heading = " ".join(content.split())
+            if heading:
+                self.sep(2)
+                self.write("#" * int(tag[1]) + " " + heading, raw=True)
+                self.sep(2)
+        elif tag == "li":
+            self._emit_li(content)
+        elif tag == "blockquote":
+            body = content.strip("\n")
+            if body.strip():
+                self.sep(2)
+                self.write("\n".join("> " + line if line.strip() else ">" for line in body.split("\n")), raw=True)
+                self.sep(2)
+        elif tag in ("td", "th"):
+            if self.rows:
+                self.rows[-1].append(" ".join(content.split()))
+            else:
+                self.write(content, raw=True)
+
+    def _emit_li(self, content):
+        if self.lists:
+            ordered, counter = self.lists[-1]
+            marker = f"{counter}. " if ordered else "- "
+            self.lists[-1][1] = counter + 1
+        else:
+            marker = "- "
+        lines = content.strip("\n").rstrip().split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if not lines:
+            return
+        pad = " " * len(marker)
+        out = [marker + lines[0].strip()]
+        out += [(pad + line) if line.strip() else "" for line in lines[1:]]
+        self.sep(1)
+        self.write("\n".join(out), raw=True)
+        self.sep(1)
+
+    def _emit_pre(self, buf, content):
+        content = content[:-1] if content.endswith("\n") else content
+        if not content:
+            return
+        language = _language_from_classes(buf.attrs.get("class") or "") or (buf.attrs.get("data-lang-hint") or "")
+        runs = re.findall(r"`+", content)
+        fence = "`" * max(3, (max(len(r) for r in runs) + 1) if runs else 0)
+        self.sep(2)
+        self.write(f"{fence}{language}\n{content}\n{fence}", raw=True)
+        self.sep(2)
+
+    def _end_row(self):
+        if not self.rows:
+            return
+        cells = self.rows[-1]
+        self.rows[-1] = []
+        if not cells:
+            return
+        self.sep(1)
+        self.write("| " + " | ".join(cells) + " |", raw=True)
+        self.sep(1)
+        if self.tables[-1] == 0:
+            self.write("| " + " | ".join("---" for _ in cells) + " |", raw=True)
+            self.sep(1)
+        self.tables[-1] += 1
+
+    def result(self):
+        while self.stack:
+            self._close(self.stack.pop())
+        return self.root.text().strip()
+
+
+def _wrap(content, marker):
+    trimmed = content.strip()
+    if not trimmed:
+        return content
+    start = content.find(trimmed)
+    return f"{content[:start]}{marker}{trimmed}{marker}{content[start + len(trimmed):]}"
+
+
+def _language_from_classes(classes):
+    for cls in classes.split():
+        if cls.startswith("language-"):
+            lang = cls[len("language-"):]
+            if lang and all(c.isalnum() or c in "+#._-" for c in lang):
+                return lang
+    return ""
+
+
+def html_to_markdown(text):
+    if len(text.encode("utf-8", "ignore")) > MAX_HTML_RESPONSE_BYTES:
+        raise Failed("HTML input too large (exceeds 5 MiB limit)")
+    parser = HtmlToMarkdown()
+    # <pre><code class="language-x"> 的语言提示：先扫一遍塞进 pre 的属性里。
+    text = re.sub(
+        r"(<pre\b)([^>]*)>\s*<code\b[^>]*class=\"([^\"]*)\"",
+        lambda m: f'{m.group(1)}{m.group(2)} data-lang-hint="{_language_from_classes(m.group(3))}"><code class="{m.group(3)}"',
+        text,
+    )
+    parser.feed(text)
+    parser.close()
+    return parser.result()
+
+
+
+
+# ---------------------------------------------------------------- topics
+
+TOPICS = (
+    "home", "for_users", "setup", "wayland", "environment_variables",
+    "xim", "gtk", "qt", "electron_chromium", "locale",
+)
+
+PAGE_FCITX5 = ("Fcitx 5", "https://fcitx-im.org/wiki/Special:MyLanguage/Fcitx_5")
+PAGE_SETUP = ("Setup Fcitx 5", "https://fcitx-im.org/wiki/Special:MyLanguage/Setup_Fcitx_5")
+PAGE_WAYLAND = ("Using Fcitx 5 on Wayland", "https://fcitx-im.org/wiki/Special:MyLanguage/Using_Fcitx_5_on_Wayland")
+PAGE_ENV = (
+    "Input method related environment variables",
+    "https://fcitx-im.org/wiki/Special:MyLanguage/Input_method_related_environment_variables",
+)
+
+DIAGNOSTIC_RULE = (
+    "本机运行时证据优先；Wiki 只能提供官方一般规则，不能覆盖 /proc、环境变量、已加载模块或实际输入测试。",
+    "Local runtime evidence comes first; the Wiki provides official general rules and must not override /proc data, environment, loaded modules, or an actual input test.",
+)
+
+# (zh, en, applies_to, caveat)
+CLAIMS = {
+    "home": [(
+        "Fcitx 5 是带插件扩展能力的输入法框架，主页的 For Users 区域链接到安装、设置、FAQ、Wayland 使用、技巧和升级页面。",
+        "Fcitx 5 is an extensible input method framework; the home page's For Users section links to install, setup, FAQ, Wayland usage, tips, and upgrade pages.",
+        "orientation",
+        "Use the home page to discover official user-facing pages, not to diagnose one app by itself.",
+    )],
+    "for_users": [(
+        "For Users 不是单独的 User Guide 页面，而是 Fcitx 5 主页上的用户入口列表；诊断时优先跳到 Setup、Wayland、FAQ 或环境变量页面。",
+        "For Users is a user-facing link section on the Fcitx 5 home page, not a standalone User Guide page; diagnostics should jump to Setup, Wayland, FAQ, or environment-variable pages.",
+        "navigation",
+        "The literal User_Guide page is empty, so do not treat it as authoritative content.",
+    )],
+    "setup": [
+        (
+            "官方 Setup 页把 `XMODIFIERS=@im=fcitx`、`GTK_IM_MODULE=fcitx`、`QT_IM_MODULE=fcitx` 作为基础环境变量示例，但强调过渡期没有适合所有人的完美方案。",
+            "The official Setup page lists `XMODIFIERS=@im=fcitx`, `GTK_IM_MODULE=fcitx`, and `QT_IM_MODULE=fcitx` as basic environment examples, while noting there is no perfect one-size-fits-all setup during the transition period.",
+            "setup",
+            "Do not conclude a variable is required globally without considering toolkit, backend, compositor, and app packaging.",
+        ),
+        (
+            "Setup 页提到 systemd `environment.d` 可配置会话环境，但变更通常需要重新登录或重启用户会话才生效。",
+            "The Setup page mentions systemd `environment.d` for session environment, with changes generally requiring re-login or a restarted user session.",
+            "environment",
+            "The target process environment is the evidence that matters, not just the current shell.",
+        ),
+    ],
+    "wayland": [
+        (
+            "Wayland 页明确说 XWayland 下 X11 应用与普通 X11 几乎没有区别，因此仍需要 `XMODIFIERS=@im=fcitx`。",
+            "The Wayland page says X11 applications under XWayland are nearly the same as normal X11, so `XMODIFIERS=@im=fcitx` is still needed.",
+            "xwayland",
+            "This does not prove a specific app calls XIM; it makes XMODIFIERS relevant evidence for X11/XWayland paths.",
+        ),
+        (
+            "现代 GTK3/GTK4 Wayland 应用可走 text-input-v3；理想设置通常不是全局强制 `GTK_IM_MODULE`。",
+            "Modern GTK3/GTK4 Wayland applications can use text-input-v3; the ideal setup usually does not globally force `GTK_IM_MODULE`.",
+            "gtk-wayland",
+            "Legacy, XWayland, compositor-specific, or per-app cases may still need module overrides.",
+        ),
+        (
+            "text-input-v3 是 Wayland 原生输入法协议，对 GTK/Qt/SDL/Electron Wayland 原生应用都有效。可通过 `wayland-info` 命令检查 compositor 是否支持 `zwp_text_input_manager_v3` 接口，并检查 fcitx5 是否加载了 `libwaylandim.so`（Wayland 前端模块）。",
+            "text-input-v3 is the Wayland native input method protocol, effective for GTK/Qt/SDL/Electron Wayland-native applications. Use `wayland-info` to check if the compositor advertises `zwp_text_input_manager_v3`, and check whether fcitx5 has loaded `libwaylandim.so` (Wayland frontend module).",
+            "text-input-v3",
+            "Both conditions (compositor support + fcitx5 frontend) must be met; either alone is insufficient.",
+        ),
+    ],
+    "xim": [
+        (
+            "`XMODIFIERS` 只影响 XIM，Fcitx 的常见值是 `@im=fcitx`。",
+            "`XMODIFIERS` affects XIM only; Fcitx commonly uses `@im=fcitx`.",
+            "xim",
+            "The variable is an activation request, not proof that the app uses XIM.",
+        ),
+        (
+            "非 CJK locale 下如果不设置 `XMODIFIERS`，一些应用的 XIM 不会工作；同时 XIM 还要求 locale 有效，不能是 `C` 或 `POSIX`。",
+            "In non-CJK locales, XIM may not work for some applications without `XMODIFIERS`; XIM also requires a valid locale and must not use `C` or `POSIX`.",
+            "locale",
+            "Check `LANG`/`LC_CTYPE` in the target process and confirm the locale exists in `locale -a`.",
+        ),
+        (
+            "Wayland 页说明 X11/XWayland 应用仍按 X11 路径处理，XWayland 本身不应被当作 XIM 失效的证据。",
+            "The Wayland page says X11/XWayland applications still follow the X11 path; XWayland itself should not be treated as evidence that XIM cannot work.",
+            "xwayland",
+            "App/toolkit support and actual behavior still need local evidence.",
+        ),
+    ],
+    "gtk": [
+        (
+            "`GTK_IM_MODULE` 会覆盖 GTK 的自动输入法模块选择；如果指定模块找不到，GTK 会回退到自动选择。",
+            "`GTK_IM_MODULE` overrides GTK's automatic input module selection; if the requested module is not found, GTK falls back to automatic selection.",
+            "gtk",
+            "Inspect GTK immodule cache and loaded `im-*.so` before claiming a GTK module is active.",
+        ),
+        (
+            "Fcitx 在 GTK immodule 中声明支持 `zh:ja:ko:*`，相关信息记录在 GTK immodule cache 中。",
+            "Fcitx declares GTK immodule support for `zh:ja:ko:*`, and this information is recorded in GTK immodule cache files.",
+            "gtk-cache",
+            "Locale-based selection must be checked against the actual cache in host/runtime/container.",
+        ),
+    ],
+    "qt": [
+        (
+            "Qt 输入法模块不需要 GTK 那样的 cache；`QT_IM_MODULE` 会覆盖 Qt 默认选择。",
+            "Qt input modules do not need GTK-style cache files; `QT_IM_MODULE` overrides Qt's default choice.",
+            "qt",
+            "Bundled/proprietary Qt apps may lack fcitx/ibus platform input context plugins, so process/package evidence matters.",
+        ),
+        (
+            "Qt 6.7 引入 `QT_IM_MODULES` 作为 fallback 顺序，例如 `wayland;fcitx;ibus`。",
+            "Qt 6.7 introduced `QT_IM_MODULES` as a fallback order, for example `wayland;fcitx;ibus`.",
+            "qt6",
+            "Qt 4/5 may still require `QT_IM_MODULE`, so do not replace all Qt rules with `QT_IM_MODULES`.",
+        ),
+    ],
+    "electron_chromium": [
+        (
+            "Wayland 页把 XWayland 下的 Electron/Chromium 归入类似 GTK2 的传统路径；不要断言它们一定不看 XIM。",
+            "The Wayland page treats Electron/Chromium under XWayland as a traditional path similar to GTK2; do not assert that they categorically ignore XIM.",
+            "electron-xwayland",
+            "Specific Electron/CEF/AppImage builds may be patched or old; local runtime evidence and actual input behavior win.",
+        ),
+        (
+            "原生 Wayland Chromium/Electron 路径需要 Ozone Wayland 和 Wayland IM 相关 flags；Electron 不支持 Chromium 的 GTK4 路径。",
+            "Native Wayland Chromium/Electron paths need Ozone Wayland and Wayland IM flags; Electron does not support Chromium's GTK4 path.",
+            "electron-wayland",
+            "Only apply this to confirmed native Wayland windows, not mixed `WAYLAND_DISPLAY` + `DISPLAY` environments.",
+        ),
+    ],
+    "locale": [
+        (
+            "XIM 需要有效 locale；locale 必须出现在 `locale -a`，并且不能是 `C` 或 `POSIX`。",
+            "XIM needs a valid locale; the locale must appear in `locale -a` and must not be `C` or `POSIX`.",
+            "locale",
+            "Check the target process, not only the shell that launched Miyu.",
+        ),
+        (
+            "Wiki 提到某些 XIM 场景可以用 `LC_CTYPE=zh_CN.UTF-8` 作为 workaround，尤其是历史上 Emacs/Java 一类问题。",
+            "The Wiki mentions `LC_CTYPE=zh_CN.UTF-8` as a workaround in some XIM cases, historically including Emacs/Java-like issues.",
+            "workaround",
+            "Treat this as a testable workaround, not a universal root cause.",
+        ),
+    ],
+}
+
+
+def parse_language(value):
+    return value if value in ("zh", "en") else "bilingual"
+
+
+def select_topic(topic, query):
+    if topic != "auto" and topic != "":
+        if topic in TOPICS:
+            return topic
+        raise Failed(f"unsupported fcitx wiki topic: {topic}", "topic 只认 auto/" + "/".join(TOPICS))
+    lower = query.lower()
+    if "xim" in lower or "xmodifiers" in lower or "xwayland" in lower:
+        return "xim"
+    if "electron" in lower or "chromium" in lower or "wechat" in lower:
+        return "electron_chromium"
+    if "gtk" in lower or "gtk_im_module" in lower:
+        return "gtk"
+    if "qt" in lower or "qt_im_module" in lower or "qt_im_modules" in lower:
+        return "qt"
+    if "lc_ctype" in lower or "locale" in lower or "lang" in lower:
+        return "locale"
+    if "wayland" in lower or "text-input" in lower or "ozone" in lower:
+        return "wayland"
+    if "setup" in lower or "install" in lower or "配置" in lower:
+        return "setup"
+    return "for_users"
+
+
+def page_for_topic(topic):
+    if topic in ("home", "for_users"):
+        return PAGE_FCITX5
+    if topic == "setup":
+        return PAGE_SETUP
+    if topic in ("wayland", "electron_chromium"):
+        return PAGE_WAYLAND
+    if topic in ("environment_variables", "xim", "gtk", "qt", "locale"):
+        return PAGE_ENV
+    return PAGE_FCITX5
+
+
+def bilingual(language, zh, en):
+    if language == "zh":
+        return {"zh": zh}
+    if language == "en":
+        return {"en": en}
+    return {"zh": zh, "en": en}
+
+
+def claims_for_topic(topic, language):
+    return [
+        {
+            "claim": bilingual(language, zh, en),
+            "applies_to": applies_to,
+            "confidence": "official_wiki_general_rule",
+            "caveat": caveat,
+        }
+        for zh, en, applies_to, caveat in CLAIMS.get(topic, [])
+    ]
+
+
+# ---------------------------------------------------------------- page excerpt
+
+def _describe(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP status error ({exc.code} {exc.reason}) for url ({exc.url})"
+    if isinstance(exc, urllib.error.URLError):
+        return f"error sending request: {exc.reason}"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return f"request timed out after {TIMEOUT}s"
+    return str(exc)
+
+
+def read_text(url, max_bytes):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        body = resp.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise Failed("response too large (exceeds configured byte limit)")
+    return body.decode("utf-8", "ignore")
+
+
+def extract_mw_parser_output(html_text):
+    """只取 mw-parser-output 那个 div 的内容（按 <div/</div 计深度），找不到返回 None。"""
+    marker = "mw-parser-output"
+    start = html_text.find(marker)
+    if start < 0:
+        return None
+    open_angle = html_text.find(">", start)
+    if open_angle < 0:
+        return None
+    rest = html_text[open_angle + 1:]
+    depth = 1
+    for m in re.finditer(r"</?div", rest):
+        if m.group(0) == "</div":
+            depth -= 1
+            if depth == 0:
+                return rest[:m.start()]
+        else:
+            depth += 1
+    return None
+
+
+def clip(value):
+    if len(value) <= MAX_EXCERPT_CHARS:
+        return value
+    return f"{value[:MAX_EXCERPT_CHARS]}\n...[truncated to {MAX_EXCERPT_CHARS} chars]"
+
+
+def fetch_page_excerpt(url):
+    try:
+        html_text = read_text(url, MAX_PAGE_BYTES)
+    except Failed:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise Failed(_describe(exc)) from exc
+    body = extract_mw_parser_output(html_text)
+    markdown = html_to_markdown(body if body is not None else html_text)
+    return clip(markdown)
+
+
+# ---------------------------------------------------------------- output
+
+def format_zh_wrapped_response(response, language):
+    claims = []
+    for item in response["claims"]:
+        value = {
+            "结论": item["claim"].get("zh", ""),
+            "适用范围": item["applies_to"],
+            "可信度": item["confidence"],
+            "注意事项": item["caveat"],
+        }
+        if language == "bilingual":
+            value["english_reference"] = item["claim"].get("en", "")
+        claims.append(value)
+    output = {
+        "状态": response["ok"],
+        "工具": response["tool"],
+        "说明": "这是 Fcitx5 官方 Wiki 专用查询工具；中文为主包装，英文保留为原文参考。",
+        "命名备注": "工具名按用户要求保留 qurey 拼写。",
+        "主题": response["topic"],
+        "查询": response["query"],
+        "来源": {"标题": response["source"]["title"], "URL": response["source"]["url"]},
+        "官方规则摘录": claims,
+        "诊断使用规则": response["diagnostic_rule"].get("zh", ""),
+        "页面摘录": response["page_excerpt"],
+    }
+    if language == "bilingual":
+        output["diagnostic_rule_en"] = response["diagnostic_rule"].get("en", "")
+    # Rust 侧 json!{} 走 BTreeMap，键按字节序输出；sort_keys 按码点排序，对 UTF-8 等价。
+    return json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def query(args):
+    q = (args.get("query") if isinstance(args.get("query"), str) else "").strip()
+    topic_arg = (args.get("topic") if isinstance(args.get("topic"), str) else "auto").strip()
+    language = parse_language(args.get("language") if isinstance(args.get("language"), str) else "bilingual")
+    include = args.get("include_page_excerpt")
+    include_page_excerpt = include if isinstance(include, bool) else True
+    topic = select_topic(topic_arg, q)
+    title, url = page_for_topic(topic)
+    response = {
+        "ok": True,
+        "tool": TOOL_NAME,
+        "spelling_note": "Tool name keeps the requested 'qurey' spelling for compatibility.",
+        "topic": topic,
+        "query": q or None,
+        "source": {"title": title, "url": url},
+        "claims": claims_for_topic(topic, language),
+        "diagnostic_rule": bilingual(language, *DIAGNOSTIC_RULE),
+        "page_excerpt": None,
+    }
+    if include_page_excerpt:
+        try:
+            response["page_excerpt"] = fetch_page_excerpt(url)
+        except Exception as exc:  # noqa: BLE001 —— 摘录失败不致命，与 Rust 一致
+            response["page_excerpt"] = f"[fetch failed: {exc}]"
+    if language == "en":
+        return json.dumps(response, ensure_ascii=False, indent=2)
+    return format_zh_wrapped_response(response, language)
+
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw:
+        if sys.stdin is None or sys.stdin.isatty():
+            raw = "{}"
+        else:
+            raw = sys.stdin.read() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"arguments are not valid JSON: {exc}", '喂一个对象，例如 {"topic":"xim"}') from exc
+    if not isinstance(args, dict):
+        raise Failed("arguments must be a JSON object", '例如 {"topic":"xim"}')
+    return args
+
+
+def main():
+    try:
+        print(query(read_args()))
+    except Failed as exc:
+        fail(exc, exc.fix)
+    except Exception as exc:  # noqa: BLE001 —— 工具层不该看到 traceback
+        fail(f"{type(exc).__name__}: {exc}", "稍后再试")
+
+
+if __name__ == "__main__":
+    main()

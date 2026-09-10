@@ -1,0 +1,880 @@
+#!/usr/bin/env python3
+# Id: game_compat
+# Display name: Game compatibility
+# 显示名称: 游戏兼容性
+# Description: Check a game's Linux/Proton compatibility and anti-cheat. Query a game's Linux compatibility from three sources: ProtonDB ratings and player reports, AreWeAntiCheatYet anti-cheat status, and the caniplayonlinux snapshot. Accepts a Steam App ID (number) or a game name. Content is parsed live from third-party sites; a missing source is not a negative verdict.
+# Timeout: 60
+# Group: gaming
+# Trust: external
+# Permission: read-only
+# Example: {"query":"Elden Ring"}
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "query": {
+#       "type": "string",
+#       "description": "Steam App ID or game name."
+#     },
+#     "max_reports": {
+#       "type": "integer",
+#       "description": "Number of ProtonDB reports, default 8, max 40. Use 0 for the verdict only, without reports."
+#     }
+#   },
+#   "required": [
+#     "query"
+#   ]
+# }
+"""
+Linux game compatibility from three sources, merged into one Markdown answer.
+
+Port of the built-in Rust tool (src/tools/protondb_query.rs + caniplayonlinux_query.rs
++ awacy_query.rs). Same pipeline:
+
+  1. ProtonDB's Algolia index resolves the query (App ID or name, Chinese names
+     included) into an English name + Steam App ID.
+  2. ProtonDB summary + player reports, AreWeAntiCheatYet games.json and the
+     caniplayonlinux page are fetched concurrently using that identity.
+  3. Everything is rendered as Markdown; a source that has no entry is printed
+     as "no result", a source that failed is printed as "error" -- never confused.
+
+Usage (terminal):
+    game_compat "Elden Ring"
+    game_compat 1245620 --max-reports 3
+    game_compat 黑神话悟空
+
+Tool layer (Miyu) feeds a JSON object on stdin instead:
+    {"query": "Apex Legends", "max_reports": 8}
+
+Caches (24h, keyed by file mtime) live in $MIYU_SCRIPT_CACHE_DIR, falling back
+to ~/.cache/miyu-scripts:
+    awacy-games.json             full AreWeAntiCheatYet table (~460KB)
+    caniplayonlinux-sitemap.xml  site map used for fuzzy slug matching
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import socket
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+# ---------------------------------------------------------------- constants
+
+PROTONDB_BASE = "https://www.protondb.com"
+ALGOLIA_URL = "https://94he6yatei-dsn.algolia.net/1/indexes/steamdb/query"
+ALGOLIA_APP_ID = "94HE6YATEI"
+ALGOLIA_API_KEY = "9ba0e69fb2974316cdaec8f5f257088f"  # public search-only key used by protondb.com
+AWACY_GAMES_JSON = "https://raw.githubusercontent.com/AreWeAntiCheatYet/AreWeAntiCheatYet/HEAD/games.json"
+AWACY_CACHE_FILE = "awacy-games.json"
+CIPOL_BASE = "https://caniplayonlinux.com"
+CIPOL_SITEMAP_URL = "https://caniplayonlinux.com/sitemap-0.xml"
+CIPOL_SITEMAP_CACHE = "caniplayonlinux-sitemap.xml"
+
+CACHE_TTL = 24 * 3600
+HTTP_TIMEOUT = 15
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_HTML_BYTES = 5 * 1024 * 1024
+MAX_AWACY_BYTES = 4 * 1024 * 1024
+DEFAULT_REPORTS = 8
+MAX_REPORTS = 40
+NOTE_CAP = 300
+UA = "miyu-game-compat/0.1 (+https://github.com/shorinkiwata/Miyu)"
+
+MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+
+FAULTS = [
+    ("audioFaults", "audio"),
+    ("graphicalFaults", "graphics"),
+    ("windowingFaults", "windowing"),
+    ("inputFaults", "input"),
+    ("saveGameFaults", "save_game"),
+    ("performanceFaults", "performance"),
+    ("stabilityFaults", "stability"),
+    ("significantBugs", "bugs"),
+]
+
+
+class Failed(RuntimeError):
+    """Argument / contract errors: reported as {"ok":false,...} with a non-zero exit."""
+
+    def __init__(self, message, fix=None):
+        super().__init__(message)
+        self.fix = fix
+
+
+class HttpError(RuntimeError):
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+# ---------------------------------------------------------------- cache dir
+
+def cache_dir():
+    base = os.environ.get("MIYU_SCRIPT_CACHE_DIR")
+    if not base:
+        xdg = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+        base = os.path.join(xdg, "miyu-scripts")
+    return base
+
+
+def cache_path(name):
+    return os.path.join(cache_dir(), name)
+
+
+def cache_is_fresh(path):
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:
+        return False
+    return 0 <= age < CACHE_TTL
+
+
+def cache_write(path, data):
+    """Best effort: a cache write failure must not fail the query."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------- HTTP
+
+def http_bytes(url, max_bytes, method="GET", body=None, headers=None):
+    """Fetch a URL and return (status, bytes). Raises HttpError on 4xx/5xx or
+    transport problems; bodies beyond max_bytes are an error, not a truncation."""
+    hdrs = {"User-Agent": UA}
+    if headers:
+        hdrs.update(headers)
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            raw = resp.read(max_bytes + 1)
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raise HttpError(f"HTTP status {exc.code} {exc.reason} for url ({url})", exc.code) from exc
+    except urllib.error.URLError as exc:
+        raise HttpError(f"error sending request for url ({url}): {exc.reason}") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise HttpError(f"request timed out after {HTTP_TIMEOUT}s for url ({url})") from exc
+    except OSError as exc:
+        raise HttpError(f"error reading response for url ({url}): {exc}") from exc
+    if len(raw) > max_bytes:
+        raise HttpError(f"response exceeds {max_bytes} bytes for url ({url})")
+    return status, raw
+
+
+def http_json(url, max_bytes=MAX_JSON_BYTES, **kw):
+    _, raw = http_bytes(url, max_bytes, **kw)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HttpError(f"invalid JSON from {url}: {exc}") from exc
+
+
+def http_text(url, max_bytes=MAX_HTML_BYTES):
+    _, raw = http_bytes(url, max_bytes)
+    return raw.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------- shared helpers
+
+def flatten(value, cap):
+    """Collapse whitespace to single spaces, cap length (with an ellipsis) and
+    neutralise a leading Markdown structural character so the note cannot break
+    out of the list item it is printed under."""
+    out = []
+    last_space = True
+    for ch in value:
+        if len(out) >= cap:
+            out.append("…")
+            break
+        if ch.isspace():
+            if not last_space:
+                out.append(" ")
+            last_space = True
+        else:
+            out.append(ch)
+            last_space = False
+    trimmed = "".join(out).strip()
+    if trimmed and trimmed[0] in "#>-*+|=":
+        return "\\" + trimmed
+    return trimmed
+
+
+def month_day_year(value):
+    """'Oct 31, 2024, 4:07 PM UTC' -> (2024, 10, 31); None if unrecognised."""
+    parts = [p for p in re.split(r"[ ,]", value.lower()) if p]
+    if len(parts) < 3:
+        return None
+    month = next((i + 1 for i, m in enumerate(MONTHS) if parts[0].startswith(m)), None)
+    try:
+        day = int(parts[1])
+        year = int(parts[2])
+    except ValueError:
+        return None
+    if month is None or not (1970 <= year <= 2999):
+        return None
+    return year, month, day
+
+
+# ---------------------------------------------------------------- ProtonDB
+
+def token_overlap(query, name):
+    def normalize(value):
+        return [t for t in re.split(r"[^a-z0-9]+", value.lower()) if t]
+
+    left, right = normalize(query), normalize(name)
+    if not left or not right:
+        return 0.0
+    matched = sum(1 for token in left if token in right)
+    return matched / len(left)
+
+
+def algolia_search(query, hits):
+    body = {
+        "query": query,
+        "facetFilters": [["appType:Game"]],
+        "hitsPerPage": hits,
+        "attributesToRetrieve": ["name", "objectID", "oslist"],
+        "page": 0,
+    }
+    value = http_json(ALGOLIA_URL, method="POST", body=body, headers={
+        "x-algolia-api-key": ALGOLIA_API_KEY,
+        "x-algolia-application-id": ALGOLIA_APP_ID,
+        "Referer": PROTONDB_BASE,
+    })
+    hits = value.get("hits")
+    return hits if isinstance(hits, list) else []
+
+
+def resolve_identity(query):
+    """Turn the query into {app_id, name, native_linux, mismatch}. Raises on
+    network failure or when Algolia has no Steam hit at all."""
+    numeric = query.isdigit()
+    hits = algolia_search(query, 1 if numeric else 5)
+    if not hits:
+        raise RuntimeError(f"no Steam match for {json.dumps(query, ensure_ascii=False)}")
+    hit = hits[0]
+
+    if numeric:
+        app_id = int(query)
+    else:
+        try:
+            app_id = int(str(hit.get("objectID")))
+        except (TypeError, ValueError):
+            raise RuntimeError("invalid objectID in search result") from None
+    name = hit.get("name") if isinstance(hit.get("name"), str) else query
+    oslist = [os_.lower() for os_ in (hit.get("oslist") or []) if isinstance(os_, str)]
+
+    # Relevance check: Algolia returns an unrelated first hit for games that are
+    # not on Steam ("Valorant" -> "NoFlash"). Non-Latin queries cannot be compared
+    # against the English name ("黑神话悟空" vs "Black Myth: Wukong"), skip them.
+    mismatch = None
+    if not numeric and query.isascii():
+        if token_overlap(query, name) < 0.5:
+            others = [h.get("name") for h in hits[1:4] if isinstance(h.get("name"), str)]
+            mismatch = (f"search for {json.dumps(query)} returned {json.dumps(name)}; "
+                        "may not be the same game (it might not be on Steam)")
+            if others:
+                mismatch += ". Other candidates: " + ", ".join(others)
+
+    return {
+        "app_id": app_id,
+        "name": name,
+        "native_linux": "linux" in oslist,
+        "mismatch": mismatch,
+    }
+
+
+def hash_r(e, t, n):
+    """R(e, t, n) = t + "p" + (e * (t % n)), reverse-engineered from the ProtonDB frontend."""
+    return f"{t}p{(e * (t % n)) & 0xFFFFFFFFFFFFFFFF}"
+
+
+def hash_i(s):
+    """I(s) = abs(foldl(s + "m", |0, (acc, ch) => ((acc << 5) - acc + charCode) | 0)).
+    JS `| 0` truncates to signed 32-bit."""
+    val = 0
+    for ch in s + "m":
+        val = ((val << 5) - val + ord(ch)) & 0xFFFFFFFF
+    if val >= 0x80000000:
+        val -= 0x100000000
+    return abs(val)
+
+
+def calculate_protondb_id(steam_id, reports_count, timestamp):
+    h1 = hash_r(steam_id, reports_count, timestamp)
+    h2 = hash_r(1, steam_id, timestamp)
+    return hash_i(f"p{h1}*vRT{h2}undefined")
+
+
+def format_date(timestamp):
+    if not timestamp:
+        return "unknown"
+    try:
+        return dt.datetime.fromtimestamp(int(timestamp), dt.timezone.utc).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return "unknown"
+
+
+def _non_empty(value):
+    if isinstance(value, str):
+        value = value.strip()
+        if value:
+            return value
+    return None
+
+
+def extract_report(raw):
+    responses = raw.get("responses") if isinstance(raw.get("responses"), dict) else {}
+    notes = responses.get("notes") if isinstance(responses.get("notes"), dict) else {}
+
+    verdict_value = responses.get("verdictOob")
+    if not isinstance(verdict_value, str):
+        verdict_value = responses.get("verdict") if isinstance(responses.get("verdict"), str) else None
+    if responses.get("startsPlay") != "yes":
+        verdict = "broken"
+    elif verdict_value == "yes":
+        verdict = "recommended"
+    elif verdict_value is not None:
+        verdict = "not_recommended"
+    else:
+        verdict = "unknown"
+
+    variant = responses.get("variant")
+    if variant == "experimental":
+        proton = "Proton Experimental"
+    elif variant == "ge":
+        proton = responses.get("customProtonVersion") if isinstance(responses.get("customProtonVersion"), str) else None
+    else:
+        proton = responses.get("protonVersion") if isinstance(responses.get("protonVersion"), str) else None
+
+    note = _non_empty(notes.get("concludingNotes")) or _non_empty(responses.get("concludingNotes"))
+    launch = _non_empty(responses.get("launchOptions"))
+
+    return {
+        "date": format_date(raw.get("timestamp") if isinstance(raw.get("timestamp"), int) else 0),
+        "verdict": verdict,
+        "proton": proton,
+        "launch": flatten(launch, NOTE_CAP) if launch else None,
+        "faults": [label for key, label in FAULTS if responses.get(key) == "yes"],
+        "note": flatten(note, NOTE_CAP) if note else None,
+    }
+
+
+def fetch_reports(app_id):
+    counts = http_json(f"{PROTONDB_BASE}/data/counts.json")
+    reports_count = counts.get("reports") if isinstance(counts.get("reports"), int) else 0
+    timestamp = counts.get("timestamp") if isinstance(counts.get("timestamp"), int) else 0
+    if reports_count <= 0 or timestamp <= 0:
+        raise RuntimeError("invalid counts.json")
+    pid = calculate_protondb_id(app_id, reports_count, timestamp)
+    return http_json(f"{PROTONDB_BASE}/data/reports/all-devices/app/{pid}.json")
+
+
+def fetch_protondb(app_id, max_reports):
+    """None = ProtonDB has no data for this game (summary 404). A fetch failure
+    raises instead, so the two are rendered differently."""
+    url = f"{PROTONDB_BASE}/api/v1/reports/summaries/{app_id}.json"
+    try:
+        summary = http_json(url)
+    except HttpError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+    def tier(key):
+        value = summary.get(key)
+        return value if isinstance(value, str) else None
+
+    data = {
+        "tier": tier("tier"),
+        "trending": tier("trendingTier"),
+        "best": tier("bestReportedTier"),
+        "reports_total": summary.get("total") if isinstance(summary.get("total"), int) else 0,
+        "reports": [],
+        "reports_error": None,
+    }
+    if max_reports == 0:
+        return data
+    try:
+        raw = fetch_reports(app_id)
+    except Exception as exc:  # noqa: BLE001 — a failed fetch must not look like zero reports
+        data["reports_error"] = str(exc)
+        return data
+    if isinstance(raw.get("total"), int):
+        data["reports_total"] = raw["total"]
+    items = raw.get("reports") if isinstance(raw.get("reports"), list) else []
+    data["reports"] = [extract_report(item) for item in items[:max_reports] if isinstance(item, dict)]
+    return data
+
+
+# ---------------------------------------------------------------- AreWeAntiCheatYet
+
+def awacy_normalize(value):
+    return "".join(c.lower() for c in value if c.isascii() and c.isalnum())
+
+
+def awacy_sort_key(raw):
+    """Both date shapes -> YYYYMMDD integer for sorting; unknown -> 0."""
+    trimmed = (raw or "").strip()
+    # ISO: 2022-03-01T18:00:27+00:00
+    if len(trimmed) >= 10 and trimmed[4] == "-":
+        digits = "".join(c for c in trimmed[:10] if c.isdigit())
+        if digits:
+            return int(digits)
+    # Human readable: Oct 31, 2024, 4:07 PM UTC
+    parsed = month_day_year(trimmed)
+    if parsed:
+        year, month, day = parsed
+        return year * 10000 + month * 100 + day
+    return 0
+
+
+def awacy_recent_updates(game):
+    updates = [u for u in game.get("updates") or [] if isinstance(u, dict)]
+    updates.sort(key=lambda u: awacy_sort_key(u.get("date") if isinstance(u.get("date"), str) else ""),
+                 reverse=True)
+    return updates[:2]
+
+
+def awacy_load_table():
+    path = cache_path(AWACY_CACHE_FILE)
+    if cache_is_fresh(path):
+        try:
+            with open(path, "rb") as fh:
+                games = json.loads(fh.read().decode("utf-8"))
+            if isinstance(games, list):
+                return games
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass  # a corrupt cache is not fatal: refetch below
+    _, raw = http_bytes(AWACY_GAMES_JSON, MAX_AWACY_BYTES)
+    try:
+        games = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"解析 AWACY games.json 失败: {exc}") from exc
+    if not isinstance(games, list):
+        raise RuntimeError("解析 AWACY games.json 失败: not a list")
+    cache_write(path, raw)
+    return games
+
+
+def awacy_lookup(app_id, name):
+    """Steam App ID first, exact normalised name second. None = not listed by
+    AWACY, which does NOT mean the game has no anti-cheat."""
+    games = [g for g in awacy_load_table() if isinstance(g, dict)]
+    if app_id is not None:
+        wanted = str(app_id)
+        for game in games:
+            store_ids = game.get("storeIds") if isinstance(game.get("storeIds"), dict) else {}
+            if store_ids.get("steam") == wanted:
+                return game
+    wanted = awacy_normalize(name)
+    if wanted:
+        for game in games:
+            if isinstance(game.get("name"), str) and awacy_normalize(game["name"]) == wanted:
+                return game
+    return None
+
+
+# ---------------------------------------------------------------- caniplayonlinux
+
+def cipol_slugify(value):
+    """caniplayonlinux slug rule: apostrophes and ampersands are dropped, not
+    hyphenated. "Baldur's Gate 3" -> "baldurs-gate-3"."""
+    out = []
+    pending_dash = False
+    for ch in value:
+        if ch in "'’&＆":
+            continue
+        if ch.isascii() and ch.isalnum():
+            if pending_dash and out:
+                out.append("-")
+            pending_dash = False
+            out.append(ch.lower())
+        else:
+            pending_dash = True
+    return "".join(out)
+
+
+def cipol_sitemap():
+    path = cache_path(CIPOL_SITEMAP_CACHE)
+    if cache_is_fresh(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            if text:
+                return text
+        except OSError:
+            pass
+    text = http_text(CIPOL_SITEMAP_URL)
+    cache_write(path, text.encode("utf-8"))
+    return text
+
+
+def cipol_similarity(a, b):
+    """Rough 0-100 similarity: shared prefix / containment over the longer string."""
+    if a == b:
+        return 100
+    long_, short = (a, b) if len(a) >= len(b) else (b, a)
+    if not short:
+        return 0
+    if long_.startswith(short) or short in long_:
+        return 70 + 30 * len(short) // len(long_)
+    common = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        common += 1
+    return 100 * common // len(long_)
+
+
+def cipol_best_sitemap_match(sitemap, slug):
+    prefix = f"{CIPOL_BASE}/games/"
+    best_score, best_url = None, None
+    for chunk in sitemap.split("<loc>")[1:]:
+        url = chunk.split("</loc>", 1)[0].strip()
+        if not url.startswith(prefix):
+            continue
+        candidate = url[len(prefix):].rstrip("/")
+        # Pagination pages (/games/3/) and empty slugs are not game pages.
+        if not candidate or candidate.isdigit():
+            continue
+        score = cipol_similarity(slug, candidate)
+        if score >= 75 and (best_score is None or score > best_score):
+            best_score, best_url = score, url
+    return best_url
+
+
+def decode_entities(value):
+    return (value.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", '"').replace("&#39;", "'").replace("&#x27;", "'")
+            .replace("&nbsp;", " "))
+
+
+def cipol_meta_description(html):
+    for marker in ('<meta name="description" content="', '<meta property="og:description" content="'):
+        pos = html.find(marker)
+        if pos < 0:
+            continue
+        rest = html[pos + len(marker):]
+        end = rest.find('"')
+        if end < 0:
+            continue
+        value = decode_entities(rest[:end].strip())
+        if value:
+            return value
+    return None
+
+
+_SKIP_BLOCKS = re.compile(r"(?is)<(script|style|svg)\b.*?</\1\s*>")
+
+
+def cipol_to_text(html):
+    """HTML -> text with one line per tag boundary. Line structure matters:
+    value_after_label finds field values by the following line."""
+    html = _SKIP_BLOCKS.sub("", html)
+    out = []
+    in_tag = False
+    for ch in html:
+        if ch == "<":
+            in_tag = True
+            out.append("\n")
+        elif ch == ">":
+            in_tag = False
+        elif in_tag:
+            continue
+        elif ch in "\n\r\t":
+            out.append("\n")
+        else:
+            out.append(ch)
+    collapsed = []
+    last_newline, last_space = True, False
+    for ch in "".join(out):
+        if ch == "\n":
+            if not last_newline:
+                collapsed.append("\n")
+            last_newline, last_space = True, False
+        elif ch == " ":
+            if not last_space and not last_newline:
+                collapsed.append(" ")
+            last_space = True
+        else:
+            collapsed.append(ch)
+            last_newline = last_space = False
+    return decode_entities("".join(collapsed).strip())
+
+
+def has_year(value):
+    return re.search(r"(?:19|20)\d\d", value) is not None
+
+
+def value_after_label(text, label, want_year):
+    """Value on the line after `label`. The label may appear several times
+    (relative time once, absolute date once); with want_year the one carrying a
+    four-digit year wins."""
+    lower = text.lower()
+    needle = label.lower()
+    fallback = None
+    cursor = 0
+    while True:
+        rel = lower.find(needle, cursor)
+        if rel < 0:
+            break
+        start = rel + len(needle)
+        cursor = start
+        line = None
+        for candidate in text[start:].splitlines():
+            candidate = candidate.strip()
+            if candidate and candidate != ":":
+                line = candidate.lstrip(":").strip()
+                break
+        if not line or len(line.encode("utf-8")) > 40:
+            continue
+        if not want_year or has_year(line):
+            return line
+        if fallback is None:
+            fallback = line
+    return fallback
+
+
+def to_iso_date(value):
+    """'May 26, 2026' -> '2026-05-26'; unrecognised values pass through."""
+    parsed = month_day_year(value)
+    if parsed and parsed[2] <= 31:
+        year, month, day = parsed
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    return value
+
+
+def cipol_lookup(name):
+    """None = the site has no page for this game; fetch failures raise."""
+    slug = cipol_slugify(name)
+    # A purely non-Latin name slugifies to "", and /games// is the catalogue
+    # front page (HTTP 200) -- it would silently yield a generic blurb.
+    if not slug:
+        return None
+    direct = f"{CIPOL_BASE}/games/{slug}/"
+    try:
+        url, html = direct, http_text(direct)
+    except HttpError:
+        sitemap = cipol_sitemap()
+        url = cipol_best_sitemap_match(sitemap, slug)
+        if url is None:
+            return None
+        html = http_text(url)
+    text = cipol_to_text(html)
+    verified = value_after_label(text, "Last verified", True)
+    return {
+        "summary": cipol_meta_description(html),
+        "last_verified": to_iso_date(verified) if verified else None,
+        "url": url,
+    }
+
+
+# ---------------------------------------------------------------- render
+
+def render(query, identity, protondb, awacy, cipol):
+    """Each of identity/protondb/awacy/cipol is ("ok", value) or ("err", message)."""
+    out = []
+    id_ok = identity[0] == "ok"
+    ident = identity[1] if id_ok else None
+
+    if id_ok and ident["mismatch"]:
+        # Keep the user's own name as the title; printing the mis-hit would
+        # cement the wrong answer.
+        out.append(f"# {query}")
+        out.append(f"\n> ⚠ {ident['mismatch']}")
+    elif id_ok:
+        out.append(f"# {ident['name']}")
+        meta = f"appid {ident['app_id']}"
+        if ident["native_linux"]:
+            meta += " · native Linux build"
+        out.append(meta)
+    else:
+        out.append(f"# {query}")
+
+    # -- protondb --
+    if not id_ok:
+        out.append(f"\n## protondb — error\n{identity[1]}")
+    elif protondb[0] == "err":
+        out.append(f"\n## protondb — error\n{protondb[1]}")
+    elif protondb[1] is None:
+        out.append("\n## protondb — no result")
+    else:
+        data = protondb[1]
+        tier = data["tier"] or "unknown"
+        bits = [tier]
+        if data["trending"] and data["trending"] != tier:
+            bits.append(f"trending {data['trending']}")
+        if data["best"] and data["best"] != tier:
+            bits.append(f"best {data['best']}")
+        bits.append(f"{data['reports_total']} reports")
+        out.append(f"\n## protondb — {' · '.join(bits)}")
+        out.append(f"{PROTONDB_BASE}/app/{ident['app_id']}")
+        if data["reports_error"]:
+            out.append(f"reports fetch failed: {data['reports_error']}")
+        if data["reports"]:
+            out.append("\n### reports")
+            for report in data["reports"]:
+                head = f"- {report['date']} {report['verdict']} {report['proton'] or 'unknown'}"
+                if report["faults"]:
+                    head += f" [{','.join(report['faults'])}]"
+                out.append(head)
+                if report["launch"]:
+                    out.append(f"  launch: {report['launch']}")
+                if report["note"]:
+                    out.append(f"  {report['note']}")
+
+    # -- areweanticheatyet --
+    if awacy[0] == "err":
+        out.append(f"\n## areweanticheatyet — error\n{awacy[1]}")
+    elif awacy[1] is None:
+        out.append("\n## areweanticheatyet — no result")
+    else:
+        game = awacy[1]
+        anticheats = [a for a in game.get("anticheats") or [] if isinstance(a, str)]
+        out.append(f"\n## areweanticheatyet — {game.get('status', '')} · "
+                   f"{', '.join(anticheats) if anticheats else 'none listed'}")
+        date_changed = game.get("dateChanged") if isinstance(game.get("dateChanged"), str) else ""
+        out.append(f"changed {date_changed[:10]} · https://areweanticheatyet.com/game/{game.get('slug', '')}")
+        for update in awacy_recent_updates(game):
+            out.append(f"- {flatten(str(update.get('name') or ''), NOTE_CAP)} ({update.get('date') or ''})")
+        for note in (game.get("notes") or [])[:3]:
+            if isinstance(note, list) and note and isinstance(note[0], str):
+                out.append(f"- {flatten(note[0], NOTE_CAP)}")
+
+    # -- caniplayonlinux --
+    if cipol[0] == "err":
+        out.append(f"\n## caniplayonlinux — error\n{cipol[1]}")
+    elif cipol[1] is None:
+        out.append("\n## caniplayonlinux — no result")
+    else:
+        entry = cipol[1]
+        head = "\n## caniplayonlinux"
+        if entry["last_verified"]:
+            head += f" — verified {entry['last_verified']}"
+        out.append(head)
+        if entry["summary"]:
+            out.append(flatten(entry["summary"], 600))
+        out.append(entry["url"])
+
+    return "\n".join(out).rstrip()
+
+
+# ---------------------------------------------------------------- orchestration
+
+def attempt(fn, *args):
+    try:
+        return ("ok", fn(*args))
+    except Exception as exc:  # noqa: BLE001 — every source failure is rendered, not raised
+        return ("err", str(exc) or type(exc).__name__)
+
+
+def game_compat(query, max_reports):
+    # Two phases: ProtonDB first resolves the query into an English name and an
+    # App ID; the other two sources match on that. A Chinese name can neither
+    # form a caniplayonlinux slug nor match an AWACY English entry.
+    identity = attempt(resolve_identity, query)
+    trustworthy = identity[0] == "ok" and identity[1]["mismatch"] is None
+    resolved_name = identity[1]["name"] if trustworthy else query
+    app_id = identity[1]["app_id"] if identity[0] == "ok" else None
+    # A mismatch means "this is not the game you asked for": do not carry the
+    # wrong App ID into the anti-cheat lookup; AWACY may hit by the raw name.
+    lookup_app_id = app_id if trustworthy else None
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_proton = pool.submit(attempt, fetch_protondb, app_id, max_reports) if app_id is not None else None
+        f_awacy = pool.submit(attempt, awacy_lookup, lookup_app_id, resolved_name)
+        f_cipol = pool.submit(attempt, cipol_lookup, resolved_name)
+        protondb = f_proton.result() if f_proton else ("ok", None)
+        awacy = f_awacy.result()
+        cipol = f_cipol.result()
+
+    return render(query, identity, protondb, awacy, cipol)
+
+
+# ---------------------------------------------------------------- CLI / stdin
+
+def parse_max_reports(value):
+    if value is None or value == "":
+        return DEFAULT_REPORTS
+    if isinstance(value, bool):
+        return DEFAULT_REPORTS
+    if isinstance(value, str):
+        if not value.strip().isdigit():
+            return DEFAULT_REPORTS
+        value = int(value)
+    if isinstance(value, float):
+        if not value.is_integer():
+            return DEFAULT_REPORTS
+        value = int(value)
+    if not isinstance(value, int) or value < 0:
+        return DEFAULT_REPORTS
+    return min(value, MAX_REPORTS)
+
+
+def read_json_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw and sys.stdin is not None and not sys.stdin.isatty():
+        raw = sys.stdin.read()
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"arguments are not valid JSON: {exc}", 'send an object like {"query":"Elden Ring"}')
+    if not isinstance(payload, dict):
+        raise Failed("arguments must be a JSON object", 'send an object like {"query":"Elden Ring"}')
+    return payload
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="game_compat", description="Linux game compatibility (ProtonDB / AWACY / caniplayonlinux)")
+    ap.add_argument("query", nargs="*", help="Steam App ID or game name")
+    ap.add_argument("--max-reports", "-n", type=int, default=None, help="ProtonDB reports to show (default 8, max 40, 0 = verdict only)")
+    cli = ap.parse_args()
+
+    try:
+        if cli.query:
+            query = " ".join(cli.query)
+            max_reports = parse_max_reports(cli.max_reports)
+        else:
+            payload = read_json_args() or {}
+            query = payload.get("query")
+            if not isinstance(query, str):
+                query = "" if query is None else str(query)
+            max_reports = parse_max_reports(payload.get("max_reports"))
+        query = query.strip()
+        if not query:
+            raise Failed("missing required argument: query", "pass a Steam App ID or a game name in query")
+        print(game_compat(query, max_reports))
+    except Failed as exc:
+        print(json.dumps({"ok": False, "error": str(exc), "fix": exc.fix}, ensure_ascii=False))
+        sys.exit(2)
+    except Exception as exc:  # noqa: BLE001 — the tool layer should never see a traceback
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                          "fix": "retry later; if it persists the upstream sites may have changed"},
+                         ensure_ascii=False))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

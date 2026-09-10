@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+# Id: query_deepseek_status
+# Display name: Check DeepSeek status
+# 显示名称: 查询 DeepSeek 状态
+# Description: Query DeepSeek service status.
+# Timeout: 60
+# Group: systeminfo
+# Trust: external
+# Permission: read-only
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "include_incidents": {
+#       "type": "boolean",
+#       "description": "Whether to include recent incidents, default true."
+#     },
+#     "max_incidents": {
+#       "type": "integer",
+#       "description": "Maximum recent incidents to return, 1-20, default 5."
+#     }
+#   }
+# }
+# Example: {}
+"""
+Port of the built-in Rust tool `query_deepseek_status` (src/tools/deepseek_status.rs).
+
+Fetches https://status.deepseek.com/ (curl -4 first, urllib as fallback),
+pulls `initialPageConfig` / `active_changes` / `initialCalendarData` /
+`component_uptimes` out of the Next.js `self.__next_f.push([1,"…"])` payloads
+and reports whether api.deepseek.com and chat.deepseek.com are usable.
+
+Arguments (all optional):
+    include_incidents  bool, default true: append `recent_incidents`
+    max_incidents      int 1-20, default 5: how many incidents to list
+    detail             bool, default false (legacy Rust argument): also list
+                       every component with its 30-day uptime, and force the
+                       incident list on
+"""
+
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+DEEPSEEK_STATUS_URL = "https://status.deepseek.com/"
+TIMEOUT = 15
+TARGET_KEYS = ("initialPageConfig", "active_changes", "initialCalendarData", "component_uptimes")
+CN_TZ = dt.timezone(dt.timedelta(hours=8))
+MARKER = 'self.__next_f.push([1,"'
+
+
+class Failed(RuntimeError):
+    def __init__(self, message, fix=None):
+        super().__init__(message)
+        self.fix = fix
+
+
+def fail(error, fix=None, code=1):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- fetch
+
+def fetch_status_html():
+    try:
+        return fetch_with_curl()
+    except Exception as curl_err:  # noqa: BLE001
+        try:
+            return fetch_with_urllib()
+        except Exception as url_err:  # noqa: BLE001
+            raise Failed(
+                f"failed to fetch DeepSeek status page; curl error: {curl_err}; urllib error: {url_err}",
+                "check network access to status.deepseek.com and retry",
+            ) from url_err
+
+
+def fetch_with_curl():
+    try:
+        proc = subprocess.run(
+            ["curl", "-4", "-fsSL", "--max-time", str(TIMEOUT), DEEPSEEK_STATUS_URL],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT + 5, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("curl not installed") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"curl timed out after {TIMEOUT}s") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(f"curl exited with status {proc.returncode}: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout.decode("utf-8")
+
+
+def fetch_with_urllib():
+    req = urllib.request.Request(DEEPSEEK_STATUS_URL, headers={"Accept": "text/html"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------- parse
+
+def next_push_payload(html, start):
+    pos, n = start, len(html)
+    while pos < n:
+        ch = html[pos]
+        if ch == "\\" and pos + 1 < n:
+            pos += 2
+            continue
+        if ch == '"' and html.startswith("])", pos + 1):
+            return html[start:pos]
+        pos += 1
+    return None
+
+
+def extract_keys(value, collected):
+    if isinstance(value, dict):
+        for key in TARGET_KEYS:
+            if key not in collected and key in value:
+                collected[key] = value[key]
+        for child in value.values():
+            extract_keys(child, collected)
+    elif isinstance(value, list):
+        for item in value:
+            extract_keys(item, collected)
+
+
+def parse_status_page(html):
+    collected = {}
+    offset = 0
+    while True:
+        rel = html.find(MARKER, offset)
+        if rel == -1:
+            break
+        content_start = rel + len(MARKER)
+        raw = next_push_payload(html, content_start)
+        if raw is not None:
+            try:
+                decoded = json.loads(f'"{raw}"')
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, str) and ":" in decoded:
+                _, data_str = decoded.split(":", 1)
+                try:
+                    data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    data = data_str
+                extract_keys(data, collected)
+        offset = content_start
+    if not collected:
+        raise Failed("failed to parse DeepSeek status page data",
+                     "the status page layout may have changed; open https://status.deepseek.com/ manually")
+    return collected
+
+
+# ---------------------------------------------------------------- shape
+
+def severity_rank(status):
+    return {"full_outage": 4, "partial_outage": 3, "degraded": 2, "maintenance": 1}.get(status, 0)
+
+
+def title_status(status):
+    return " ".join(part[:1].upper() + part[1:] for part in status.split("_"))
+
+
+def now_cn_iso():
+    return dt.datetime.now(CN_TZ).isoformat()
+
+
+def epoch_to_cn_iso(seconds):
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        return None
+    try:
+        return dt.datetime.fromtimestamp(int(seconds), CN_TZ).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def as_str(value, default=""):
+    return value if isinstance(value, str) else default
+
+
+def as_list(value):
+    return value if isinstance(value, list) else []
+
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def format_incident(change):
+    change = as_dict(change)
+    started = change.get("start_at_seconds")
+    resolved = change.get("close_at_seconds")
+    started = started if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    resolved = resolved if isinstance(resolved, (int, float)) and not isinstance(resolved, bool) else None
+    duration = int(resolved - started) if started is not None and resolved is not None else None
+    return {
+        "id": change.get("change_id"),
+        "title": as_str(change.get("title")),
+        "type": as_str(change.get("type"), "incident"),
+        "status": as_str(change.get("status")),
+        "started_at": epoch_to_cn_iso(started) if started is not None else None,
+        "resolved_at": epoch_to_cn_iso(resolved) if resolved is not None else None,
+        "duration_seconds": duration,
+        "affected_components": [
+            as_str(as_dict(item).get("name") if as_dict(item).get("name") is not None else as_dict(item).get("component_name"))
+            for item in as_list(change.get("affected_components"))
+        ],
+        "timeline": [
+            {
+                "time": epoch_to_cn_iso(as_dict(item).get("at_seconds")),
+                "status": as_str(as_dict(item).get("status")),
+                "description": as_str(as_dict(item).get("description")),
+            }
+            for item in as_list(change.get("updates"))
+        ],
+    }
+
+
+def build_response(raw, detail, include_incidents, max_incidents):
+    page_config = as_dict(raw.get("initialPageConfig"))
+    active_changes = [as_dict(c) for c in as_list(raw.get("active_changes"))]
+    component_uptimes = [as_dict(u) for u in as_list(raw.get("component_uptimes"))]
+
+    components = []
+    for component in as_list(page_config.get("components")):
+        component = as_dict(component)
+        cid = as_str(component.get("component_id"))
+        uptime = next((u.get("uptime") for u in component_uptimes if as_str(u.get("component_id")) == cid), None)
+        components.append({
+            "id": cid,
+            "name": as_str(component.get("name")),
+            "description": as_str(component.get("description")),
+            "status": "operational",
+            "uptime_30d_percent": uptime,
+        })
+    for change in active_changes:
+        change_status = as_str(change.get("status"), "unknown")
+        affected_ids = [as_str(as_dict(item).get("component_id"))
+                        for item in as_list(change.get("affected_components"))
+                        if as_dict(item).get("component_id") is not None]
+        for component in components:
+            if component["id"] in affected_ids:
+                component["status"] = change_status
+
+    active_count = len(active_changes)
+    if active_count == 0:
+        overall_status, status_readable = "operational", "All Systems Operational"
+    else:
+        worst = max(active_changes, key=lambda c: severity_rank(as_str(c.get("status"))))
+        overall_status = as_str(worst.get("status"), "unknown")
+        status_readable = f"{title_status(overall_status)} - {active_count} active incident(s)"
+
+    recent_incidents = []
+    if detail or include_incidents:
+        changes = as_list(as_dict(raw.get("initialCalendarData")).get("changes"))
+        recent_incidents = [format_incident(c) for c in changes[:max_incidents]]
+
+    def component_status(needle, fallback_needles):
+        # Primary (the Rust rule): first component whose description names the host.
+        for component in components:
+            if needle in component["description"]:
+                return component["status"]
+        # The status page dropped the host names from its descriptions (components
+        # are now "DeepSeek V4 Pro API服务", "快速模式(Instant Mode)", …), which
+        # leaves the Rust rule answering "unknown" for everything. Fall back to
+        # the worst status among the components whose name/description carries
+        # one of the fallback needles.
+        matched = [
+            c for c in components
+            if any(n.lower() in (c["name"] + " " + c["description"]).lower() for n in fallback_needles)
+        ]
+        if not matched:
+            return "unknown"
+        return max(matched, key=lambda c: severity_rank(c["status"]))["status"]
+
+    response = {
+        "success": True,
+        "queried_at": now_cn_iso(),
+        "api": component_status("api.deepseek.com", ("API",)),
+        "chat": component_status("chat.deepseek.com", ("Instant Mode", "Expert Mode", "快速模式", "专家模式")),
+        "overall_status": overall_status,
+    }
+    if active_count > 0:
+        response["status_readable"] = status_readable
+        response["active_incidents_count"] = active_count
+        response["degraded"] = [
+            {"name": c["name"], "status": c["status"]}
+            for c in components if c["status"] != "operational"
+        ]
+    if detail:
+        response["components"] = components
+    if detail or include_incidents:
+        response["recent_incidents"] = recent_incidents
+    return response
+
+
+# ---------------------------------------------------------------- main
+
+def read_args():
+    raw = os.environ.get("MIYU_ARGS_JSON")
+    if not raw and sys.stdin is not None and not sys.stdin.isatty():
+        raw = sys.stdin.read()
+    raw = (raw or "").strip() or "{}"
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Failed(f"arguments are not valid JSON: {exc}", "feed a JSON object, {} is enough")
+    if not isinstance(args, dict):
+        raise Failed("arguments must be a JSON object", "{} is enough")
+    return args
+
+
+def main():
+    try:
+        args = read_args()
+        detail = args.get("detail") is True
+        include_incidents = args.get("include_incidents")
+        include_incidents = True if not isinstance(include_incidents, bool) else include_incidents
+        max_incidents = args.get("max_incidents")
+        if isinstance(max_incidents, bool) or not isinstance(max_incidents, int):
+            max_incidents = 5
+        max_incidents = max(1, min(max_incidents, 20))
+        html = fetch_status_html()
+        raw = parse_status_page(html)
+        print(json.dumps(build_response(raw, detail, include_incidents, max_incidents),
+                         ensure_ascii=False, indent=2))
+    except Failed as exc:
+        fail(str(exc), exc.fix)
+    except Exception as exc:  # noqa: BLE001
+        fail(f"internal error: {type(exc).__name__}: {exc}")
+
+
+if __name__ == "__main__":
+    main()
