@@ -79,7 +79,10 @@ class Handler(BaseHTTPRequestHandler):
             self._sse(_tc(0, "call_d", "run_command", {"command": "echo 最后一条", "title": "回显最后一条"}))
             self._finish("tool_calls")
         else:
-            self._text("好了，四步跑完：两条回显正常，列根目录正常，读那个不存在的文件如预期报错。")
+            # 最终回答顺便带上代码块、行内代码和表格:去气泡之后这些面要能从页面底色上分出来
+            self._text("好了，四步跑完：两条回显正常，列根目录正常，读那个不存在的文件如预期报错。把 `spawn` 那行改成 IPC 调用就行：\n\n")
+            self._text("```kdl\n// niri config.kdl\nbinds {\n    Mod+Return { spawn \"kitty\"; }\n}\n```\n\n")
+            self._text("| 项目 | 版本 | 来源 |\n|---|---|---|\n| niri | 26.04-1 | extra |\n| noctalia-git | 5.0.0.r1191 | AUR |\n\n对齐和渲染看着还行吧？")
             self._finish()
 
     def do_GET(self):

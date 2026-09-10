@@ -9507,6 +9507,7 @@ body.miyu-paused *::after {
 
 /* 「准备 xx」占位签:时间线上的一行,转圈图标就是节点,文字和工具行同款 */
 .assistant-blocks .proc-steps > .tool-preparing-tag {
+  animation: none;
   display: flex;
   width: 100%;
   max-width: 100%;
@@ -9543,6 +9544,7 @@ body.miyu-paused *::after {
   color: var(--proc-soft);
   font-size: 11.5px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -9625,8 +9627,9 @@ body.miyu-paused *::after {
   width: auto;
   margin: 2px 0 8px var(--proc-indent);
   padding: 9px 10px;
-  border: 1px solid var(--line);
+  border: 0;
   background: var(--surface-1);
+  box-shadow: var(--bubble-shadow);
   gap: 1em;
 }
 .assistant-blocks .proc-steps > .tool-card .tool-detail-label {
@@ -9687,4 +9690,49 @@ body.miyu-paused *::after {
   background: var(--surface-1);
   color: var(--text);
   box-shadow: var(--bubble-shadow);
+}
+/* 正文里的面原来都是对着气泡的 surface-1 调的,现在直接落在页面底色上:
+   代码块用 surface-1 加软阴影(和用户气泡同一张卡),行内代码和表格底用
+   正文色兑底色得到的中性灰,亮色下不再和米色底混成一片。 */
+.assistant-content .code-block {
+  --code-bg: var(--surface-1);
+  box-shadow: var(--bubble-shadow);
+}
+.assistant-content .markdown-body code:not(pre code) {
+  background: color-mix(in srgb, var(--text) 9%, var(--app-bg));
+}
+.assistant-content .markdown-table-scroll {
+  background: none;
+}
+.assistant-content .markdown-body table {
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--bubble-shadow);
+}
+.assistant-content .markdown-body th {
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--text) 5%, var(--surface-1));
+}
+.assistant-content .markdown-body td {
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+.assistant-content .markdown-body tr:last-child td {
+  border-bottom: 0;
+}
+/* 用户气泡现在是中性底,里面的代码块不再是那块深蓝:底色深一档、配色跟正文同一套 */
+.user-bubble .code-block {
+  --code-bg: color-mix(in srgb, var(--text) 7%, var(--surface-1));
+  --code-ink: var(--text);
+  --tok-c: inherit;
+  --tok-p: inherit;
+  --tok-o: inherit;
+  --tok-k: inherit;
+  --tok-s: inherit;
+  --tok-n: inherit;
+  --tok-f: inherit;
+  --tok-t: inherit;
+  --tok-y: inherit;
+}
+.user-bubble > p > code {
+  background: color-mix(in srgb, var(--text) 9%, var(--surface-1));
 }

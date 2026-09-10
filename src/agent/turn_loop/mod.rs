@@ -664,7 +664,20 @@ impl Agent {
                 self.execute_parallel_task_calls(&result.tool_calls, on_event)
                     .await?
             };
+            // 每个调用的执行起止:一次迭代压进 `messages` 的 tool 消息就是这个
+            // 调用的结果(各分支都以 push + continue 收尾),下一次迭代开始时给
+            // 上一批盖章。并行 task 组早在循环前跑完,这里量到的只是入队那一瞬,
+            // 与其给一个假的 0 ms,不如让它没有耗时。
+            let mut span_from = messages.len();
+            let mut span_since = unix_ms();
+            let mut span_skip = false;
             for (call_index, call) in result.tool_calls.into_iter().enumerate() {
+                if !span_skip {
+                    stamp_tool_spans(&mut messages[span_from..], span_since, unix_ms());
+                }
+                span_from = messages.len();
+                span_since = unix_ms();
+                span_skip = parallel_task_outputs.contains_key(&call_index);
                 if let Some(group_output) = parallel_task_outputs.remove(&call_index) {
                     // Executed in the parallel group; events already emitted.
                     used_tools.push(call.function.name.clone());
@@ -1039,6 +1052,9 @@ impl Agent {
                     }
                 }
             }
+            if !span_skip {
+                stamp_tool_spans(&mut messages[span_from..], span_since, unix_ms());
+            }
             // 本轮工具结果已经全部进了 `messages`,趁这里把 tool_flow 落一次盘。
             //
             // 崩溃恢复时正文和工具报告都能从流水物化出来(`interrupted_projection`
@@ -1208,6 +1224,8 @@ pub(in crate::agent) fn record_remote_tool_chunk(
                     .map(|input| input.to_string())
                     .unwrap_or_default(),
                 output: String::new(),
+                started_ms: None,
+                finished_ms: None,
             });
             None
         }
@@ -1257,6 +1275,23 @@ impl RoundTiming {
         match (self.first, self.last) {
             (Some(first), Some(last)) => last.saturating_duration_since(first).as_millis() as u64,
             _ => 0,
+        }
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 给一批刚压进 `messages` 的工具结果盖执行起止:一次调用一段迭代,迭代内压进
+/// 的 tool 消息就是它的结果。已经盖过的不重盖。
+fn stamp_tool_spans(messages: &mut [ChatMessage], started_ms: u64, finished_ms: u64) {
+    for message in messages {
+        if message.role == "tool" && message.tool_span_ms.is_none() {
+            message.tool_span_ms = Some((started_ms, finished_ms));
         }
     }
 }
