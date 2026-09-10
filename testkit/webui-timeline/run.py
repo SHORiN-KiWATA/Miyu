@@ -7,6 +7,8 @@ web/*.js 与 styles.css 编进二进制,所以 WEB 给的是哪个目录,页面�
 Playwright 拦下 index.html / app.js / styles.css 换成 WEB 里的文件,二进制本身不用重编。
 
 判定项(一轮「思考 → 2 工具 → 说话 → 1 失败工具 → 思考 → 1 工具 → 最终回答」):
+  think_node         思考中的节点仍是原子图标(svg 显示、芯片形态的三个跳动点不显示、宽 16px)
+  prep_row           「准备 xx」签在时间线里、无底色,线已长到它
   live_groups        实时:说话把时间线切成两条,第一条 1 思考 2 工具,第二条 1 工具 + 1 思考 + 1 工具
   live_head_hidden   实时运行中的那条没有总结行
   live_collapsed     她一开口,前一条收起、总结行出现,文字形如「Worked for 1.2 s · 2 tools · 1 thought」
@@ -144,8 +146,16 @@ def main():
             t0 = time.time()
             live_snapshot = None
             shots = 0
+            prep_seen = None
+            think_seen = None
             while time.time() - t0 < 60:
                 info = page.evaluate(GROUPS_JS)
+                if think_seen is None and page.evaluate("Boolean(document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live'))"):
+                    think_seen = page.evaluate("() => { const i = document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon'); const svg = i.querySelector('svg'); const dot = i.querySelector('i'); return { svgShown: svg && getComputedStyle(svg).display !== 'none', dotsShown: dot ? getComputedStyle(dot).display !== 'none' : false, width: i.getBoundingClientRect().width }; }")
+                    page.screenshot(path=str(OUT / "00-live-thinking.png"))
+                if prep_seen is None and page.evaluate("Boolean(document.querySelector('.live-assistant .tool-preparing-tag'))"):
+                    prep_seen = page.evaluate("() => { const t = document.querySelector('.live-assistant .tool-preparing-tag'); return { inSteps: t.parentElement.classList.contains('proc-steps'), text: t.textContent, bg: getComputedStyle(t).backgroundColor, railHeight: parseFloat(t.closest('.proc-line').querySelector('.proc-rail').style.height || '0') }; }")
+                    page.screenshot(path=str(OUT / "00b-live-preparing.png"))
                 if info and info["live"] and shots == 0 and info["lines"] and info["lines"][0]["tools"] >= 1:
                     page.screenshot(path=str(OUT / "01-live-first-group.png")); shots = 1
                 if info and info["live"] and len(info["lines"]) >= 2 and info["lines"][1]["tools"] >= 1 and shots == 1:
@@ -160,6 +170,11 @@ def main():
             done = page.evaluate(GROUPS_JS)
             report["live_snapshot"] = live_snapshot
             report["done"] = done
+            report["think_seen"] = think_seen
+            report["prep_seen"] = prep_seen
+            # 思考中的节点是原子图标(svg 显示、跳动点隐藏、宽 16px);「准备」签在时间线里、无底色、线长到了它
+            report["think_node"] = bool(think_seen) and think_seen["svgShown"] and not think_seen["dotsShown"] and 15 <= think_seen["width"] <= 19
+            report["prep_row"] = bool(prep_seen) and prep_seen["inSteps"] and prep_seen["bg"] in ("rgba(0, 0, 0, 0)", "transparent") and prep_seen["railHeight"] > 20
             ls = (live_snapshot or {}).get("lines") or []
             report["live_head_hidden"] = bool(ls) and ls[-1]["live"] and ls[-1]["headHidden"]
             report["live_collapsed"] = bool(ls) and (not ls[0]["open"]) and (not ls[0]["headHidden"]) and ls[0]["summary"].startswith("Worked for") and "2 tools" in ls[0]["summary"] and "1 thought" in ls[0]["summary"]
@@ -235,7 +250,7 @@ def main():
     report["errors"] = errors
     report["console_clean"] = not errors
     (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), "utf-8")
-    keys = ["live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
+    keys = ["think_node", "prep_row", "live_groups", "live_head_hidden", "live_collapsed", "err_marked", "rail_sized", "persisted_groups", "persisted_err", "no_times", "toggle_off_on", "console_clean"]
     for k in keys:
         print(f"{'  ok ' if report.get(k) else 'FAIL '} {k}")
     print("report:", OUT / "report.json")

@@ -61,7 +61,10 @@ class Handler(BaseHTTPRequestHandler):
             # 第一幕:思考,然后两个工具
             self._reason("用户想看时间线，先跑两条命令，一条回显，一条列目录，然后再决定下一步。")
             self._sse(_tc(0, "call_a", "run_command", {"command": "echo 第一条", "title": "回显第一条"}))
-            self._sse(_tc(1, "call_b", "run_command", {"command": "ls /", "title": "列根目录"}))
+            # 第二个调用先只给名字、入参慢慢流:这正是「准备 xx」签露面的窗口(批量里第二个起就算)
+            self._sse({"tool_calls": [{"index": 1, "id": "call_b", "type": "function", "function": {"name": "run_command", "arguments": ""}}]})
+            time.sleep(float(os.environ.get("STUB_PREP_SLEEP", "1.5")))
+            self._sse({"tool_calls": [{"index": 1, "function": {"arguments": json.dumps({"command": "ls /", "title": "列根目录"}, ensure_ascii=False)}}]})
             self._finish("tool_calls")
         elif acts == 1:
             # 第二幕:中途说一句(把组切开),再来一个会失败的工具。

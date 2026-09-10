@@ -9486,9 +9486,65 @@ body.miyu-paused *::after {
 .proc-line.is-static .proc-steps > * {
   animation: none;
 }
-/* 「准备 xx」占位签:属于过程,缩进到文字列 */
+/* 思考中:节点保持原子图标,只让它轻轻呼吸;芯片形态那三个跳动点不进时间线 */
+.assistant-blocks .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon {
+  display: grid;
+  width: var(--proc-col);
+  gap: 0;
+}
+.assistant-blocks .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon svg {
+  display: block;
+  animation: proc-breathe 1.6s ease-in-out infinite;
+}
+.assistant-blocks .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon i {
+  display: none;
+}
+@keyframes proc-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* 「准备 xx」占位签:时间线上的一行,转圈图标就是节点,文字和工具行同款 */
 .assistant-blocks .proc-steps > .tool-preparing-tag {
-  margin: 4px 0 4px calc(var(--proc-col) + var(--proc-gap));
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-height: 30px;
+  align-items: center;
+  margin: 0;
+  padding: 4px 0;
+  border-radius: 0;
+  background: none;
+  color: var(--proc-soft);
+  gap: var(--proc-gap);
+  overflow: visible;
+  white-space: normal;
+}
+.assistant-blocks .proc-steps > .tool-preparing-tag > .icon-slot {
+  display: grid;
+  box-sizing: border-box;
+  width: var(--proc-col);
+  height: var(--proc-col);
+  flex: 0 0 var(--proc-col);
+  place-items: center;
+  background: var(--app-bg);
+  box-shadow: 0 -2px 0 var(--app-bg), 0 2px 0 var(--app-bg);
+  color: var(--proc-soft);
+}
+.assistant-blocks .proc-steps > .tool-preparing-tag > .icon-slot svg {
+  width: 13px;
+  height: 13px;
+}
+.assistant-blocks .proc-steps > .tool-preparing-tag > .tool-preparing-label {
+  min-width: 0;
+  padding: 1px 4px;
+  overflow: hidden;
+  color: var(--proc-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 工具行:节点 + 名字 + 等宽主语,右侧耗时。不再是各自宽度的彩色芯片 */
