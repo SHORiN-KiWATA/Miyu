@@ -9,8 +9,8 @@ pub(crate) use index::*;
 pub(crate) use manage::*;
 pub(crate) use refresh::*;
 
-use super::registry::UnregisteredScript;
-use super::{ToolRegistry, ToolSpec};
+use super::registry::{ScriptScope, UnregisteredScript};
+use super::{ToolPermission, ToolProgress, ToolRegistry, ToolSpec, ToolTrust};
 use crate::i18n::is_zh;
 use crate::paths::MiyuPaths;
 use crate::tools::tool_descriptions::LoadPolicy;
@@ -42,6 +42,57 @@ pub fn register(registry: &mut ToolRegistry, config: &crate::config::AppConfig, 
     register_script_tools(registry, config.clone(), paths.clone());
 }
 
+/// 不可信场所的脚本面:只收头部写了 `Trust: external` 的脚本,不给 manage_script。
+/// 范围记在注册表上,热刷新走同一条 replace_script_tools 时照样过滤。
+pub fn register_external(
+    registry: &mut ToolRegistry,
+    config: &crate::config::AppConfig,
+    paths: &MiyuPaths,
+) {
+    registry.set_script_scope(ScriptScope::ExternalOnly);
+    match prepare_script_refresh(None, config, paths) {
+        Ok(Some(snapshot)) => apply_script_refresh(registry, paths, snapshot),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to scan Miyu script directories for the external registry");
+        }
+    }
+}
+
+/// 脚本 stdout 里的附件行:`MIYU-IMAGE: <路径> | <说明>`。整行从输出里摘掉,
+/// 图片交给投递层(终端内联/WebUI/QQ 各自渲染),说明可省。相对路径按
+/// 脚本缓存目录解析。
+pub(crate) const IMAGE_MARKER: &str = "MIYU-IMAGE:";
+
+pub(crate) fn split_attachment_lines(
+    stdout: &str,
+    cache_dir: &Path,
+) -> (String, Vec<(PathBuf, String)>) {
+    let mut kept = Vec::new();
+    let mut images = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.trim_start().strip_prefix(IMAGE_MARKER) else {
+            kept.push(line);
+            continue;
+        };
+        let (path, alt) = rest
+            .split_once('|')
+            .map(|(path, alt)| (path.trim(), alt.trim()))
+            .unwrap_or((rest.trim(), ""));
+        if path.is_empty() {
+            continue;
+        }
+        let path = Path::new(path);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cache_dir.join(path)
+        };
+        images.push((path, alt.to_string()));
+    }
+    (kept.join("\n"), images)
+}
+
 async fn run_script(
     path_str: &str,
     scripts_dir: &Path,
@@ -49,6 +100,7 @@ async fn run_script(
     args: &Value,
     timeout_secs: u64,
     argv: ArgvMode,
+    progress: &ToolProgress,
 ) -> Result<String> {
     let script_path = resolve_script_path(path_str, scripts_dir);
 
@@ -115,6 +167,14 @@ async fn run_script(
 
     let stdout = String::from_utf8_lossy(&stdout_bytes);
     let stderr = String::from_utf8_lossy(&stderr_bytes);
+    let (stdout, images) = split_attachment_lines(stdout.trim(), cache_dir);
+    for (path, alt) in images {
+        if path.is_file() {
+            progress.report_image(path, alt);
+        } else {
+            tracing::warn!(path = %path.display(), "script reported an image that does not exist");
+        }
+    }
     let stdout = clip_output(stdout.trim());
     let stderr = clip_output(stderr.trim());
 

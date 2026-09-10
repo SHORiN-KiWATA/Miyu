@@ -169,7 +169,39 @@ pub struct ToolSpec {
     /// 按 action 条件必填）一行装不下，给半个示例比不给更危险——模型会以为
     /// 那就是全部形状。那类工具就该老实走 `load_tools`。
     pub stub_example: Option<String>,
+    /// 能否暴露给不可信的场所(QQ 群这类 External 入口)。默认 Owner:
+    /// 只有属主类入口看得见。注册位置曾是唯一的权限边界(restricted 注册表
+    /// 硬编码白名单);这个位让脚本/插件自己声明,场所层按它过滤。
+    pub trust: ToolTrust,
+    /// 指路句:`(必须同时在场的工具, 追加到本工具描述末尾的句子)`。被指的
+    /// 工具没注册就一个字都不加(见 cross_hints)。
+    pub cross_hints: Vec<(String, String)>,
+    /// 本回合必须先调用过这些工具之一才放行(跨工具闸,由 guard 层执行)。
+    pub requires_prior: Vec<String>,
     pub(crate) handler: ToolHandler,
+}
+
+/// 工具对场所信任等级的要求。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolTrust {
+    /// 只给属主类入口(终端、本机 WebUI、语音)。
+    #[default]
+    Owner,
+    /// 也给不可信入口(QQ 群、远端 WebUI 成员)。
+    External,
+}
+
+impl ToolTrust {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "owner" | "private" | "local" | "属主" => Some(Self::Owner),
+            "external" | "platform" | "public" | "everyone" | "外部" | "公开" => {
+                Some(Self::External)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,6 +209,22 @@ pub enum ToolPermission {
     ReadOnly,
     Presentation,
     Writes,
+}
+
+impl ToolPermission {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '-'], "_")
+            .as_str()
+        {
+            "read_only" | "readonly" | "read" | "只读" => Some(Self::ReadOnly),
+            "presentation" | "present" | "展示" => Some(Self::Presentation),
+            "writes" | "write" | "读写" | "写" => Some(Self::Writes),
+            _ => None,
+        }
+    }
 }
 
 impl ToolSpec {
@@ -202,6 +250,9 @@ impl ToolSpec {
             groups: Vec::new(),
             timeout_seconds: None,
             stub_example: None,
+            trust: ToolTrust::Owner,
+            cross_hints: Vec::new(),
+            requires_prior: Vec::new(),
             handler: Arc::new(move |args, _progress| Box::pin(handler(args))),
         }
     }
@@ -228,6 +279,9 @@ impl ToolSpec {
             groups: Vec::new(),
             timeout_seconds: None,
             stub_example: None,
+            trust: ToolTrust::Owner,
+            cross_hints: Vec::new(),
+            requires_prior: Vec::new(),
             handler: Arc::new(move |args, progress| Box::pin(handler(args, progress))),
         }
     }
@@ -273,6 +327,33 @@ impl ToolSpec {
 
     pub fn script(mut self) -> Self {
         self.is_script = true;
+        self
+    }
+
+    pub fn with_trust(mut self, trust: ToolTrust) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    pub fn with_permission(mut self, permission: ToolPermission) -> Self {
+        self.permission = permission;
+        self
+    }
+
+    pub fn with_cross_hints(mut self, hints: Vec<(String, String)>) -> Self {
+        self.cross_hints = hints
+            .into_iter()
+            .filter(|(tool, sentence)| !tool.trim().is_empty() && !sentence.trim().is_empty())
+            .collect();
+        self
+    }
+
+    pub fn with_requires_prior(mut self, tools: Vec<String>) -> Self {
+        self.requires_prior = tools
+            .into_iter()
+            .map(|tool| tool.trim().to_string())
+            .filter(|tool| !tool.is_empty())
+            .collect();
         self
     }
 

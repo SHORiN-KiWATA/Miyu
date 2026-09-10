@@ -64,8 +64,8 @@ use std::sync::RwLock;
 
 #[allow(unused_imports)]
 pub use registry::{
-    empty_parameters, CommandOutputStream, GuardCtx, ToolFuture, ToolGuard, ToolPermission,
-    ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec,
+    empty_parameters, CommandOutputStream, GuardCtx, ScriptScope, ToolFuture, ToolGuard,
+    ToolPermission, ToolProgress, ToolProgressEvent, ToolRegistry, ToolSpec, ToolTrust,
 };
 pub(crate) use scripts::{
     apply_script_refresh, prepare_script_refresh, scripts_dashboard_delete,
@@ -399,9 +399,31 @@ pub(crate) fn command_deny_guard(patterns: Vec<String>) -> ToolGuard {
     })
 }
 
+/// 清单声明的前置工具(`Requires: a, b` → ToolSpec::requires_prior):本回合
+/// 先调用过其中之一才放行。数据驱动,脚本与插件不必各写一个 guard 闭包。
+pub(crate) fn requires_prior_guard() -> ToolGuard {
+    std::sync::Arc::new(|tool, _args, ctx| {
+        if tool.requires_prior.is_empty() {
+            return None;
+        }
+        let satisfied = ctx
+            .used_tools
+            .iter()
+            .any(|used| used != &tool.name && tool.requires_prior.iter().any(|req| req == used));
+        (!satisfied).then(|| {
+            format!(
+                "{} requires calling {} earlier in this turn first",
+                tool.name,
+                tool.requires_prior.join(" or ")
+            )
+        })
+    })
+}
+
 fn install_builtin_guards(registry: &mut ToolRegistry, config: &AppConfig) {
     registry.add_guard(aur_review_install_guard());
     registry.add_guard(command_deny_guard(config.tools.command_deny.clone()));
+    registry.add_guard(requires_prior_guard());
 }
 
 pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
@@ -731,6 +753,9 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
             tracing::warn!(error = %error, "failed to register skills for restricted platform registry");
         }
     }
+    // 脚本按信任位进场:头部写了 `Trust: external` 的才给不可信场所。
+    // 注册位置不再是脚本唯一的权限边界,清单自己说能不能出去。
+    scripts::register_external(&mut registry, config, paths);
     // load_tools 常驻注册(09-01):full 模式下调用它无害(返回契约文本),
     // 而会话中途从需加载模型切到完整模型时,历史里的 load_tools 调用记录
     // 必须仍然可执行,否则模型模仿历史会撞未知工具。

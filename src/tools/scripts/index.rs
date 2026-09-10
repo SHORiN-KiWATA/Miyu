@@ -49,6 +49,21 @@ pub(crate) struct ScriptEntry {
     pub(crate) groups: Vec<String>,
     #[serde(default, skip_serializing_if = "ArgvMode::is_off")]
     pub(crate) argv: ArgvMode,
+    /// 场所信任位;缺省 Owner。见 ToolSpec::trust。
+    #[serde(default, skip_serializing_if = "is_owner_trust")]
+    pub(crate) trust: ToolTrust,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) permission: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) stub_example: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) hints: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) requires: Vec<String>,
+}
+
+fn is_owner_trust(trust: &ToolTrust) -> bool {
+    *trust == ToolTrust::Owner
 }
 
 impl ScriptEntry {
@@ -65,6 +80,11 @@ impl ScriptEntry {
             load_policy: LoadPolicy::Summary,
             groups: Vec::new(),
             argv: ArgvMode::Off,
+            trust: ToolTrust::Owner,
+            permission: None,
+            stub_example: None,
+            hints: Vec::new(),
+            requires: Vec::new(),
         }
     }
 }
@@ -139,6 +159,30 @@ pub(crate) fn merge_header_defaults(entry: &mut ScriptEntry, metadata: &ScriptMe
         if let Some(argv) = metadata.argv {
             entry.argv = argv;
         }
+    }
+    if entry.trust == ToolTrust::Owner {
+        if let Some(trust) = metadata.trust {
+            entry.trust = trust;
+        }
+    }
+    if entry.permission.is_none() {
+        entry.permission = metadata.permission.map(|permission| {
+            match permission {
+                ToolPermission::ReadOnly => "read-only",
+                ToolPermission::Presentation => "presentation",
+                ToolPermission::Writes => "writes",
+            }
+            .to_string()
+        });
+    }
+    if entry.stub_example.is_none() {
+        entry.stub_example = metadata.stub_example.clone();
+    }
+    if entry.hints.is_empty() {
+        entry.hints = metadata.hints.clone();
+    }
+    if entry.requires.is_empty() {
+        entry.requires = metadata.requires.clone();
     }
 }
 
@@ -473,18 +517,47 @@ pub(crate) fn entry_to_spec(
     let scripts_dir = scripts_dir.to_path_buf();
     let cache_dir = cache_dir.to_path_buf();
 
-    let spec = ToolSpec::new(id, description, parameters, move |args| {
-        let path_str = path_str.clone();
-        let scripts_dir = scripts_dir.clone();
-        let cache_dir = cache_dir.clone();
-        async move { run_script(&path_str, &scripts_dir, &cache_dir, &args, timeout, argv).await }
-    })
-    .writes()
-    .with_display_name(display_name)
-    .with_always_loaded(always_loaded)
-    .with_load_policy(load_policy)
-    .with_groups(entry.groups.clone())
-    .script();
+    // 缺省 writes:脚本会跑命令。头部/index 明确写了 read-only 的才降。
+    let permission = entry
+        .permission
+        .as_deref()
+        .and_then(ToolPermission::parse)
+        .unwrap_or(ToolPermission::Writes);
+    let mut spec =
+        ToolSpec::new_with_progress(id, description, parameters, move |args, progress| {
+            let path_str = path_str.clone();
+            let scripts_dir = scripts_dir.clone();
+            let cache_dir = cache_dir.clone();
+            async move {
+                run_script(
+                    &path_str,
+                    &scripts_dir,
+                    &cache_dir,
+                    &args,
+                    timeout,
+                    argv,
+                    &progress,
+                )
+                .await
+            }
+        })
+        .with_permission(permission)
+        .with_display_name(display_name)
+        .with_always_loaded(always_loaded)
+        .with_load_policy(load_policy)
+        .with_groups(entry.groups.clone())
+        .with_trust(entry.trust)
+        .with_cross_hints(entry.hints.clone())
+        .with_requires_prior(entry.requires.clone())
+        .script();
+    if let Some(example) = entry
+        .stub_example
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        spec = spec.with_stub_example(example);
+    }
     Ok(spec)
 }
 

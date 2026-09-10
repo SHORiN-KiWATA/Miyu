@@ -153,3 +153,57 @@ fn read_header_only_takes_the_first_32kb() {
     assert_eq!(raw.len(), HEADER_READ_LIMIT);
     assert_eq!(description_from_script(&path), Some("Big".to_string()));
 }
+
+/// 扩展清单五字段(09-10 分层架构阶段 1):信任位、权限、桩示例、指路句、前置工具。
+#[test]
+fn extracts_manifest_fields_for_trust_permission_example_hint_and_requires() {
+    let raw = "#!/usr/bin/env python3\n\
+# Description: Weather lookup\n\
+# Trust: external\n\
+# Permission: read-only\n\
+# Example: {\"city\":\"Tokyo\"}\n\
+# Hint: read: Prefix a path with kb: to read the knowledge base.\n\
+# 指路：web_fetch：Fetch the source page with web_fetch.\n\
+# Requires: review_aur_package, check_issue\n\
+import sys";
+    let metadata = extract_metadata(raw);
+    assert_eq!(metadata.trust, Some(crate::tools::ToolTrust::External));
+    assert_eq!(
+        metadata.permission,
+        Some(crate::tools::ToolPermission::ReadOnly)
+    );
+    assert_eq!(
+        metadata.stub_example.as_deref(),
+        Some("{\"city\":\"Tokyo\"}")
+    );
+    assert_eq!(
+        metadata.hints,
+        vec![
+            (
+                "read".to_string(),
+                " Prefix a path with kb: to read the knowledge base.".to_string()
+            ),
+            (
+                "web_fetch".to_string(),
+                " Fetch the source page with web_fetch.".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        metadata.requires,
+        vec!["review_aur_package".to_string(), "check_issue".to_string()]
+    );
+}
+
+#[test]
+fn manifest_fields_default_to_owner_and_unset() {
+    let metadata = extract_metadata("#!/bin/sh\n# Description: plain\necho ok");
+    assert_eq!(metadata.trust, None);
+    assert_eq!(metadata.permission, None);
+    assert!(metadata.stub_example.is_none());
+    assert!(metadata.hints.is_empty());
+    assert!(metadata.requires.is_empty());
+    // 认不出的值不当成外部可见:写错了宁可保守。
+    let metadata = extract_metadata("#!/bin/sh\n# Trust: everyone-and-their-dog\necho ok");
+    assert_eq!(metadata.trust, None);
+}

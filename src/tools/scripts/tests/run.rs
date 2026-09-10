@@ -70,6 +70,7 @@ async fn a_script_run_points_the_cache_at_miyu() {
         &serde_json::json!({}),
         30,
         ArgvMode::Off,
+        &crate::tools::ToolProgress::default(),
     )
     .await
     .unwrap();
@@ -101,6 +102,7 @@ async fn args_json_env_mirrors_stdin() {
         &json!({"query": "x"}),
         30,
         ArgvMode::Off,
+        &crate::tools::ToolProgress::default(),
     )
     .await
     .unwrap();
@@ -153,6 +155,7 @@ async fn flags_mode_passes_arguments_on_argv() {
         &json!({"query": "hello world", "limit": 5, "json": true, "dry": false}),
         30,
         ArgvMode::Flags,
+        &crate::tools::ToolProgress::default(),
     )
     .await
     .unwrap();
@@ -161,4 +164,68 @@ async fn flags_mode_passes_arguments_on_argv() {
         parsed["stdout"].as_str().unwrap(),
         "--json\n--limit=5\n--query=hello world"
     );
+}
+
+/// `MIYU-IMAGE: 路径 | 说明` 行从 stdout 里摘掉,图片交给投递层;相对路径按
+/// 脚本缓存目录解析,不存在的文件只记警告不进投递。
+#[test]
+fn attachment_lines_are_split_out_of_stdout() {
+    let cache = Path::new("/tmp/miyu-cache");
+    let (kept, images) = split_attachment_lines(
+        "hello\nMIYU-IMAGE: /tmp/a.png | 天气图\n  MIYU-IMAGE: rel/b.png\nMIYU-IMAGE:\nworld",
+        cache,
+    );
+    assert_eq!(kept, "hello\nworld");
+    assert_eq!(
+        images,
+        vec![
+            (PathBuf::from("/tmp/a.png"), "天气图".to_string()),
+            (cache.join("rel/b.png"), String::new()),
+        ]
+    );
+}
+
+/// 真跑一个脚本:它写一张图并报 MIYU-IMAGE,进度通道里应收到 Image 事件,
+/// 返回体的 stdout 不再带那一行。
+#[tokio::test]
+async fn a_script_can_hand_back_an_image() {
+    let temp = tempfile::tempdir().unwrap();
+    let scripts_dir = temp.path().join("scripts");
+    let cache_dir = temp.path().join("cache");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let image = cache_dir.join("shot.png");
+    std::fs::write(&image, b"png").unwrap();
+    let script = scripts_dir.join("shooter");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho before\necho 'MIYU-IMAGE: {} | shot'\necho after\n",
+            image.display()
+        ),
+    )
+    .unwrap();
+    executable(&script);
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let progress = crate::tools::ToolProgress::new(sender);
+    let out = super::super::run_script(
+        "shooter",
+        &scripts_dir,
+        &cache_dir,
+        &serde_json::json!({}),
+        30,
+        ArgvMode::Off,
+        &progress,
+    )
+    .await
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["stdout"], "before\nafter");
+    match receiver.try_recv().unwrap() {
+        crate::tools::ToolProgressEvent::Image { path, alt, .. } => {
+            assert_eq!(path, image);
+            assert_eq!(alt, "shot");
+        }
+        other => panic!("expected an image event, got {other:?}"),
+    }
 }

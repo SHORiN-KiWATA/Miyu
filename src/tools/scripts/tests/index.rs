@@ -480,3 +480,49 @@ fn same_stem_sibling_with_header_does_not_replace_indexed_entry() {
     assert_eq!(scan.entries[0].description, "Python one");
     assert!(scan.entries[0].path.ends_with("tool.py"));
 }
+
+/// 头部的五个清单字段一路落到 ToolSpec:信任位、权限、桩示例、指路句、前置工具;
+/// index 里显式写的仍是覆盖层。
+#[test]
+fn manifest_fields_reach_the_tool_spec() {
+    let raw = "#!/bin/sh\n\
+# Description: Weather lookup\n\
+# Trust: external\n\
+# Permission: read-only\n\
+# Example: {\"city\":\"Tokyo\"}\n\
+# Hint: web_fetch: Fetch the page with web_fetch.\n\
+# Requires: check_issue\n\
+echo ok";
+    let metadata = extract_metadata(raw);
+    let mut entry = ScriptEntry::overlay("weather".to_string(), "weather".to_string());
+    merge_header_defaults(&mut entry, &metadata);
+    let spec = entry_to_spec(&entry, Path::new("."), Path::new(".")).unwrap();
+    assert_eq!(spec.trust, crate::tools::ToolTrust::External);
+    assert_eq!(spec.permission, crate::tools::ToolPermission::ReadOnly);
+    assert_eq!(spec.stub_example.as_deref(), Some("{\"city\":\"Tokyo\"}"));
+    assert_eq!(
+        spec.cross_hints,
+        vec![(
+            "web_fetch".to_string(),
+            " Fetch the page with web_fetch.".to_string()
+        )]
+    );
+    assert_eq!(spec.requires_prior, vec!["check_issue".to_string()]);
+
+    // 缺省:只给属主、writes、无示例。
+    let mut plain = ScriptEntry::overlay("plain".to_string(), "plain".to_string());
+    plain.description = "Plain".to_string();
+    let spec = entry_to_spec(&plain, Path::new("."), Path::new(".")).unwrap();
+    assert_eq!(spec.trust, crate::tools::ToolTrust::Owner);
+    assert_eq!(spec.permission, crate::tools::ToolPermission::Writes);
+    assert!(spec.stub_example.is_none());
+
+    // index 覆盖层写了 trust 就以 index 为准。
+    let mut pinned = ScriptEntry::overlay("pinned".to_string(), "pinned".to_string());
+    pinned.trust = crate::tools::ToolTrust::External;
+    merge_header_defaults(
+        &mut pinned,
+        &extract_metadata("#!/bin/sh\n# Description: x\n# Trust: owner\necho"),
+    );
+    assert_eq!(pinned.trust, crate::tools::ToolTrust::External);
+}

@@ -39,11 +39,28 @@ const CROSS_TOOL_HINTS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// 注册表构造收尾时调用一次。
+/// 注册表构造收尾时调用一次。内置表之外,脚本/插件也能在清单里自带指路句
+/// (`Hint: <tool>: <sentence>` → ToolSpec::cross_hints),同一条规则:被指
+/// 工具不在场就不加。
 pub(super) fn apply(registry: &mut ToolRegistry) {
     for (tool, requires, suffix) in CROSS_TOOL_HINTS {
         if registry.contains(tool) && registry.contains(requires) {
             registry.amend_description(tool, suffix);
+        }
+    }
+    let mut declared = registry
+        .specs()
+        .into_iter()
+        .filter(|spec| !spec.cross_hints.is_empty())
+        .map(|spec| (spec.name.clone(), spec.cross_hints.clone()))
+        .collect::<Vec<_>>();
+    // HashMap 无序,按名字排定后追加,字节恒定(AGENTS §1.1)。
+    declared.sort_by(|a, b| a.0.cmp(&b.0));
+    for (tool, hints) in declared {
+        for (requires, suffix) in hints {
+            if registry.contains(&requires) {
+                registry.amend_description(&tool, &suffix);
+            }
         }
     }
 }
@@ -96,5 +113,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 清单自带的指路句(`Hint: web_fetch: …`)与内置表同一规则:被指工具在场
+    /// 才追加,不在场一字不加。
+    #[test]
+    fn manifest_declared_hints_follow_the_same_presence_rule() {
+        let hinted = || {
+            stub("weather").with_cross_hints(vec![(
+                "web_fetch".to_string(),
+                " Fetch the source page with web_fetch.".to_string(),
+            )])
+        };
+        let mut both = ToolRegistry::new();
+        both.register(hinted());
+        both.register(stub("web_fetch"));
+        apply(&mut both);
+        assert!(both
+            .get("weather")
+            .unwrap()
+            .description
+            .ends_with("base. Fetch the source page with web_fetch."));
+
+        let mut alone = ToolRegistry::new();
+        alone.register(hinted());
+        apply(&mut alone);
+        assert_eq!(alone.get("weather").unwrap().description, "base.");
     }
 }

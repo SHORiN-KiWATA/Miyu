@@ -5,6 +5,7 @@ pub(crate) use lazy::*;
 pub(crate) use spec::*;
 pub use spec::{
     GuardCtx, ToolFuture, ToolGuard, ToolPermission, ToolProgress, ToolProgressEvent, ToolSpec,
+    ToolTrust,
 };
 
 use crate::llm::{FunctionDefinition, ToolDefinition};
@@ -36,6 +37,18 @@ pub struct ToolRegistry {
     default_timeout: Option<std::time::Duration>,
     /// 单调守卫链,按注册序求值,第一个拒绝即终。
     guards: Vec<ToolGuard>,
+    /// 脚本可见范围:受限平台注册表只收 `Trust: external` 的脚本。热刷新
+    /// 走同一条 replace_script_tools,所以范围记在注册表上而不是调用点。
+    script_scope: ScriptScope,
+}
+
+/// 注册表收哪些脚本。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ScriptScope {
+    #[default]
+    All,
+    /// 只收声明了 `Trust: external` 的脚本(不可信场所)。
+    ExternalOnly,
 }
 
 impl ToolRegistry {
@@ -55,6 +68,19 @@ impl ToolRegistry {
 
     pub fn add_guard(&mut self, guard: ToolGuard) {
         self.guards.push(guard);
+    }
+
+    pub fn set_script_scope(&mut self, scope: ScriptScope) {
+        self.script_scope = scope;
+    }
+
+    pub fn script_scope(&self) -> ScriptScope {
+        self.script_scope
+    }
+
+    /// 所有已注册工具的快照(无序)。给注册收尾的批处理用(指路句等)。
+    pub(crate) fn specs(&self) -> Vec<Arc<ToolSpec>> {
+        self.tools.values().cloned().collect()
     }
 
     fn guard_denial(&self, tool: &ToolSpec, args: &Value, ctx: &GuardCtx) -> Option<String> {
@@ -133,6 +159,10 @@ impl ToolRegistry {
             }
             if !names.insert(script.name.clone()) {
                 bail!("duplicate script id: {}", script.name);
+            }
+            if self.script_scope == ScriptScope::ExternalOnly && script.trust != ToolTrust::External
+            {
+                continue;
             }
             // occupant 是否脚本按注册表现状判断,不依赖 script_tool_names:
             // 脚本先注册、同名 MCP 工具后覆盖时,名单还挂着旧名字,按名单
@@ -999,5 +1029,96 @@ mod tests {
         assert!(registry.get("remember_fact").is_none());
         assert!(cached.get("remember_fact").is_some());
         assert!(!registry.unregister("remember_fact"));
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    fn script(name: &str, trust: ToolTrust) -> ToolSpec {
+        ToolSpec::new(
+            name,
+            "desc",
+            json!({"type":"object","properties":{}}),
+            |_| async { Ok(String::new()) },
+        )
+        .script()
+        .with_trust(trust)
+    }
+
+    /// 受限平台注册表只收 `Trust: external` 的脚本;范围记在注册表上,
+    /// 热刷新再走 replace_script_tools 时过滤照旧。
+    #[test]
+    fn external_only_scope_filters_owner_scripts() {
+        let mut registry = ToolRegistry::new();
+        registry.set_script_scope(ScriptScope::ExternalOnly);
+        registry
+            .replace_script_tools(
+                vec![
+                    script("weather", ToolTrust::External),
+                    script("gpu_toggle", ToolTrust::Owner),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(registry.contains("weather"));
+        assert!(!registry.contains("gpu_toggle"));
+
+        let mut everything = ToolRegistry::new();
+        everything
+            .replace_script_tools(
+                vec![
+                    script("weather", ToolTrust::External),
+                    script("gpu_toggle", ToolTrust::Owner),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(everything.contains("weather") && everything.contains("gpu_toggle"));
+    }
+
+    /// `Requires:` 清单字段:本回合先调过前置工具之一才放行,否则以 tool error 拒。
+    #[tokio::test]
+    async fn requires_prior_guard_enforces_manifest_prerequisites() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolSpec::new(
+                "install_thing",
+                "installs",
+                json!({"type":"object","properties":{}}),
+                |_| async { Ok("installed".to_string()) },
+            )
+            .with_requires_prior(vec!["review_thing".to_string()]),
+        );
+        registry.add_guard(crate::tools::requires_prior_guard());
+        let (sender, _receiver) = mpsc::unbounded_channel();
+
+        let cold = vec!["install_thing".to_string()];
+        let denied = registry
+            .call_with_progress_future(
+                "install_thing",
+                "{}",
+                sender.clone(),
+                &GuardCtx { used_tools: &cold },
+            )
+            .unwrap()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(denied.contains("requires calling review_thing"), "{denied}");
+
+        let warm = vec!["review_thing".to_string(), "install_thing".to_string()];
+        let allowed = registry
+            .call_with_progress_future(
+                "install_thing",
+                "{}",
+                sender,
+                &GuardCtx { used_tools: &warm },
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(allowed, "installed");
     }
 }

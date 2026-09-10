@@ -44,6 +44,11 @@
 | `Timeout` | `timeout_seconds`、`超时` | 秒，默认 120，上限 300 |
 | `Group` | `groups`、`分组` | `load_tools` 分组，逗号分隔 |
 | `Argv` | | `none`（默认）或 `flags`，见下 |
+| `Trust` | `信任`、`可见范围` | `owner`（默认）只给属主类入口（终端、本机 WebUI、语音）；`external` 也给不可信入口（QQ 群、远端 WebUI 成员）。注册位置不再是脚本唯一的权限边界，清单自己说能不能出去 |
+| `Permission` | `权限` | `writes`（默认，脚本会跑命令）、`read-only`、`presentation` |
+| `Example` | `stub_example`、`示例` | stub 加载模式下附在桩上的一行调用示例，如 `{"city":"Tokyo"}`。只给「容易猜错、契约又短」的脚本写 |
+| `Hint` | `cross_hint`、`指路`、`指路句` | `Hint: <工具>: <句子>`。被指的工具在同一注册表里时，句子追加到本脚本描述末尾；不在场一个字不加。可写多行 |
+| `Requires` | `requires_prior`、`需先调用`、`前置工具` | 逗号分隔。本回合先调用过其中之一才放行，否则以 tool error 拒（数据驱动的跨工具闸） |
 
 ## 运行时契约
 
@@ -54,6 +59,7 @@
 - **上限**：单流 8MiB 硬截断，展示 20000 字符软截断。列表类结果要给 `limit` 参数。
 - **缓存目录**：`MIYU_SCRIPT_CACHE_DIR` 指向 Miyu 的缓存目录，登录态、cookie、中间产物放这里；变量不存在（终端直接跑）时退回 XDG 默认。
 - **输出格式**：默认紧凑可读，提供 `format=json` 供逐字段处理。
+- **图片回传**：stdout 里一行 `MIYU-IMAGE: <路径> | <说明>`（说明可省）会被整行摘掉，图片交给投递层（终端内联、WebUI、QQ 各自渲染）。相对路径按 `MIYU_SCRIPT_CACHE_DIR` 解析；文件不存在只记警告。
 
 ## 用 manage_script 注册
 

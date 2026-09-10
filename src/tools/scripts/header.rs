@@ -67,6 +67,16 @@ pub(crate) struct ScriptMetadata {
     pub(crate) groups: Vec<String>,
     pub(crate) argv: Option<ArgvMode>,
     pub(crate) parameters: Option<Value>,
+    /// `Trust: external` = 也给不可信场所(QQ 群等);缺省只给属主。
+    pub(crate) trust: Option<ToolTrust>,
+    /// `Permission: read-only|presentation|writes`;缺省 writes(脚本会跑命令)。
+    pub(crate) permission: Option<ToolPermission>,
+    /// `Example: {"query":"x"}`:stub 模式下附在桩上的一行调用示例。
+    pub(crate) stub_example: Option<String>,
+    /// `Hint: <tool>: <sentence>`:被指工具在场时把句子追加到本脚本描述末尾。
+    pub(crate) hints: Vec<(String, String)>,
+    /// `Requires: tool_a, tool_b`:本回合先调用过其中之一才放行。
+    pub(crate) requires: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +90,11 @@ enum HeaderKey {
     Groups,
     Argv,
     Parameters,
+    Trust,
+    Permission,
+    Example,
+    Hint,
+    Requires,
 }
 
 /// 读脚本开头(最多 32KB),UTF-8 边界截断按 lossy 处理——头部在前,截在
@@ -189,6 +204,15 @@ pub(crate) fn extract_metadata(raw: &str) -> ScriptMetadata {
             HeaderKey::Timeout => metadata.timeout_seconds = parse_timeout(value),
             HeaderKey::Groups => metadata.groups = split_groups(value),
             HeaderKey::Argv => metadata.argv = ArgvMode::parse(value),
+            HeaderKey::Trust => metadata.trust = ToolTrust::parse(value),
+            HeaderKey::Permission => metadata.permission = ToolPermission::parse(value),
+            HeaderKey::Example => metadata.stub_example = Some(value.to_string()),
+            HeaderKey::Hint => {
+                if let Some(hint) = split_hint(value) {
+                    metadata.hints.push(hint);
+                }
+            }
+            HeaderKey::Requires => metadata.requires = split_groups(value),
         }
     }
     metadata
@@ -221,6 +245,11 @@ fn header_key(raw: &str) -> Option<HeaderKey> {
         "group" | "groups" | "分组" => HeaderKey::Groups,
         "argv" => HeaderKey::Argv,
         "parameters" | "params" | "schema" | "参数" => HeaderKey::Parameters,
+        "trust" | "信任" | "可见范围" => HeaderKey::Trust,
+        "permission" | "权限" => HeaderKey::Permission,
+        "example" | "stub_example" | "示例" => HeaderKey::Example,
+        "hint" | "cross_hint" | "指路" | "指路句" => HeaderKey::Hint,
+        "requires" | "requires_prior" | "需先调用" | "前置工具" => HeaderKey::Requires,
         _ => return None,
     })
 }
@@ -231,6 +260,18 @@ fn parse_timeout(value: &str) -> Option<u64> {
         .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '秒')
         .trim();
     digits.parse::<u64>().ok().filter(|secs| *secs > 0)
+}
+
+/// `Hint: read: Prefix a path with kb: …` → (被指工具, 句子)。句子自带前导空格,
+/// 它是接在描述末尾的。
+fn split_hint(value: &str) -> Option<(String, String)> {
+    let (tool, sentence) = value.split_once([':', '：'])?;
+    let tool = tool.trim();
+    let sentence = sentence.trim();
+    if tool.is_empty() || sentence.is_empty() {
+        return None;
+    }
+    Some((tool.to_string(), format!(" {sentence}")))
 }
 
 fn split_groups(value: &str) -> Vec<String> {
