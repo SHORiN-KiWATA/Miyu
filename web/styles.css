@@ -9694,7 +9694,8 @@ body.miyu-paused *::after {
 .reasoning-peek {
   display: none;
   min-width: 0;
-  flex: 1 1 auto;
+  /* 只占文字那么宽,展开箭头紧跟其后;放不下时才被压到剩余宽度 */
+  flex: 0 1 auto;
   justify-content: flex-start;
   margin-left: 6px;
   overflow: hidden;
