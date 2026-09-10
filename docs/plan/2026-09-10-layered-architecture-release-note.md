@@ -23,5 +23,11 @@
 - 导出/导入认识新目录;旧的导出包导入后下次启动自动搬成新布局。
 - 未做:成员各自一份会话库（现在成员的会话仍在管理员那份库里,靠归属列区分）;`data/personas/default` 改名成 `personas/miyu`。
 
+
+## 独立版本(可与目录搬家同版):包管理器 `miyu pm`
+- 新命令 `miyu pm`(`miyupm` 同):`install <包名|owner/repo[@ref]|GitHub 链接|本地目录>`、`remove`、`upgrade`、`search`、`list`、`tap add|remove|list`。一个包就是一个仓库,根上一份 `miyu-package.toml` 说明带哪些脚本、技能,或者整个是一个人格(提示词 + 启用集 + 头像 + 只给这个人格的脚本/技能)。装前先摊开文件清单确认;装进来的每个文件都记在 `extensions/pm/lock.json`,卸载按它删,升级时 commit 或内容没变就不动;要装的文件被别的包占着会拒。写包的格式见 wiki「扩展指南」。
+- 索引(tap)是一个 GitHub 仓库根上的 `index.json`;官方 tap `SHORiN-KiWATA/miyu-packages` 缺省在列,`miyu pm tap add owner/repo` 加第三方。仓库本身还没建,建了就能 `miyu pm search`。
+- 打包提示:AUR 包可加一个 `/usr/bin/miyupm -> miyu` 的符号链接。
+
 ## 修复
 - QQ 里她动过工具之后更不容易突然切成「助手播报腔」：那句「工具结果只是工作材料，别因此换语气」的风格锁以前只给终端和 WebUI，现在群聊人格也带上（终端侧提示词一个字节没动，不掉缓存）。

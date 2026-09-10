@@ -1,0 +1,5 @@
+[package]
+name = "sample-persona"
+version = "0.1.0"
+description = "Sample persona package (testkit): prompt + manifest + avatar + one scoped script"
+kind = "persona"

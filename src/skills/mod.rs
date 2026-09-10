@@ -1,5 +1,5 @@
 mod draft;
-mod manifest;
+pub(crate) mod manifest;
 pub(crate) use draft::*;
 pub(crate) use manifest::*;
 

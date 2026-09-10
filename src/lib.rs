@@ -31,6 +31,7 @@ mod paths;
 mod persona_hint;
 mod platform_types;
 mod platforms;
+mod pm;
 mod prompts;
 mod question;
 mod question_tui;

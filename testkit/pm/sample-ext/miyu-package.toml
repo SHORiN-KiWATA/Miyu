@@ -1,0 +1,10 @@
+[package]
+name = "sample-ext"
+version = "1.0.0"
+description = "Sample extension package: one script + one skill (testkit)"
+kind = "extension"
+requires-miyu = ">=0.5.0"
+
+[install]
+scripts = ["scripts/*.py"]
+skills = ["skills/*"]

@@ -94,10 +94,12 @@
 
 ### 阶段 7 · 包管理器
 
-- [ ] `miyu pm install|remove|upgrade|search|list`(一套主语法 + 少量别名;`miyupm` shim)
-- [ ] 索引:官方 tap 仓库映射包名 → owner/repo;允许第三方 tap
-- [ ] 锁文件:commit sha + 内容指纹;`requires miyu >= x.y`;装前摊开清单
-- [ ] 只往 `extensions/` 与 `personas/` 放文件;装完重扫指纹、通知 daemon
+- [x] `miyu pm install|remove|upgrade|search|list|tap`(别名 add/i/rm/uninstall/up/update/ls;`miyupm` = argv[0] 识别的 shim,打包做符号链接)——`src/pm/mod.rs`、`src/cli/pm_cmds.rs`
+- [x] 索引:tap = GitHub 仓库根上 `index.json`(包名 → owner/repo);官方 tap `SHORiN-KiWATA/miyu-packages` 缺省在列(仓库待建);`tap add` 先验索引可读;`install` 也直接吃 `owner/repo[@ref]`、GitHub URL、本地目录
+- [x] 锁文件 `extensions/pm/lock.json`:来源/ref/commit(ls-remote → GitHub API)/版本/文件清单/blake3 指纹;`requires-miyu = ">=x.y.z"`;装前摊开文件清单确认(`-y` 跳过);升级按 commit 或指纹判「已是最新」
+- [x] 只往 `extensions/`、`personas/`(人格包另写 `data/prompts/<名>.md`、`data/persona-avatars/<名>/`——人格碎片未归位前的妥协)放文件;目标被别的包占着或不是 pm 装的拒(`--force`);装完 `reload_daemon_if_running`;脚本目录变动本就下一回合重扫
+- [x] 清单格式 `miyu-package.toml`(`[package]{name,version,description,kind,requires-miyu}` + `[install]{scripts,skills,persona}` 小 glob);tar 解包拒 `..`/绝对路径/链接;单测 `pm::tests` 7 项;真二进制 `testkit/pm/pm_e2e.py`(离线:本地包装/升/冲突/人格包/miyupm/卸)
+- [ ] 未做:签名、二进制包、MCP 配置片段、提示词片段;联网路径(search/按名装/tap)无夹具,手工验
 - 验证:装/卸/升一个脚本包、一个 persona 包;指纹重扫生效
 
 ## 可删项清单(草稿,全部需确认后再删)

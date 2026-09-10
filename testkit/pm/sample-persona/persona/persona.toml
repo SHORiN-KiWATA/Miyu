@@ -1,0 +1,5 @@
+[subsystems]
+memory = false
+
+[plugins]
+enabled = ["files", "scripts"]

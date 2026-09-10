@@ -96,6 +96,8 @@ pub enum Command {
     Paths,
     /// 家目录布局:看计划 / --apply 立刻搬 / --rollback 搬回去
     Layout(LayoutArgs),
+    /// 包管理器:install / remove / upgrade / search / list / tap(`miyupm` 同)
+    Pm(PmArgs),
     Config(ConfigArgs),
     Reload,
     Models(ModelsArgs),
