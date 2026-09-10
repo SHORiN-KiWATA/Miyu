@@ -27,15 +27,30 @@ pub(in crate::web) fn identity_json(identity: &WebIdentity) -> Value {
     })
 }
 
-/// 自己是谁。
+/// 某个登录者的档案文件:管理员(含只填口令的机器级管理员)是属主档案,
+/// 成员是自己家目录里的 profile.md。
+pub(in crate::web) fn profile_file_for(paths: &MiyuPaths, identity: &WebIdentity) -> PathBuf {
+    if identity.admin {
+        paths.profile_file()
+    } else {
+        paths.user_profile_file(&identity.username)
+    }
+}
+
+pub(in crate::web) const MAX_PROFILE_CHARS: usize = 20_000;
+
+/// 自己是谁 + 档案内容。
 pub(in crate::web) async fn account_me(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> std::result::Result<Response, ApiError> {
     let identity = require_identity(&headers, &state)?;
+    let profile =
+        std::fs::read_to_string(profile_file_for(&state.paths, &identity)).unwrap_or_default();
     Ok(Json(json!({
         "account": identity_json(&identity),
         "multi_user": state.auth.required(),
+        "profile": profile,
     }))
     .into_response())
 }
@@ -49,10 +64,14 @@ pub(in crate::web) struct UpdateAccountRequest {
     pub(in crate::web) current_password: Option<String>,
     #[serde(default)]
     pub(in crate::web) password: Option<String>,
+    /// 「希望 AI 如何认知你」——写进自己的 profile.md;只在 WebUI/终端等属主类
+    /// 入口注入提示词,通讯平台不看。
+    #[serde(default)]
+    pub(in crate::web) profile: Option<String>,
 }
 
-/// 改自己的显示名/密码。拿 `-p` 口令登录的机器级管理员没有账号行,密码
-/// 是命令行给的,这里改不了。
+/// 改自己的显示名/密码/档案。拿 `-p` 口令登录的机器级管理员没有账号行,
+/// 密码是命令行给的,这里改不了;档案照改(那是属主档案)。
 pub(in crate::web) async fn account_update(
     State(state): State<DaemonState>,
     headers: HeaderMap,
@@ -60,7 +79,23 @@ pub(in crate::web) async fn account_update(
 ) -> std::result::Result<Response, ApiError> {
     require_mutation(&headers, &state)?;
     let identity = require_identity(&headers, &state)?;
+    if let Some(profile) = request.profile.as_deref() {
+        if profile.chars().count() > MAX_PROFILE_CHARS {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "profile is too long",
+            ));
+        }
+        let path = profile_file_for(&state.paths, &identity);
+        if let Some(parent) = path.parent() {
+            crate::paths::ensure_private_dir(parent).map_err(ApiError::internal)?;
+        }
+        std::fs::write(&path, profile.trim_end().to_string() + "\n").map_err(ApiError::internal)?;
+    }
     if identity.account_id.is_empty() {
+        if request.display_name.is_none() && request.password.is_none() {
+            return Ok(Json(json!({ "account": identity_json(&identity) })).into_response());
+        }
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "this login has no account row; sign in with a username to edit it",

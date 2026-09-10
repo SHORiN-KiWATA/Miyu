@@ -266,8 +266,9 @@ impl AppConfig {
                 documents.join("Miyu"),
                 documents.join("miyu"),
                 legacy_data.join("documents"),
+                paths.data_dir.join("documents"),
             ],
-            &paths.data_dir.join("documents"),
+            &paths.documents_dir(),
             base.home_dir(),
         ) {
             relocate_managed_output(&from, &to);
@@ -278,8 +279,9 @@ impl AppConfig {
                 pictures.join("miyu"),
                 pictures.join("Miyu"),
                 legacy_data.join("pictures"),
+                paths.data_dir.join("pictures"),
             ],
-            &paths.data_dir.join("pictures"),
+            &paths.pictures_dir,
             base.home_dir(),
         ) {
             relocate_managed_output(&from, &to);

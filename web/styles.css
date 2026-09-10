@@ -9351,6 +9351,10 @@ body.miyu-paused *::after {
   background: var(--surface-2); color: var(--text); font-size: var(--fs-ui); outline: 0; }
 .acct-grid input:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
 .acct-grid input:disabled { color: var(--text-soft); }
+.acct-profile { display: grid; gap: 4px; margin-top: 12px; font-size: var(--fs-meta); color: var(--text-soft); }
+.acct-profile textarea { min-height: 120px; padding: 10px; border: 0; border-radius: var(--radius); resize: vertical;
+  background: var(--surface-2); color: var(--text); font-size: var(--fs-ui); font-family: inherit; outline: 0; }
+.acct-profile textarea:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
 .acct-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .acct-actions .login-submit { margin-top: 0; padding: 0 18px; }
 .acct-head-action { margin-left: auto; }

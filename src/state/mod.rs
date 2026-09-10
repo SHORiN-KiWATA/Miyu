@@ -215,7 +215,10 @@ impl StateStore {
 
     pub fn new(paths: &MiyuPaths) -> Result<Self> {
         let state_dir = paths.state_dir.clone();
-        let conv_db = Arc::new(ConversationDb::open(&state_dir)?);
+        let conv_db = Arc::new(ConversationDb::open_at(
+            &paths.conversation_db_dir(),
+            &state_dir,
+        )?);
         let platform_access = shared_platform_access_index(&state_dir, &conv_db)?;
         let session_id = Arc::new(std::sync::RwLock::new(Arc::<str>::from(
             conv_db.resolve_current_session()?,
@@ -234,8 +237,8 @@ impl StateStore {
         conv_db.discard_stale_queued_prompts(&queue_session_id, queue_owner_pid)?;
         Ok(Self {
             state_dir,
-            artifacts_dir: paths.data_dir.join("artifacts"),
-            shared_files_dir: paths.data_dir.join("shared"),
+            artifacts_dir: paths.artifacts_dir(),
+            shared_files_dir: paths.shared_files_dir(),
             conv_db,
             platform_access,
             session_id,

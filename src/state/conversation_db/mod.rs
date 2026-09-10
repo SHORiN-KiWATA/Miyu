@@ -150,12 +150,17 @@ impl ConversationDb {
     /// 损坏可能从 open/PRAGMA/版本读取/迁移里任意一处冒出来,所以在出口统一
     /// 认,不逐个 `?` 去猜。
     pub fn open(state_dir: &Path) -> Result<Self> {
-        let db_path = state_dir.join("conversation.db");
-        Self::open_inner(state_dir).map_err(|error| {
+        Self::open_at(state_dir, state_dir)
+    }
+
+    /// 库文件在 `db_dir`(家目录布局下是管理员家目录),附件仍在 state。
+    pub fn open_at(db_dir: &Path, state_dir: &Path) -> Result<Self> {
+        let db_path = db_dir.join("conversation.db");
+        Self::open_inner(db_dir, state_dir).map_err(|error| {
             if !is_database_corrupt(&error) {
                 return error;
             }
-            let backup = state_dir.join("conversation.db.bak");
+            let backup = db_dir.join("conversation.db.bak");
             let recovery = if backup.exists() {
                 format!(
                     "\n可用的迁移前备份：{}（改名成 conversation.db 顶上，会丢掉最后一次版本升级之后的记录）",
@@ -174,9 +179,10 @@ impl ConversationDb {
         })
     }
 
-    fn open_inner(state_dir: &Path) -> Result<Self> {
+    fn open_inner(db_dir: &Path, state_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(db_dir)?;
         std::fs::create_dir_all(state_dir)?;
-        let db_path = state_dir.join("conversation.db");
+        let db_path = db_dir.join("conversation.db");
         let mut conn = Connection::open(&db_path)
             .with_context(|| format!("failed to open conversation db: {}", db_path.display()))?;
         conn.execute_batch(
@@ -225,8 +231,8 @@ impl ConversationDb {
                 // 再 VACUUM INTO、失败只 log"——在坏库上 VACUUM 几乎必失败,
                 // 于是用户最需要备份的那一刻,上一份好备份刚被删掉,新的又没
                 // 生成(08-29 用户反馈的坏库现场)。
-                let bak = state_dir.join("conversation.db.bak");
-                let staging = state_dir.join("conversation.db.bak.new");
+                let bak = db_dir.join("conversation.db.bak");
+                let staging = db_dir.join("conversation.db.bak.new");
                 let _ = std::fs::remove_file(&staging);
                 match conn.execute("VACUUM INTO ?1", [staging.to_string_lossy().as_ref()]) {
                     Ok(_) => {

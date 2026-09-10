@@ -41,6 +41,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        # STUB_DUMP_SYSTEM=<文件>:每个请求的 system 消息全文追加成一行 JSON(多用户测具
+        # 用它验证「成员的档案进了提示词、管理员的没进」)。
+        if os.environ.get("STUB_DUMP_SYSTEM"):
+            def _text(m):
+                c = m.get("content")
+                if isinstance(c, list):
+                    c = "".join(p.get("text", "") for p in c if isinstance(p, dict))
+                return c or ""
+            system = "\n".join(_text(m) for m in body.get("messages", []) if m.get("role") == "system")
+            with open(os.environ["STUB_DUMP_SYSTEM"], "a") as f:
+                f.write(json.dumps({"system": system}, ensure_ascii=False) + "\n")
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("cache-control", "no-cache")

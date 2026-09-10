@@ -112,7 +112,7 @@ fn read_dispatch(
         if name.is_empty() {
             return crate::tools::artifact::managed_manifest(paths, &session);
         }
-        let root = paths.data_dir.join("artifacts");
+        let root = paths.artifacts_dir();
         let resolved = crate::tools::artifact::managed_file_path(&root, &session, name)?;
         args["path"] = Value::String(resolved.to_string_lossy().to_string());
     } else if let Some(rel) = path_arg.strip_prefix("kb:") {

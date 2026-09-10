@@ -285,8 +285,24 @@ async fn run_turn_task_inner(
             AgentMode::Normal => normal_tools.clone(),
             AgentMode::Dev => dev_tools.clone(),
         };
+        // 成员的档案(阶段 6):`home/<用户名>/profile.md` 顶替管理员的属主档案。
+        // 只改 Agent 手里的配置副本,资源缓存键不变;通讯平台受众本就不注入档案。
+        let mut agent_config = config.clone();
+        if platform_context.is_none() && !store.usage_account().is_empty() {
+            if let Some(account) = base_store
+                .account_by_id(store.usage_account())
+                .ok()
+                .flatten()
+            {
+                agent_config.prompt.user_identity_file = paths
+                    .user_profile_file(&account.username)
+                    .display()
+                    .to_string();
+                agent_config.prompt.active_identity.clear();
+            }
+        }
         let mut agent = Agent::new_for_audience(
-            config.clone(),
+            agent_config,
             &paths,
             store.clone(),
             // A platform turn buffers a whole round and posts it as one

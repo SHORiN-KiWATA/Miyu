@@ -40,6 +40,7 @@ mod data_cmds;
 mod embed_cmds;
 use embed_cmds::*;
 mod footer;
+mod layout_cmds;
 mod migrate_cmds;
 mod model_cmds;
 mod pop_cmds;
@@ -53,6 +54,7 @@ use alarm_worker::*;
 use daemon_log::*;
 use data_cmds::*;
 use footer::*;
+use layout_cmds::*;
 use migrate_cmds::*;
 use model_cmds::*;
 use pop_cmds::*;
@@ -174,6 +176,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
                 | Some(Command::ZshInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
+                | Some(Command::Layout(_))
                 | Some(Command::Import(_))
         )
     {
@@ -230,6 +233,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
             paths.print();
             Ok(())
         }
+        Some(Command::Layout(args)) => run_layout(&paths, args),
         Some(Command::Config(args)) => {
             let saved = run_config(&paths, args).await?;
             if saved && ipc::daemon_info(&paths).await.is_some() {

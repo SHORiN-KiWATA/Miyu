@@ -171,6 +171,15 @@ pub(in crate::web) async fn auth_register(
     if state.auth.throttle(peer.ip()).is_err() {
         return Ok(rate_limited_response());
     }
+    // 家目录名就是用户名(阶段 6):不能撞管理员的家目录,也不能撞已有目录。
+    if let Some(admin) = state.paths.home_admin() {
+        if admin.eq_ignore_ascii_case(request.username.trim()) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "username is already taken",
+            ));
+        }
+    }
     let store = state.state_store.clone();
     let (invite, username, display_name, password) = (
         request.invite,
@@ -190,8 +199,17 @@ pub(in crate::web) async fn auth_register(
             return Err(ApiError::new(StatusCode::BAD_REQUEST, error.to_string()));
         }
     };
+    if let Err(error) = ensure_user_home(&state.paths, &account.username) {
+        tracing::warn!(error = %error, username = %account.username, "creating member home failed");
+    }
     let session = state.auth.issue(WebIdentity::from_account(&account));
     session_cookie_response(&session)
+}
+
+/// 成员的家目录 `home/<用户名>/`(0700)。老布局下也建——档案文件要有地方放。
+pub(in crate::web) fn ensure_user_home(paths: &MiyuPaths, username: &str) -> Result<()> {
+    crate::paths::ensure_private_dir(&paths.homes_dir())?;
+    crate::paths::ensure_private_dir(&paths.user_home_dir(username))
 }
 
 pub(in crate::web) fn resolve_web_password(args: &WebArgs) -> Result<Option<String>> {

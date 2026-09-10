@@ -14,11 +14,11 @@ pub(super) const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 // 读取走 read 的 artifact: 前缀;发布仍是 present_artifact。
 pub fn register_webui(registry: &mut ToolRegistry, paths: &MiyuPaths, session_id: &str) {
     register_present(registry);
-    super::apply_patch::register_artifact(registry, paths.data_dir.join("artifacts"), session_id);
+    super::apply_patch::register_artifact(registry, paths.artifacts_dir(), session_id);
 }
 
 pub fn managed_manifest(paths: &MiyuPaths, session_id: &str) -> Result<String> {
-    let root = paths.data_dir.join("artifacts");
+    let root = paths.artifacts_dir();
     validate_session_id(session_id)?;
     let session_dir = root.join(session_id);
     let mut entries = Vec::new();
@@ -342,7 +342,7 @@ mod tests {
         create_artifact(
             json!({"filename":"secret-report.md", "content":"private body"}),
             ToolProgress::default(),
-            &paths.data_dir.join("artifacts"),
+            &paths.artifacts_dir(),
             "sess_test",
         )
         .unwrap();

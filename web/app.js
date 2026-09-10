@@ -284,6 +284,7 @@
     accountDisplayName: document.getElementById("accountDisplayName"),
     accountCurrentPassword: document.getElementById("accountCurrentPassword"),
     accountNewPassword: document.getElementById("accountNewPassword"),
+    accountProfile: document.getElementById("accountProfile"),
     accountSave: document.getElementById("accountSave"),
     accountLogout: document.getElementById("accountLogout"),
     accountError: document.getElementById("accountError"),
@@ -8674,6 +8675,10 @@
       elements.registerPassword.value = "";
       elements.registerInvite.value = "";
       await loadBootstrap();
+      if (!state.blocked) {
+        consoleOpen("account");
+        showToast("欢迎!先在这里写下希望她如何认知你,也可以直接返回聊天。", "info");
+      }
     } catch (error) {
       fail(error.message || "注册失败", elements.registerInvite);
     } finally {
@@ -9728,9 +9733,18 @@
     elements.accountNewPassword.disabled = noRow;
     elements.accountSave.disabled = noRow;
     elements.accountSelfHint.textContent = noRow
-      ? "用访问密码登录的是机器级管理员,密码在启动参数里改;用「admin」用户名登录可以改显示名。"
+      ? "用访问密码登录的是机器级管理员,密码在启动参数里改;用管理员用户名登录可以改显示名。"
       : account.admin ? "管理员" : "成员";
+    elements.accountSave.disabled = false;
     elements.accountStamp.textContent = "";
+    try {
+      const me = await apiRequest("/api/account").then((response) => response.json());
+      if (seq !== accountState.loadSeq) return;
+      elements.accountProfile.value = typeof me.profile === "string" ? me.profile : "";
+      accountState.profile = elements.accountProfile.value;
+    } catch (_) {
+      // 档案读不到就留空,保存时再报
+    }
     if (!isAdmin()) return;
     elements.inviteFresh.hidden = true;
     try {
@@ -9866,6 +9880,8 @@
       patch.password = newPassword;
       patch.current_password = elements.accountCurrentPassword.value;
     }
+    const profile = elements.accountProfile.value;
+    if (profile !== (accountState.profile ?? "")) patch.profile = profile;
     if (!Object.keys(patch).length) return showAccountError("没有要保存的改动");
     elements.accountSave.disabled = true;
     try {
@@ -9876,6 +9892,7 @@
       }
       elements.accountCurrentPassword.value = "";
       elements.accountNewPassword.value = "";
+      if (patch.profile != null) accountState.profile = patch.profile;
       showAccountError("");
       showToast("已保存", "success");
     } catch (error) {

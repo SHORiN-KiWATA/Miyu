@@ -172,9 +172,10 @@ impl StateStore {
     }
 
     /// 引导:daemon 带着 `-p` 起来时,保证有一个管理员账号且密码就是它。
-    /// 没有账号就建 `admin`;已有管理员就把密码重设成 `-p` 的值(它是属主
-    /// 这台机器上的机器级凭据,改了 `-p` 就该生效)。
-    pub fn ensure_bootstrap_admin(&self, password: &str) -> Result<Account> {
+    /// 没有账号就建一个(用户名 = 家目录名,拿不到时 `admin`);已有管理员就
+    /// 把密码重设成 `-p` 的值(它是属主这台机器上的机器级凭据,改了 `-p`
+    /// 就该生效)。
+    pub fn ensure_bootstrap_admin(&self, password: &str, username: &str) -> Result<Account> {
         let admins = self
             .conv_db
             .list_accounts()?
@@ -191,7 +192,12 @@ impl StateStore {
                 .account_by_id(&admin.id)?
                 .expect("admin account exists"));
         }
-        self.create_account(BOOTSTRAP_ADMIN_USERNAME, "", password, ROLE_ADMIN)
+        let username = if validate_username(username).is_ok() {
+            username
+        } else {
+            BOOTSTRAP_ADMIN_USERNAME
+        };
+        self.create_account(username, "", password, ROLE_ADMIN)
     }
 
     /// 管理员生成邀请码:返回明文(只此一次)。

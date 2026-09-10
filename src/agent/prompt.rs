@@ -36,15 +36,18 @@ pub(in crate::agent) fn with_runtime_system_context(
 
 /// 模式选提示词源:Dev=一行可编辑开发提示词(无人格全家、无用户身份,
 /// 极简原则);Normal=人格提示词(按 audience 附用户档案)。
+/// `with_user_profile`:属主档案进不进提示词——终端/WebUI 回合进,通讯平台
+/// 回合不进(阶段 6:成员的 WebUI 回合带的是成员自己的档案)。
 pub(in crate::agent) fn mode_system_prompt(
     config: &AppConfig,
     paths: &MiyuPaths,
     mode: AgentMode,
     audience: PromptAudience,
+    with_user_profile: bool,
 ) -> Result<String> {
     match mode {
         AgentMode::Dev => config.dev_system_prompt(paths),
-        AgentMode::Normal => config.system_prompt_for(paths, audience),
+        AgentMode::Normal => config.system_prompt_with(paths, audience, with_user_profile),
     }
 }
 

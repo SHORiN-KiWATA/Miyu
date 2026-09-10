@@ -42,7 +42,7 @@
 ### 阶段 2 · 系统提示词归位(独立可做,直接减跨端分叉)
 
 - [x] style-lock 给外部受众(追加末尾,属主字节序不变,Internal 不加);VOICE_PROTOCOL 留到阶段 4 按「可播报」能力位决定
-- [ ] 属主档案改由 `profile.md` 注入,只在 Owner/Member 入口;通讯平台不注入
+- [x] 属主档案改由 `profile.md` 注入,只在 Owner/Member 入口;通讯平台不注入(阶段 6:`user_profile_applies(audience, platform_turn)`——WebUI 回合(External 无平台上下文)现在也带档案,以前只有终端带)
 - [ ] 删除 host-environment 一行(可删项,需确认)
 - [ ] LaTeX 一句改由场所能力位决定
 - 验证:REPL 与 WebUI 同会话跨端 cache_read 不再掉(cache-usage.jsonl 取证法)
@@ -74,19 +74,22 @@
 - [x] 管理台闸:`/api/dash/*`、`/api/config`(GET/PUT)、思考档位、全局模型、供应商拉模型、语音、QQ 历史、记忆重置、清空统计、账号/邀请码 → `require_admin`;成员 403。前端 `data-admin-only` 隐藏侧栏设置按钮与控制台十个管理面板,成员只剩「数据统计(自己的)」与「账号」
 - [x] 事件流按归属过滤(`web/ownership.rs`):`session_id` → 归属;无则 `run_id` → 活跃回合表/`run.started` 反查;两者都没有的全局事件只给管理员。管理员也看不到成员会话的事件
 - [x] 账号面板:改显示名/密码、退出登录;管理员生成/作废邀请码、停用/恢复成员、重设密码、30 天按人用量;登录页加用户名 + 「注册账号」表单
-- [ ] OOBE 两步(专属人格 + 「希望 AI 如何认知你」→ `home/<user>/profile.md`,通讯平台不生效)——依赖阶段 6 家目录,顺延
-- [ ] `home/<user>/profile.md` 注入(属主类入口)——同上顺延
+- [~] OOBE:第二步「希望 AI 如何认知你」已落(注册成功即打开账号页,textarea 写 `home/<user>/profile.md`;通讯平台受众本就不注入档案);第一步「专属人格」(成员私有 persona、按会话选人格)未做——依赖按人拆库与会话级人格指针
+- [x] `home/<user>/profile.md` 注入:成员回合把 `prompt.user_identity_file` 指到自己的档案(task.rs,只改 Agent 的配置副本,资源缓存键不变);管理员读 `home/<admin>/profile.md`
 - [ ] 三个钩子:信任枚举 Member(今天=Owner)、回合上下文必填 principal、run_command spawn 处沙盒策略参数(默认完全放开)——principal 已落(成员回合必带);另两个未动
 - [x] 测具 `testkit/multi-user/e2e.py`:隔离 daemon + 桩模型,登录/邀请/注册/归属/管理台闸/用量按人/SSE 归属/停用恢复
 - 验证:两个账号各开会话互不可见;成员在共享 Miyu 下 recall 只见 public + 自己;dashboard/设置页 403
 
 ### 阶段 6 · 迁移(单独版本,只做搬家 + 回滚脚本)
 
-- [ ] `data/{conversation.db,ledger,artifacts,documents,pictures,identities}` → `home/shorin/`
-- [ ] `data/personas/default` → `personas/miyu`;`dev` 同级
-- [ ] `config/skills`、`data/scripts` → `extensions/`
-- [ ] 会话 id 不变;memory.db 内 origin_session_id 不动
-- [ ] 回滚脚本 + 干跑模式 + 备份
+- [x] `state/conversation.db(+wal/shm)`、`data/{ledger,artifacts,documents,pictures,shared→shares,identities}` → `home/<admin>/`;`identities/user-identity.md` → `home/<admin>/profile.md`(`src/paths/home_layout.rs`,复用资源迁移的预检/日志/原子移动;标记 `.home-layout-v1` 内容 = 管理员家目录名,取 `MIYU_ADMIN_USER` → 系统用户名 → `admin`;新装直接是新布局)
+- [x] `data/personas` → `personas/`(目录名仍 `default`/`dev`:persona scope 名穿透会话表/记忆库/脚本技能命名空间,改名要先做 scope 别名,另做)
+- [x] `data/skills`、`data/scripts` → `extensions/`(config→data 的资源迁移先落定才搬)
+- [x] 会话 id 不变;memory.db 不动;`MiyuPaths` 不加字段(六十处测试夹具),按标记现算 `personas_dir/artifacts_dir/ledger_dir/shared_files_dir/profile_file/conversation_db_dir/identities_dir`
+- [x] `miyu layout`(干跑计划)/`--apply`/`--rollback`(搬回并写 `.home-layout-off`,同一二进制不再自动搬,`--apply` 撤销);中断靠 journal 接续/回滚
+- [x] 导出/导入:registry 新增 home/personas/extensions 单元,`.home-layout-v1` 随档案走
+- [ ] 按人拆库(成员各自 `home/<user>/conversation.db`):今天成员会话仍在管理员库里靠 owner 列区分;StateStore 单库假设贯穿 actor/事件/队列,另立一版
+- [x] 测具:单测 `paths::tests::home`(搬/回滚/冲突零写入/新装/路径解析)、`config::tests::paths::home_layout_marker_redirects_identity_and_persona_paths`;真二进制 `testkit/multi-user/layout_e2e.py`(新装→跑一轮→回滚→老布局起 daemon→再搬→同会话回合还在)
 - 验证:隔离 home 上跑迁移前后 tools 指纹、会话列表、记忆召回逐一相等
 
 ### 阶段 7 · 包管理器

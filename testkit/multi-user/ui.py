@@ -28,7 +28,7 @@ e2e.OUT = OUT / "ui"
 e2e.HOME = e2e.OUT / "home"
 e2e.RUNTIME = e2e.OUT / "runtime"
 e2e.ENV = dict(os.environ, MIYU_HOME=str(e2e.HOME), XDG_RUNTIME_DIR=str(e2e.RUNTIME),
-               MIYU_SYSTEM_SCRIPTS_DIR=str(REPO / "src/scripts"))
+               MIYU_SYSTEM_SCRIPTS_DIR=str(REPO / "src/scripts"), MIYU_ADMIN_USER="admin")
 
 results = []
 
@@ -81,20 +81,23 @@ def main():
             page.fill("#registerPassword", "alice-pass")
             page.screenshot(path=str(OUT / "ui-register.png"))
             page.click("#registerSubmit")
-            page.wait_for_selector("#composerInput, #composer textarea, textarea", timeout=20000)
+            # 注册成功即打开账号页(OOBE 第二步:希望 AI 如何认知你)
+            page.wait_for_selector("#consoleView:not([hidden])", timeout=20000)
             page.wait_for_timeout(1200)
+            account_open = page.evaluate("() => document.querySelector('.con-panel[data-console-panel=\"account\"]').hidden === false")
+            check("注册成功自动打开账号页", account_open is True, str(account_open))
             settings_hidden = page.evaluate("() => document.getElementById('sidebarSettingsButton').hidden")
             check("成员侧栏没有设置按钮", settings_hidden is True, str(settings_hidden))
             sessions = page.evaluate("() => [...document.querySelectorAll('#sessionItems [data-session-id]')].map(e => e.textContent)")
             check("成员侧栏看不到管理员的会话", not any("管理员的会话" in text for text in sessions), json.dumps(sessions, ensure_ascii=False))
-            page.click("#consoleButton")
-            page.wait_for_selector("#consoleView:not([hidden])")
-            page.wait_for_timeout(600)
             visible_rail = page.evaluate("() => [...document.querySelectorAll('.con-rail-item[data-console-panel]')].filter(e => !e.hidden).map(e => e.dataset.consolePanel)")
             check("成员控制台只剩数据统计与账号", sorted(visible_rail) == ["account", "usage"], json.dumps(visible_rail))
             page.screenshot(path=str(OUT / "ui-member-console.png"))
-            page.click(".con-rail-item[data-console-panel='account']")
-            page.wait_for_timeout(600)
+            page.fill("#accountProfile", "请叫我爱丽丝")
+            page.click("#accountSave")
+            page.wait_for_timeout(800)
+            profile_saved = (e2e.HOME / "home/alice/profile.md").read_text().strip() if (e2e.HOME / "home/alice/profile.md").exists() else ""
+            check("账号页写档案落到 home/alice/profile.md", profile_saved == "请叫我爱丽丝", profile_saved)
             username = page.input_value("#accountUsername")
             check("账号页显示用户名", username == "alice", username)
             invite_card_hidden = page.evaluate("() => [...document.querySelectorAll('[data-console-panel=\"account\"] [data-admin-only]')].every(e => e.hidden)")

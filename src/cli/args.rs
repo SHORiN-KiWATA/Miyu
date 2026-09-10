@@ -94,6 +94,8 @@ pub enum Command {
     Voice(VoiceArgs),
     Init,
     Paths,
+    /// 家目录布局:看计划 / --apply 立刻搬 / --rollback 搬回去
+    Layout(LayoutArgs),
     Config(ConfigArgs),
     Reload,
     Models(ModelsArgs),

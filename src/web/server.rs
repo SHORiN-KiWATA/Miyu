@@ -126,7 +126,11 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     // 多用户(阶段 5):带 `-p` 起来就保证有一个管理员账号且密码等于它;
     // 用户名+密码登录走账号表,只填口令仍是老路。
     if let Some(password) = password.as_deref() {
-        match state_store.ensure_bootstrap_admin(password) {
+        // 用户名 = 家目录名(阶段 6):`home/<用户名>/` 就是这个人的目录。
+        let admin_username = paths
+            .home_admin()
+            .unwrap_or_else(|| crate::state::BOOTSTRAP_ADMIN_USERNAME.to_string());
+        match state_store.ensure_bootstrap_admin(password, &admin_username) {
             Ok(account) => tracing::info!(username = %account.username, "admin account ready"),
             Err(error) => tracing::warn!(error = %error, "bootstrap admin account failed"),
         }

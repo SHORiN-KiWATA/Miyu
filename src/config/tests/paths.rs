@@ -245,3 +245,55 @@ fn reserved_system_prompt_file_is_not_a_persona() {
     config.prompt.active_persona = "system-prompt.md".to_string();
     assert!(config.validate_persona_files(&paths).is_err());
 }
+
+/// 家目录布局(阶段 6):属主档案与身份文件跟进 home/<admin>,人格记忆去 personas/。
+#[test]
+fn home_layout_marker_redirects_identity_and_persona_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
+    let paths = MiyuPaths {
+        root_dir: root.clone(),
+        config_dir: root.join("config"),
+        config_file: root.join("config/config.jsonc"),
+        skills_dir: root.join("extensions/skills"),
+        data_dir: root.join("data"),
+        cache_dir: root.join("cache"),
+        state_dir: root.join("state"),
+        pictures_dir: root.join("home/shorin/pictures"),
+        fish_hook_file: root.join("fish/miyu.fish"),
+        bash_hook_file: root.join("config/shell/bash-hook.sh"),
+        zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
+        scripts_dir: root.join("extensions/scripts"),
+        system_scripts_dir: PathBuf::new(),
+    };
+    std::fs::write(root.join(".home-layout-v1"), "shorin\n").unwrap();
+    let mut config = AppConfig::default();
+    let home = root.join("home/shorin");
+    assert_eq!(config.user_identity_path(&paths), home.join("profile.md"));
+    assert_eq!(config.identities_dir_path(&paths), home.join("identities"));
+    assert_eq!(
+        config.identity_path(&paths, "team/user.md"),
+        home.join("identities/team/user.md")
+    );
+    assert_eq!(
+        config.persona_memory_data_dir(&paths, "default"),
+        root.join("personas/default")
+    );
+    assert_eq!(config.prompts_dir_path(&paths), root.join("data/prompts"));
+    assert_eq!(
+        config.persona_skills_dir(&paths, "team"),
+        root.join("extensions/skills/personas/team")
+    );
+    // 成员回合把 user_identity_file 指到自己家目录的绝对路径:原样采用
+    config.prompt.user_identity_file = root.join("home/alice/profile.md").display().to_string();
+    assert_eq!(
+        config.user_identity_path(&paths),
+        root.join("home/alice/profile.md")
+    );
+    std::fs::create_dir_all(root.join("home/alice")).unwrap();
+    std::fs::write(root.join("home/alice/profile.md"), "call me Alice").unwrap();
+    assert_eq!(
+        config.user_identity_prompt(&paths).unwrap(),
+        "call me Alice"
+    );
+}

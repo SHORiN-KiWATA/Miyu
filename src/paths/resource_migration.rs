@@ -134,20 +134,31 @@ pub(crate) fn try_migrate_resource_layout(
         }
     }
     preflight_resource_entries(layout, &entries)?;
+    run_journaled_moves(&layout.resource_journal(), entries)?;
+    write_marker(&layout.resource_marker())?;
+    remove_resource_journal_if_present(layout)?;
+    Ok(true)
+}
 
+/// 逐条原子移动,每一步先落日志;中途失败就按日志回滚,回滚也失败则两个
+/// 错误一起报。资源迁移与家目录迁移共用。
+pub(crate) fn run_journaled_moves(
+    journal_path: &Path,
+    entries: Vec<ResourceMigrationEntry>,
+) -> Result<()> {
     let mut journal = ResourceMigrationJournal {
         entries,
         moved: 0,
         pending: None,
     };
-    write_resource_journal(layout, &journal)?;
+    write_journal_at(journal_path, &journal)?;
     while journal.moved < journal.entries.len() {
         let index = journal.moved;
         let entry = journal.entries[index].clone();
         journal.pending = Some(index);
-        write_resource_journal(layout, &journal)?;
+        write_journal_at(journal_path, &journal)?;
         if let Err(error) = atomic_resource_move(&entry.source, &entry.destination) {
-            let recovery = recover_resource_migration(layout);
+            let recovery = recover_migration_at(journal_path);
             return match recovery {
                 Ok(()) => Err(error).with_context(|| {
                     format!(
@@ -163,12 +174,9 @@ pub(crate) fn try_migrate_resource_layout(
         }
         journal.moved = index + 1;
         journal.pending = None;
-        write_resource_journal(layout, &journal)?;
+        write_journal_at(journal_path, &journal)?;
     }
-
-    write_marker(&layout.resource_marker())?;
-    remove_resource_journal_if_present(layout)?;
-    Ok(true)
+    Ok(())
 }
 
 pub(crate) struct ResourceDaemonGuard {
@@ -208,6 +216,12 @@ pub(crate) fn preflight_resource_entries(
     layout: &Layout,
     entries: &[ResourceMigrationEntry],
 ) -> Result<()> {
+    preflight_entries(&layout.data_dir, entries)
+}
+
+/// 预检:源不能是符号链接、目标不能已存在、目标必须在 `root` 之下且祖先
+/// 不是链接、同一文件系统、目标之间不互相嵌套。失败零写入。
+pub(crate) fn preflight_entries(root: &Path, entries: &[ResourceMigrationEntry]) -> Result<()> {
     let projections = entries
         .iter()
         .map(|entry| (entry.source.clone(), entry.destination.clone()))
@@ -222,7 +236,7 @@ pub(crate) fn preflight_resource_entries(
         }
         ensure_supported_entry_tree(&entry.source)?;
         ensure_absolute_symlink_targets_stable(&entry.source, &projections)?;
-        ensure_destination_ancestors(layout, &entry.destination)?;
+        ensure_destination_ancestors_under(root, &entry.destination)?;
         ensure_resource_same_filesystem(&entry.source, &entry.destination)?;
         match fs::symlink_metadata(&entry.destination) {
             Ok(_) => bail!(
@@ -243,15 +257,18 @@ pub(crate) fn preflight_resource_entries(
 }
 
 pub(crate) fn ensure_destination_ancestors(layout: &Layout, destination: &Path) -> Result<()> {
-    let relative = destination
-        .strip_prefix(&layout.data_dir)
-        .with_context(|| {
-            format!(
-                "resource destination escapes Miyu data directory: {}",
-                destination.display()
-            )
-        })?;
-    let mut current = layout.data_dir.clone();
+    ensure_destination_ancestors_under(&layout.data_dir, destination)
+}
+
+pub(crate) fn ensure_destination_ancestors_under(root: &Path, destination: &Path) -> Result<()> {
+    let relative = destination.strip_prefix(root).with_context(|| {
+        format!(
+            "resource destination escapes {}: {}",
+            root.display(),
+            destination.display()
+        )
+    })?;
+    let mut current = root.to_path_buf();
     for component in relative.components() {
         current.push(component);
         if current == destination {
@@ -345,7 +362,11 @@ pub(crate) fn write_resource_journal(
     layout: &Layout,
     journal: &ResourceMigrationJournal,
 ) -> Result<()> {
-    let path = layout.resource_journal();
+    write_journal_at(&layout.resource_journal(), journal)
+}
+
+pub(crate) fn write_journal_at(path: &Path, journal: &ResourceMigrationJournal) -> Result<()> {
+    let path = path.to_path_buf();
     let temporary = path.with_extension(format!(
         "tmp-{}-{}",
         std::process::id(),
@@ -366,7 +387,12 @@ pub(crate) fn write_resource_journal(
 }
 
 pub(crate) fn recover_resource_migration(layout: &Layout) -> Result<()> {
-    let path = layout.resource_journal();
+    recover_migration_at(&layout.resource_journal())
+}
+
+/// 按日志接着走或回滚:pending 那条看两头哪边存在定进退,已搬的逆序搬回。
+pub(crate) fn recover_migration_at(path: &Path) -> Result<()> {
+    let path = path.to_path_buf();
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -402,7 +428,7 @@ pub(crate) fn recover_resource_migration(layout: &Layout) -> Result<()> {
                 entry.destination.display()
             ),
         }
-        write_resource_journal(layout, &journal)?;
+        write_journal_at(&path, &journal)?;
     }
     while journal.moved > 0 {
         let index = journal.moved - 1;
@@ -433,15 +459,18 @@ pub(crate) fn recover_resource_migration(layout: &Layout) -> Result<()> {
             ),
         }
         journal.moved = index;
-        write_resource_journal(layout, &journal)?;
+        write_journal_at(&path, &journal)?;
     }
-    remove_resource_journal_if_present(layout)
+    remove_journal_if_present_at(&path)
 }
 
 pub(crate) fn remove_resource_journal_if_present(layout: &Layout) -> Result<()> {
-    let path = layout.resource_journal();
-    match fs::remove_file(&path) {
-        Ok(()) => sync_parent(&path),
+    remove_journal_if_present_at(&layout.resource_journal())
+}
+
+pub(crate) fn remove_journal_if_present_at(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => sync_parent(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }

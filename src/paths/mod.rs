@@ -1,5 +1,7 @@
+mod home_layout;
 mod legacy_migration;
 mod resource_migration;
+pub(crate) use home_layout::*;
 pub(crate) use legacy_migration::*;
 pub(crate) use resource_migration::*;
 
@@ -179,8 +181,29 @@ impl MiyuPaths {
             } else {
                 !try_migrate_resource_layout(&resource_layout, daemon_process)?
             };
+        // 家目录布局(阶段 6):资源迁移落定之后再搬;有别的 daemon 在跑就
+        // 下次再来。搬完(或本来就是新布局)标记里记着管理员的家目录名。
+        let home_admin = if use_legacy_temporarily
+            || resource_migration_deferred
+            || cfg!(test)
+            || home_layout_opted_out(&root_dir)?
+        {
+            read_home_layout_admin(&root_dir)?
+        } else {
+            let home_layout = HomeLayout {
+                layout: resource_layout.clone(),
+                admin: admin_home_name_from_env(),
+            };
+            try_migrate_home_layout(&home_layout, daemon_process)?;
+            read_home_layout_admin(&root_dir)?
+        };
+        let admin_home = home_admin
+            .as_deref()
+            .map(|admin| root_dir.join("home").join(admin));
         let pictures_dir = if use_legacy_temporarily {
             legacy_pictures_root.join("miyu")
+        } else if let Some(home) = &admin_home {
+            home.join("pictures")
         } else {
             data_dir.join("pictures")
         };
@@ -192,7 +215,16 @@ impl MiyuPaths {
         } else {
             data_dir.clone()
         };
-        let scripts_dir = resource_config_dir.join("scripts");
+        // 新布局下 skills/scripts 是「已装扩展」,住 extensions/。
+        let extensions_dir = admin_home.as_ref().map(|_| root_dir.join("extensions"));
+        let scripts_dir = match &extensions_dir {
+            Some(extensions) => extensions.join("scripts"),
+            None => resource_config_dir.join("scripts"),
+        };
+        let skills_dir = match &extensions_dir {
+            Some(extensions) => extensions.join("skills"),
+            None => resource_config_dir.join("skills"),
+        };
         // 内置脚本目录默认在系统前缀下,`MIYU_SYSTEM_SCRIPTS_DIR` 可覆盖——
         // 打包到非标准前缀、或隔离测试时用得上。
         let system_scripts_dir = std::env::var_os("MIYU_SYSTEM_SCRIPTS_DIR")
@@ -205,7 +237,7 @@ impl MiyuPaths {
             // open, and it closes as soon as the new daemon migrates them here.
             root_dir,
             config_file: config_dir.join("config.jsonc"),
-            skills_dir: resource_config_dir.join("skills"),
+            skills_dir,
             config_dir,
             data_dir,
             cache_dir,
@@ -224,6 +256,10 @@ impl MiyuPaths {
         let identities_dir = self.identities_dir();
         let persona_avatars_dir = self.persona_avatars_dir();
         let skill_drafts_dir = self.skill_drafts_dir();
+        if let Some(home) = self.admin_home_dir() {
+            ensure_private_dir(&self.root_dir.join("home"))?;
+            ensure_private_dir(&home)?;
+        }
         for directory in [
             &self.config_dir,
             &self.skills_dir,
@@ -246,10 +282,91 @@ impl MiyuPaths {
     /// an upgrade this intentionally remains the old config directory until
     /// the resource migration marker has been committed.
     pub fn resource_dir(&self) -> &Path {
-        if self.skills_dir == self.data_dir.join("skills") {
-            &self.data_dir
-        } else {
+        if self.skills_dir == self.config_dir.join("skills") {
             &self.config_dir
+        } else {
+            &self.data_dir
+        }
+    }
+
+    // ── 家目录布局(阶段 6) ──
+
+    /// 管理员的家目录名;None = 还是老布局(`data/` 一锅端)。每次读标记文件,
+    /// 十几字节,调用频度是每回合个位数,不值得加字段——加字段要改六十处测试
+    /// 夹具。
+    pub fn home_admin(&self) -> Option<String> {
+        read_home_layout_admin(&self.root_dir).ok().flatten()
+    }
+
+    pub fn homes_dir(&self) -> PathBuf {
+        self.root_dir.join("home")
+    }
+
+    /// 某个账号的家目录(不保证存在)。
+    pub fn user_home_dir(&self, username: &str) -> PathBuf {
+        self.homes_dir().join(username)
+    }
+
+    pub fn admin_home_dir(&self) -> Option<PathBuf> {
+        self.home_admin().map(|admin| self.user_home_dir(&admin))
+    }
+
+    /// 共享人格目录:新布局 `personas/`,老布局 `data/personas`。
+    pub fn personas_dir(&self) -> PathBuf {
+        if self.home_admin().is_some() {
+            self.root_dir.join("personas")
+        } else {
+            self.data_dir.join("personas")
+        }
+    }
+
+    pub fn extensions_dir(&self) -> Option<PathBuf> {
+        self.home_admin().map(|_| self.root_dir.join("extensions"))
+    }
+
+    fn admin_owned(&self, home_name: &str, legacy_name: &str) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home.join(home_name),
+            None => self.data_dir.join(legacy_name),
+        }
+    }
+
+    pub fn artifacts_dir(&self) -> PathBuf {
+        self.admin_owned("artifacts", "artifacts")
+    }
+
+    pub fn documents_dir(&self) -> PathBuf {
+        self.admin_owned("documents", "documents")
+    }
+
+    pub fn ledger_dir(&self) -> PathBuf {
+        self.admin_owned("ledger", "ledger")
+    }
+
+    pub fn shared_files_dir(&self) -> PathBuf {
+        self.admin_owned("shares", "shared")
+    }
+
+    /// 属主档案(「希望 AI 如何认知你」):新布局 `home/<admin>/profile.md`,
+    /// 老布局 `identities/user-identity.md`。只在属主类入口注入,通讯平台不看。
+    pub fn profile_file(&self) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home.join("profile.md"),
+            None => self.identities_dir().join("user-identity.md"),
+        }
+    }
+
+    /// 某个成员的档案文件。
+    pub fn user_profile_file(&self, username: &str) -> PathBuf {
+        self.user_home_dir(username).join("profile.md")
+    }
+
+    /// 会话库所在目录:新布局在管理员家目录(成员的会话暂靠 owner 列区分,
+    /// 按人拆库是下一步),老布局在 state。
+    pub fn conversation_db_dir(&self) -> PathBuf {
+        match self.admin_home_dir() {
+            Some(home) => home,
+            None => self.state_dir.clone(),
         }
     }
 
@@ -281,6 +398,20 @@ impl MiyuPaths {
         ) {
             return None;
         }
+        // 新布局:扩展住 extensions/,身份跟属主进家目录。
+        if let Some(extensions) = self.extensions_dir() {
+            if matches!(namespace, "skills" | "scripts") {
+                return Some(extensions.join(relative));
+            }
+        }
+        if namespace == "identities" {
+            if let Some(home) = self.admin_home_dir() {
+                if relative == Path::new("identities/user-identity.md") {
+                    return Some(home.join("profile.md"));
+                }
+                return Some(home.join(relative));
+            }
+        }
         Some(self.resource_dir().join(relative))
     }
 
@@ -289,7 +420,10 @@ impl MiyuPaths {
     }
 
     pub fn identities_dir(&self) -> PathBuf {
-        self.resource_dir().join("identities")
+        match self.admin_home_dir() {
+            Some(home) => home.join("identities"),
+            None => self.resource_dir().join("identities"),
+        }
     }
 
     pub fn persona_avatars_dir(&self) -> PathBuf {
@@ -375,6 +509,18 @@ impl MiyuPaths {
             t("data directory", "数据目录"),
             self.data_dir.display()
         );
+        if let Some(home) = self.admin_home_dir() {
+            println!(
+                "{}: {}",
+                t("admin home directory", "管理员家目录"),
+                home.display()
+            );
+            println!(
+                "{}: {}",
+                t("personas directory", "人格目录"),
+                self.personas_dir().display()
+            );
+        }
         println!(
             "{}: {}",
             t("cache directory", "缓存目录"),

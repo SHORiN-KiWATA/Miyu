@@ -9,31 +9,46 @@ fn first_account_is_admin_and_bootstrap_syncs_password() {
     let store = StateStore::new(&test_paths(temp.path())).unwrap();
     assert_eq!(store.count_accounts().unwrap(), 0);
 
-    let admin = store.ensure_bootstrap_admin("first-pass").unwrap();
-    assert_eq!(admin.username, BOOTSTRAP_ADMIN_USERNAME);
+    let admin = store
+        .ensure_bootstrap_admin("first-pass", "shorin")
+        .unwrap();
+    assert_eq!(admin.username, "shorin");
     assert!(admin.is_admin());
     assert!(store
-        .authenticate_account("ADMIN", "first-pass")
+        .authenticate_account("SHORIN", "first-pass")
         .unwrap()
         .is_some());
     // 改了 -p 就该生效:引导会把管理员密码同步成新值。
-    store.ensure_bootstrap_admin("second-pass").unwrap();
+    store
+        .ensure_bootstrap_admin("second-pass", "shorin")
+        .unwrap();
     assert!(store
-        .authenticate_account("admin", "first-pass")
+        .authenticate_account("shorin", "first-pass")
         .unwrap()
         .is_none());
     assert!(store
-        .authenticate_account("admin", "second-pass")
+        .authenticate_account("shorin", "second-pass")
         .unwrap()
         .is_some());
     assert_eq!(store.count_accounts().unwrap(), 1);
+    // 非法家目录名退回 admin
+    let other = StateStore::new(&test_paths(&temp.path().join("other"))).unwrap();
+    assert_eq!(
+        other
+            .ensure_bootstrap_admin("x-pass-1", "")
+            .unwrap()
+            .username,
+        BOOTSTRAP_ADMIN_USERNAME
+    );
 }
 
 #[test]
 fn invite_registers_once_and_disabled_accounts_cannot_log_in() {
     let temp = tempfile::tempdir().unwrap();
     let store = StateStore::new(&test_paths(temp.path())).unwrap();
-    let admin = store.ensure_bootstrap_admin("admin-pass").unwrap();
+    let admin = store
+        .ensure_bootstrap_admin("admin-pass", "shorin")
+        .unwrap();
     let (code, invite) = store.create_invite(&admin.id, None, ROLE_MEMBER).unwrap();
     assert_eq!(code.len(), 8);
     assert!(invite.used_by.is_none());

@@ -23,8 +23,20 @@ impl AppConfig {
     }
 
     pub fn system_prompt_for(&self, paths: &MiyuPaths, audience: PromptAudience) -> Result<String> {
+        self.system_prompt_with(paths, audience, audience.includes_user_identity())
+    }
+
+    /// `with_user_profile` 单独给:属主档案(profile.md)只在属主类入口注入——终端
+    /// 与 WebUI(本机或远端,External 也算),通讯平台不注入。受众本身只管
+    /// style-lock 那类差异,由调用方按「有没有平台上下文」决定档案进不进。
+    pub fn system_prompt_with(
+        &self,
+        paths: &MiyuPaths,
+        _audience: PromptAudience,
+        with_user_profile: bool,
+    ) -> Result<String> {
         let mut prompt = self.base_system_prompt(paths)?;
-        if audience.includes_user_identity() {
+        if with_user_profile {
             let user_identity = self.user_identity_prompt(paths)?;
             if !user_identity.trim().is_empty() {
                 prompt.push_str("\n\n<current-user-profile>\n");
@@ -134,10 +146,7 @@ impl AppConfig {
     }
 
     pub fn persona_memory_data_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
-        paths
-            .data_dir
-            .join("personas")
-            .join(persona_scope_name(persona))
+        paths.personas_dir().join(persona_scope_name(persona))
     }
 
     pub fn persona_memory_state_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {

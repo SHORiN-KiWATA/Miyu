@@ -46,6 +46,15 @@ pub(crate) fn fallback_resource_file(
     namespace: &str,
     file_name: &str,
 ) -> PathBuf {
+    // 家目录布局:属主档案是 home/<admin>/profile.md,其余身份文件跟进家目录。
+    if namespace == "identities" {
+        if paths.admin_home_dir().is_some() {
+            if file_name == "user-identity.md" {
+                return paths.profile_file();
+            }
+            return paths.identities_dir().join(file_name);
+        }
+    }
     if paths.resources_use_config_dir() {
         paths.config_dir.join(file_name)
     } else {

@@ -135,7 +135,7 @@ pub(in crate::web) async fn dash_memory_personas(
     let active = crate::config::persona_scope_name(&config.prompt.active_persona);
     let mut names = std::collections::BTreeSet::new();
     names.insert(active.clone());
-    if let Ok(entries) = std::fs::read_dir(state.paths.data_dir.join("personas")) {
+    if let Ok(entries) = std::fs::read_dir(state.paths.personas_dir()) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.join("memory").join("memory.db").is_file() {

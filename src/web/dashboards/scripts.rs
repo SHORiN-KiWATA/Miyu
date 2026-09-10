@@ -93,7 +93,7 @@ pub(in crate::web) async fn dash_scripts_personas(
     let mut names = std::collections::BTreeSet::new();
     names.insert(active.clone());
     for directory in [
-        state.paths.data_dir.join("personas"),
+        state.paths.personas_dir(),
         state.paths.scripts_dir.join("personas"),
     ] {
         if let Ok(entries) = std::fs::read_dir(directory) {

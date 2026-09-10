@@ -59,7 +59,7 @@ impl LedgerDb {
     }
 
     pub fn db_path(paths: &MiyuPaths) -> PathBuf {
-        paths.data_dir.join("ledger").join("ledger.db")
+        paths.ledger_dir().join("ledger.db")
     }
 
     /// 直接按路径打开，测试与导入导出用。

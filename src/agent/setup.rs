@@ -70,7 +70,13 @@ impl Agent {
         let client = client.with_claude_code_dev_mode(mode == AgentMode::Dev);
         // opencode Zen 的会话头按这个走:一次对话对应服务端一个会话。
         let client = client.with_zen_session(&state.session_id());
-        let base_system_prompt = mode_system_prompt(&config, paths, mode, prompt_audience)?;
+        let base_system_prompt = mode_system_prompt(
+            &config,
+            paths,
+            mode,
+            prompt_audience,
+            user_profile_applies(prompt_audience, false),
+        )?;
         let system_prompt = with_memory_preamble(
             with_host_environment(
                 with_mode_reminder(base_system_prompt, mode),
@@ -247,8 +253,14 @@ impl Agent {
     }
 
     pub fn prepare_for_turn(&mut self) -> Result<()> {
-        let mode_prompt =
-            mode_system_prompt(&self.config, &self.paths, self.mode, self.prompt_audience)?;
+        // (档案进不进由 user_profile_applies 决定:平台回合不进。)
+        let mode_prompt = mode_system_prompt(
+            &self.config,
+            &self.paths,
+            self.mode,
+            self.prompt_audience,
+            user_profile_applies(self.prompt_audience, self.platform_context.is_some()),
+        )?;
         {
             // 指纹永远按人格/模式提示词算,不看整体替换的覆盖:覆盖是回合级
             // 瞬态,进指纹会让每个带覆盖的回合都翻转一次指纹文件。
@@ -442,8 +454,13 @@ impl Agent {
     /// `reset_if_prompt_changed` must never fire (it would wipe the very
     /// turn that is running).
     pub(in crate::agent) fn refresh_system_prompt(&mut self) -> Result<()> {
-        let mode_prompt =
-            mode_system_prompt(&self.config, &self.paths, self.mode, self.prompt_audience)?;
+        let mode_prompt = mode_system_prompt(
+            &self.config,
+            &self.paths,
+            self.mode,
+            self.prompt_audience,
+            user_profile_applies(self.prompt_audience, self.platform_context.is_some()),
+        )?;
         self.system_prompt = self.assemble_system_prompt(mode_prompt);
         Ok(())
     }
@@ -559,4 +576,13 @@ impl Agent {
             self.max_tool_rounds = cap;
         }
     }
+}
+
+/// 属主/成员档案进不进系统提示词:终端(Owner)与 WebUI(External 且没有平台
+/// 上下文)进;QQ 等平台回合与内部回合不进。
+pub(in crate::agent) fn user_profile_applies(
+    audience: PromptAudience,
+    platform_turn: bool,
+) -> bool {
+    !platform_turn && matches!(audience, PromptAudience::Owner | PromptAudience::External)
 }

@@ -34,8 +34,10 @@ PORT = int(os.environ.get("PORT", "18491"))
 STUB_PORT = int(os.environ.get("STUB_PORT", "18497"))
 BASE = f"http://127.0.0.1:{PORT}"
 ADMIN_PASSWORD = "hunter2-admin"
+# MIYU_ADMIN_USER 固定成 admin:管理员用户名 = 家目录名,不能随跑测试的系统用户名变。
 ENV = dict(os.environ, MIYU_HOME=str(HOME), XDG_RUNTIME_DIR=str(RUNTIME),
-           MIYU_SYSTEM_SCRIPTS_DIR=str(REPO / "src/scripts"))
+           MIYU_SYSTEM_SCRIPTS_DIR=str(REPO / "src/scripts"), MIYU_ADMIN_USER="admin")
+STUB_SYSTEM_DUMP = OUT / "stub-system.jsonl"
 
 results = []
 
@@ -161,7 +163,8 @@ def main():
     write_config()
     password_file = OUT / "web-password"
     password_file.write_text(ADMIN_PASSWORD + "\n")
-    stub_env = dict(os.environ, STUB_PORT=str(STUB_PORT), MODE="plain", STUB_CHUNK_SLEEP="0.01")
+    stub_env = dict(os.environ, STUB_PORT=str(STUB_PORT), MODE="plain", STUB_CHUNK_SLEEP="0.01",
+                    STUB_DUMP_SYSTEM=str(STUB_SYSTEM_DUMP))
     stub = subprocess.Popen([sys.executable, str(REPO / "testkit/webui-fixes/stub_reasoning.py")], env=stub_env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     daemon = None
@@ -173,6 +176,13 @@ def main():
                                   stderr=subprocess.STDOUT)
         assert wait_http(f"{BASE}/api/health"), "daemon not up"
         time.sleep(1)
+
+        # 0. 家目录布局(阶段 6):新装即新布局
+        marker = HOME / ".home-layout-v1"
+        check("新装即家目录布局(标记=admin)", marker.is_file() and marker.read_text().strip() == "admin",
+              marker.read_text().strip() if marker.exists() else "missing")
+        check("会话库在管理员家目录", (HOME / "home/admin/conversation.db").is_file())
+        check("state 里没有会话库", not (HOME / "state/conversation.db").exists())
 
         # 1. 登录
         anon = Client()
@@ -206,6 +216,10 @@ def main():
         status, data = member.call("POST", "/api/auth/register",
                                    {"invite": code, "username": "alice", "display_name": "爱丽丝", "password": "alice-pass"})
         check("凭邀请码注册成员", status == 204, f"{status} {data}")
+        check("注册即建家目录 home/alice", (HOME / "home/alice").is_dir())
+        status, data = Client().call("POST", "/api/auth/register",
+                                     {"invite": code, "username": "ADMIN", "password": "admin-pass-2"})
+        check("与管理员家目录同名的用户名被拒", status == 400, f"{status} {data}")
         status, data = Client().call("POST", "/api/auth/register",
                                      {"invite": code, "username": "bob", "password": "bob-pass-1"})
         check("邀请码二次使用被拒", status == 400, f"{status} {data}")
@@ -259,6 +273,18 @@ def main():
         status, _ = member.call("GET", "/api/usage/stats?range=all")
         check("成员看自己的统计 200", status == 200, str(status))
 
+        # 档案(阶段 6):各写各的,回合里只带自己的
+        status, data = member.call("PATCH", "/api/account", {"profile": "请叫我爱丽丝,我养了两只猫。"})
+        check("成员写档案", status == 200, f"{status} {data}")
+        check("档案落在 home/alice/profile.md",
+              (HOME / "home/alice/profile.md").read_text().startswith("请叫我爱丽丝") if (HOME / "home/alice/profile.md").exists() else False)
+        status, data = admin.call("PATCH", "/api/account", {"profile": "我是管理员 shorin,喜欢 Arch Linux。"})
+        check("管理员(口令登录)写属主档案", status == 200, f"{status} {data}")
+        check("属主档案落在 home/admin/profile.md",
+              (HOME / "home/admin/profile.md").read_text().startswith("我是管理员") if (HOME / "home/admin/profile.md").exists() else False)
+        status, me_admin = admin.call("GET", "/api/account")
+        check("GET /api/account 带档案", status == 200 and me_admin.get("profile", "").startswith("我是管理员"), json.dumps(me_admin)[:120])
+
         # 7. SSE 准备:两条流同时收
         member_events, member_thread = sse_collect(member.cookie, 14)
         admin_events, admin_thread = sse_collect(admin.cookie, 14)
@@ -269,6 +295,14 @@ def main():
         admin_view = run_turn(admin, admin_session, "你好,我是管理员")
         check("成员回合完成", bool(member_view.get("turns")), str(len(member_view.get("turns", []))))
         check("管理员回合完成", bool(admin_view.get("turns")), str(len(admin_view.get("turns", []))))
+        dumps = [json.loads(line)["system"] for line in STUB_SYSTEM_DUMP.read_text().splitlines() if line.strip()] \
+            if STUB_SYSTEM_DUMP.exists() else []
+        member_prompts = [s for s in dumps if "请叫我爱丽丝" in s]
+        admin_prompts = [s for s in dumps if "我是管理员 shorin" in s]
+        check("成员回合的系统提示词带成员档案、不带属主档案",
+              len(member_prompts) == 1 and "我是管理员" not in member_prompts[0], f"{len(dumps)} requests")
+        check("管理员回合的系统提示词带属主档案、不带成员档案",
+              len(admin_prompts) == 1 and "爱丽丝" not in admin_prompts[0], f"{len(admin_prompts)}")
         time.sleep(1.5)
         history = HOME / "state" / "usage-history.jsonl"
         if not history.exists():
