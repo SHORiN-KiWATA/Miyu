@@ -423,8 +423,7 @@
     colorScheme: null,
     uiPrefs: {},
     matugenAvailable: null,
-    // 思考内容默认展开(09-10 用户定):时间线上思考行的那段淡色文字直接可读
-    reasoningExpanded: true,
+    reasoningExpanded: false,
     toolExpanded: false,
     // 过程自动收起:她一开口,前面那串思考+工具收成一行总结。默认开。
     procCollapse: true,
@@ -734,7 +733,7 @@
     if (!proc || !line.isConnected) return;
     const nodes = [];
     if (!proc.head.hidden) nodes.push(proc.head.querySelector(".proc-node"));
-    if (line.classList.contains("is-open")) {
+    if (line.classList.contains("is-open") || proc.folding) {
       for (const step of proc.steps.children) {
         const node = step.querySelector(PROC_NODE_SELECTOR);
         // 隐藏的签(生图签藏着)没有 offsetParent,不算节点
@@ -754,14 +753,29 @@
       return (rect.top - box.top + rect.height / 2) / zoom;
     };
     const first = center(nodes[0]);
-    const last = center(nodes[nodes.length - 1]);
+    let last = center(nodes[nodes.length - 1]);
+    // 开合动画进行中:内层在被裁剪,线的终点不能超过当前可见底边,否则内容收完了线还拖在外面
+    const clip = proc.steps.parentElement.getBoundingClientRect();
+    last = Math.min(last, (clip.bottom - box.top) / zoom);
     proc.rail.style.top = `${first}px`;
     proc.rail.style.height = `${Math.max(0, last - first)}px`;
   }
 
   function procLineSetOpen(line, open) {
     line.classList.toggle("is-open", open);
-    line.miyuProc?.head.setAttribute("aria-expanded", String(open));
+    const proc = line.miyuProc;
+    if (!proc) return;
+    proc.head.setAttribute("aria-expanded", String(open));
+    // 开合期间线逐帧跟裁剪边走,不自己再走一遍 transition(两条曲线叠起来就是线拖在内容后面)。
+    // 收起时节点仍算数,只是被裁剪边钳住;裁剪到头线也就到头了。
+    proc.rail.style.transition = "none";
+    proc.folding = true;
+    window.clearTimeout(proc.foldTimer);
+    proc.foldTimer = window.setTimeout(() => {
+      proc.folding = false;
+      proc.rail.style.transition = "";
+      procLineFit(line);
+    }, 420);
     procLineFit(line);
   }
 
@@ -10450,8 +10464,7 @@
     if (storedScheme) setColorScheme(storedScheme, false);
     probeMatugenTheme();
     setChatFontSize(safeStorageGet("miyu.web.chatFontSize") || "15px", false);
-    // 没存过就是开(默认开),只认显式的 "false"
-    setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") !== "false", false);
+    setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") === "true", false);
     setToolExpanded(safeStorageGet("miyu.web.toolExpanded") === "true", false);
     // 没存过就是开(默认开),所以只认显式的 "false"
     setProcCollapse(safeStorageGet("miyu.web.procCollapse") !== "false", false);
