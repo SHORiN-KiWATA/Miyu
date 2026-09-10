@@ -9783,3 +9783,32 @@ body.miyu-paused *::after {
   border-radius: 8px;
   background: color-mix(in srgb, var(--text) 9%, var(--surface-1));
 }
+
+/* ═══ 排队消息:画在对话末尾的用户气泡,左边一枚「排队中」小签和撤下按钮 ═══ */
+/* 网格两列会把气泡挤成最窄的一柱;改 flex,气泡照旧按 62% 上限自然铺开,小签贴在左边 */
+.user-message.is-queued {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.user-message.is-queued .user-attachments {
+  flex: 0 0 100%;
+}
+.user-message.is-queued .user-bubble {
+  opacity: 0.82;
+}
+.queue-badge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-soft);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+  gap: 2px;
+}
+.queue-badge .queue-remove {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+}
