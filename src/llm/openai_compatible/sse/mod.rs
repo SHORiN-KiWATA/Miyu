@@ -152,7 +152,10 @@ where
             *finish_reason = Some(next_finish_reason);
         }
         let delta = choice.delta;
-        if let Some(text) = delta_reasoning_text(&delta) {
+        // 空串是「没有」,不是一段推理:DeepSeek 等网关会在每个正文 delta 上
+        // 附带 `reasoning_content: ""`,若照收就会给每个正文分片包一对
+        // ReasoningPartStart/End,终端把每个分片单独截成一段(09-10 截图)。
+        if let Some(text) = delta_reasoning_text(&delta).filter(|text| !text.is_empty()) {
             if !*reasoning_part_active {
                 if !reasoning.is_empty() && !reasoning.ends_with("\n\n") {
                     reasoning.push_str("\n\n");

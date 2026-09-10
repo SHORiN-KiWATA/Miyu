@@ -1104,6 +1104,9 @@
     renderConfigEditors();
     renderModelMenu();
     updateContext();
+    // /api/config 给的是全局池的窗口;看着的会话钉了模型时以会话接口为准,
+    // 否则打开设置页一次,上下文条就被改回全局默认模型的窗口。
+    if (state.viewSessionId) refreshSessionContext(state.viewSessionId);
   }
 
   async function loadConfigDraft() {
@@ -2684,9 +2687,14 @@
     return Array.from(String(value || "")).length;
   }
 
+  // 触屏设备(手机/平板):没有悬停、指针粗。回车语义与自动聚焦都按它分岔。
+  function isTouchComposer() {
+    return window.matchMedia("(hover: none), (pointer: coarse)").matches;
+  }
+
   // 触屏设备上程序化聚焦会弹出软键盘挡住内容，只在桌面端自动聚焦
   function focusComposerIfDesktop() {
-    if (window.matchMedia("(hover: none), (pointer: coarse)").matches) return;
+    if (isTouchComposer()) return;
     elements.composerInput.focus();
   }
 
@@ -5707,6 +5715,11 @@
     // 跟着输出走时才滚到底，否则原地恢复滚动位置。
     const keepScroll = !forceScroll && !state.followOutput;
     const previousScrollTop = elements.chatScroll.scrollTop;
+    // replaceChildren 让 scrollHeight 瞬间塌掉,浏览器把 scrollTop 钳到 0 并派发
+    // 一条 scroll 事件;这条事件先于下面的 rAF 到达监听器。不守卫的话监听器
+    // 把「跳到顶」当成用户上滚,关掉跟随——后台任务完成的通知落库触发整段
+    // 重建时就是这么把自动滚动弄丢的(之后 AI 继续输出也不再往下走)。
+    armProgrammaticScroll();
     elements.timeline.replaceChildren();
     const turns = [...state.turns].sort((left, right) => asFiniteNumber(left?.seq) - asFiniteNumber(right?.seq));
     state.turns = turns;
@@ -5744,6 +5757,7 @@
     if (keepScroll) {
       // 同步恢复（不等下一帧），重建就不会闪一下再跳回来。上方内容高度
       // 变化仍可能让视口偏移，先接受这个近似。
+      armProgrammaticScroll();
       elements.chatScroll.scrollTop = previousScrollTop;
       state.nearBottom = isNearBottom();
       elements.jumpBottomButton.hidden = false;
@@ -5752,10 +5766,27 @@
       state.followOutput = true;
       elements.jumpBottomButton.hidden = true;
       window.requestAnimationFrame(() => {
+        armProgrammaticScroll();
         elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
+        // 重建前后都可能有 scroll 事件进监听器,跟随位在这里再钉一次。
+        state.followOutput = true;
+        state.nearBottom = true;
+        elements.jumpBottomButton.hidden = true;
       });
     }
     updateConversationChrome();
+  }
+
+  /// 标记「接下来这次滚动是程序发起的」:监听器看到守卫就不把它当用户上滚。
+  /// 非 smooth 滚动由紧随其后的那条 scroll 事件解除;没动(scrollTop 没变)
+  /// 就不派发事件,靠超时兜底。
+  function armProgrammaticScroll() {
+    state.programmaticScroll = true;
+    programmaticScrollSmooth = false;
+    window.clearTimeout(programmaticScrollTimer);
+    programmaticScrollTimer = window.setTimeout(() => {
+      state.programmaticScroll = false;
+    }, PROGRAMMATIC_SCROLL_AUTO_MS);
   }
 
   /// 把还在跑的 live 气泡挂回重建后的时间线。
@@ -5928,8 +5959,13 @@
       runId: live.runId,
       attachments: live.userAttachments
     });
-    if (live.article?.isConnected) elements.timeline.insertBefore(message, live.article);
-    else elements.timeline.appendChild(message);
+    // 目标续轮等合成内容不画用户气泡(createUserMessage 返回 null),别的
+    // 调用点都走 appendUserMessage 的空值兜底,这里以前直接 appendChild(null)
+    // 抛 TypeError,把整段 live 装配掐断。
+    if (message) {
+      if (live.article?.isConnected) elements.timeline.insertBefore(message, live.article);
+      else elements.timeline.appendChild(message);
+    }
     live.userRendered = true;
     updateConversationChrome();
     contentAdded();
@@ -10082,6 +10118,9 @@
         return;
       }
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !state.composing && event.keyCode !== 229) {
+        // 触屏设备上回车是换行:软键盘没有 Shift+Enter,回车即发送就没法
+        // 打多行了。发送用按钮;Ctrl/Cmd+Enter 仍然发送。
+        if (isTouchComposer() && !(event.ctrlKey || event.metaKey)) return;
         event.preventDefault();
         if (!elements.sendButton.disabled) elements.composerForm.requestSubmit();
       }
@@ -10128,6 +10167,14 @@
       syncArtifactLayout();
       positionModelMenu();
     }, { passive: true });
+    // 「回到底部」的 bottom 是按 composerDock 高度写的内联值。后台任务条
+    // 出现/增行、软键盘顶起视口时 dock 会变高,但那些路径并不都经过
+    // updateJumpButtonOffset,按钮就留在旧高度、压在任务条上——手机上一点
+    // 就误触。直接盯 dock 的尺寸,谁改都跟上。
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(() => updateJumpButtonOffset()).observe(elements.composerDock);
+    }
+    window.visualViewport?.addEventListener("resize", updateJumpButtonOffset, { passive: true });
     new ResizeObserver(syncArtifactLayout).observe(elements.mainStage);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncAppHeight, { passive: true });

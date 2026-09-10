@@ -797,20 +797,28 @@ pub(in crate::web) fn session_state_for(
         .session_record(session_id)?
         .with_context(|| format!("session not found: {session_id}"))?;
     let current_session_id = state.state_store.session_id();
-    let context = if &*current_session_id == session_id {
+    // 会话钉了模型池就按那个池算窗口。回合路(turns/task.rs)与压缩路
+    // (actor)都套了这条覆盖,快照路此前漏了:打开页面、刷新、切换会话时
+    // 上下文条显示的都是全局池的窗口,要跑完一轮才被 run.completed 纠正。
+    let mut config = state.manager.lock().unwrap().config.clone();
+    apply_session_model_override_to(&mut config, &state.state_store, session_id);
+    let mut context = if &*current_session_id == session_id {
         state.manager.lock().unwrap().context
     } else {
-        let config = state.manager.lock().unwrap().config.clone();
         // dev 会话按 dev 装配估算：系统提示词、工具表、记忆钥匙都跟着模式
         // 走，拿 Normal 硬算的话，dev 空会话和普通空会话永远是同一个数。
         let (config, mode) = if record.persona == crate::state::DEV_PERSONA {
             (config.dev_scoped(), AgentMode::Dev)
         } else {
-            (config, AgentMode::Normal)
+            (config.clone(), AgentMode::Normal)
         };
         let store = state.state_store.pinned(session_id);
         current_context(&build_session_agent(&config, &state.paths, &store, mode)?)?
     };
+    if let Some((window, source)) = config.active_context_window_with_source()? {
+        context.window = Some(window);
+        context.window_assumed = matches!(source, crate::config::ContextWindowSource::Assumed);
+    }
     Ok(ipc::SessionState {
         context_tokens: context.tokens,
         context_window: context.window,

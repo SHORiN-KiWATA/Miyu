@@ -474,7 +474,8 @@ where
                         }
                     }
                     Some("thinking_delta") => {
-                        if let Some(text) = delta.thinking {
+                        // 空 thinking delta 不开新分段(同 chat 路径的空 reasoning_content)。
+                        if let Some(text) = delta.thinking.filter(|text| !text.is_empty()) {
                             open_reasoning_part(state, on_chunk)?;
                             push_buffered_chunk(
                                 &mut state.reasoning,

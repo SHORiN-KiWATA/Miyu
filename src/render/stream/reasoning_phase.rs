@@ -90,8 +90,16 @@ impl StreamRenderer {
         if self.reasoning_mode != ReasoningDisplayMode::Summary {
             return Ok(());
         }
-        self.end_active_stream_line()?;
-        if self.reasoning_title.is_some() || !self.reasoning_text.is_empty() {
+        let has_pending_summary = self.reasoning_title.is_some() || !self.reasoning_text.is_empty();
+        let mid_content = self.mode == Some(ChatStreamKind::Content);
+        // 正文行还开着、又没有待写的摘要时不截断正文:分段开始本身不落
+        // 一个字,截了只会把一段话拆成一行一段(09-10 截图:每个 delta 单独
+        // 成段,起因是供应商在正文 delta 上附带空推理字段)。真有推理文本
+        // 到来时 write_chunk 会先收行再起转轮;摘要要写时这里照旧断行。
+        if has_pending_summary || !mid_content {
+            self.end_active_stream_line()?;
+        }
+        if has_pending_summary {
             self.freeze_reasoning_elapsed_at(received_at);
             self.finalize_reasoning_summary()?;
             self.reasoning_started_at = Some(received_at);
@@ -102,6 +110,10 @@ impl StreamRenderer {
         self.reasoning_title = None;
         self.reasoning_text.clear();
         self.reasoning_tokens = 0;
+        if mid_content && !has_pending_summary {
+            // 转轮会 MoveToColumn(0)+清行,正文行开着时起它会抹掉半行字。
+            return Ok(());
+        }
         self.start_waiting()
     }
 
