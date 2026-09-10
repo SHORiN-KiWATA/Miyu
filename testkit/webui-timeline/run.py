@@ -149,8 +149,16 @@ def main():
             shots = 0
             prep_seen = None
             think_seen = None
+            head_hidden_seen = False
+            head_shown_live = False
             while time.time() - t0 < 60:
                 info = page.evaluate(GROUPS_JS)
+                # 运行中的那条时间线任何时刻都不该露出总结行(桩快的时候快照未必抓在运行中,所以全程累计)
+                for l in (info or {}).get("lines") or []:
+                    if l["live"] and l["headHidden"]:
+                        head_hidden_seen = True
+                    if l["live"] and not l["headHidden"]:
+                        head_shown_live = True
                 if think_seen is None and page.evaluate("Boolean(document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live'))"):
                     think_seen = page.evaluate("() => { const i = document.querySelector('.live-assistant .proc-steps > .reasoning-block.is-live > summary > .reasoning-icon'); const svg = i.querySelector('svg'); const dot = i.querySelector('i'); return { svgShown: svg && getComputedStyle(svg).display !== 'none', dotsShown: dot ? getComputedStyle(dot).display !== 'none' : false, width: i.getBoundingClientRect().width }; }")
                     page.screenshot(path=str(OUT / "00-live-thinking.png"))
@@ -177,7 +185,7 @@ def main():
             report["think_node"] = bool(think_seen) and think_seen["svgShown"] and not think_seen["dotsShown"] and 15 <= think_seen["width"] <= 19
             report["prep_row"] = bool(prep_seen) and prep_seen["inSteps"] and prep_seen["bg"] in ("rgba(0, 0, 0, 0)", "transparent") and prep_seen["railHeight"] > 20
             ls = (live_snapshot or {}).get("lines") or []
-            report["live_head_hidden"] = bool(ls) and ls[-1]["live"] and ls[-1]["headHidden"]
+            report["live_head_hidden"] = head_hidden_seen and not head_shown_live
             report["live_collapsed"] = bool(ls) and (not ls[0]["open"]) and (not ls[0]["headHidden"]) and ls[0]["summary"].startswith("Worked for") and "2 tools" in ls[0]["summary"] and "1 thought" in ls[0]["summary"]
             dl = (done or {}).get("lines") or []
             report["live_groups"] = len(dl) == 2 and dl[0]["tools"] == 2 and dl[0]["thoughts"] == 1 and dl[1]["tools"] == 2 and dl[1]["thoughts"] == 1

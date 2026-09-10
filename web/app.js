@@ -423,7 +423,8 @@
     colorScheme: null,
     uiPrefs: {},
     matugenAvailable: null,
-    reasoningExpanded: false,
+    // 思考内容默认展开(09-10 用户定):时间线上思考行的那段淡色文字直接可读
+    reasoningExpanded: true,
     toolExpanded: false,
     // 过程自动收起:她一开口,前面那串思考+工具收成一行总结。默认开。
     procCollapse: true,
@@ -719,7 +720,7 @@
     inner.appendChild(steps);
     wrap.appendChild(inner);
     line.append(rail, head, wrap);
-    line.miyuProc = { rail, head, summary, steps, closed: false, lastAppear: 0 };
+    line.miyuProc = { rail, head, summary, steps, closed: false, batchStart: -Infinity };
     const fit = () => procLineFit(line);
     if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(line);
     window.requestAnimationFrame(fit);
@@ -772,14 +773,15 @@
       line = procLineCreate(isStatic);
       blocks.appendChild(line);
     }
-    if (!isStatic && element.classList?.contains("tool-card")) {
-      // 快模型一口气吐几个调用时,几行同一帧出现,淡入叠成一团。按 90ms 错开,
-      // 累计封顶 360ms,再快也只是排着队出场,不会越拖越远。
+    if (!isStatic) {
+      // 快模型一口气吐几个调用:不压着后来的行等,而是让 250ms 窗口内到的行共用
+      // 同一条淡入时间轴(负延迟对齐到窗口起点),几行像一批一起浮起来;窗口过了
+      // 再开新一批。动画还是那条曲线,只是不会一行一行各自蹦。
       const proc = line.miyuProc;
       const now = performance.now();
-      const at = Math.min(Math.max(now, proc.lastAppear + 90), now + 360);
-      proc.lastAppear = at;
-      if (at > now) element.style.animationDelay = `${Math.round(at - now)}ms`;
+      if (now - proc.batchStart > 250) proc.batchStart = now;
+      const offset = now - proc.batchStart;
+      if (offset > 0) element.style.animationDelay = `-${Math.round(offset)}ms`;
     }
     line.miyuProc.steps.appendChild(element);
     return line;
@@ -10428,7 +10430,8 @@
     if (storedScheme) setColorScheme(storedScheme, false);
     probeMatugenTheme();
     setChatFontSize(safeStorageGet("miyu.web.chatFontSize") || "15px", false);
-    setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") === "true", false);
+    // 没存过就是开(默认开),只认显式的 "false"
+    setReasoningExpanded(safeStorageGet("miyu.web.reasoningExpanded") !== "false", false);
     setToolExpanded(safeStorageGet("miyu.web.toolExpanded") === "true", false);
     // 没存过就是开(默认开),所以只认显式的 "false"
     setProcCollapse(safeStorageGet("miyu.web.procCollapse") !== "false", false);
