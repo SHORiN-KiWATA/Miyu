@@ -82,7 +82,9 @@ class Handler(BaseHTTPRequestHandler):
             # 最终回答顺便带上代码块、行内代码和表格:去气泡之后这些面要能从页面底色上分出来
             self._text("好了，四步跑完：两条回显正常，列根目录正常，读那个不存在的文件如预期报错。把 `spawn` 那行改成 IPC 调用就行：\n\n")
             self._text("```kdl\n// niri config.kdl\nbinds {\n    Mod+Return { spawn \"kitty\"; }\n}\n```\n\n")
-            self._text("| 项目 | 版本 | 来源 |\n|---|---|---|\n| niri | 26.04-1 | extra |\n| noctalia-git | 5.0.0.r1191 | AUR |\n\n对齐和渲染看着还行吧？")
+            self._text("| 项目 | 版本 | 来源 |\n|---|---|---|\n| niri | 26.04-1 | extra |\n| noctalia-git | 5.0.0.r1191 | AUR |\n\n")
+            # 词内下划线不是斜体(check_os_info 原样),词边界上的下划线才是
+            self._text("工具名 check_os_info 和 bilibili_live_stream 要原样，_这个才是斜体_。对齐和渲染看着还行吧？")
             self._finish()
 
     def do_GET(self):
