@@ -84,6 +84,7 @@ impl Agent {
                 paths,
                 &config,
                 mode,
+                false,
             ),
             PersonaManifest::load(&config, paths, &config.active_persona_scope())
                 .memory_enabled(&config),
@@ -340,6 +341,7 @@ impl Agent {
                     &self.paths,
                     &self.config,
                     self.mode,
+                    self.platform_context.is_some(),
                 ),
                 self.config.memory_config().enabled,
             ),

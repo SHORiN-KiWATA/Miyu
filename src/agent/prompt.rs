@@ -84,8 +84,15 @@ pub(in crate::agent) fn with_host_environment(
     paths: &MiyuPaths,
     config: &AppConfig,
     mode: AgentMode,
+    platform_turn: bool,
 ) -> String {
     if audience == PromptAudience::External {
+        // WebUI 回合(External 但不是平台回合,与档案注入同一判据):也带主机环境块
+        // ——成员的沙盒回合尤其需要它(09-11);QQ 等平台回合仍不带。
+        if !platform_turn {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&host_environment_for(config, paths));
+        }
         // 风格锁与受众无关(09-10 分层架构阶段 2):它守的是「工具循环后别切
         // 播报腔」,QQ 群里同样需要。此前它只是顺手放进了属主分支,等于让
         // 场所替人格做了决定。属主提示词的字节顺序不动(零冷启动),外部
@@ -100,8 +107,30 @@ pub(in crate::agent) fn with_host_environment(
         return system_prompt;
     }
     system_prompt.push_str("\n\n");
-    // 当前模型池与思考档位(state 里存的偏好):池里不止一个就全列(逗号分隔),
-    // 档位各模型不一致就写 mixed——模型知道自己可能是其中之一,别把 mixed 当档位名。
+    system_prompt.push_str(&host_environment_for(config, paths));
+    // 渲染能力说明(仅 owner 会话):终端与 WebUI 都支持 LaTeX。
+    // 不放人格提示词里——QQ 等平台的排版能力不同,不该看到这段。
+    // dev 也不带:极简原则,编码任务用不上排版说明(验收 08-16 解剖)。
+    if mode != AgentMode::Dev {
+        // 工具期风格锁:模型进工具循环后切播报腔是 OOC 主场景(AstrBot 4.6
+        // 同款思路)。08-23 工具体制 A/B 实测 n=12/臂:探针全过 5/12→8/12,
+        // 无换行 6/12→10/12,其余指标不降。
+        system_prompt.push_str(STYLE_LOCK);
+        system_prompt.push_str(
+            "\n\nWrite math in LaTeX. Block formulas (`$$…$$` on their own paragraph) render as typeset images; inline `$…$` becomes Unicode math text. Never hand-build formulas from bare Unicode or ASCII.",
+        );
+        // 语音协议是常量,所有 owner 会话共用:语音会话不换系统提示词,缓存
+        // 前缀与别的会话一致;只有被 <voice_input> 包裹的用户消息才触发
+        // <speak> 块,打字的会话不会多吐一个字。
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(VOICE_PROTOCOL);
+    }
+    system_prompt
+}
+
+/// 主机环境块:模型池与思考档位(state 里存的偏好)——池里不止一个就全列(逗号
+/// 分隔),档位各模型不一致就写 mixed;沙盒回合(成员)再带上工作区。
+fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> String {
     let choices = config.active_provider_model_choices();
     let model_label = (!choices.is_empty()).then(|| {
         choices
@@ -133,30 +162,12 @@ pub(in crate::agent) fn with_host_environment(
         .home_dir
         .as_deref()
         .map(|home| std::path::Path::new(home).join("workspace"));
-    system_prompt.push_str(&crate::host_info::host_environment_block_full(
+    crate::host_info::host_environment_block_full(
         &paths.root_dir,
         model_label.as_deref(),
         effort.as_deref(),
         sandbox_workspace.as_deref(),
-    ));
-    // 渲染能力说明(仅 owner 会话):终端与 WebUI 都支持 LaTeX。
-    // 不放人格提示词里——QQ 等平台的排版能力不同,不该看到这段。
-    // dev 也不带:极简原则,编码任务用不上排版说明(验收 08-16 解剖)。
-    if mode != AgentMode::Dev {
-        // 工具期风格锁:模型进工具循环后切播报腔是 OOC 主场景(AstrBot 4.6
-        // 同款思路)。08-23 工具体制 A/B 实测 n=12/臂:探针全过 5/12→8/12,
-        // 无换行 6/12→10/12,其余指标不降。
-        system_prompt.push_str(STYLE_LOCK);
-        system_prompt.push_str(
-            "\n\nWrite math in LaTeX. Block formulas (`$$…$$` on their own paragraph) render as typeset images; inline `$…$` becomes Unicode math text. Never hand-build formulas from bare Unicode or ASCII.",
-        );
-        // 语音协议是常量,所有 owner 会话共用:语音会话不换系统提示词,缓存
-        // 前缀与别的会话一致;只有被 <voice_input> 包裹的用户消息才触发
-        // <speak> 块,打字的会话不会多吐一个字。
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(VOICE_PROTOCOL);
-    }
-    system_prompt
+    )
 }
 
 /// 每轮瞬态尾巴里唯一的运行时事实：时间 + 工作目录。

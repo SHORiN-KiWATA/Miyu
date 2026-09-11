@@ -128,6 +128,27 @@ pub fn confine(command: &mut tokio::process::Command) {
     }
 }
 
+/// 中转线的 CLI 进程(claude / codex / agy)本身关进沙盒(09-11 用户拍板:不是关掉
+/// 它们自带的工具,而是让整个进程跑在沙盒里,它起的 Bash/Edit 子进程照样继承规则)。
+/// 在成员策略之上再放行 CLI 自己的配置目录(登录态、会话文件都在里面),HOME 不换
+/// ——CLI 得按真 HOME 找 ~/.claude。没有策略(管理员)原样。
+pub fn confine_relay(command: &mut tokio::process::Command, extra_rw: &[PathBuf]) {
+    if let Some(policy) = current_sandbox() {
+        let mut extended = (*policy).clone();
+        extended.home = None;
+        for path in extra_rw {
+            if path.exists() && !extended.read_write.iter().any(|p| p == path) {
+                extended.read_write.push(path.clone());
+            }
+        }
+        let rules = Rules::prepare(&extended);
+        // SAFETY: 同 confine。
+        unsafe {
+            command.pre_exec(move || rules.apply());
+        }
+    }
+}
+
 pub fn confine_std(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     if let Some(policy) = current_sandbox() {

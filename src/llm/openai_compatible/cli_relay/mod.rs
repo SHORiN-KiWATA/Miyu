@@ -39,12 +39,11 @@ pub(in crate::llm::openai_compatible) fn tool_scopes(
     dev_mode: bool,
 ) -> ToolScopes {
     let tool_capable = matches!(request_scope, "chat" | "subagent");
-    // 沙盒回合(成员):CLI 自带的 Bash/Edit/Read 跑在 claude/codex/agy 进程里,
-    // 不经 Miyu、不受 Landlock——原生工具一律关,工具只能从 MCP 桥拿(桥在
-    // daemon 里执行,套沙盒)。09-11 成员用 claude-code 实测「完全没有沙盒」。
-    let sandboxed = crate::tools::sandbox::current_sandbox().is_some();
+    // 沙盒回合(成员)里 CLI 自带的工具照开:整个 CLI 进程关在 Landlock 里
+    // (`RelayProcess::spawn` → `sandbox::confine_relay`),它起的 Bash/Edit 子进程
+    // 继承规则。09-11 用户拍板:关进沙盒,不是关掉工具。
     ToolScopes {
-        native_on: tool_capable && !sandboxed && scope_allows(native_scope, dev_mode),
+        native_on: tool_capable && scope_allows(native_scope, dev_mode),
         miyu_on: tool_capable && scope_allows(miyu_scope, dev_mode),
     }
 }

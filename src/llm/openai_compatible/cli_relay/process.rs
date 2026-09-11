@@ -30,6 +30,22 @@ pub(in crate::llm::openai_compatible) struct RelayProcess {
     label: &'static str,
 }
 
+/// 三条中转线各自的配置/登录态目录:claude(`~/.claude`、`~/.claude.json`)、
+/// codex(`~/.codex`)、agy(`~/.gemini`,或 `MIYU_AGY_CONFIG_DIR`)。不存在的不给。
+fn relay_config_grants() -> Vec<std::path::PathBuf> {
+    let mut grants = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        for name in [".claude", ".claude.json", ".codex", ".gemini"] {
+            grants.push(home.join(name));
+        }
+    }
+    if let Some(dir) = std::env::var_os("MIYU_AGY_CONFIG_DIR") {
+        grants.push(std::path::PathBuf::from(dir));
+    }
+    grants
+}
+
 impl RelayProcess {
     /// 拉起子进程并把整段 stdin 载荷写完、关写端(本轮输入结束)。
     /// `env` 里 `None` 表示从子进程环境里抹掉该变量。
@@ -64,6 +80,9 @@ impl RelayProcess {
                 }
             }
         }
+        // 沙盒回合(成员):CLI 进程整个关进 Landlock,它自带的 Bash/Edit 子进程一并
+        // 继承;CLI 自己的配置目录(登录态、会话文件)放行读写。
+        crate::tools::sandbox::confine_relay(&mut command, &relay_config_grants());
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 anyhow::anyhow!("{}: {}", not_found(), binary.display())

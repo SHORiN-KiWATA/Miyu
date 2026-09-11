@@ -41,7 +41,8 @@
 - WebUI 的 `/reset` `/compact` 这些命令失效、麦克风按钮不见了：页面一打开就去拿命令清单和语音状态，那时还没登录（401），登录后没再拿。现在登录完重拿。
 - 编辑工具失败后卡片上还挂着「准备修改」；正在思考的标题一悬停字就消失（流光字的底色被 hover 盖掉）。
 - 回合失败时 WebUI 只显示最外层那句「LLM stream failed after emitting output」，查不到原因；现在把原因链一起带出来。
-- 成员用 claude-code / codex / antigravity 这类 CLI 供应商时完全没有沙盒：那些 CLI 自带的 Bash/Edit/Read 跑在它们自己的进程里，不经 Miyu。沙盒回合里原生工具一律关掉，工具只能从 MCP 桥拿（桥在 daemon 里执行、套沙盒）。
+- 成员用 claude-code / codex / antigravity 这类 CLI 供应商时完全没有沙盒：那些 CLI 自带的 Bash/Edit/Read 跑在它们自己的进程里，不经 Miyu。现在沙盒回合里整个 CLI 进程关进 Landlock（它起的 Bash/Edit 子进程继承规则），原生工具照开；CLI 自己的配置目录（`~/.claude`、`~/.claude.json`、`~/.codex`、`~/.gemini`）放行读写，所以 CLI 能登录、能存会话。注意：这意味着成员在 CLI 里跑的 Bash 也读得到这些配置文件（里面有你的登录态）——这是「CLI 关进沙盒」这条路径的固有代价。
+- WebUI 的回合（管理员和成员）现在也带 `<host-environment>`（以前只有终端有），成员的沙盒回合里能看到自己的工作区。
 - 登录态落盘：以前 daemon 一重启所有人都被登出，cookie 也只有 1 天，手机上隔天打开就得重登；现在服务端和 cookie 都保留 30 天，重启不掉线。登录过期时直接回到登录页（中文提示），不再是发消息时弹一句英文。
 - 成员在 AI 输出时再发一条排不进队：排队检查盯着管理员的库看。
 - 刷新页面后每条回合的「累计」「每秒 x toks」没了：输出速度样本落库（`generation_tokens` / `generation_ms`），累计按会话顺序求和，刷新后照旧。成员页面的上下文条「累计」也按自己的会话算。

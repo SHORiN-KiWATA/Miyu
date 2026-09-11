@@ -52,6 +52,7 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
         &paths,
         &AppConfig::default(),
         AgentMode::Normal,
+        false,
     );
     assert!(owner.starts_with("base\n\n<host-environment os=\""));
     assert!(owner.contains("/>"));
@@ -70,7 +71,8 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
             PromptAudience::Internal,
             &paths,
             &AppConfig::default(),
-            AgentMode::Normal
+            AgentMode::Normal,
+            false,
         ),
         "base"
     );
@@ -80,11 +82,24 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
         &paths,
         &AppConfig::default(),
         AgentMode::Normal,
+        true,
     );
     assert_eq!(external, format!("base{STYLE_LOCK}"));
     assert!(!external.contains("<host-environment"));
     assert!(!external.contains("LaTeX"));
     assert!(!external.contains("<voice-protocol"));
+    // WebUI 回合(External 但不是平台回合):带主机环境块,但 LaTeX/语音协议仍只给属主
+    let webui = with_host_environment(
+        "base".to_string(),
+        PromptAudience::External,
+        &paths,
+        &AppConfig::default(),
+        AgentMode::Normal,
+        false,
+    );
+    assert!(webui.starts_with("base\n\n<host-environment os=\""));
+    assert!(webui.ends_with(STYLE_LOCK));
+    assert!(!webui.contains("LaTeX"));
     // dev 提示词极简,外部受众也不带风格锁。
     assert_eq!(
         with_host_environment(
@@ -92,7 +107,8 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
             PromptAudience::External,
             &paths,
             &AppConfig::default(),
-            AgentMode::Dev
+            AgentMode::Dev,
+            true,
         ),
         "base"
     );
@@ -114,6 +130,7 @@ fn host_environment_is_byte_stable_across_prompt_rebuilds() {
         &paths,
         &AppConfig::default(),
         AgentMode::Normal,
+        false,
     );
     let second = with_host_environment(
         String::new(),
@@ -121,6 +138,7 @@ fn host_environment_is_byte_stable_across_prompt_rebuilds() {
         &paths,
         &AppConfig::default(),
         AgentMode::Normal,
+        false,
     );
     assert_eq!(first, second);
 }
