@@ -132,6 +132,9 @@ pub struct JobCompletion {
 
 pub type CompletionHook = Arc<dyn Fn(JobCompletion) + Send + Sync>;
 pub type StartedHook = Arc<dyn Fn(JobOverview) + Send + Sync>;
+/// (job_id, raw progress message) → 推给 UI 的实时进度。后台子代理的每条进度
+/// 除了落任务日志,也经此上 SSE,网页端据 job_id 把它渲进那个任务的子过程流。
+pub type ProgressHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// UI-facing snapshot of one job, for status strips and IPC polling.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,9 +176,26 @@ fn started_hook() -> &'static Mutex<Option<StartedHook>> {
     HOOK.get_or_init(|| Mutex::new(None))
 }
 
+fn progress_hook() -> &'static Mutex<Option<ProgressHook>> {
+    static HOOK: OnceLock<Mutex<Option<ProgressHook>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
 /// Install the host started hook (daemon: publish job.started to UIs).
 pub fn set_started_hook(hook: StartedHook) {
     *started_hook().lock().unwrap() = Some(hook);
+}
+
+/// Install the host progress hook (daemon: publish job.progress to UIs).
+pub fn set_progress_hook(hook: ProgressHook) {
+    *progress_hook().lock().unwrap() = Some(hook);
+}
+
+/// 后台任务的一条实时进度上 SSE(如已安装 hook)。子代理进度桥调用它。
+pub fn publish_job_progress(job_id: &str, message: &str) {
+    if let Some(hook) = progress_hook().lock().unwrap().clone() {
+        hook(job_id, message);
+    }
 }
 
 impl JobEntry {

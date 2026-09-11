@@ -25,6 +25,15 @@ pub(in crate::web) fn install_background_job_hook(state: &DaemonState) {
             .events
             .publish("job.started", json!({ "job": overview }));
     }));
+    // 后台子代理的实时进度上 SSE:网页端据 job_id 把它渲进任务条那个任务的
+    // 子过程流(点开后台子代理即可看流式,与前台子代理工具行同款)。
+    let progress_state = state.clone();
+    tools::jobs::set_progress_hook(Arc::new(move |job_id, message| {
+        progress_state.events.publish(
+            "job.progress",
+            json!({ "job_id": job_id, "message": message }),
+        );
+    }));
     let hook_state = state.clone();
     tools::jobs::set_completion_hook(Arc::new(move |completion| {
         let state = hook_state.clone();

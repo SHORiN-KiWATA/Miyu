@@ -188,6 +188,7 @@
     "job.started",
     "job.finished",
     "job.acknowledged",
+    "job.progress",
     "resync_required"
   ];
 
@@ -384,6 +385,8 @@
   const state = {
     backgroundJobs: new Map(),
     jobsStripOpen: localStorage.getItem("miyu.web.jobsStripOpen") === "1",
+    expandedJobs: new Set(),
+    jobStreamSinks: new Map(),
     bootId: null,
     latestEventId: 0,
     lastEventId: 0,
@@ -5892,6 +5895,7 @@
     const ev = parseSubagentEvent(message);
     if (ev.kind === "stats") return;
     const line = subagentPeekLine(ev);
+    if (line) tool.peekLine = line;
     if (tool.taskPeek && line) setReasoningPeek(tool.taskPeek, line);
     if (!tool.subTimeline) return;
     if (ev.kind === "reasoning") {
@@ -5939,6 +5943,22 @@
         if (finished) row.finish(!errored);
       }
     }
+  }
+
+  // 后台子代理的子过程流:一个 job 一份,持久存在 state.jobStreamSinks 里
+  // (任务条整条重建时面板 DOM 也不丢),点开对应任务条那行时挂到它下面。
+  function jobStreamSink(jobId) {
+    let sink = state.jobStreamSinks.get(jobId);
+    if (!sink) {
+      const panel = document.createElement("div");
+      panel.className = "job-stream-panel";
+      const subTimeline = document.createElement("div");
+      subTimeline.className = "sub-timeline";
+      panel.appendChild(subTimeline);
+      sink = { panel, subTimeline, subReasoningRow: null, lastSubToolRow: null, subSteps: null, peekLine: "" };
+      state.jobStreamSinks.set(jobId, sink);
+    }
+    return sink;
   }
 
   function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
@@ -8537,8 +8557,38 @@
           showToast(error.message || "停止失败", "error");
         }
       });
-      row.append(marker, label, time, stop);
-      fragment.appendChild(row);
+      // 子代理任务:标题行里一条单行窥视显示当前子过程,点行展开子过程时间线
+      // (与前台子代理工具行同款);多个并行子代理各占一行、各自展开互不干扰。
+      if (job.kind === "subagent") {
+        const jid = String(job.job_id);
+        const peekSlot = document.createElement("span");
+        peekSlot.className = "reasoning-peek job-chip-peek";
+        const peekSpan = document.createElement("span");
+        peekSlot.appendChild(peekSpan);
+        row.append(marker, label, peekSlot, time, stop);
+        row.classList.add("is-expandable");
+        const expanded = state.expandedJobs.has(jid);
+        row.classList.toggle("is-open", expanded);
+        row.setAttribute("aria-expanded", String(expanded));
+        row.addEventListener("click", (event) => {
+          if (event.target.closest(".job-chip-stop")) return;
+          if (state.expandedJobs.has(jid)) state.expandedJobs.delete(jid);
+          else state.expandedJobs.add(jid);
+          renderJobsStrip();
+        });
+        const wrap = document.createElement("div");
+        wrap.className = "job-chip-wrap";
+        wrap.appendChild(row);
+        const sink = state.jobStreamSinks.get(jid);
+        if (expanded) wrap.appendChild(jobStreamSink(jid).panel);
+        if (sink && sink.peekLine) {
+          window.requestAnimationFrame(() => setReasoningPeek(peekSpan, sink.peekLine));
+        }
+        fragment.appendChild(wrap);
+      } else {
+        row.append(marker, label, time, stop);
+        fragment.appendChild(row);
+      }
     }
     strip.replaceChildren(fragment);
     strip.hidden = false;
@@ -9095,12 +9145,33 @@
       }
       return;
     }
+    if (name === "job.progress") {
+      const jobId = String(data?.job_id || "");
+      const message = String(data?.message || "");
+      if (jobId && message) {
+        // 后台子代理的实时进度:喂给该 job 的子过程流(与前台子代理工具行同款
+        // 解析),并把当前活动写到任务条那一行的窥视上。
+        const sink = jobStreamSink(jobId);
+        renderSubagentProgress(sink, message);
+        const peek = elements.jobsStrip?.querySelector(
+          `.job-chip[data-job-id="${CSS.escape(jobId)}"] .job-chip-peek > span`
+        );
+        if (peek && sink.peekLine) setReasoningPeek(peek, sink.peekLine);
+      }
+      return;
+    }
     if (name === "job.finished") {
-      if (state.backgroundJobs.delete(String(data?.job_id))) renderJobsStrip();
+      const jobId = String(data?.job_id || "");
+      state.expandedJobs.delete(jobId);
+      state.jobStreamSinks.delete(jobId);
+      if (state.backgroundJobs.delete(jobId)) renderJobsStrip();
       return;
     }
     if (name === "job.acknowledged") {
-      if (state.backgroundJobs.delete(String(data?.job_id))) renderJobsStrip();
+      const jobId = String(data?.job_id || "");
+      state.expandedJobs.delete(jobId);
+      state.jobStreamSinks.delete(jobId);
+      if (state.backgroundJobs.delete(jobId)) renderJobsStrip();
       return;
     }
     if (name === "queue.removed") {

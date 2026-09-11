@@ -1518,6 +1518,31 @@ body[data-theme="graphite"] .session-unread-dot {
   font-variant-numeric: tabular-nums;
 }
 
+/* 后台子代理任务行:可点开看流式子过程。收起时标题行里带一条单行窥视。 */
+.job-chip-wrap {
+  width: 100%;
+}
+.job-chip.is-expandable {
+  cursor: pointer;
+}
+.job-chip.is-expandable .job-chip-label {
+  flex: 0 1 auto;
+}
+.job-chip-peek {
+  flex: 1 1 auto;
+}
+.job-chip:not(.is-open) .job-chip-peek {
+  display: flex;
+}
+.job-chip.is-open .job-chip-peek {
+  display: none;
+}
+.job-stream-panel {
+  margin: 2px 0 8px 24px;
+  padding-left: 10px;
+  border-left: 2px solid var(--rule-soft, rgba(128, 128, 128, 0.25));
+}
+
 .job-chip-stop {
   flex: none;
   border: none;

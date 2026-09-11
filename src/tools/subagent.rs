@@ -319,7 +319,7 @@ async fn spawn_background(
         &description,
         &progress,
         move |job_id, log_path| async move {
-            let bridge = spawn_subagent_log_bridge(log_path.clone());
+            let bridge = spawn_subagent_log_bridge(job_id.clone(), log_path.clone());
             // 后台子代理:用后台任务 id 作收件箱键,主体可用 send_subagent_message
             // 中途投递 follow-up;主体从后台返回里拿到这个 job_id。工作区/会话/沙盒
             // 由 with_turn_scope 套回(见上)。
@@ -364,13 +364,19 @@ async fn spawn_background(
 
 /// Bridge a detached subagent's progress stream into its job log so
 /// `job_status` reads live progress the same way it reads command output.
-fn spawn_subagent_log_bridge(log_path: std::path::PathBuf) -> crate::tools::ToolProgress {
+fn spawn_subagent_log_bridge(
+    job_id: String,
+    log_path: std::path::PathBuf,
+) -> crate::tools::ToolProgress {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Some(event) = receiver.recv().await {
             let crate::tools::ToolProgressEvent::Message(message) = event else {
                 continue;
             };
+            // 原始标记上 SSE(网页端据 job_id 渲染子过程流,与前台子代理工具行
+            // 同款);人读的行落任务日志(job status 读它)。
+            crate::tools::jobs::publish_job_progress(&job_id, &message);
             let line = readable_subagent_log_line(&message);
             if line.is_empty() {
                 continue;
