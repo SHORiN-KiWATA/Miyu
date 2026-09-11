@@ -68,7 +68,12 @@ impl LlmEndpoint {
 
 #[derive(Default)]
 pub(in crate::llm::openai_compatible) struct LlmScheduler {
-    pub(in crate::llm::openai_compatible) cursor: usize,
+    /// 轮询游标**按池分**(键=池内端点 id 的拼接)。原来是单个全局游标
+    /// (80af3d57「balance active model endpoints」),那时只有主对话池在请求,
+    /// 转起来是均匀的;后来加了分级池与辅助角色(判定/记忆/视觉/子代理),它们
+    /// 共用同一个全局游标各自 +1,主对话多模型池的轮询被打偏——用户选了多个
+    /// 模型却「一直请求一个」(09-11)。改成每池一个游标,各池独立均衡。
+    pub(in crate::llm::openai_compatible) cursors: HashMap<String, usize>,
     pub(in crate::llm::openai_compatible) cooldowns: HashMap<String, Instant>,
     /// 连败计数(按端点 id)。冷却到期被探测不清零,只有一次真实成功才清
     /// ——持续故障的端点探测频率按此指数衰减(08-24:扁平 120s 让挂死的
@@ -105,9 +110,26 @@ impl LlmScheduler {
         if available.is_empty() {
             return Vec::new();
         }
-        let start = self.cursor % available.len();
-        self.cursor = self.cursor.wrapping_add(1);
+        // 池身份 = 全部端点 id 的拼接(用全量而非 available,冷却不改变池身份)。
+        // 每个池一个独立游标,别的池请求不再打偏本池的轮询。
+        let pool_key = endpoints
+            .iter()
+            .map(|endpoint| endpoint.id())
+            .collect::<Vec<_>>()
+            .join("|");
+        let start = self.next_start(pool_key, available.len());
         rotate_from(available, start)
+    }
+
+    /// 取本池当前起点并把该池游标 +1。每个池独立计数,互不打偏。
+    fn next_start(&mut self, pool_key: String, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let cursor = self.cursors.entry(pool_key).or_insert(0);
+        let start = *cursor % len;
+        *cursor = cursor.wrapping_add(1);
+        start
     }
 
     pub(in crate::llm::openai_compatible) fn is_ready(&mut self, id: &str) -> bool {
@@ -393,6 +415,30 @@ pub(in crate::llm::openai_compatible) fn stream_chunk_commits_attempt(
         || (reasoning_visibility == ReasoningVisibility::Full
             && chunk.kind == ChatStreamKind::Reasoning
             && !chunk.text.is_empty())
+}
+
+#[cfg(test)]
+mod scheduler_balance_tests {
+    use super::*;
+
+    /// 每池一个游标:一个池连着请求应均匀轮换 0,1,0,1…;另一个池的请求
+    /// 不再把这个池的游标带跑(09-11 用户报「选多模型却一直请求一个」)。
+    #[test]
+    fn each_pool_round_robins_independently() {
+        let mut scheduler = LlmScheduler::default();
+        let main = "provA|provB".to_string();
+        let aux = "aux0".to_string();
+        // 主池两模型:交替 0,1,0,1。
+        assert_eq!(scheduler.next_start(main.clone(), 2), 0);
+        assert_eq!(scheduler.next_start(main.clone(), 2), 1);
+        // 中间夹一堆别的池请求。
+        for _ in 0..5 {
+            scheduler.next_start(aux.clone(), 1);
+        }
+        // 主池继续从上次接着轮,不受影响。
+        assert_eq!(scheduler.next_start(main.clone(), 2), 0);
+        assert_eq!(scheduler.next_start(main.clone(), 2), 1);
+    }
 }
 
 #[cfg(test)]

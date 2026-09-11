@@ -457,7 +457,18 @@ async fn run_core(
     } = params;
     let tool_timeout = SUBAGENT_TOOL_TIMEOUT;
 
-    let mode = ProgressMode::from_config(&context.config);
+    // WebUI 回合(既非终端、也非平台:没有 origin tty、没有平台 sender)一律用
+    // Full 档发子过程标记(思考 + 结构化工具调用/结果),网页端据此把展开后的
+    // 子过程时间线画成「思考+工具流」——和主智能体过程区同款(09-11 用户要求)。
+    // 网页端默认收起这些,静息态不吵;终端/平台仍按 display.tool_calls 配置,
+    // 免得 Summary 档的终端用户突然被子代理的全量嵌套刷屏。
+    let is_webui_turn = crate::tools::workspace::current_origin_tty().is_none()
+        && crate::tools::workspace::current_platform_sender().is_none();
+    let mode = if is_webui_turn {
+        ProgressMode::Full
+    } else {
+        ProgressMode::from_config(&context.config)
+    };
     let enabled = context.config.plugins.deep_research.show_progress;
     let sa_progress = SubagentProgress::new(progress, mode, enabled);
 

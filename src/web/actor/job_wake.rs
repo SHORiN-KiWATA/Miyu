@@ -21,17 +21,23 @@ use crate::web::*;
 pub(in crate::web) fn install_background_job_hook(state: &DaemonState) {
     let started_state = state.clone();
     tools::jobs::set_started_hook(Arc::new(move |overview| {
-        started_state
-            .events
-            .publish("job.started", json!({ "job": overview }));
+        // session_id 放**顶层**:事件归属过滤(EventOwnerFilter)只认顶层的
+        // session_id/run_id,没有就只发给管理员——成员的后台任务因此在成员端
+        // 完全不显示(09-11 用户报「后台任务 UI 没了」)。带上归属会话即可让
+        // 成员收到自己那份。
+        started_state.events.publish(
+            "job.started",
+            json!({ "job": overview, "session_id": overview.session_id }),
+        );
     }));
     // 后台子代理的实时进度上 SSE:网页端据 job_id 把它渲进任务条那个任务的
     // 子过程流(点开后台子代理即可看流式,与前台子代理工具行同款)。
     let progress_state = state.clone();
     tools::jobs::set_progress_hook(Arc::new(move |job_id, message| {
+        let session_id = tools::jobs::job_session_id(job_id);
         progress_state.events.publish(
             "job.progress",
-            json!({ "job_id": job_id, "message": message }),
+            json!({ "job_id": job_id, "message": message, "session_id": session_id }),
         );
     }));
     let hook_state = state.clone();
@@ -54,6 +60,8 @@ pub(in crate::web) async fn handle_job_completion(
             "title": completion.title,
             "status": completion.state_label,
             "runtime_seconds": completion.runtime_seconds,
+            // 顶层 session_id:成员才收得到自己后台任务的完成事件(见 started)。
+            "session_id": completion.session_id.as_deref(),
         }),
     );
     tracing::info!(
@@ -68,7 +76,7 @@ pub(in crate::web) async fn handle_job_completion(
         tools::jobs::acknowledge(&completion.job_id);
         state
             .events
-            .publish("job.acknowledged", json!({ "job_id": completion.job_id }));
+            .publish("job.acknowledged", json!({ "job_id": completion.job_id, "session_id": completion.session_id.as_deref() }));
         return;
     }
     let command_short = completion.command.chars().take(120).collect::<String>();
@@ -131,7 +139,7 @@ pub(in crate::web) async fn handle_job_completion(
     tools::jobs::acknowledge(&completion.job_id);
     state
         .events
-        .publish("job.acknowledged", json!({ "job_id": completion.job_id }));
+        .publish("job.acknowledged", json!({ "job_id": completion.job_id, "session_id": completion.session_id.as_deref() }));
 }
 
 /// 本地会话唤醒回合的标识:run id + 事件订阅起点(在回合入队前取,保证

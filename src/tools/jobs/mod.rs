@@ -198,6 +198,15 @@ pub fn publish_job_progress(job_id: &str, message: &str) {
     }
 }
 
+/// 某后台任务归属的会话 id(事件按它做归属过滤:成员只收到自己那份)。
+pub fn job_session_id(job_id: &str) -> Option<String> {
+    jobs()
+        .lock()
+        .unwrap()
+        .get(job_id)
+        .and_then(|job| job.session_id.as_deref().map(str::to_string))
+}
+
 impl JobEntry {
     /// 命令还是子代理。UI 的任务条与工具返回值共用同一份判定,免得两处措辞跑偏。
     fn kind_label(&self) -> &'static str {

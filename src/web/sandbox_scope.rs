@@ -62,15 +62,27 @@ pub(in crate::web) fn member_scope(
     read_only.push(home.join("pictures"));
     // Landlock 对打不开的授权根是失败关闭:不存在的目录先剔掉。
     read_only.retain(|path| path.exists());
+    // daemon 的运行时目录(IPC socket core.sock 在里面):成员用 claude-code 等
+    // CLI 后端时,CLI 起的 `miyu mcp-serve` 桥要连这个 socket 把工具调用转回
+    // daemon 才拿得到 Miyu 工具。CLI 进程被 Landlock 关着,桥子进程继承规则,
+    // 不放行这条就连不上、报 CONNECTION_CLOSED(09-11 实测)。桥转的工具调用带
+    // 成员 session、在 daemon 侧按成员作用域执行,不越权;裸 IPC 的特权命令
+    // (Shutdown 等)按「防君子不防小人」的既定尺度不设防(Landlock 本就不管
+    // socket)。runtime 目录只含 miyu 自己的运行时文件,给读写(connect 需要)。
+    let runtime_dir = paths.runtime_dir();
+    let mut read_write = vec![
+        workspace.clone(),
+        artifacts,
+        PathBuf::from("/tmp"),
+        PathBuf::from("/dev/null"),
+        paths.cache_dir.clone(),
+    ];
+    if runtime_dir.exists() {
+        read_write.push(runtime_dir);
+    }
     let policy = SandboxPolicy {
         read_only,
-        read_write: vec![
-            workspace.clone(),
-            artifacts,
-            PathBuf::from("/tmp"),
-            PathBuf::from("/dev/null"),
-            paths.cache_dir.clone(),
-        ],
+        read_write,
         home: Some(workspace.clone()),
     };
     Some(MemberScope {
