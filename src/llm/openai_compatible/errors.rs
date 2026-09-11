@@ -349,7 +349,7 @@ pub(in crate::llm::openai_compatible) fn zen_upstream_failed(
     body: &str,
 ) -> bool {
     status == 400
-        && provider.base_url.trim_end_matches('/') == OPENCODE_ZEN_BASE_URL
+        && super::zen_headers::is_zen_endpoint(provider)
         && body
             .to_ascii_lowercase()
             .contains("upstream request failed")

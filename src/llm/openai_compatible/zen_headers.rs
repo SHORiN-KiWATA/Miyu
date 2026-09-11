@@ -27,9 +27,13 @@
 //! 判定按**端点**而不是供应商 id:用户可以把 Zen 那份配置改名(测试里就有个叫
 //! `myopencode` 的),而决定服务端怎么看这次请求的是打到哪个地址。同 `errors`
 //! 里的 `zen_upstream_failed`。
+//!
+//! 端点不止 `/zen/v1` 一个:Console Go 挂在 `/zen/go/v1`,同一套头同一个网关。
+//! 09-11 实测(`testkit/opencode-zen/go_endpoint_headers.py`)——Go 那边缺
+//! `x-opencode-session` 是**硬 400**(`MissingSessionID`),不像 Zen 只是把你
+//! 丢进匿名桶,所以这里按 `/zen` 这一层整段判,新开的兄弟端点自动覆盖到。
 
 use crate::config::ProviderConfig;
-use crate::default_models::OPENCODE_ZEN_BASE_URL;
 use rand::Rng;
 use sha1::Digest;
 use std::sync::OnceLock;
@@ -45,9 +49,20 @@ const OPENCODE_CLIENT: &str = "cli";
 /// 不在某个具体项目里时 opencode 报的值。Miyu 不是按目录组织工作的,恒定报它。
 const OPENCODE_PROJECT: &str = "global";
 
-/// 这次请求是不是打到 Zen 端点。
+/// Zen 系端点共同的前缀:`/zen/v1`(Zen)与 `/zen/go/v1`(Console Go)都在它下面。
+const OPENCODE_ZEN_ROOT: &str = "https://opencode.ai/zen";
+
+/// 这次请求是不是打到 Zen 系端点(Zen 本体或它下面的 Console Go)。
 pub(in crate::llm::openai_compatible) fn is_zen_endpoint(provider: &ProviderConfig) -> bool {
-    provider.base_url.trim_end_matches('/') == OPENCODE_ZEN_BASE_URL
+    match provider
+        .base_url
+        .trim_end_matches('/')
+        .strip_prefix(OPENCODE_ZEN_ROOT)
+    {
+        // 只认整段路径:`/zen`、`/zen/v1`、`/zen/go/v1` 算,`/zenith/v1` 不算。
+        Some(rest) => rest.is_empty() || rest.starts_with('/'),
+        None => false,
+    }
 }
 
 /// 给发往 Zen 的请求补上识别头;不是 Zen 的原样返回,一个头都不加。

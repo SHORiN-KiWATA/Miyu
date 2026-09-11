@@ -672,7 +672,7 @@ impl ProviderConfig {
     pub fn default_templates() -> Vec<Self> {
         let mut providers = vec![Self::default_opencodezen()];
         providers.extend([
-            Self::template("opencodego", "OpenCode Go", "https://opencode.ai/zen/go/v1"),
+            Self::template("opencodego", "OpenCode Go", OPENCODE_ZEN_GO_BASE_URL),
             Self::template("openai", "OpenAI", "https://api.openai.com/v1"),
             Self::default_anthropic(),
             Self::template("deepseek", "DeepSeek", "https://api.deepseek.com"),

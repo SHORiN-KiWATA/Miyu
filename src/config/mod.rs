@@ -23,7 +23,7 @@ pub(crate) use tool_plugins::*;
 
 use crate::default_models::{
     OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID,
-    OPENCODE_ZEN_BASE_URL,
+    OPENCODE_ZEN_BASE_URL, OPENCODE_ZEN_GO_BASE_URL,
 };
 use crate::paths::MiyuPaths;
 use crate::prompts::default_system_prompt;

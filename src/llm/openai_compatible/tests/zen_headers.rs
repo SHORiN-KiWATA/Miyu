@@ -4,7 +4,7 @@
 //! 收没收到」，中间任何一层把它们吃掉都是 bug。
 
 use super::shared::*;
-use crate::llm::openai_compatible::*;
+use crate::default_models::{OPENCODE_ZEN_BASE_URL, OPENCODE_ZEN_GO_BASE_URL};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
@@ -88,6 +88,88 @@ async fn zen_requests_carry_the_opencode_client_headers() {
     assert_eq!(
         header_value(&heads[0], "x-opencode-session"),
         header_value(&heads[1], "x-opencode-session"),
+    );
+}
+
+/// Console Go(`/zen/go/v1`)与 Zen 是同一个网关的两个端点，同样要带这套头。
+/// 09-11 实录：判定当初写成与 `/zen/v1` 全等，Go 那边一个头都收不到，服务端直接
+/// 回 400 `MissingSessionID`——"Request is missing x-opencode-session"。
+#[tokio::test]
+async fn console_go_requests_carry_the_opencode_client_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let head = read_http_request_head(&mut stream).await;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+        head
+    });
+
+    let client = test_client(test_provider("opencodego", OPENCODE_ZEN_GO_BASE_URL));
+    client
+        .send_with_transport_retry("llm_1730000000000_7", "chat.send", || {
+            client.client.post(&url)
+        })
+        .await
+        .unwrap();
+
+    let head = server.await.unwrap();
+    for (name, prefix) in [
+        ("x-opencode-session", "ses_"),
+        ("x-opencode-request", "msg_"),
+    ] {
+        let value = header_value(&head, name).unwrap_or_default();
+        assert!(
+            value.starts_with(prefix),
+            "{name} 该是 {prefix}* 形状，实际 {value:?}：{head}"
+        );
+    }
+    assert_eq!(
+        header_value(&head, "x-opencode-client").as_deref(),
+        Some("cli")
+    );
+    assert_eq!(
+        header_value(&head, "x-opencode-project").as_deref(),
+        Some("global")
+    );
+}
+
+/// 放宽成前缀判定之后仍然只认 `/zen` 这一整段路径：同域下别的东西不算 Zen。
+#[tokio::test]
+async fn a_lookalike_opencode_path_is_not_a_zen_endpoint() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let head = read_http_request_head(&mut stream).await;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+        head
+    });
+
+    let client = test_client(test_provider("zenith", "https://opencode.ai/zenith/v1"));
+    client
+        .send_with_transport_retry("llm_1730000000000_7", "chat.send", || {
+            client.client.post(&url)
+        })
+        .await
+        .unwrap();
+
+    let head = server.await.unwrap();
+    assert!(
+        !head.to_ascii_lowercase().contains("x-opencode-"),
+        "只是前缀像 zen 的路径不该被当成 Zen：{head}"
     );
 }
 

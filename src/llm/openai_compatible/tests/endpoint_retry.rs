@@ -1,6 +1,7 @@
 //! 同一端点内的重试与冷却。
 
 use super::shared::*;
+use crate::default_models::OPENCODE_ZEN_BASE_URL;
 use crate::llm::openai_compatible::*;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
