@@ -2948,15 +2948,14 @@ body.has-lightbox {
   scrollbar-width: thin;
 }
 
-.main-stage.is-wide .stage-todos:not([hidden]) {
+/* artifact 分栏后正文缩到左半,而下面的 `right` 仍从整个舞台的中线量,面板会
+   落到正文头上;容器(主舞台)也没变窄,容器查询不会把它收掉。所以直接不让它
+   在 artifact 打开时显示。这条 `:not(.artifact-open)` 必须写进**显示**规则本身:
+   原来另写一条 `.main-stage.artifact-open .stage-todos{display:none}` 想盖掉它,
+   但显示规则带 `:not([hidden])` 特异度(0,4,0)高于那条(0,3,0),隐藏规则打不过,
+   浮层照样冒出来盖住对话(09-11 实测)。气泡里那份任务列表仍在。 */
+.main-stage.is-wide:not(.artifact-open) .stage-todos:not([hidden]) {
   display: block;
-}
-
-/* artifact 分栏后正文缩到左半,而上面的 `right` 仍从整个舞台的中线量,面板
-   会落到正文头上;容器(主舞台)也没变窄,容器查询不会把它收掉。直接隐藏,
-   气泡里那份任务列表仍在(09-03 用户报)。 */
-.main-stage.artifact-open .stage-todos {
-  display: none;
 }
 
 /* 侧边这份去框：它悬在留白里,描边和底色反而显得突兀,也和正文抢注意力。
@@ -9862,6 +9861,59 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
 .reasoning-peek > span {
   flex: none;
   white-space: nowrap;
+}
+/* 子代理标题行的单行窥视:复用 reasoning-peek 的尾部对齐/左渐隐。收起态
+   在标题行里显示当前子过程(和「已思考」尾巴同款);展开后让位给子过程时间线。 */
+.tool-card.is-task.collapsed .tool-head .tool-peek {
+  display: flex;
+}
+.tool-card.is-task:not(.collapsed) .tool-head .tool-peek {
+  display: none;
+}
+/* 展开后的子过程时间线:子代理自己的思考与工具流,按序摆开。 */
+.tool-card.is-task .sub-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.sub-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+.sub-row .sub-dot {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.sub-tool.is-running .sub-dot {
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: subDotPulse 1.1s ease-in-out infinite;
+}
+.sub-tool.is-error .sub-dot {
+  background: var(--danger, #d9534f);
+}
+.sub-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+}
+.sub-reasoning-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--proc-think);
+  font-style: italic;
+}
+@keyframes subDotPulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
 }
 /* 放不下了:尾部对齐(文字从左边溢出被裁),再加一层左侧渐隐,新字从右边推进来 */
 .reasoning-peek.is-overflow {

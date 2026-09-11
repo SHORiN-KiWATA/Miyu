@@ -65,9 +65,23 @@ pub(crate) fn format_tokens_per_second(speed: GenerationSpeed) -> Option<String>
 
 /// `None` when there is nothing honest to report: a provider that never said
 /// anything about caching must not be rendered as a flat 0%.
-pub(crate) fn cache_percent(cached: u64, prompt: u64) -> Option<u64> {
-    (cached > 0 && prompt > 0)
-        .then(|| ((cached as f64 / prompt as f64) * 100.0).round().min(100.0) as u64)
+///
+/// 显示口径(09-11 用户拍板):只有 >99.9 才显示成 100(99.5 这类高命中不该被
+/// 抹成满分);99.1–99.9 保留一位小数(临满未满看得见);99.0 及以下取整
+/// (99 就是 "99",不写 "99.0")。
+pub(crate) fn cache_percent(cached: u64, prompt: u64) -> Option<String> {
+    if cached == 0 || prompt == 0 {
+        return None;
+    }
+    let raw = ((cached as f64 / prompt as f64) * 100.0).min(100.0);
+    let rounded_one = (raw * 10.0).round() / 10.0;
+    Some(if rounded_one >= 100.0 {
+        "100".to_string()
+    } else if rounded_one > 99.0 {
+        format!("{rounded_one:.1}")
+    } else {
+        format!("{}", raw.round() as u64)
+    })
 }
 
 pub(crate) fn cache_suffix(cached: u64, prompt: u64) -> String {
@@ -186,5 +200,47 @@ pub(crate) fn format_compact_unit(value: f64, suffix: &str) -> String {
         format!("{value:.0}{suffix}")
     } else {
         format!("{value:.1}{suffix}")
+    }
+}
+
+#[cfg(test)]
+mod cache_percent_tests {
+    use super::cache_percent;
+
+    fn pct(cached: u64, prompt: u64) -> Option<String> {
+        cache_percent(cached, prompt)
+    }
+
+    #[test]
+    fn only_above_99_9_shows_100() {
+        // 99.5% 不再被抹成满分。
+        assert_eq!(pct(995, 1000).as_deref(), Some("99.5"));
+        // 99.94% 一位小数四舍五入到 99.9,仍是小数。
+        assert_eq!(pct(9994, 10000).as_deref(), Some("99.9"));
+        // 99.96% → 100。
+        assert_eq!(pct(9996, 10000).as_deref(), Some("100"));
+        assert_eq!(pct(1000, 1000).as_deref(), Some("100"));
+    }
+
+    #[test]
+    fn ninety_nine_band_shows_one_decimal_from_99_1() {
+        // 恰好 99.0 取整为 "99",不写 "99.0"。
+        assert_eq!(pct(990, 1000).as_deref(), Some("99"));
+        // 99.04 一位小数舍到 99.0 → 取整 "99"。
+        assert_eq!(pct(9904, 10000).as_deref(), Some("99"));
+        // 99.1 起显示一位小数。
+        assert_eq!(pct(9910, 10000).as_deref(), Some("99.1"));
+    }
+
+    #[test]
+    fn below_99_is_integer() {
+        assert_eq!(pct(880, 1000).as_deref(), Some("88"));
+        assert_eq!(pct(1, 2).as_deref(), Some("50"));
+    }
+
+    #[test]
+    fn nothing_to_report_is_none() {
+        assert_eq!(pct(0, 1000), None);
+        assert_eq!(pct(500, 0), None);
     }
 }

@@ -270,7 +270,7 @@ async fn run_turn_task_inner(
             );
         }
         if local_webui && config.tools.enabled {
-            tools::register_webui_artifact_tools(&mut normal_tools, &paths, &session_id);
+            tools::register_webui_artifact_tools(&mut normal_tools, &config, &paths, &session_id);
             // 分享是全局清单,用根库而不是会话钉定克隆。
             tools::register_webui_share_tools(&mut normal_tools, &config, base_store.clone());
         }
@@ -353,7 +353,7 @@ async fn run_turn_task_inner(
             .unwrap_or_default();
         if local_webui && mode == AgentMode::Normal {
             let manifest =
-                tools::webui_artifact_manifest(&paths, &session_id).unwrap_or_else(|_| {
+                tools::webui_artifact_manifest(&config, &paths, &session_id).unwrap_or_else(|_| {
                     "(the artifact manifest is temporarily unavailable)".to_string()
                 });
             // v7 Phase 2.1: the manifest changes whenever artifacts change, so

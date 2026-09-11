@@ -634,10 +634,11 @@ pub fn restricted_platform_registry(config: &AppConfig, paths: &MiyuPaths) -> To
 
 pub fn register_webui_artifact_tools(
     registry: &mut ToolRegistry,
+    config: &AppConfig,
     paths: &MiyuPaths,
     session_id: &str,
 ) {
-    artifact::register_webui(registry, paths, session_id);
+    artifact::register_webui(registry, artifact::artifacts_root(config, paths), session_id);
 }
 
 /// WebUI 文件分享工具。与 artifact 演示区解耦，单独注册。
@@ -649,8 +650,12 @@ pub fn register_webui_share_tools(
     share_file::register_webui(registry, config, store);
 }
 
-pub fn webui_artifact_manifest(paths: &MiyuPaths, session_id: &str) -> anyhow::Result<String> {
-    artifact::managed_manifest(paths, session_id)
+pub fn webui_artifact_manifest(
+    config: &AppConfig,
+    paths: &MiyuPaths,
+    session_id: &str,
+) -> anyhow::Result<String> {
+    artifact::managed_manifest(&artifact::artifacts_root(config, paths), session_id)
 }
 
 pub(crate) fn rescope_platform_memory_tools(
@@ -1289,7 +1294,7 @@ mod tests {
 
         // Edit/Read 统一后 WebUI 附加的只剩发布动作;创建/读取/打补丁走
         // edit/read 的 artifact: 命名空间。
-        register_webui_artifact_tools(&mut registry, &paths, "sess_webui");
+        register_webui_artifact_tools(&mut registry, &config, &paths, "sess_webui");
         assert_eq!(
             registry.permission("present_artifact").unwrap(),
             ToolPermission::Presentation,

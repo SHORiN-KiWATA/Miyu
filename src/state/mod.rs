@@ -325,6 +325,16 @@ fn artifact_media_type(path: &Path) -> (&'static str, &'static str) {
         // 天然安全),但它同时是文本,源码视图也要能看——归进 text/code 就拿不到
         // 图片那套缩放平移了。**投递永远是 attachment**,理由见 assets.rs。
         "svg" => ("image/svg+xml", "svg"),
+        // 位图:归 kind="image" + 正确 mime,前端预览走 <img> 通道(否则落到
+        // application/octet-stream + kind="file",被当文本 dump 出一屏乱码,且
+        // 服务端带 nosniff 连 <img> 都渲染不了——09-11 PNG 预览实测)。
+        "png" => ("image/png", "image"),
+        "jpg" | "jpeg" => ("image/jpeg", "image"),
+        "webp" => ("image/webp", "image"),
+        "gif" => ("image/gif", "image"),
+        "bmp" => ("image/bmp", "image"),
+        "ico" => ("image/x-icon", "image"),
+        "avif" => ("image/avif", "image"),
         // csv/tsv 从 text 里单拎出来,前端才认得出该画成表格。
         "csv" => ("text/csv; charset=utf-8", "csv"),
         "tsv" => ("text/tab-separated-values; charset=utf-8", "csv"),

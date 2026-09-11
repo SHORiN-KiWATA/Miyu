@@ -612,7 +612,7 @@ pub(in crate::web) fn attach_owner_turn_tools(
     // claude-code 的工具**只能**从 MCP 桥拿,于是 REPL 里照样拿到——
     // 08-26 那次"群友经由桥能调 run_command"是同一个坑的另一半。
     if mode == AgentMode::Normal && session_is_running_local_webui(state, session_id) {
-        crate::tools::register_webui_artifact_tools(registry, &state.paths, session_id);
+        crate::tools::register_webui_artifact_tools(registry, config, &state.paths, session_id);
         crate::tools::register_webui_share_tools(registry, config, state.state_store.clone());
     }
 }

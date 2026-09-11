@@ -1522,11 +1522,22 @@
   // 缓存命中率只以输入为分母：输出 token 要到下一轮才进入输入，把它算进
   // 分母会让同样的缓存效果随回复变长而显得越来越差。三家供应商的用量字段
   // 也都是这么定义的（DeepSeek 直接把 prompt 劈成 hit+miss）。
+  // 缓存命中率显示口径(09-11 用户拍板,与终端 render::usage::cache_percent 同规矩):
+  // 只有 >99.9 才显示成 100;99.1–99.9 留一位小数;99.0 及以下取整(99 不写 99.0)。
+  function formatCachePercent(hit, total) {
+    if (hit <= 0 || total <= 0) return null;
+    const raw = Math.min(100, (hit / total) * 100);
+    const roundedOne = Math.round(raw * 10) / 10;
+    if (roundedOne >= 100) return "100";
+    if (roundedOne > 99) return roundedOne.toFixed(1);
+    return String(Math.round(raw));
+  }
+
   function cacheSuffix(cached, prompt) {
     const hit = asFiniteNumber(cached, 0);
     const total = asFiniteNumber(prompt, 0);
-    if (hit <= 0 || total <= 0) return "";
-    return `（C${Math.min(100, Math.round((hit / total) * 100))}%）`;
+    const label = formatCachePercent(hit, total);
+    return label == null ? "" : `（C${label}%）`;
   }
 
   // 输出速度:回合层测的「首块到末块」时长与对应 completion tokens,两者
@@ -5811,6 +5822,125 @@
     if (slot) slot.classList.toggle("is-overflow", peek.scrollWidth > slot.clientWidth + 1);
   }
 
+  // ── 子代理进度:把中转来的标记流解析成结构化事件 ───────────────────
+  // 子代理内部的思考/工具活动经父回合的 tool.progress 通道以标记串上来。
+  // Summary 档只有纯文本行(用于标题窥视);Full 档带 __subtool_call__ /
+  // __subtool_result__ / __subagent_reasoning__(用于展开后的子过程时间线)。
+  const SUBAGENT_MARKERS = {
+    reasoning: "__subagent_reasoning__",
+    call: "__subtool_call__",
+    result: "__subtool_result__",
+    stats: "__subagent_stats__",
+    detach: "__subagent_detach__"
+  };
+
+  function parseSubagentEvent(message) {
+    const text = String(message || "");
+    if (text.startsWith(SUBAGENT_MARKERS.reasoning)) {
+      return { kind: "reasoning", text: text.slice(SUBAGENT_MARKERS.reasoning.length).trim() };
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.call)) {
+      try {
+        const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.call.length));
+        const args = typeof payload.args === "string" ? payload.args : JSON.stringify(payload.args ?? {});
+        return { kind: "call", name: String(payload.name || ""), subject: toolSubject(payload.name, args) };
+      } catch {
+        return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.call.length).trim() };
+      }
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.result)) {
+      try {
+        const payload = JSON.parse(text.slice(SUBAGENT_MARKERS.result.length));
+        return { kind: "result", name: String(payload.name || ""), ok: payload.ok !== false };
+      } catch {
+        return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.result.length).trim() };
+      }
+    }
+    if (text.startsWith(SUBAGENT_MARKERS.stats)) return { kind: "stats", text: text.slice(SUBAGENT_MARKERS.stats.length).trim() };
+    if (text.startsWith(SUBAGENT_MARKERS.detach)) return { kind: "plain", text: text.slice(SUBAGENT_MARKERS.detach.length).trim() };
+    return { kind: "plain", text: text.trim() };
+  }
+
+  function subagentPeekLine(ev) {
+    if (ev.kind === "reasoning") return ev.text;
+    if (ev.kind === "call") return `调用 ${ev.name}${ev.subject ? " · " + ev.subject : ""}`;
+    if (ev.kind === "result") return `${ev.name} ${ev.ok ? "完成" : "出错"}`;
+    return ev.text || "";
+  }
+
+  function makeSubToolRow(name, subject) {
+    const el = document.createElement("div");
+    el.className = "sub-row sub-tool is-running";
+    const dot = document.createElement("span");
+    dot.className = "sub-dot";
+    const label = document.createElement("span");
+    label.className = "sub-label";
+    label.textContent = subject ? `${name} · ${subject}` : name;
+    el.append(dot, label);
+    return {
+      el,
+      finish(ok) {
+        el.classList.remove("is-running");
+        el.classList.toggle("is-error", !ok);
+      }
+    };
+  }
+
+  // 展开后的子过程时间线:Full 档把子代理的思考与工具流按序摆开,和主智能体
+  // 的过程区同款。Summary 档没有结构化标记,只更新标题窥视,时间线留空。
+  function renderSubagentProgress(tool, message) {
+    const ev = parseSubagentEvent(message);
+    if (ev.kind === "stats") return;
+    const line = subagentPeekLine(ev);
+    if (tool.taskPeek && line) setReasoningPeek(tool.taskPeek, line);
+    if (!tool.subTimeline) return;
+    if (ev.kind === "reasoning") {
+      if (!tool.subReasoningRow) {
+        const row = document.createElement("div");
+        row.className = "sub-row sub-reasoning";
+        const span = document.createElement("span");
+        span.className = "sub-reasoning-text";
+        row.appendChild(span);
+        tool.subTimeline.appendChild(row);
+        tool.subReasoningRow = span;
+      }
+      tool.subReasoningRow.textContent = ev.text;
+    } else if (ev.kind === "call") {
+      const row = makeSubToolRow(ev.name, ev.subject);
+      tool.subTimeline.appendChild(row.el);
+      tool.lastSubToolRow = row;
+      tool.subReasoningRow = null;
+    } else if (ev.kind === "result") {
+      if (tool.lastSubToolRow) {
+        tool.lastSubToolRow.finish(ev.ok);
+        tool.lastSubToolRow = null;
+      }
+    } else if (ev.kind === "plain" && ev.text) {
+      // Summary 档没有结构化标记,只有 `工具 #N：名字 · 主语 运行中/ok/err`。
+      // 按 #N 归键,运行中建/留行,ok/err 收尾——展开后同样能看到步骤序列。
+      const match = ev.text.match(/^(?:工具|tool)\s*#(\d+)[:：]?\s*(.*)$/i);
+      if (match) {
+        const key = match[1];
+        const rest = match[2].trim();
+        const running = /(?:运行中|running)$/i.test(rest);
+        const errored = /(?:\berr\b|错误|失败)$/i.test(rest);
+        const finished = !running && /(?:\bok\b|\berr\b|完成|失败|错误)$/i.test(rest);
+        const label = rest.replace(/\s*(?:运行中|running|ok|err)$/i, "").trim();
+        if (!tool.subSteps) tool.subSteps = new Map();
+        let row = tool.subSteps.get(key);
+        if (!row) {
+          row = makeSubToolRow(label, "");
+          tool.subTimeline.appendChild(row.el);
+          tool.subSteps.set(key, row);
+        } else {
+          const labelNode = row.el.querySelector(".sub-label");
+          if (labelNode) labelNode.textContent = label;
+        }
+        if (finished) row.finish(!errored);
+      }
+    }
+  }
+
   function createReasoningBlock(text, title = "已思考", live = false, summaryOnly = false) {
     const details = document.createElement("details");
     details.className = "reasoning-block";
@@ -7376,7 +7506,18 @@
     statusText.textContent = "运行中";
     status.append(statusIcon, statusText);
     const chevron = makeIconSlot("chevron-down", "tool-chevron");
-    head.append(icon, title, status, chevron);
+    // 子代理:标题行里放一条单行窥视(和「已思考」标题右侧尾巴同款),收起态
+    // 显示子代理当前在做什么;不再用带底色的方块(那读起来像独立 tag,09-11)。
+    let taskPeek = null;
+    if (isTask) {
+      const peekSlot = document.createElement("span");
+      peekSlot.className = "reasoning-peek tool-peek";
+      taskPeek = document.createElement("span");
+      peekSlot.appendChild(taskPeek);
+      head.append(icon, title, peekSlot, status, chevron);
+    } else {
+      head.append(icon, title, status, chevron);
+    }
     let commandPreview = null;
     let commandOutputPreview = null;
     if (isCommand) {
@@ -7404,13 +7545,16 @@
       argumentsDetail.wrapper.hidden = false;
     }
     body.append(argumentsDetail.wrapper, progressDetail.wrapper, stdoutDetail.wrapper, stderrDetail.wrapper, resultDetail.wrapper);
-    // 子代理签:标题行下方的实时进度面板,收起态也可见,tool.progress 原地刷新
+    // 子代理:收起看标题行的窥视,展开看下面的「子过程时间线」——子代理自己的
+    // 思考与工具流,和主智能体的过程区同款渲染(09-11 用户要求)。不再用方块。
     let liveProgress = null;
+    let subTimeline = null;
     if (isTask) {
-      liveProgress = document.createElement("div");
-      liveProgress.className = "tool-live-progress";
-      liveProgress.textContent = subjectText || "正在启动子代理…";
-      card.append(head, liveProgress, body);
+      subTimeline = document.createElement("div");
+      subTimeline.className = "sub-timeline";
+      body.insertBefore(subTimeline, body.firstChild);
+      card.append(head, body);
+      if (taskPeek) taskPeek.textContent = reasoningPeekText(subjectText || "正在启动子代理…");
     } else {
       card.append(head);
       if (commandPreview) card.appendChild(commandPreview);
@@ -7440,6 +7584,9 @@
       resultDetail,
       isTask,
       liveProgress,
+      taskPeek,
+      subTimeline,
+      subRows: new Map(),
       titleText: String(data?.display_name || data?.name || "工具"),
       subject: subjectText,
       startedAt: performance.now(),
@@ -7646,6 +7793,10 @@
         tool.progressDetail.wrapper.hidden = false;
       }
       updateToolSummary(tool);
+    } else if (name === "tool.progress" && tool.isTask) {
+      // 子代理:标题行单行窥视 + 展开后的子过程时间线,不再用带底色的方块。
+      renderSubagentProgress(tool, String(data?.message || ""));
+      if (!tool.finished) updateToolStatus(tool, "运行中", "loader-circle");
     } else if (name === "tool.progress") {
       let message = String(data?.message || "");
       // 阶段签(「准备修改」这类)只描述过程,不是结果:工具失败后不该留在卡片上

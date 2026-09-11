@@ -31,9 +31,18 @@ pub(in crate::web) fn member_scope(
     if account.is_admin() {
         return None;
     }
-    let workspace = paths.user_home_dir(&account.username).join("workspace");
+    let home = paths.user_home_dir(&account.username);
+    let workspace = home.join("workspace");
     if let Err(error) = crate::paths::ensure_private_dir(&workspace) {
         tracing::warn!(error = %error, path = %workspace.display(), "member workspace dir");
+    }
+    // 成员自己的产出目录(artifact 库、生图落盘)也得能读写——artifact 落在
+    // `home/<user>/artifacts`(见 tools::artifact::artifacts_root),沙盒不放行就
+    // 会「读 artifact:x 报 outside your workspace」(09-11 实测)。先建出来,
+    // Landlock 对不存在的授权根是失败关闭。
+    let artifacts = home.join("artifacts");
+    if let Err(error) = crate::paths::ensure_private_dir(&artifacts) {
+        tracing::warn!(error = %error, path = %artifacts.display(), "member artifacts dir");
     }
     let mut read_only: Vec<PathBuf> = [
         "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/proc", "/sys", "/dev", "/run", "/opt",
@@ -47,12 +56,17 @@ pub(in crate::web) fn member_scope(
     if let Ok(exe) = std::env::current_exe() {
         read_only.push(exe);
     }
+    // 成员自己家里的只读产出目录:文档、图片(vision/print_image 读得到自己
+    // 生成的图)。会话库、profile 这些不放行,「沙盒外读取也禁」的口径不变。
+    read_only.push(home.join("documents"));
+    read_only.push(home.join("pictures"));
     // Landlock 对打不开的授权根是失败关闭:不存在的目录先剔掉。
     read_only.retain(|path| path.exists());
     let policy = SandboxPolicy {
         read_only,
         read_write: vec![
             workspace.clone(),
+            artifacts,
             PathBuf::from("/tmp"),
             PathBuf::from("/dev/null"),
             paths.cache_dir.clone(),

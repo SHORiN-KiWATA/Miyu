@@ -109,10 +109,13 @@ fn read_dispatch(
         let session = crate::tools::workspace::try_session()
             .ok_or_else(|| anyhow::anyhow!("artifact: paths require a session turn"))?;
         let name = name.trim();
+        // 成员回合的 artifact 库在自己家里(artifacts_root 按 config.member_home_dir()
+        // 解析),不能用 admin_owned 的 paths.artifacts_dir()——否则成员读
+        // `artifact:x` 会解析到管理员的 home 再被沙盒挡下(09-11 实测)。
+        let root = crate::tools::artifact::artifacts_root(config, paths);
         if name.is_empty() {
-            return crate::tools::artifact::managed_manifest(paths, &session);
+            return crate::tools::artifact::managed_manifest(&root, &session);
         }
-        let root = paths.artifacts_dir();
         let resolved = crate::tools::artifact::managed_file_path(&root, &session, name)?;
         args["path"] = Value::String(resolved.to_string_lossy().to_string());
     } else if let Some(rel) = path_arg.strip_prefix("kb:") {

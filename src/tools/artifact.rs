@@ -10,15 +10,26 @@ use std::path::{Component, Path};
 
 pub(super) const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 
-// 08-21 二次裁定:Artifact 写入独立成 `artifact` 补丁工具(域名即广告),
-// 读取走 read 的 artifact: 前缀;发布仍是 present_artifact。
-pub fn register_webui(registry: &mut ToolRegistry, paths: &MiyuPaths, session_id: &str) {
-    register_present(registry);
-    super::apply_patch::register_artifact(registry, paths.artifacts_dir(), session_id);
+/// artifact 库根:成员回合落在自己家里(`home/<user>/artifacts`),与 KB 的
+/// `kb_root_for` 同一套口径——`MiyuPaths::artifacts_dir()` 是 admin_owned,永远指
+/// 管理员的家,成员用它就会去读写管理员的 artifacts(09-11 实测:成员读
+/// `artifact:x.svg` 报「outside your workspace」,因为解析到了 home/shorin)。
+/// 管理员 / 无成员身份时原样走默认。
+pub fn artifacts_root(config: &crate::config::AppConfig, paths: &MiyuPaths) -> PathBuf {
+    match config.member_home_dir() {
+        Some(home) => home.join("artifacts"),
+        None => paths.artifacts_dir(),
+    }
 }
 
-pub fn managed_manifest(paths: &MiyuPaths, session_id: &str) -> Result<String> {
-    let root = paths.artifacts_dir();
+// 08-21 二次裁定:Artifact 写入独立成 `artifact` 补丁工具(域名即广告),
+// 读取走 read 的 artifact: 前缀;发布仍是 present_artifact。
+pub fn register_webui(registry: &mut ToolRegistry, artifacts_root: PathBuf, session_id: &str) {
+    register_present(registry);
+    super::apply_patch::register_artifact(registry, artifacts_root, session_id);
+}
+
+pub fn managed_manifest(root: &Path, session_id: &str) -> Result<String> {
     validate_session_id(session_id)?;
     let session_dir = root.join(session_id);
     let mut entries = Vec::new();
@@ -347,8 +358,37 @@ mod tests {
             "sess_test",
         )
         .unwrap();
-        let manifest = managed_manifest(&paths, "sess_test").unwrap();
+        let manifest = managed_manifest(&paths.artifacts_dir(), "sess_test").unwrap();
         assert!(manifest.contains("secret-report.md"));
         assert!(!manifest.contains("private body"));
+    }
+
+    #[test]
+    fn artifacts_root_prefers_member_home_over_admin() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = MiyuPaths {
+            root_dir: temp.path().to_path_buf(),
+            config_dir: temp.path().join("config"),
+            config_file: temp.path().join("config/config.jsonc"),
+            skills_dir: temp.path().join("config/skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish"),
+            bash_hook_file: temp.path().join("bash"),
+            zsh_hook_file: temp.path().join("zsh"),
+            scripts_dir: temp.path().join("scripts"),
+            system_scripts_dir: temp.path().join("system-scripts"),
+        };
+        // 无成员身份:走默认(admin_owned 回退到 data/artifacts)。
+        let mut config = crate::config::AppConfig::default();
+        assert_eq!(artifacts_root(&config, &paths), paths.artifacts_dir());
+        // 成员:落到自己家里的 artifacts,不再借用管理员目录(09-11 修复)。
+        config.accounts.home_dir = Some("/tmp/miyu-member-xyz".to_string());
+        assert_eq!(
+            artifacts_root(&config, &paths),
+            std::path::PathBuf::from("/tmp/miyu-member-xyz/artifacts")
+        );
     }
 }
