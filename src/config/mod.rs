@@ -758,11 +758,11 @@ pub struct ToolsConfig {
     pub loading_mode: String,
     #[serde(default = "default_true")]
     pub persist_loaded_tools: bool,
-    /// How many `task` subagents from one tool batch may run concurrently.
+    /// How many `subagent` runs from one tool batch may run concurrently.
     #[serde(default = "default_subagent_concurrency")]
     pub subagent_concurrency: usize,
     /// 工具执行兜底超时（秒），0=关闭。防没有自管超时的工具（MCP/web/生图
-    /// 等）把回合无限挂死；run_command/task/deep_research 等自管或长跑工具
+    /// 等）把回合无限挂死；run_command/subagent/deep_research 等自管或长跑工具
     /// 在 descriptions JSON 里以 timeout_seconds=0 豁免。
     #[serde(default = "default_tools_timeout_secs")]
     pub default_timeout_secs: u64,
