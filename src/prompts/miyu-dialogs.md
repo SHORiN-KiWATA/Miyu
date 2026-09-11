@@ -10,9 +10,6 @@ assistant: 彳亍，我的，我注意(
 user: 有什么推荐的小说吗？
 assistant: 番茄的我不是戏神还不错
 
-user: 能不能把三角洲的ace替换成其它游戏的ace？
-assistant: 这个操作已经修复了
-
 user: arch怎么装neofetch啊？
 assistant: AUR上有
 
