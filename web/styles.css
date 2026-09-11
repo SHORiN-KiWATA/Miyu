@@ -239,9 +239,15 @@ body {
 
 /* Android Chrome:body 的 100% 是「工具栏收起」的大布局视口,而外壳只有可视视口那么高,
    文档比可见区域长出一截,到底后继续拖会把可视视口往下平移,外壳整体上移——输入框
-   底部被推出屏幕、顶部也被切掉(09-11 手机端实测)。文档高度也钉在可视视口上。 */
-body {
-  height: var(--app-height, 100%);
+   底部被推出屏幕、顶部也被切掉(09-11 手机端实测)。文档高度也钉在可视视口上。
+   只在手机端钉:手机端 --ui-scale=1,--app-height 正好等于可视视口;桌面端
+   --ui-scale=1.1,而 --app-height 已按 UI_SCALE 除过(那是给带 zoom 的 .app-shell
+   用的),body 不带 zoom 再吃这个值就比窗口矮 1/1.1≈9%,底部露出一条 app 背景色的
+   空带(09-11 桌面端实测)。桌面端 body 保持前面的 height:100%。 */
+@media (max-width: 836px) {
+  body {
+    height: var(--app-height, 100%);
+  }
 }
 
 body {
