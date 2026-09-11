@@ -5894,26 +5894,37 @@
   function renderSubagentProgress(tool, message) {
     const ev = parseSubagentEvent(message);
     if (ev.kind === "stats") return;
+    if (ev.kind === "reasoning") {
+      // 思考是**逐 token 的增量**(子代理每个流块发一条),要累加,不能覆盖——
+      // 否则窥视和时间线里只剩最后一个 token 在疯狂刷(09-11 用户报)。
+      tool.subReasoningAccum = (tool.subReasoningAccum || "") + ev.text;
+      tool.peekLine = tool.subReasoningAccum;
+      if (tool.taskPeek) setReasoningPeek(tool.taskPeek, tool.subReasoningAccum);
+      if (tool.subTimeline) {
+        if (!tool.subReasoningRow) {
+          const row = document.createElement("div");
+          row.className = "sub-row sub-reasoning";
+          const span = document.createElement("span");
+          span.className = "sub-reasoning-text";
+          row.appendChild(span);
+          tool.subTimeline.appendChild(row);
+          tool.subReasoningRow = span;
+        }
+        tool.subReasoningRow.textContent = tool.subReasoningAccum;
+      }
+      return;
+    }
     const line = subagentPeekLine(ev);
     if (line) tool.peekLine = line;
     if (tool.taskPeek && line) setReasoningPeek(tool.taskPeek, line);
     if (!tool.subTimeline) return;
-    if (ev.kind === "reasoning") {
-      if (!tool.subReasoningRow) {
-        const row = document.createElement("div");
-        row.className = "sub-row sub-reasoning";
-        const span = document.createElement("span");
-        span.className = "sub-reasoning-text";
-        row.appendChild(span);
-        tool.subTimeline.appendChild(row);
-        tool.subReasoningRow = span;
-      }
-      tool.subReasoningRow.textContent = ev.text;
-    } else if (ev.kind === "call") {
+    if (ev.kind === "call") {
       const row = makeSubToolRow(ev.name, ev.subject);
       tool.subTimeline.appendChild(row.el);
       tool.lastSubToolRow = row;
+      // 一轮工具开始 = 上一段思考收尾:清掉当前思考行与累加,下段思考另起一行。
       tool.subReasoningRow = null;
+      tool.subReasoningAccum = "";
     } else if (ev.kind === "result") {
       if (tool.lastSubToolRow) {
         tool.lastSubToolRow.finish(ev.ok);
@@ -7299,6 +7310,10 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(call?.display_name || name || "工具");
+    // 开发模式子代理显示「开发中」(与实时行同口径,09-11)。
+    if (["subagent", "task"].includes(String(name || "")) && parsedToolArguments(call?.arguments)?.dev === true) {
+      displayName.textContent = "开发中";
+    }
     // 名字被芯片截断时,悬浮还能看全(load_tools 一次点名几个工具就会超长)。
     displayName.title = displayName.textContent;
     const realName = document.createElement("small");
@@ -7514,6 +7529,10 @@
     title.className = "tool-title";
     const displayName = document.createElement("strong");
     displayName.textContent = String(data?.display_name || data?.name || "工具");
+    // 开发模式子代理显示「开发中」而非「子代理」,和普通子代理区分开(09-11)。
+    if (isTask && parsedToolArguments(data?.arguments)?.dev === true) {
+      displayName.textContent = "开发中";
+    }
     displayName.title = displayName.textContent;
     const realName = document.createElement("small");
     realName.className = "tool-technical-name";

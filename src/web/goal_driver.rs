@@ -233,7 +233,8 @@ pub(in crate::web) async fn maybe_continue_goal(state: DaemonState, session_id: 
     if goal_record.phase != crate::state::GoalPhase::Active || !goal::is_armed(&session_id) {
         return;
     }
-    if goal_record.rounds_started >= goal_record.max_rounds {
+    if goal_record.max_rounds > 0 && goal_record.rounds_started >= goal_record.max_rounds {
+        // max_rounds == 0 = 不限(09-11 移除轮数限制),不再转 blocked。
         // 轮数耗尽转 blocked 而不是静默停下：人得知道它为什么不动了，
         // 以及该怎么继续（/goal edit 抬高上限）。
         let _ = state.state_store.block_goal(

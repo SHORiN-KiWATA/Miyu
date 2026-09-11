@@ -132,7 +132,7 @@ impl std::fmt::Display for GoalDenied {
 impl std::error::Error for GoalDenied {}
 
 /// 没指定上限时的续轮上限。
-pub const DEFAULT_MAX_GOAL_ROUNDS: i64 = 256;
+pub const DEFAULT_MAX_GOAL_ROUNDS: i64 = 0; // 0 = 不限(09-11 移除轮数限制)
 
 const GOAL_COLUMNS: &str = "session_id, goal_id, revision, objective, phase, \
      blocked_code, blocked_message, max_rounds, rounds_started, created_at, updated_at";
@@ -224,10 +224,12 @@ impl ConversationDb {
                 "goal objective must be a non-empty string".to_string()
             ));
         }
+        // 0 = 不限轮数(09-11 用户拍板移除轮数限制):缺省不再是 256,而是不限;
+        // 负数仍非法。所有 rounds_started >= max_rounds 的判定都加了 max_rounds > 0 的前提。
         let max_rounds = max_rounds.unwrap_or(DEFAULT_MAX_GOAL_ROUNDS);
-        if max_rounds < 1 {
+        if max_rounds < 0 {
             bail!(GoalDenied::InvalidInput(
-                "max_goal_rounds must be a positive integer".to_string()
+                "max_goal_rounds must be zero (unlimited) or a positive integer".to_string()
             ));
         }
         let mut conn = self.conn.lock().unwrap();
@@ -298,9 +300,9 @@ impl ConversationDb {
             }
         }
         if let Some(max_rounds) = max_rounds {
-            if max_rounds < 1 {
+            if max_rounds < 0 {
                 bail!(GoalDenied::InvalidInput(
-                    "max_goal_rounds must be a positive integer".to_string()
+                    "max_goal_rounds must be zero (unlimited) or a positive integer".to_string()
                 ));
             }
         }
@@ -352,7 +354,7 @@ impl ConversationDb {
                 verb,
             });
         }
-        if check_capacity && current.rounds_started >= current.max_rounds {
+        if check_capacity && current.max_rounds > 0 && current.rounds_started >= current.max_rounds {
             bail!(GoalDenied::RoundsExhausted {
                 max_rounds: current.max_rounds
             });
@@ -495,7 +497,7 @@ impl ConversationDb {
                 current_round: current.rounds_started,
             });
         }
-        if current.rounds_started >= current.max_rounds {
+        if current.max_rounds > 0 && current.rounds_started >= current.max_rounds {
             bail!(GoalDenied::RoundsExhausted {
                 max_rounds: current.max_rounds
             });
