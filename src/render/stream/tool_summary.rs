@@ -641,13 +641,17 @@ impl StreamRenderer {
     }
 
     pub(crate) fn display_tool_name<'a>(&self, name: &'a str) -> String {
-        // Subagents keep their per-call description so parallel task calls
-        // show as separate lines: "子代理·<描述>".
-        if let Some(description) = name.strip_prefix("task:") {
+        // Subagents keep their per-call description so parallel subagent
+        // calls show as separate lines: "子代理·<描述>".
+        // "task:" 是改名前的事件名,历史回放里还在。
+        if let Some(description) = name
+            .strip_prefix("subagent:")
+            .or_else(|| name.strip_prefix("task:"))
+        {
             let base = if self.readable_tool_names {
-                readable_tool_name("task")
+                readable_tool_name("subagent")
             } else {
-                "task".to_string()
+                "subagent".to_string()
             };
             return format!("{base}·{description}");
         }

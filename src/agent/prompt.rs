@@ -130,7 +130,7 @@ pub(in crate::agent) fn with_host_environment(
 
 /// 主机环境块:模型池与思考档位(state 里存的偏好)——池里不止一个就全列(逗号
 /// 分隔),档位各模型不一致就写 mixed;沙盒回合(成员)再带上工作区。
-fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> String {
+pub(crate) fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> String {
     let choices = config.active_provider_model_choices();
     let model_label = (!choices.is_empty()).then(|| {
         choices

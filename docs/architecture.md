@@ -19,7 +19,8 @@
   `history` / `context` 请求组装、`compact` / pruning 压缩溢出、`control` 单跑闩锁与续传、
   `repeat_gate` 复读闸。
 - **核心工具**（约 11 件）：`run_command` + `jobs`、`apply_patch`、`todowrite`、`goal`、
-  `task`（子代理）、`web` 搜/取、`vision`、MCP 客户端、`load_tools`、`ask_question`。
+  `subagent`（子代理，`dev=true` 走开发模式）、`web` 搜/取、`vision`、MCP 客户端、
+  `load_tools`、`ask_question`。
   `ask_question` 只在「能弹问题」的入口给。
 - **模型客户端与池** `src/llm/`、`src/config/`：OpenAI 兼容 / Anthropic / 中转线
   （claude-code / codex / antigravity）；全局池 + 四档 Lite / Cheap / Standard / Flagship。

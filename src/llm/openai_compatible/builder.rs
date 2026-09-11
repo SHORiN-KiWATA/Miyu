@@ -168,7 +168,7 @@ impl OpenAiCompatibleClient {
     }
 
     /// Builds the client for a subagent tier pool with the tier-routing
-    /// fallback contract shared by every tier consumer (the `task` tool and
+    /// fallback contract shared by every tier consumer (the `subagent` tool and
     /// the auxiliary roles under `model_tiers.roles`):
     ///
     /// * an unconfigured pool silently uses the main model pool;

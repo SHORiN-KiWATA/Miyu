@@ -26,7 +26,7 @@ impl Agent {
         let eligible: Vec<usize> = calls
             .iter()
             .enumerate()
-            .filter(|(_, call)| call.function.name == "task")
+            .filter(|(_, call)| call.function.name == "subagent")
             .map(|(index, _)| index)
             .collect();
         if eligible.len() < 2 {
@@ -156,7 +156,7 @@ impl Agent {
                                     ok: true,
                                     output: output.clone(),
                                 })?;
-                                let report = extract_persistable_tool_report("task", &output);
+                                let report = extract_persistable_tool_report("subagent", &output);
                                 outputs.insert(call_index, GroupTaskOutput { output, report });
                             }
                             Err(err) => {

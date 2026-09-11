@@ -1,5 +1,5 @@
 //! 档位池客户端构造(`from_tier` / `from_aux_role`)的回退契约:未配置=主池、
-//! 配了但不可用=主池+notice。task 工具与辅助角色共用这一份语义。
+//! 配了但不可用=主池+notice。subagent 工具与辅助角色共用这一份语义。
 
 use super::shared::test_paths;
 use crate::config::{AppConfig, AuxRole, ModelTier};

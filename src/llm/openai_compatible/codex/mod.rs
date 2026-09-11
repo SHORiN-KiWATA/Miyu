@@ -66,7 +66,7 @@ fn default_instructions_dir() -> PathBuf {
 
 /// 两套工具同开时从桥里剔除的 Miyu 工具。codex 原生有 shell(=run_command)、
 /// web_search 与 update_plan(=todowrite);glob/grep 它靠 shell 里的 rg 做,
-/// 没有独立工具,Miyu 的照留;read/edit/task/job/alarm 的保留理由同 claude 线。
+/// 没有独立工具,Miyu 的照留;read/edit/subagent/job/alarm 的保留理由同 claude 线。
 pub(in crate::llm::openai_compatible) const BRIDGE_DUPLICATE_TOOLS: &[&str] =
     &["run_command", "web_search", "todowrite"];
 
@@ -79,7 +79,7 @@ const RELAY_ENVIRONMENT_NOTE: &str = "\n\n<relay-environment>\nThis session runs
 
 /// miyu 工具桥在场时的补充事实(codex 给 MCP 工具的名字是 `miyu__<name>`… 实际
 /// 前缀由 codex 决定,这里按服务器名描述)。
-const RELAY_MIYU_TOOLS_NOTE: &str = "\n<relay-environment-tools>\nThe tools from the `miyu` MCP server live in the persistent Miyu daemon and survive across turns: its task tool runs a background subagent that wakes a follow-up turn when it finishes, job inspects or stops those, alarm schedules timed reminders, ask_question reaches the user and waits for the answer, and generate_image delivers the picture to the user.\n</relay-environment-tools>";
+const RELAY_MIYU_TOOLS_NOTE: &str = "\n<relay-environment-tools>\nThe tools from the `miyu` MCP server live in the persistent Miyu daemon and survive across turns: its subagent tool runs a background subagent that wakes a follow-up turn when it finishes, job inspects or stops those, alarm schedules timed reminders, ask_question reaches the user and waits for the answer, and generate_image delivers the picture to the user.\n</relay-environment-tools>";
 
 impl OpenAiCompatibleClient {
     pub(crate) async fn chat_codex_stream<F>(

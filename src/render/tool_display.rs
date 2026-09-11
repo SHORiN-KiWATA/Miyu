@@ -148,7 +148,7 @@ pub(crate) fn is_silent_tool(name: &str) -> bool {
 
 pub(crate) fn is_subagent_tool(name: &str) -> bool {
     let name = tool_event_base_name(name);
-    matches!(name, "deep_research" | "task")
+    matches!(name, "deep_research" | "subagent" | "task")
 }
 
 pub(crate) fn tool_event_base_name(name: &str) -> &str {
@@ -160,6 +160,9 @@ pub(crate) fn tool_event_base_name(name: &str) -> &str {
         "load_skill"
     } else if name.starts_with("load_tools:") {
         "load_tools"
+    } else if name.starts_with("subagent:") {
+        "subagent"
+    // 改名前的事件名(task:<描述>)还留在历史记录里。
     } else if name.starts_with("task:") {
         "task"
     } else {
@@ -209,7 +212,7 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         "read_url_content" => string_arg(&args, &["url"]).and_then(|url| safe_url_subject(&url)),
         "search_web" => string_arg(&args, &["query"]),
         "call_mcp_tool" => string_arg(&args, &["ToolName"]),
-        "task" => string_arg(&args, &["description"]),
+        "subagent" | "task" => string_arg(&args, &["description"]),
         "web_search"
         | "search_web_images"
         | "use_meme"

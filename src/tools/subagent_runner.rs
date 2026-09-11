@@ -503,7 +503,7 @@ impl SubagentRunner {
         // this subagent instead of restarting it from scratch.
         let resume_id = store_checkpoint(messages.to_vec(), steps);
         bail!(
-            "subagent stream failed after {STREAM_ATTEMPTS} attempts: {err}; resume_id=\"{resume_id}\" — call the task tool again with this resume_id to continue from the last completed tool round (process-local; lost on restart)"
+            "subagent stream failed after {STREAM_ATTEMPTS} attempts: {err}; resume_id=\"{resume_id}\" — call the subagent tool again with this resume_id to continue from the last completed tool round (process-local; lost on restart)"
         );
     }
 

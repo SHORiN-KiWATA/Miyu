@@ -30,8 +30,8 @@ pub(crate) mod platform_outreach;
 mod registry;
 mod scripts;
 mod skills;
+mod subagent;
 mod subagent_runner;
-mod task;
 mod todowrite;
 pub(crate) mod voice_chat;
 pub(crate) mod voice_speak;
@@ -148,7 +148,7 @@ pub fn readable_tool_name(name: &str) -> String {
     if let Some(display_name) = builtin_readable_tool_name(name) {
         return display_name.to_string();
     }
-    // `use_meme:search` / `task:xxx` 这类带 action 后缀的事件名，按基名取友好名。
+    // `use_meme:search` / `subagent:xxx` 这类带 action 后缀的事件名，按基名取友好名。
     // 漏了这一步就一路落到最后的 `name.to_string()`，UI 上显示成裸的
     // `use_meme:search`——同一个工具有没有后缀，显示名不该差这么远。
     let base = crate::render::tool_event_base_name(name);
@@ -182,8 +182,7 @@ fn readable_load_target_name(name: &str) -> String {
 /// The tool name is decoded from the stream well before its arguments finish,
 /// so this is what keeps a multi-kilobyte patch or file write from looking
 /// frozen. Deliberately a short list: flashing a hint for a `read_file` whose
-/// arguments arrive in one chunk is noise. `task` is absent because subagents
-/// already get their own timed block.
+/// arguments arrive in one chunk is noise.
 pub fn preparing_phase(name: &str) -> Option<&'static str> {
     Some(match name {
         "edit"
@@ -208,7 +207,7 @@ pub fn preparing_phase(name: &str) -> Option<&'static str> {
         "trash_path" => t("Preparing delete", "准备删除"),
         // A subagent brief is long, and its own timed block only appears once
         // the arguments have all arrived.
-        "task" | "deep_research" => t("Preparing task", "准备任务"),
+        "subagent" | "deep_research" => t("Preparing task", "准备任务"),
         "ask_question" => t("Preparing question", "准备问题"),
         // 整张清单都在参数里,条目一多就是几百字节,和批量删是同一个窗口。
         "todowrite" => t("Preparing list", "准备清单"),
@@ -236,7 +235,9 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "read_artifact" => t("Read preview file", "读取预览文件"),
         "present_artifact" => t("Preview file", "预览文件"),
         "ask_question" => t("Ask user", "询问用户"),
-        "task" => t("Subagent", "子代理"),
+        // "task" 是 09-11 改名前的旧名:历史记录里存着的调用照样要显示成
+        // 「子代理」,不然翻旧会话看到的是裸工具名。
+        "subagent" | "task" => t("Subagent", "子代理"),
         "read" | "read_file" => t("Read file", "读取文件"),
         "write_file" => t("Write file", "写入文件"),
         "edit_file" => t("Edit file", "编辑文件"),
@@ -440,14 +441,14 @@ impl Surface {
 /// builtin_registry / dev_registry / restricted_platform_registry 三张各写一遍):
 ///
 /// 1. **core**:今天的 dev 那套——命令与后台任务、补丁编辑、todo、goal、web
-///    抓取/搜索、看图、MCP、task 子代理、load_tools。不看 persona。
+///    抓取/搜索、看图、MCP、subagent 子代理、load_tools。不看 persona。
 /// 2. **扩展**:按 persona 清单启用。子系统(记忆、技能、语音)与插件(其余
 ///    注册单元,id 见 config::PLUGIN_IDS)各自受 config 的机器级开关约束——
 ///    persona 只能在「本机装了的」里挑。
 /// 3. **场所**:External 只留 `trust == External` 的工具,再做平台专属的描述
 ///    修饰;`interactive_questions` 决定给不给 ask_question。
 ///
-/// 注册顺序沿用旧表(task 的快照点、cross_hints 收尾都在原位),定义按名排序,
+/// 注册顺序沿用旧表(subagent 的快照点、cross_hints 收尾都在原位),定义按名排序,
 /// 所以三个面的 tools 数组与合并前逐字节相同(`shape_tests` 钉着)。
 pub fn compose_registry(
     config: &AppConfig,
@@ -559,9 +560,9 @@ pub fn compose_registry(
         memory::register(&mut registry, config.clone(), paths.clone());
     }
     // 子代理拿的是这一刻的快照,指路句也得按它自己的工具面补。
-    let mut task_tools = registry.clone();
-    cross_hints::apply(&mut task_tools);
-    task::register(&mut registry, config.clone(), paths.clone(), task_tools);
+    let mut subagent_tools = registry.clone();
+    cross_hints::apply(&mut subagent_tools);
+    subagent::register(&mut registry, config.clone(), paths.clone(), subagent_tools);
     // 记账:注册位置就是权限边界——不可信场所连工具名都不存在(trust 缺省 Owner)。
     if plugin("ledger") {
         ledger::register(&mut registry, config.clone(), paths.clone());
@@ -854,7 +855,7 @@ mod tests {
             .map(|(n, t)| format!("{n}={t}"))
             .collect();
         println!("schema token top10: {}", top.join(" "));
-        // 600 = 现状最重的 task(332)留将近一倍头:新工具照这个体量写,别更肥。
+        // 600 = 现状最重的 subagent(332)留将近一倍头:新工具照这个体量写,别更肥。
         const BUDGET: usize = 600;
         let over: Vec<&(String, usize)> =
             rows.iter().filter(|(_, tokens)| *tokens > BUDGET).collect();
@@ -994,7 +995,7 @@ mod tests {
             assert!(!dev.contains(&gone.to_string()), "dev still exposes {gone}");
         }
         // 干活的那些一件都不能少。
-        for kept in ["run_command", "edit", "task", "job", "todowrite"] {
+        for kept in ["run_command", "edit", "subagent", "job", "todowrite"] {
             assert!(dev.contains(&kept.to_string()), "dev lost {kept}");
         }
         let normal = names(crate::agent::AgentMode::Normal);
@@ -1054,7 +1055,7 @@ mod tests {
             preparing_phase("trash_path"),
             Some(crate::i18n::text("Preparing delete", "准备删除"))
         );
-        for name in ["task", "deep_research"] {
+        for name in ["subagent", "deep_research"] {
             assert_eq!(
                 preparing_phase(name),
                 Some(crate::i18n::text("Preparing task", "准备任务")),
@@ -1238,7 +1239,7 @@ mod tests {
             "write_file",
             "apply_patch",
             "vision_analyze",
-            "task",
+            "subagent",
         ] {
             assert!(!names.iter().any(|name| name == forbidden), "{forbidden}");
         }
@@ -1350,41 +1351,41 @@ mod tests {
 #[cfg(test)]
 mod tier_schema_probe {
     /// Regression: the built-in description overlay
-    /// (`descriptions/task.json`) wholesale replaces the task schema at
+    /// (`descriptions/subagent.json`) wholesale replaces the subagent schema at
     /// register time — a param added only in code silently vanishes from
     /// what the LLM sees.
     #[test]
-    fn task_definition_includes_tier() {
+    fn subagent_definition_includes_tier() {
         let config = crate::config::AppConfig::default();
         let paths = crate::paths::MiyuPaths::new().unwrap();
         let registry = super::builtin_registry(&config, &paths);
         let defs = registry.definitions();
-        let task = defs
+        let subagent = defs
             .iter()
-            .find(|d| d.function.name == "task")
-            .expect("task registered");
-        let props = task.function.parameters.get("properties").unwrap();
+            .find(|d| d.function.name == "subagent")
+            .expect("subagent registered");
+        let props = subagent.function.parameters.get("properties").unwrap();
         assert!(
             props.get("tier").is_some(),
             "tier missing: {}",
-            task.function.parameters
+            subagent.function.parameters
         );
         // 全未配置=零追加(08-16 tools 瘦身:三行"未配置"是零信息,还把
         // 动态文本焊进 tools 数组);配置了档位才出现状态。
-        assert!(!task.function.description.contains("cheap=["));
+        assert!(!subagent.function.description.contains("cheap=["));
     }
 
     /// The description is constant bytes: configuring tier pools must not
     /// change it (a config-derived suffix would re-key the prompt cache on
     /// every pool edit), and the tier enum carries the four current names.
     #[test]
-    fn task_description_is_constant_and_lists_the_four_tiers() {
+    fn subagent_description_is_constant_and_lists_the_four_tiers() {
         let paths = crate::paths::MiyuPaths::new().unwrap();
         let bare = crate::config::AppConfig::default();
-        let bare_task = super::builtin_registry(&bare, &paths)
+        let bare_subagent = super::builtin_registry(&bare, &paths)
             .definitions()
             .into_iter()
-            .find(|d| d.function.name == "task")
+            .find(|d| d.function.name == "subagent")
             .unwrap();
 
         let mut config = crate::config::AppConfig::default();
@@ -1398,14 +1399,17 @@ mod tier_schema_probe {
         config
             .toggle_tier_model(crate::config::ModelTier::Cheap, &provider_id, "mini-a")
             .unwrap();
-        let task = super::builtin_registry(&config, &paths)
+        let subagent = super::builtin_registry(&config, &paths)
             .definitions()
             .into_iter()
-            .find(|d| d.function.name == "task")
+            .find(|d| d.function.name == "subagent")
             .unwrap();
-        assert_eq!(task.function.description, bare_task.function.description);
-        assert!(!task.function.description.contains("cheap=["));
-        let schema = serde_json::to_string(&task.function.parameters).unwrap();
+        assert_eq!(
+            subagent.function.description,
+            bare_subagent.function.description
+        );
+        assert!(!subagent.function.description.contains("cheap=["));
+        let schema = serde_json::to_string(&subagent.function.parameters).unwrap();
         for tier in ["lite", "cheap", "standard", "flagship"] {
             assert!(schema.contains(&format!("\"{tier}\"")), "{schema}");
         }
