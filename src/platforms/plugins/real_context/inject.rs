@@ -100,6 +100,7 @@ impl RealContextPlugin {
                 self.clear_cancelled_pending(context, &event.sender_id)
                     .await;
                 decision.should_reply = false;
+                self.log_muted(context, None);
                 return Ok(());
             }
             self.clear_cancelled_pending(context, &event.sender_id)
@@ -238,6 +239,7 @@ impl RealContextPlugin {
         if context.bot_send_availability().await == BotSendAvailability::Muted {
             self.clear_cancelled_pending(context, &event.sender_id)
                 .await;
+            self.log_muted(context, Some(trigger));
             return Ok(());
         }
         if inherited_committed {
@@ -583,6 +585,22 @@ impl RealContextPlugin {
             &context.sender_id,
             trigger,
             reason,
+        );
+        tracing::info!(target: "miyu::qq", "\n{readable}");
+    }
+
+    /// 自认被禁言而放弃这一轮。两处判定共用,别让它再变回静默返回。
+    pub(in crate::platforms::plugins::real_context) fn log_muted(
+        &self,
+        context: &PlatformTurnContext,
+        trigger: Option<TriggerKind>,
+    ) {
+        let readable = format_active_reply_muted_log(
+            &context.conversation.account_id,
+            &context.conversation.conversation_id,
+            &context.sender_display_name,
+            &context.sender_id,
+            trigger,
         );
         tracing::info!(target: "miyu::qq", "\n{readable}");
     }

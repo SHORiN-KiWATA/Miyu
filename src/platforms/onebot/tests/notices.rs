@@ -170,6 +170,9 @@ async fn bot_send_availability_queries_self_once_and_uses_the_cache() {
     assert_eq!(frame["action"], "get_group_member_info");
     assert_eq!(frame["params"]["group_id"], 42);
     assert_eq!(frame["params"]["user_id"], adapter.self_id);
+    // 09-11:这一条走了上游缓存,提前解禁之后问到的还是旧的 shut_up_timestamp,
+    // 她在群里哑了两小时二十分。没有这条断言的话回滚不会报红。
+    assert_eq!(frame["params"]["no_cache"], true);
     route_api_response(
         &handle,
         json!({
@@ -189,6 +192,84 @@ async fn bot_send_availability_queries_self_once_and_uses_the_cache() {
         BotSendAvailability::Muted
     );
     assert!(frames.try_recv().is_err());
+    group_mute_cache()
+        .lock()
+        .unwrap()
+        .remove_account(adapter.self_id);
+}
+
+/// 12 小时的禁言只信到复查窗口为止:提前解禁而通知没收到时,最坏 5 分钟自愈,
+/// 而不是一路哑到原定解禁时刻。查询侧与通知侧都要守住。
+#[tokio::test]
+async fn a_long_mute_is_only_trusted_until_the_recheck_window() {
+    let (handle, mut frames) = test_connection(None);
+    let adapter = Arc::new(test_adapter(handle.clone(), Target::Group { group_id: 43 }));
+    let key = (adapter.self_id, 43);
+    group_mute_cache()
+        .lock()
+        .unwrap()
+        .remove_account(adapter.self_id);
+
+    let lookup = {
+        let adapter = adapter.clone();
+        tokio::spawn(async move { adapter.bot_send_availability().await })
+    };
+    let frame: Value = serde_json::from_str(&frames.recv().await.unwrap()).unwrap();
+    route_api_response(
+        &handle,
+        json!({
+            "status": "ok",
+            "retcode": 0,
+            "data": {
+                "group_id": 43,
+                "user_id": adapter.self_id,
+                "shut_up_timestamp": unix_now() + 12 * 60 * 60
+            },
+            "echo": frame["echo"]
+        }),
+    );
+    assert_eq!(lookup.await.unwrap().unwrap(), BotSendAvailability::Muted);
+
+    let now = Instant::now();
+    assert_eq!(
+        group_mute_cache().lock().unwrap().get(key, now),
+        Some(BotSendAvailability::Muted)
+    );
+    assert_eq!(
+        group_mute_cache()
+            .lock()
+            .unwrap()
+            .get(key, now + GROUP_MUTE_MUTED_TTL + Duration::from_secs(1)),
+        None,
+        "禁言状态过了复查窗口必须重新问一次"
+    );
+
+    group_mute_cache()
+        .lock()
+        .unwrap()
+        .remove_account(adapter.self_id);
+    update_group_ban_notice(&json!({
+        "post_type": "notice",
+        "notice_type": "group_ban",
+        "sub_type": "ban",
+        "self_id": adapter.self_id,
+        "group_id": 43,
+        "user_id": adapter.self_id,
+        "duration": 12 * 60 * 60
+    }));
+    let now = Instant::now();
+    assert_eq!(
+        group_mute_cache().lock().unwrap().get(key, now),
+        Some(BotSendAvailability::Muted)
+    );
+    assert_eq!(
+        group_mute_cache()
+            .lock()
+            .unwrap()
+            .get(key, now + GROUP_MUTE_MUTED_TTL + Duration::from_secs(1)),
+        None,
+        "通知给的禁言时长同样只是上界"
+    );
     group_mute_cache()
         .lock()
         .unwrap()

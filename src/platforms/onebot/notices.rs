@@ -73,7 +73,8 @@ pub(in crate::platforms::onebot) fn update_group_ban_notice(event: &Value) {
             if duration == 0 {
                 GROUP_MUTE_WHOLE_NOTICE_TTL
             } else {
-                Duration::from_secs(duration).min(GROUP_MUTE_MAX_TTL)
+                // 上界是禁言时长,但到点要复查——提前解禁的通知可能收不到。
+                Duration::from_secs(duration).min(GROUP_MUTE_MUTED_TTL)
             },
         )
     };

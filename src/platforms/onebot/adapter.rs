@@ -177,7 +177,11 @@ impl PlatformAdapter for OneBotAdapter {
                     json!({
                         "group_id": group_id,
                         "user_id": self.self_id,
-                        "no_cache": false,
+                        // 这一条**必须** no_cache:NapCat 的成员信息缓存在提前
+                        // 解禁之后仍然带着旧的 shut_up_timestamp,信它就会以为
+                        // 自己还在禁言里(09-11 实录见 GROUP_MUTE_MUTED_TTL)。
+                        // 频率由禁言缓存兜着,不会变成每条消息一次查询。
+                        "no_cache": true,
                     }),
                     GROUP_MUTE_LOOKUP_TIMEOUT,
                 )
@@ -188,7 +192,7 @@ impl PlatformAdapter for OneBotAdapter {
                     Some(muted_until) if muted_until > now_unix => (
                         BotSendAvailability::Muted,
                         Duration::from_secs((muted_until - now_unix) as u64)
-                            .min(GROUP_MUTE_MAX_TTL),
+                            .min(GROUP_MUTE_MUTED_TTL),
                     ),
                     Some(_) => (BotSendAvailability::Available, GROUP_MUTE_AVAILABLE_TTL),
                     None => (BotSendAvailability::Unknown, GROUP_MUTE_UNKNOWN_TTL),

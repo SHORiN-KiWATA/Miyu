@@ -4,8 +4,9 @@
 //! 时一条消息就是四五个来回，在群活跃时直接把连接打满。
 //!
 //! 禁言缓存的 TTL 是**动态**的（`GROUP_MUTE_AVAILABLE_TTL` / `_UNKNOWN_TTL` /
-//! 按解禁时刻收敛，上限 `GROUP_MUTE_MAX_TTL`）：查到确切解禁时间就缓存到那一
-//! 刻，查不到才退回短 TTL——否则要么反复查，要么在解禁后还以为自己被禁言。
+//! 按解禁时刻收敛）：查到确切解禁时间就缓存到那一刻，查不到才退回短 TTL——
+//! 否则要么反复查，要么在解禁后还以为自己被禁言。但「自认被禁言」这一侧再
+//! 压一道 `GROUP_MUTE_MUTED_TTL` 的复查上限，理由见那个常量。
 
 use crate::platforms::onebot::*;
 
@@ -32,6 +33,18 @@ pub(in crate::platforms::onebot) const GROUP_MUTE_WHOLE_NOTICE_TTL: Duration =
 
 pub(in crate::platforms::onebot) const GROUP_MUTE_MAX_TTL: Duration =
     Duration::from_secs(31 * 24 * 60 * 60);
+
+/// 「我在这个群被禁言」最多信这么久,到点必须重新问一次。
+///
+/// 09-11 实录:20:19 机器人被禁言 12 小时,20:25 人工提前解禁,解禁通知也收到了
+/// ——可 `GROUP_MUTE_AVAILABLE_TTL` 只有 30 秒,30 秒后的那次复查问到的是 NapCat
+/// 缓存里的旧 `shut_up_timestamp`(还指着 12 小时后),于是「我被禁言」按那个时刻
+/// 缓存下来,她在群里一声不吭了两小时二十分,直到人工再禁言+解禁才活过来。
+///
+/// 禁言的确切解禁时刻只是**上界**,不是承诺:提前解禁、上游答案陈旧都会让它失真。
+/// 压到 5 分钟,最坏情况 5 分钟自愈;代价是真被禁言时每 5 分钟一次成员信息查询,
+/// 一个群一次,可以忽略。
+pub(in crate::platforms::onebot) const GROUP_MUTE_MUTED_TTL: Duration = Duration::from_secs(5 * 60);
 
 pub(in crate::platforms::onebot) const GROUP_MUTE_CACHE_CAPACITY: usize = 1024;
 

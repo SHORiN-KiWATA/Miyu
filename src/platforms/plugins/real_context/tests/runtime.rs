@@ -80,6 +80,25 @@ fn active_reply_decision_log_is_structured_for_humans() {
 }
 
 #[test]
+fn muted_skip_log_names_the_trigger_or_falls_back_to_system() {
+    assert_eq!(
+        format_active_reply_muted_log_for(
+            "10000",
+            "20000",
+            "测试用户",
+            "30000",
+            Some(TriggerKind::Direct),
+            Locale::Zh,
+        ),
+        "（跳过：自认被禁言）\n会话：群聊 20000（机器人 QQ 10000）\n发送者：测试用户（QQ 30000）\n触发：直接触发 (direct)\n结果：不回复\n原因：查到机器人自己在本群处于禁言中，等解禁再说话"
+    );
+    assert!(
+        format_active_reply_muted_log_for("10000", "20000", "User", "30000", None, Locale::En,)
+            .contains("Trigger: system")
+    );
+}
+
+#[test]
 fn active_reply_skip_log_keeps_session_sender_and_reason() {
     assert_eq!(
         format_active_reply_skip_log_for(

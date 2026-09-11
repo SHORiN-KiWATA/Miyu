@@ -286,6 +286,51 @@ pub(in crate::platforms::plugins::real_context) fn format_active_reply_skip_log_
     }
 }
 
+/// 「自认在本群被禁言,本轮不说话」的留痕。
+///
+/// 这条路径原本一行日志都不打:消息收下、判官不跑、回复不发,群里看着就是
+/// Miyu 死了,日志里连"她决定不说话"都查不到。09-11 排查一次两小时二十分的
+/// 群内失声,全靠禁言台账和时间戳倒推才定位。同 `format_active_reply_skip_log`。
+pub(in crate::platforms::plugins::real_context) fn format_active_reply_muted_log(
+    account_id: &str,
+    group_id: &str,
+    sender_name: &str,
+    sender_id: &str,
+    trigger: Option<TriggerKind>,
+) -> String {
+    format_active_reply_muted_log_for(
+        account_id,
+        group_id,
+        sender_name,
+        sender_id,
+        trigger,
+        crate::i18n::locale(),
+    )
+}
+
+pub(in crate::platforms::plugins::real_context) fn format_active_reply_muted_log_for(
+    account_id: &str,
+    group_id: &str,
+    sender_name: &str,
+    sender_id: &str,
+    trigger: Option<TriggerKind>,
+    locale: Locale,
+) -> String {
+    if locale == Locale::Zh {
+        format!(
+            "（跳过：自认被禁言）\n会话：群聊 {group_id}（机器人 QQ {account_id}）\n发送者：{}（QQ {sender_id}）\n触发：{}\n结果：不回复\n原因：查到机器人自己在本群处于禁言中，等解禁再说话",
+            empty_as(sender_name, "未知用户"),
+            trigger.map_or("系统触发", |trigger| trigger.log_label(locale)),
+        )
+    } else {
+        format!(
+            "[Skipped: the bot believes it is muted]\nConversation: group {group_id} (bot QQ {account_id})\nSender: {} (QQ {sender_id})\nTrigger: {}\nResult: no reply\nReason: the bot is muted in this group; staying quiet until the mute is lifted",
+            empty_as(sender_name, "unknown user"),
+            trigger.map_or("system", |trigger| trigger.log_label(locale)),
+        )
+    }
+}
+
 /// 未经判官直接回复的留痕。这三条路径(限额耗尽、本会话不做主动判断、
 /// 覆盖窗口沿用已承诺回复)此前一行日志都不打,取证时是黑洞:08-29 排查
 /// 两次「元层拒答」,只能靠"回复出现了但没有判官决定"做减法,推错过一次。
