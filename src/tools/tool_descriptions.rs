@@ -90,7 +90,7 @@ macro_rules! tool_description_files {
             include_str!("descriptions/search_knowledge_base.json"),
             include_str!("descriptions/search_web_images.json"),
             include_str!("descriptions/share_file.json"),
-            include_str!("descriptions/task.json"),
+            include_str!("descriptions/subagent.json"),
             include_str!("descriptions/todowrite.json"),
             include_str!("descriptions/trash_path.json"),
             include_str!("descriptions/vision_analyze.json"),

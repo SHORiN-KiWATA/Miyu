@@ -56,7 +56,7 @@ fn tool_summary_uses_spinner_and_updates_subagent_elapsed_time() {
 
     renderer
         .write_tool_call(
-            "task",
+            "subagent",
             r#"{"description":"确认工作区环境","prompt":"details"}"#,
         )
         .unwrap();
@@ -71,7 +71,7 @@ fn tool_summary_uses_spinner_and_updates_subagent_elapsed_time() {
             t("running", "运行中")
         )
     );
-    renderer.tool_stats.get_mut("task").unwrap().started_at =
+    renderer.tool_stats.get_mut("subagent").unwrap().started_at =
         Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
     renderer.tick_spinner().unwrap();
     assert_eq!(
@@ -96,15 +96,18 @@ fn subagent_summary_keeps_current_internal_tool_without_raw_reasoning() {
     renderer.live_summary = false;
     renderer
         .write_tool_call(
-            "task",
+            "subagent",
             r#"{"description":"查询磁盘占用","prompt":"details"}"#,
         )
         .unwrap();
     renderer
-        .write_tool_progress("task", "工具 #2：运行命令 · du -sh /home/shorin/* 运行中")
+        .write_tool_progress(
+            "subagent",
+            "工具 #2：运行命令 · du -sh /home/shorin/* 运行中",
+        )
         .unwrap();
     renderer
-        .write_tool_progress("task", "__subagent_reasoning__private analysis")
+        .write_tool_progress("subagent", "__subagent_reasoning__private analysis")
         .unwrap();
 
     let summary = renderer.tool_summary_text();
@@ -227,12 +230,12 @@ fn subagent_status_shows_live_and_frozen_elapsed_time() {
         ..ToolStats::default()
     };
     assert_eq!(
-        tool_status_text("task", &running, true),
-        format!("task×1 {} · 1m 08s", t("running", "运行中"))
+        tool_status_text("subagent", &running, true),
+        format!("subagent×1 {} · 1m 08s", t("running", "运行中"))
     );
     assert_eq!(
-        tool_status_text("task", &running, false),
-        format!("task×1 {}", t("running", "运行中"))
+        tool_status_text("subagent", &running, false),
+        format!("subagent×1 {}", t("running", "运行中"))
     );
 
     let completed = ToolStats {
@@ -268,14 +271,14 @@ fn full_mode_subagent_result_uses_elapsed_status_and_clears_timer() {
     );
     renderer.live_summary = false;
     renderer
-        .write_tool_call("task", r#"{"description":"计时","prompt":"details"}"#)
+        .write_tool_call("subagent", r#"{"description":"计时","prompt":"details"}"#)
         .unwrap();
-    renderer.tool_stats.get_mut("task").unwrap().started_at =
+    renderer.tool_stats.get_mut("subagent").unwrap().started_at =
         Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
 
-    renderer.write_tool_result("task", true, "{}").unwrap();
+    renderer.write_tool_result("subagent", true, "{}").unwrap();
 
-    assert!(!renderer.tool_stats.contains_key("task"));
+    assert!(!renderer.tool_stats.contains_key("subagent"));
     assert_eq!(
         tool_result_status("ok", Some(std::time::Duration::from_secs(5))),
         "ok · 5s"
@@ -293,14 +296,17 @@ fn tool_summary_suppresses_subagent_reasoning_even_when_reasoning_is_full() {
     );
     renderer.live_summary = false;
     renderer
-        .write_tool_call("task", r#"{"description":"分析问题","prompt":"details"}"#)
+        .write_tool_call(
+            "subagent",
+            r#"{"description":"分析问题","prompt":"details"}"#,
+        )
         .unwrap();
 
     renderer
-        .write_tool_progress("task", "__subagent_reasoning__Inspecting state")
+        .write_tool_progress("subagent", "__subagent_reasoning__Inspecting state")
         .unwrap();
 
-    let stats = renderer.tool_stats.get("task").unwrap();
+    let stats = renderer.tool_stats.get("subagent").unwrap();
     assert_eq!(stats.calls, 1);
     assert!(stats.started_at.is_some());
     assert_eq!(renderer.subagent_mode, None);
@@ -347,7 +353,7 @@ fn task_summary_omits_tool_prefix() {
         10,
     );
     renderer.tool_stats.insert(
-        "task".to_string(),
+        "subagent".to_string(),
         ToolStats {
             calls: 1,
             ok: 0,
@@ -377,9 +383,9 @@ fn parallel_subagents_render_stacked_blocks() {
         10,
     );
     for (name, subject, progress) in [
-        ("task:任务A", "任务A", Some("工具 #1: 运行命令")),
-        ("task:任务B", "任务B", None),
-        ("task:任务C", "任务C", Some("正在搜索")),
+        ("subagent:任务A", "任务A", Some("工具 #1: 运行命令")),
+        ("subagent:任务B", "任务B", None),
+        ("subagent:任务C", "任务C", Some("正在搜索")),
     ] {
         renderer.tool_stats.insert(
             name.to_string(),
@@ -423,7 +429,7 @@ fn live_blocks_freeze_settled_subagents_in_place() {
         10,
     );
     renderer.tool_stats.insert(
-        "task:任务A".to_string(),
+        "subagent:任务A".to_string(),
         ToolStats {
             calls: 1,
             subject: Some("任务A".to_string()),
@@ -432,7 +438,7 @@ fn live_blocks_freeze_settled_subagents_in_place() {
         },
     );
     renderer.tool_stats.insert(
-        "task:任务B".to_string(),
+        "subagent:任务B".to_string(),
         ToolStats {
             calls: 1,
             ok: 1,
@@ -468,7 +474,7 @@ fn committed_summary_keeps_block_headers_when_one_subagent_finishes() {
         10,
     );
     renderer.tool_stats.insert(
-        "task:任务A".to_string(),
+        "subagent:任务A".to_string(),
         ToolStats {
             calls: 1,
             subject: Some("任务A".to_string()),
@@ -476,7 +482,7 @@ fn committed_summary_keeps_block_headers_when_one_subagent_finishes() {
         },
     );
     renderer.tool_stats.insert(
-        "task:任务B".to_string(),
+        "subagent:任务B".to_string(),
         ToolStats {
             calls: 1,
             ok: 1,
@@ -497,7 +503,7 @@ fn committed_summary_keeps_block_headers_when_one_subagent_finishes() {
 
 #[test]
 fn all_subagent_summaries_use_activity_prefix() {
-    for name in ["task", "deep_research"] {
+    for name in ["subagent", "deep_research"] {
         let mut renderer = StreamRenderer::new(
             ReasoningDisplayMode::Summary,
             ToolCallDisplayMode::Summary,
@@ -623,7 +629,7 @@ fn tool_subject_extracts_safe_operation_targets() {
     );
     assert_eq!(
         tool_subject(
-            "task",
+            "subagent",
             r#"{"description":"定位渲染链路","prompt":"private details"}"#
         )
         .as_deref(),
@@ -763,6 +769,8 @@ fn readable_tool_names_translate_known_tools_and_fallback_unknown() {
         ("vision_analyze", "Visual analysis", "视觉分析"),
         ("use_meme", "Meme", "表情包"),
         ("manage_meme", "Manage memes", "管理表情包"),
+        ("subagent", "Subagent", "子代理"),
+        // 改名前的旧名:历史记录里的调用照样显示成「子代理」。
         ("task", "Subagent", "子代理"),
         (
             "upload_text_to_knowledge_base",

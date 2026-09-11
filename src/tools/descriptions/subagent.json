@@ -1,7 +1,7 @@
 {
-  "name": "task",
+  "name": "subagent",
   "display_name": "子代理",
-  "description": "Delegate a task to a subagent that has your full tool set. Use it when the work would flood this conversation with tool output (reading many files, paging through search results, long command runs), when independent pieces can run in parallel, or for a one-off investigation unrelated to the main thread. The subagent starts with a fresh context and returns only one final message, so the prompt must be self-contained: background, conclusions you already confirmed, the goal, and what it should return. Use background=true for long tasks; you are woken automatically on completion.",
+  "description": "Delegate a task to a subagent that has your full tool set. Use it when the work would flood this conversation with tool output (reading many files, paging through search results, long command runs), when independent pieces can run in parallel, or for a one-off investigation unrelated to the main thread. Coding work belongs here too: set dev=true and the subagent runs in development mode. The subagent starts with a fresh context and returns only one final message, so the prompt must be self-contained: background, conclusions you already confirmed, the goal, and what it should return. Use background=true for long tasks; you are woken automatically on completion.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -12,6 +12,10 @@
       "prompt": {
         "type": "string",
         "description": "The complete task prompt for the subagent; it must stand on its own outside this conversation. The subagent cannot see your conversation history or anything the user said — include the background, constraints, and conclusions you have already found, and state explicitly what information it should return in its final reply."
+      },
+      "dev": {
+        "type": "boolean",
+        "description": "Run the subagent in development mode: the development system prompt plus a minimal coding tool set (commands, background jobs, patch editing, file search, todo, web). Turn it on for every coding task — writing, refactoring, debugging, reviewing, running builds and tests — and put the whole job in prompt, including which files and directories to work in."
       },
       "max_steps": {
         "type": "integer",
@@ -33,7 +37,7 @@
       },
       "resume_id": {
         "type": "string",
-        "description": "Optional. If the previous task failed due to a connection interruption and the error included a resume_id, pass it to resume from the last completed tool turn (valid only within this process)."
+        "description": "Optional. If the previous run failed due to a connection interruption and the error included a resume_id, pass it to resume from the last completed tool turn (valid only within this process)."
       }
     },
     "required": [

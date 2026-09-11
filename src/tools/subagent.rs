@@ -1,5 +1,6 @@
 use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner, SubagentStats};
 use super::{ToolRegistry, ToolSpec};
+use crate::agent::AgentMode;
 use crate::config::{AppConfig, ModelTier};
 use crate::llm::OpenAiCompatibleClient;
 use crate::paths::MiyuPaths;
@@ -8,15 +9,25 @@ use serde_json::{json, Value};
 
 const SUBAGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.md");
 
+/// dev 子代理的系统提示词由三段拼成:用户的 dev 提示词(与 dev 会话同一份
+/// 真相源)、主机环境块、这一句交付约定。三段都是同一会话内的常量,拼出的
+/// 前缀字节稳定,多次 dev 子代理之间照样命中供应商缓存。
+///
+/// 约定只留一句:主体布置任务时会把目标写进 prompt,但「回话对象是主 agent
+/// 而不是用户、没有第二轮」这件事它自己看不出来——dev 提示词里也没有。
+const SUBAGENT_DEV_CONTRACT: &str = "Your reply goes back to the agent that delegated this task, not to a user, and there is no second round: finish the work yourself and end with what you did, what the result was, and anything the caller must know.";
+
 /// 子代理不再分类(08-17):任务由主体布置,工具就沿用主体的目录。
 /// 原来的 explore 是一份硬白名单(read_file/glob/grep/check_os_info/
 /// read_clipboard/web_fetch/web_search),而 dev 目录根本不注册前五个——
 /// dev 下的 explore 只剩 web 两件套,描述却还在承诺 7 个工具。分类本身
 /// 就是这类漂移的来源,连同 275 字符的 subagent_type 参数一起退场。
 ///
-/// 递归防护保留:这份排除表继续把 task/deep_research、技能创作、闹钟和
+/// 递归防护保留:这份排除表继续把 subagent/deep_research、技能创作、闹钟和
 /// 娱乐类工具挡在子代理之外。
 pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
+    "subagent",
+    // 09-11 改名前的旧名,按名匹配的排除表留着不花钱。
     "task",
     "task_agent",
     "deep_research",
@@ -34,7 +45,7 @@ pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
 const SUBAGENT_TOOL_TIMEOUT: u64 = 120;
 
 #[derive(Clone)]
-struct TaskContext {
+struct SubagentContext {
     config: AppConfig,
     paths: MiyuPaths,
     tools: ToolRegistry,
@@ -46,14 +57,14 @@ pub fn register(
     paths: MiyuPaths,
     tools: ToolRegistry,
 ) {
-    let context = TaskContext {
+    let context = SubagentContext {
         config,
         paths,
         tools,
     };
     registry.register(ToolSpec::new_with_progress(
-        "task",
-        "Launch a subagent to handle a complex task independently. The subagent has its own system prompt, tool set, and LLM loop, and returns its final text to the main agent.",
+        "subagent",
+        "Launch a subagent to handle a complex task independently. The subagent has its own system prompt, tool set, and LLM loop, and returns its final text to the main agent. Set dev=true for coding work.",
         json!({
             "type": "object",
             "properties": {
@@ -64,6 +75,10 @@ pub fn register(
                 "prompt": {
                     "type": "string",
                     "description": "Detailed task prompt. Must include full context, goals, and output requirements since the subagent has no access to the main agent's conversation history."
+                },
+                "dev": {
+                    "type": "boolean",
+                    "description": "Run the subagent in development mode: the development system prompt plus a minimal coding tool set. Turn it on for every coding task."
                 },
                 "max_steps": {
                     "type": "integer",
@@ -88,18 +103,19 @@ pub fn register(
         }),
         move |args, progress| {
             let context = context.clone();
-            async move { run_task(args, context, progress).await }
+            async move { run_subagent(args, context, progress).await }
         },
     ).writes());
 }
 
 #[derive(Clone)]
-struct TaskParams {
+struct SubagentParams {
     description: String,
     prompt: String,
     resume_id: Option<String>,
     max_steps: usize,
     tier: ModelTier,
+    dev: bool,
 }
 
 /// Session linkage captured while still inside the turn scope — a detached
@@ -111,7 +127,7 @@ struct AuditAnchor {
     persona: String,
 }
 
-fn parse_task_params(args: &Value) -> Result<TaskParams> {
+fn parse_params(args: &Value) -> Result<SubagentParams> {
     let description = args
         .get("description")
         .and_then(Value::as_str)
@@ -148,21 +164,23 @@ fn parse_task_params(args: &Value) -> Result<TaskParams> {
         .and_then(Value::as_str)
         .and_then(ModelTier::from_str)
         .unwrap_or(ModelTier::Standard);
-    Ok(TaskParams {
+    let dev = args.get("dev").and_then(Value::as_bool).unwrap_or(false);
+    Ok(SubagentParams {
         description,
         prompt,
         resume_id,
         max_steps,
         tier,
+        dev,
     })
 }
 
-async fn run_task(
+async fn run_subagent(
     args: Value,
-    context: TaskContext,
+    context: SubagentContext,
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
-    let params = parse_task_params(&args)?;
+    let params = parse_params(&args)?;
     let anchor = AuditAnchor {
         parent: crate::tools::workspace::try_session().map(|session| session.to_string()),
         persona: context.config.active_persona_scope(),
@@ -172,11 +190,9 @@ async fn run_task(
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        return spawn_background_task(context, params, anchor, progress).await;
+        return spawn_background(context, params, anchor, progress).await;
     }
-    Ok(run_task_core(context, progress, params, anchor)
-        .await?
-        .output)
+    Ok(run_core(context, progress, params, anchor).await?.output)
 }
 
 /// 一次子代理运行的结果。
@@ -184,28 +200,63 @@ async fn run_task(
 /// `state` 以前是后台路径把 `output` 当 JSON 反解出来的——而 08-21 的
 /// token-diet 把成功路径改成了纯文本,那次反解从此永远失败、悄悄退化成
 /// "completed",`budget_reached` 被当成正常完成上报。现在直接带出来。
-struct TaskRun {
+struct SubagentRun {
     output: String,
     state: &'static str,
+}
+
+/// 回合作用域(沙盒策略、工作区、会话身份)不跟着 `tokio::spawn` 走:后台
+/// 子代理起在一条新任务上,task-local 到那边全是空的。后果不是显示问题
+/// ——成员回合的后台子代理会跑在 Landlock 之外,工具的工作目录也退回
+/// daemon 的 cwd。在还看得见的地方抓下来,进了后台原样套回去。
+async fn with_turn_scope<F>(
+    sandbox: Option<std::sync::Arc<crate::tools::sandbox::SandboxPolicy>>,
+    workspace: Option<std::path::PathBuf>,
+    session: Option<std::sync::Arc<str>>,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let mut future: std::pin::Pin<Box<dyn std::future::Future<Output = F::Output> + Send>> =
+        Box::pin(future);
+    if let Some(session) = session {
+        future = Box::pin(crate::tools::workspace::with_session(session, future));
+    }
+    if let Some(workspace) = workspace {
+        future = Box::pin(crate::tools::workspace::with_workspace(workspace, future));
+    }
+    // `None` 也照样套:显式「这一段没有策略」与回合里的语义一致。
+    crate::tools::sandbox::with_sandbox(sandbox, future).await
 }
 
 /// Detach the subagent run behind the shared background-job registry: its
 /// progress streams into the job log, and completion goes through the same
 /// wake path as background commands.
-async fn spawn_background_task(
-    context: TaskContext,
-    params: TaskParams,
+async fn spawn_background(
+    context: SubagentContext,
+    params: SubagentParams,
     anchor: AuditAnchor,
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
     let description = params.description.clone();
+    let sandbox = crate::tools::sandbox::current_sandbox();
+    let workspace = crate::tools::workspace::try_workspace();
+    let session = crate::tools::workspace::try_session();
     crate::tools::jobs::spawn_background_subagent(
         None,
         &description,
         &progress,
         move |job_id, log_path| async move {
             let bridge = spawn_subagent_log_bridge(log_path.clone());
-            let run = run_task_core(context, bridge, params, anchor).await;
+            let run = with_turn_scope(
+                sandbox,
+                workspace,
+                session,
+                run_core(context, bridge, params, anchor),
+            )
+            .await;
             let state_label = match &run {
                 Ok(run) => run.state,
                 Err(_) => "error",
@@ -284,18 +335,45 @@ fn readable_subagent_log_line(message: &str) -> String {
     message.trim().to_string()
 }
 
-async fn run_task_core(
-    context: TaskContext,
+/// dev 子代理的系统提示词。
+///
+/// 第一段是用户自己的 dev 提示词(`dev-prompt.md`,与 dev 会话读同一份),
+/// 改它对子代理同时生效。第二段是主体也在用的主机环境块——子代理没有
+/// 每轮瞬态尾巴,工作目录只能从这里知道,否则第一步永远浪费在 `pwd` 上。
+/// 末尾是那句交付约定。
+///
+/// 三段在一个会话里都是常量(工作目录跟着会话工作区走),多次 dev 子代理
+/// 之间前缀缓存照样命中。
+fn build_dev_system_prompt(config: &AppConfig, paths: &MiyuPaths) -> Result<String> {
+    let mut prompt = config.dev_system_prompt(paths)?;
+    prompt.push_str("\n\n");
+    prompt.push_str(&crate::agent::prompt::host_environment_for(config, paths));
+    prompt.push_str(&format!(
+        "\n<runtime cwd=\"{}\"/>",
+        crate::host_info::xml_attr_escape(
+            &crate::tools::workspace::effective_workdir()
+                .display()
+                .to_string()
+        )
+    ));
+    prompt.push_str("\n\n");
+    prompt.push_str(SUBAGENT_DEV_CONTRACT);
+    Ok(prompt)
+}
+
+async fn run_core(
+    context: SubagentContext,
     progress: crate::tools::ToolProgress,
-    params: TaskParams,
+    params: SubagentParams,
     anchor: AuditAnchor,
-) -> Result<TaskRun> {
-    let TaskParams {
+) -> Result<SubagentRun> {
+    let SubagentParams {
         description,
         prompt,
         resume_id,
         max_steps,
         tier,
+        dev,
     } = params;
     let tool_timeout = SUBAGENT_TOOL_TIMEOUT;
 
@@ -303,23 +381,46 @@ async fn run_task_core(
     let enabled = context.config.plugins.deep_research.show_progress;
     let sa_progress = SubagentProgress::new(progress, mode, enabled);
 
+    // dev 子代理 = 开发模式的三件套,与 dev 会话同源:保留人格 "dev" 的
+    // 作用域(记忆整套关)、那份 core_only 的工具面、以及中转线的 dev 工具
+    // 作用域。少任何一件都会漂移成「名字叫 dev、其实是普通子代理」。
+    let config = if dev {
+        context.config.dev_scoped()
+    } else {
+        context.config.clone()
+    };
+
     // Tier routing: the tier's pool gets its own load-balanced client;
     // an unconfigured pool silently uses the main model pool, and a
     // configured-but-unusable pool falls back with a notice returned to
     // the calling agent (not printed to the user). The fallback contract
     // lives in `from_tier` so auxiliary roles share it byte for byte.
-    let routed = OpenAiCompatibleClient::from_tier(&context.config, &context.paths, tier)?;
+    let routed = OpenAiCompatibleClient::from_tier(&config, &context.paths, tier)?;
     let tier_notice = routed.notice;
     let model_choice = routed.model_choice;
     let client = routed
         .client
         .with_request_scope("subagent")
+        .with_claude_code_dev_mode(dev)
         .for_subagent_output(mode == ProgressMode::Full);
-    // 工具沿用主体目录:子代理的任务是主体布置的,分类只会让"承诺的工具"
+    // 普通子代理沿用主体目录:任务是主体布置的,分类只会让"承诺的工具"
     // 与"实际注册的工具"漂移(dev 下的旧 explore 就是这么坏掉的)。
-    let tools = context.tools.clone();
+    // dev 子代理反过来:它的任务与主体人格无关,拿的就是 dev 会话那张面,
+    // 现造而不是注册时造——注册发生在 `compose_registry` 里,在那儿造 dev
+    // 面会自己套自己。
+    let tools = if dev {
+        crate::tools::build_tool_registry(&config, &context.paths, AgentMode::Dev, false)?
+    } else {
+        context.tools.clone()
+    };
 
-    let runner = SubagentRunner::new(client, SUBAGENT_SYSTEM_PROMPT, tools, sa_progress)
+    let system_prompt = if dev {
+        build_dev_system_prompt(&config, &context.paths)?
+    } else {
+        SUBAGENT_SYSTEM_PROMPT.to_string()
+    };
+
+    let runner = SubagentRunner::new(client, system_prompt, tools, sa_progress)
         .max_steps(max_steps)
         .timeout_seconds(tool_timeout)
         .excluded_tools(SUBAGENT_EXCLUDED);
@@ -331,7 +432,7 @@ async fn run_task_core(
         Err(err) => {
             let output = serde_json::to_string_pretty(&json!({
                 "ok": false,
-                "kind": "task",
+                "kind": "subagent",
                 "tier": tier.label(),
                 "tier_notice": tier_notice,
                 "description": description,
@@ -348,7 +449,7 @@ async fn run_task_core(
                 None,
                 &model_choice,
             );
-            return Ok(TaskRun {
+            return Ok(SubagentRun {
                 output,
                 state: "error",
             });
@@ -367,7 +468,7 @@ async fn run_task_core(
     // (换行/引号转义在长结论上是实打实的浪费)。result: 之后到结尾都是
     // 结论本体,tool_report.rs 的持久化提取按此约定解析;错误路径保留
     // ok:false JSON(成败判定的结构即功能)。
-    let mut output = format!("task {state} (tier {}): {description}\n", tier.label());
+    let mut output = format!("subagent {state} (tier {}): {description}\n", tier.label());
     if let Some(notice) = &tier_notice {
         output.push_str(notice);
         output.push('\n');
@@ -393,7 +494,7 @@ async fn run_task_core(
         Some(&stats),
         &model_choice,
     );
-    Ok(TaskRun { output, state })
+    Ok(SubagentRun { output, state })
 }
 
 /// Persists an audit session for a subagent run: a hidden `kind='subagent'`
@@ -401,7 +502,7 @@ async fn run_task_core(
 /// result JSON) plus the model identity and token usage on the session row.
 /// Best-effort: audit failures never fail the task itself.
 fn record_subagent_audit(
-    context: &TaskContext,
+    context: &SubagentContext,
     anchor: &AuditAnchor,
     description: &str,
     prompt: &str,
@@ -461,5 +562,96 @@ fn record_subagent_audit(
     })();
     if let Err(error) = outcome {
         tracing::warn!(error = %error, "{}", crate::i18n::text("failed to record subagent audit session", "记录子代理审计会话失败"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_paths(root: &std::path::Path) -> MiyuPaths {
+        crate::tools::tests::test_paths(root)
+    }
+
+    #[test]
+    fn dev_flag_defaults_to_off_and_parses() {
+        let base = json!({"description": "d", "prompt": "p"});
+        assert!(!parse_params(&base).unwrap().dev);
+        let mut with_dev = base.clone();
+        with_dev["dev"] = json!(true);
+        assert!(parse_params(&with_dev).unwrap().dev);
+    }
+
+    /// dev 子代理的系统提示词是三段拼起来的,少任何一段它都得先浪费一轮
+    /// 去问「我在哪、说给谁听」。
+    #[test]
+    fn dev_system_prompt_carries_the_dev_prompt_host_block_and_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let prompt = build_dev_system_prompt(&config, &paths).unwrap();
+        assert!(
+            prompt.starts_with(crate::config::DEFAULT_DEV_SYSTEM_PROMPT),
+            "{prompt}"
+        );
+        assert!(prompt.contains("<host-environment"), "{prompt}");
+        assert!(prompt.contains("<runtime cwd="), "{prompt}");
+        assert!(prompt.ends_with(SUBAGENT_DEV_CONTRACT), "{prompt}");
+    }
+
+    /// 同一个会话里连开两个 dev 子代理,系统提示词必须逐字节相同——不然
+    /// 每一个都是一次冷前缀。
+    #[test]
+    fn dev_system_prompt_is_byte_stable_within_a_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        assert_eq!(
+            build_dev_system_prompt(&config, &paths).unwrap(),
+            build_dev_system_prompt(&config, &paths).unwrap()
+        );
+    }
+
+    /// 递归防护:dev 子代理拿的是 dev 会话那张面,而那张面里也注册着
+    /// `subagent`——排除表必须认得新名,否则子代理能自己再开子代理。
+    #[test]
+    fn subagent_excludes_itself_by_its_current_name() {
+        assert!(SUBAGENT_EXCLUDED.contains(&"subagent"));
+    }
+
+    /// 后台子代理起在 `tokio::spawn` 的新任务上,回合的 task-local 到那儿
+    /// 全空了:成员的后台子代理会因此跑在 Landlock 之外,工具的工作目录
+    /// 也退回 daemon 的 cwd。这条钉住「抓下来再套回去」。
+    #[tokio::test]
+    async fn background_scope_is_carried_across_the_spawn() {
+        let workspace = std::path::PathBuf::from("/tmp/miyu-subagent-scope");
+        let session: std::sync::Arc<str> = "sess_probe".into();
+        let (bare, restored) = crate::tools::workspace::with_workspace(
+            workspace.clone(),
+            crate::tools::workspace::with_session(session.clone(), async {
+                let carried_workspace = crate::tools::workspace::try_workspace();
+                let carried_session = crate::tools::workspace::try_session();
+                tokio::spawn(async move {
+                    let bare = (
+                        crate::tools::workspace::try_workspace(),
+                        crate::tools::workspace::try_session(),
+                    );
+                    let restored =
+                        with_turn_scope(None, carried_workspace, carried_session, async {
+                            (
+                                crate::tools::workspace::try_workspace(),
+                                crate::tools::workspace::try_session(),
+                            )
+                        })
+                        .await;
+                    (bare, restored)
+                })
+                .await
+                .unwrap()
+            }),
+        )
+        .await;
+        assert_eq!(bare, (None, None), "裸 spawn 本就看不见回合作用域");
+        assert_eq!(restored, (Some(workspace), Some(session)));
     }
 }

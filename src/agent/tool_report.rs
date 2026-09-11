@@ -206,7 +206,8 @@ pub(in crate::agent) fn extract_persistable_tool_report(
         "linux_input_method_diagnose" | "deep_diagnose" | "deep_research" => "final_answer",
         // 08-21 token-diet 文本形态:"result:" 行之后全是子代理结论本体;
         // 旧 JSON 形态(历史回放)与错误路径(ok:false JSON)走下面的原路径。
-        "task" => {
+        // "task" 是 09-11 改名前的旧名:历史记录里的报告照样要解析。
+        "subagent" | "task" => {
             if let Some((_, report)) = output.split_once("\nresult:\n") {
                 let report = report.trim();
                 if !report.is_empty() {

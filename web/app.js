@@ -7051,7 +7051,7 @@
     if (["webfetch", "web_fetch"].includes(toolName)) return compactLine(args.url);
     if (["web_search", "search_web", "search_web_images"].includes(toolName)) return compactLine(args.query || args.q);
     if (toolName === "generate_image") return compactLine(args.prompt);
-    if (toolName === "task") return compactLine(args.description || args.prompt);
+    if (toolName === "subagent" || toolName === "task") return compactLine(args.description || args.prompt);
     if (toolName === "load_skill") return compactLine(args.name);
     const preferred = ["query", "command", "path", "filePath", "url", "name", "id", "target"];
     for (const key of preferred) {
@@ -7120,7 +7120,7 @@
     card.className = state.toolExpanded ? "tool-card" : "tool-card collapsed";
     const name = String(call?.name || "");
     if (name === "run_command" || name === "Bash") card.classList.add("is-command");
-    if (name === "task") card.classList.add("is-task");
+    if (name === "subagent" || name === "task") card.classList.add("is-task");
     // 图标配色来自 is-success（金）/ is-failure（红）。两个都不加会退回默认色，
     // 看起来就是「颜色不对」。
     //
@@ -7274,7 +7274,7 @@
     if (["recall_memories", "recall_past_events", "remember_fact", "search_evicted_context"].includes(n)) return "brain";
     if (["create_goal", "get_goal", "update_goal"].includes(n)) return "target";
     if (n === "todowrite" || n === "todoupdate") return "list-todo";
-    if (n === "task" || n === "deep_research") return "bot";
+    if (n === "subagent" || n === "task" || n === "deep_research") return "bot";
     if (n.includes("knowledge_base")) return "book-open";
     if (n === "ask_question") return "circle-help";
     if (n === "generate_image") return "paintbrush";
@@ -7342,7 +7342,9 @@
     card.dataset.toolId = toolId;
     const isCommand = ["run_command", "Bash"].includes(String(data?.name || ""));
     if (isCommand) card.classList.add("is-command");
-    const isTask = String(data?.name || "") === "task" || /^task[:：]/i.test(String(data?.display_name || ""));
+    const isTask =
+      ["subagent", "task"].includes(String(data?.name || "")) ||
+      /^(subagent|task)[:：]/i.test(String(data?.display_name || ""));
     if (isTask) card.classList.add("is-task");
     const subjectText = toolSubject(data?.name, data?.arguments);
     const commandArguments = isCommand ? parsedToolArguments(data?.arguments) : null;

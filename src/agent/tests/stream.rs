@@ -27,7 +27,7 @@ fn tool_call_stream_announces_preparation_for_slow_argument_tools() {
         "write_file",
         "edit_string",
         "run_command",
-        "task",
+        "subagent",
         "ask_question",
         // Arguments arrive in one chunk: a hint here would only flicker.
         "read_file",
@@ -51,7 +51,7 @@ fn tool_call_stream_announces_preparation_for_slow_argument_tools() {
             "write_file",
             "edit_string",
             "run_command",
-            "task",
+            "subagent",
             "ask_question"
         ]
     );
@@ -155,7 +155,7 @@ async fn parallel_task_calls_run_concurrently_and_map_outputs() {
         OpenAiCompatibleClient::new(config.provider(None).unwrap(), &config, &paths).unwrap();
     let mut registry = ToolRegistry::new();
     registry.register(crate::tools::ToolSpec::new(
-        "task",
+        "subagent",
         "stub subagent",
         crate::tools::empty_parameters(),
         |args| async move {
@@ -183,7 +183,7 @@ async fn parallel_task_calls_run_concurrently_and_map_outputs() {
             id: format!("call_{index}"),
             kind: "function".to_string(),
             function: crate::llm::ToolCallFunction {
-                name: "task".to_string(),
+                name: "subagent".to_string(),
                 arguments: format!(r#"{{"n":"{index}"}}"#),
             },
         })

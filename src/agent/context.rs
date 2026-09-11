@@ -634,7 +634,7 @@ pub(in crate::agent) fn append_interrupted_tool_results(
 
 pub(in crate::agent) fn replay_tool_function_name(name: &str) -> String {
     match name.split_once(':').map(|(prefix, _)| prefix) {
-        Some("load_skill") | Some("load_tools") | Some("task") => {
+        Some("load_skill") | Some("load_tools") | Some("subagent") | Some("task") => {
             name.split(':').next().unwrap_or(name).to_string()
         }
         _ => name.to_string(),

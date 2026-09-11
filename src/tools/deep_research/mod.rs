@@ -139,7 +139,7 @@ async fn run_deep_research(
         )
         .max_steps(max_tool_steps)
         .timeout_seconds(plugin.tool_call_timeout_seconds)
-        .excluded_tools(&["deep_research", "task", "task_agent"]);
+        .excluded_tools(&["deep_research", "subagent", "task", "task_agent"]);
         let (thinker, sa_stats) = runner.run(&prompt).await?;
         merge_stats(&state, &sa_stats);
         if !thinker.content.trim().is_empty() {

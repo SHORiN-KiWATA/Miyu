@@ -25,6 +25,11 @@ testkit/compact-concurrency/out/
 testkit/embedding/out-*.txt
 testkit/embedding/kbsrc/
 
+# testkit/subagent-dev 黑盒的一次性产物
+testkit/subagent-dev/home/
+testkit/subagent-dev/out/
+testkit/subagent-dev/work/
+
 # testkit/cli 黑盒与真宿主 demo 的一次性产物
 testkit/cli/home/
 testkit/cli/home-demo/
