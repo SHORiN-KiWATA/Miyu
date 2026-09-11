@@ -170,6 +170,23 @@ async fn reindex(config: &AppConfig, paths: &MiyuPaths, quiet: bool) -> Result<(
         println!("embedding is disabled or no model is available; nothing to do");
         return Ok(());
     };
+    // 看板的「重建语义索引」按钮起的正是这个命令,并经 MIYU_KB_ROOT 指定了
+    // 某一个库(成员的 home/<user>/kb 或管理员的默认库)。那是一次**定向**重建,
+    // 只该碰那个库;顺手把记忆/表情包也重嵌等于让成员触发管理员库的嵌入,
+    // 既越权又浪费。裸 `miyu kb embed reindex`(不带这个变量)仍三样全建。
+    let kb_only = std::env::var_os("MIYU_KB_ROOT").is_some_and(|value| !value.is_empty());
+    if kb_only {
+        if config.plugins.knowledge_base.enabled && config.plugins.knowledge_base.embedding_enabled
+        {
+            let kb = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone())?;
+            let count = kb.reindex_embeddings(quiet).await?;
+            if !quiet {
+                println!("knowledge base: embedded {count} chunks");
+            }
+        }
+        shutdown_worker().await;
+        return Ok(());
+    }
     let store = MemoryStore::new(config, paths);
     // 三样各建各的:记忆那步失败不该顺手把知识库那趟也带走。原来这里是 `?`,
     // 一条记忆库报错就让整条命令提前退出,而知识库那半连开始都没开始——后台

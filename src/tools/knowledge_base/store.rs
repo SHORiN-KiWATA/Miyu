@@ -105,6 +105,18 @@ pub(in crate::tools::knowledge_base) fn kb_root_for(
     config: &crate::config::AppConfig,
     paths: &MiyuPaths,
 ) -> PathBuf {
+    // 后台重建子进程(`miyu kb embed reindex`)是个不带成员身份的裸 CLI:它
+    // 读盘上的默认配置,member_home_dir() 一律是 None,于是会去建**默认库**,
+    // 而不是发起重建那个成员的 `home/<user>/kb`——它把 done 写进默认库的进度
+    // 文件,成员那份进度停在 starting,看门狗遂判「exited without indexing」。
+    // 父进程 spawn 时把真正的库根经 MIYU_KB_ROOT 传进来,这里优先认它。
+    if let Some(root) = std::env::var_os("MIYU_KB_ROOT") {
+        let root = root.to_string_lossy();
+        let root = root.trim();
+        if !root.is_empty() {
+            return PathBuf::from(root);
+        }
+    }
     match config.member_home_dir() {
         Some(home) => home.join("kb"),
         None => kb_root(&config.plugins.knowledge_base, paths),

@@ -446,6 +446,10 @@ impl KnowledgeBase {
         // 正是唯一能救场的信息。
         let mut child = Command::new(exe)
             .args(["kb", "embed", "reindex"])
+            // 子进程是不带成员身份的裸 CLI,靠这个环境变量认出「该重建哪一个
+            // 库」——否则成员发起的重建会跑去建默认库,成员这份进度永远停在
+            // starting,看门狗判失败(kb_root_for 里有详述)。
+            .env("MIYU_KB_ROOT", &self.root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))
