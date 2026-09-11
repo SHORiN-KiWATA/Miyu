@@ -127,8 +127,10 @@ impl Agent {
                 ));
             }
         }
-        // dev 目录里没有表情包工具,提醒只会指向不存在的工具——不发。
-        if self.mode != AgentMode::Dev {
+        // 提醒只会指向 use_meme:这轮的工具面里没有它(dev 目录、人格清单没勾表情包、
+        // 成员没开)就不发,否则模型去加载一个不存在的工具(09-11 成员实测)。
+        let meme_tool_present = self.tools.lock().unwrap().contains("use_meme");
+        if self.mode != AgentMode::Dev && meme_tool_present {
             if let Some(reminder) =
                 memes::auto_meme_reminder(&self.config, &input, self.platform_context.is_some())
             {

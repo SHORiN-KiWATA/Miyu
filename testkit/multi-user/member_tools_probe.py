@@ -101,6 +101,37 @@ def run_actor(client, sid, label, home, workspace, sandboxed):
     return calls
 
 
+def ui_phase_badge(home, sid, member, workspace):
+    """页面开着的时候跑一轮:失败的 edit 卡片上不该留着「准备修改」阶段签(09-11 手机端实测)。"""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.goto(e2e.BASE)
+        page.wait_for_selector("#loginForm:not([hidden])", timeout=15000)
+        page.fill("#loginUsername", "alice")
+        page.fill("#loginPassword", "alice-pass")
+        page.click("#loginSubmit")
+        page.wait_for_function("() => !document.body.classList.contains('is-blocked')", timeout=20000)
+        if page.evaluate("() => { const o = document.getElementById('oobe'); return Boolean(o && !o.hidden); }"):
+            page.click("#oobeSkip")
+        page.wait_for_selector("#composerInput:not([disabled])", timeout=20000)
+        view = e2e.run_turn(member, sid, "把工具都试一遍")
+        page.wait_for_timeout(1500)
+        cards = page.evaluate("""() => [...document.querySelectorAll('.tool-card')].map((card) => ({
+            title: (card.querySelector('.tool-display-name, .tool-name, .tool-title') || card).textContent.trim().slice(0, 40),
+            failed: card.className.includes('failure') || Boolean(card.querySelector('.is-failure')),
+            live: [...card.querySelectorAll('.tool-live-progress')].map((el) => ({text: el.textContent.trim(), hidden: el.hidden})),
+        }))""")
+        edits = [c for c in cards if "编辑" in c["title"]]
+        print("edit cards:", json.dumps(edits, ensure_ascii=False)[:400])
+        failed = [c for c in edits if c["failed"]]
+        check("失败的 edit 卡片上没有挂着「准备修改」", failed and all(not (l["text"] == "准备修改" and not l["hidden"]) for c in failed for l in c["live"]),
+              json.dumps(failed, ensure_ascii=False)[:200])
+        page.screenshot(path=str(OUT / "phase-badge.png"))
+        browser.close()
+
+
 def main():
     import shutil
     if OUT.exists():
@@ -150,7 +181,10 @@ def main():
         assert status == 201, (status, data)
         status, boot = member.call("GET", "/api/bootstrap")
         sid = boot["current_session_id"]
-        run_actor(member, sid, "member", str(HOME), str(member_ws), sandboxed=True)
+        if os.environ.get("UI") == "1":
+            ui_phase_badge(HOME, sid, member, str(member_ws))
+        else:
+            run_actor(member, sid, "member", str(HOME), str(member_ws), sandboxed=True)
 
         # 管理员对照:同样的调用,但路径指向管理员工作区(工作区=会话 workspace,这里直接用 HOME)
         status, created = admin.call("POST", "/api/sessions", {"name": "管理员走查", "workspace": str(admin_ws)})

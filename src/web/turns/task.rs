@@ -512,7 +512,8 @@ async fn run_turn_task_inner(
             }
             questions.cancel_run(run_id);
             finish_run(manager, run_id, None);
-            let message = safe_error_message(&error);
+            // 带上原因链:只给最外层那句「stream failed …」用户查不到根因(09-11 todolist)。
+            let message = safe_error_message(format!("{error:#}"));
             tracing::error!(
                 run_id,
                 error = %error,
@@ -851,7 +852,7 @@ pub(in crate::web) fn finish_failed_run(
     questions.cancel_run(run_id);
     let context = current_context(agent).ok().filter(|_| updates_context);
     finish_run(manager, run_id, context);
-    let message = safe_error_message(error);
+    let message = safe_error_message(format!("{error:#}"));
     tracing::error!(
         run_id,
         error = %error,

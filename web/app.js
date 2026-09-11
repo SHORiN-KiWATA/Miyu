@@ -3234,6 +3234,16 @@
   // 逐句填进输入框。按一下开始,再按一下或 Esc 结束;静默 10 秒 daemon 自动收。
   // 按钮只在 daemon 说语音功能已启用时显示;LAN 上的 http 页面拿不到麦克风
   // (浏览器安全策略),这时提示改用本机 REPL 的 /stt。
+  /// 麦克风按钮显隐随 daemon 的语音开关;登录前这条 401,登录后要再拿一次。
+  function refreshVoiceButton() {
+    const button = elements.micButton;
+    if (!button) return;
+    apiRequest("/api/voice/status")
+      .then((response) => response.json())
+      .then((status) => { button.hidden = !status?.enabled; })
+      .catch(() => { button.hidden = true; });
+  }
+
   function wireMicButton() {
     const button = elements.micButton;
     const indicator = elements.voiceIndicator;
@@ -3241,10 +3251,7 @@
     let session = null;
     const MAX_MS = 5 * 60_000;
 
-    apiRequest("/api/voice/status")
-      .then((response) => response.json())
-      .then((status) => { button.hidden = !status?.enabled; })
-      .catch(() => { button.hidden = true; });
+    refreshVoiceButton();
 
     function setIndicator(shown) {
       if (indicator) indicator.hidden = !shown;
@@ -7604,6 +7611,9 @@
       updateToolSummary(tool);
     } else if (name === "tool.progress") {
       let message = String(data?.message || "");
+      // 阶段签(「准备修改」这类)只描述过程,不是结果:工具失败后不该留在卡片上
+      // 当错误说明(09-11 手机端实测 edit 被沙盒拒后还挂着「准备修改」)。
+      tool.lastProgressWasPhase = message.startsWith("__tool_phase__");
       if (message.startsWith("__tool_phase__")) {
         message = message.slice("__tool_phase__".length).replace(/^~\s*/, "").trim();
       } else if (message.startsWith("__subagent_stats__")) {
@@ -7687,7 +7697,7 @@
       updateToolStatus(tool, ok ? formatToolDuration(tool.finishedAt - tool.startedAt) || "完成" : "失败", ok ? "check" : "circle-alert", ok ? "is-success" : "is-failure");
       updateToolSummary(tool);
       if (tool.liveProgress) {
-        if (ok) tool.liveProgress.hidden = true;
+        if (ok || tool.lastProgressWasPhase) tool.liveProgress.hidden = true;
         else tool.liveProgress.classList.add("is-error");
         tool.progressDetail.wrapper.hidden = !tool.progressDetail.raw;
         syncBubbleWidth(live.article);
@@ -9217,6 +9227,12 @@
         applyBootstrap(snapshot);
         // 认证过了才拉外观偏好:未登录时这个接口本来就该 401。
         syncUiPrefs();
+        // 命令清单与麦克风状态同理:WebUI 永远要登录(09-11),页面初始化那次
+        // 拿到的是 401,登录之后必须重拿,否则 /reset /compact 全都当普通消息发出去。
+        if (!state.blocked) {
+          window.MiyuCommands?.load(apiRequest);
+          refreshVoiceButton();
+        }
       } catch (error) {
         showBlockedState(error.status === 401, error.message);
       }

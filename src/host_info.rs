@@ -140,6 +140,18 @@ fn host_os_facts() -> &'static (String, Option<String>) {
 /// `MIYU_HOME` can move it, and because a concrete path is what stops the
 /// model from guessing at the layout.
 pub(crate) fn host_environment_block(root_dir: &Path) -> String {
+    host_environment_block_with(root_dir, None, None)
+}
+
+/// 同上,再带上 harness(Miyu 版本)、当前模型与思考档位(09-11 todolist):
+/// 模型知道自己是谁、在哪个档位跑,回答「你是什么模型」「现在思考开多大」不用猜。
+/// 模型/档位变了系统提示词就变——换模型本来就是另一份前缀缓存,换档位掉一次
+/// 缓存可以接受。
+pub(crate) fn host_environment_block_with(
+    root_dir: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> String {
     let (os, kernel) = host_os_facts();
     let mut block = format!("<host-environment os=\"{}\"", xml_attr_escape(os));
     // Omitted rather than reported as "unknown": an absent attribute costs
@@ -148,9 +160,20 @@ pub(crate) fn host_environment_block(root_dir: &Path) -> String {
         block.push_str(&format!(" kernel=\"{}\"", xml_attr_escape(kernel)));
     }
     block.push_str(&format!(
-        " miyu_home=\"{}\"/>",
+        " miyu_home=\"{}\"",
         xml_attr_escape(&root_dir.display().to_string())
     ));
+    block.push_str(&format!(
+        " harness=\"Miyu {}\"",
+        xml_attr_escape(env!("CARGO_PKG_VERSION"))
+    ));
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        block.push_str(&format!(" model=\"{}\"", xml_attr_escape(model)));
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
+        block.push_str(&format!(" effort=\"{}\"", xml_attr_escape(effort)));
+    }
+    block.push_str("/>");
     block
 }
 
@@ -203,7 +226,14 @@ mod tests {
 
     #[test]
     fn host_block_is_a_single_self_closing_tag_with_the_real_root() {
-        let block = host_environment_block(&PathBuf::from("/home/tester/.miyu"));
+        let block = host_environment_block_with(
+            &PathBuf::from("/home/tester/.miyu"),
+            Some("stub/stub-a"),
+            Some("high"),
+        );
+        assert!(block.contains(" harness=\"Miyu "));
+        assert!(block.contains(" model=\"stub/stub-a\""));
+        assert!(block.contains(" effort=\"high\""));
         assert!(block.starts_with("<host-environment os=\""));
         assert!(block.ends_with("/>"));
         assert!(block.contains(" miyu_home=\"/home/tester/.miyu\""));
@@ -216,7 +246,8 @@ mod tests {
     #[test]
     fn host_block_escapes_paths_that_would_break_the_attribute() {
         let block = host_environment_block(&PathBuf::from("/tmp/a\"b&c"));
-        assert!(block.contains(" miyu_home=\"/tmp/a&quot;b&amp;c\"/>"));
+        // miyu_home 后面还有 harness 属性,不再是最后一个
+        assert!(block.contains(" miyu_home=\"/tmp/a&quot;b&amp;c\" harness=\"Miyu "));
     }
 
     #[cfg(unix)]

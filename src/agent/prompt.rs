@@ -82,6 +82,7 @@ pub(in crate::agent) fn with_host_environment(
     mut system_prompt: String,
     audience: PromptAudience,
     paths: &MiyuPaths,
+    config: &AppConfig,
     mode: AgentMode,
 ) -> String {
     if audience == PromptAudience::External {
@@ -99,7 +100,21 @@ pub(in crate::agent) fn with_host_environment(
         return system_prompt;
     }
     system_prompt.push_str("\n\n");
-    system_prompt.push_str(&crate::host_info::host_environment_block(&paths.root_dir));
+    // 当前模型(主力那一个)与它的思考档位(state 里存的偏好)。
+    let primary = config.active_provider_model_choices().into_iter().next();
+    let model_label = primary
+        .as_ref()
+        .map(|choice| format!("{}/{}", choice.provider_id, choice.model));
+    let effort = primary.as_ref().and_then(|choice| {
+        crate::llm::ThinkingVariantPreferences::load(paths)
+            .selected(&choice.provider_id, &choice.model)
+            .map(str::to_string)
+    });
+    system_prompt.push_str(&crate::host_info::host_environment_block_with(
+        &paths.root_dir,
+        model_label.as_deref(),
+        effort.as_deref(),
+    ));
     // 渲染能力说明(仅 owner 会话):终端与 WebUI 都支持 LaTeX。
     // 不放人格提示词里——QQ 等平台的排版能力不同,不该看到这段。
     // dev 也不带:极简原则,编码任务用不上排版说明(验收 08-16 解剖)。

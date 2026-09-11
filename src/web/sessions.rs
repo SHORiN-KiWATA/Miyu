@@ -130,14 +130,13 @@ pub(in crate::web) async fn create_session_http(
     require_mutation(&headers, &state)?;
     let identity = require_identity(&headers, &state)?;
     if !identity.admin {
-        // 成员的会话归成员名下,不动全局指针;dev 会话(run_command 等
-        // 属主工具)只有管理员能开。
-        if request.mode.as_deref() == Some("dev") {
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "dev sessions are admin only",
-            ));
-        }
+        // 成员的会话归成员名下,不动全局指针。dev 会话(run_command 等)成员也能开
+        // (09-11 起有 Landlock 沙盒兜底):建到保留人格 dev 名下,模式由它推导。
+        let persona = if request.mode.as_deref() == Some("dev") {
+            crate::state::DEV_PERSONA.to_string()
+        } else {
+            member_session_persona(&state, identity.owner_key())
+        };
         let name = request
             .name
             .map(|name| name.trim().to_string())
@@ -147,7 +146,7 @@ pub(in crate::web) async fn create_session_http(
             .for_identity(&identity)
             .map_err(ApiError::internal)?
             .create_session_for_owner(
-                &member_session_persona(&state, identity.owner_key()),
+                &persona,
                 &name,
                 crate::state::USER_SESSION_KIND,
                 None,

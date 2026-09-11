@@ -851,6 +851,10 @@ fn retarget_member_sessions(state: &DaemonState, identity: &WebIdentity, scope: 
     };
     let mut has_empty_on_scope = false;
     for overview in sessions.iter().filter(|overview| overview.turn_count == 0) {
+        // dev 会话挂在保留人格 dev 上,模式由它推导:换人格不动它。
+        if overview.record.persona == crate::state::DEV_PERSONA {
+            continue;
+        }
         if overview.record.persona == scope {
             has_empty_on_scope = true;
             continue;

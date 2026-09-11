@@ -82,6 +82,7 @@ impl Agent {
                 with_mode_reminder(base_system_prompt, mode),
                 prompt_audience,
                 paths,
+                &config,
                 mode,
             ),
             PersonaManifest::load(&config, paths, &config.active_persona_scope())
@@ -337,6 +338,7 @@ impl Agent {
                     ),
                     self.prompt_audience,
                     &self.paths,
+                    &self.config,
                     self.mode,
                 ),
                 self.config.memory_config().enabled,

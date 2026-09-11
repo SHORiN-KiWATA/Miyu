@@ -50,6 +50,7 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
         "base".to_string(),
         PromptAudience::Owner,
         &paths,
+        &AppConfig::default(),
         AgentMode::Normal,
     );
     assert!(owner.starts_with("base\n\n<host-environment os=\""));
@@ -68,6 +69,7 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
             "base".to_string(),
             PromptAudience::Internal,
             &paths,
+            &AppConfig::default(),
             AgentMode::Normal
         ),
         "base"
@@ -76,6 +78,7 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
         "base".to_string(),
         PromptAudience::External,
         &paths,
+        &AppConfig::default(),
         AgentMode::Normal,
     );
     assert_eq!(external, format!("base{STYLE_LOCK}"));
@@ -88,6 +91,7 @@ fn host_environment_rides_the_system_prompt_for_owners_only() {
             "base".to_string(),
             PromptAudience::External,
             &paths,
+            &AppConfig::default(),
             AgentMode::Dev
         ),
         "base"
@@ -108,12 +112,14 @@ fn host_environment_is_byte_stable_across_prompt_rebuilds() {
         String::new(),
         PromptAudience::Owner,
         &paths,
+        &AppConfig::default(),
         AgentMode::Normal,
     );
     let second = with_host_environment(
         String::new(),
         PromptAudience::Owner,
         &paths,
+        &AppConfig::default(),
         AgentMode::Normal,
     );
     assert_eq!(first, second);

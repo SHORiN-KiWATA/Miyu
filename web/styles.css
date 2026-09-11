@@ -9820,7 +9820,9 @@ body.is-login .login-form { width: min(100%, 380px); padding: 22px; }
   border-radius: 5px;
   transition: background-color 0.18s ease;
 }
-.assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-title:hover {
+/* 正在思考的标题是 background-clip:text 的流光字,底色一换字就没了(09-11 todolist 截图):
+   hover 底色只给想完的那种。 */
+.assistant-blocks .proc-steps > .reasoning-block:not(.is-live) > summary .reasoning-title:hover {
   background: var(--surface-2);
 }
 .assistant-blocks .proc-steps > .reasoning-block > summary .reasoning-live-status,

@@ -285,8 +285,8 @@ def main():
         check("成员按 id 打开管理员会话 404", status == 404, str(status))
         status, _ = member.call("PATCH", f"/api/sessions/{admin_session}", {"name": "篡改"})
         check("成员改名管理员会话 404", status == 404, str(status))
-        status, _ = member.call("POST", "/api/sessions", {"mode": "dev"})
-        check("成员建 dev 会话 403", status == 403, str(status))
+        status, created = member.call("POST", "/api/sessions", {"mode": "dev"})
+        check("成员能建 dev 会话(沙盒兜底)", status == 201 and created.get("session", {}).get("mode") == "dev", f"{status} {json.dumps(created)[:100]}")
 
         # 4. 成员建会话
         status, created = member.call("POST", "/api/sessions", {"name": "爱丽丝的会话"})
