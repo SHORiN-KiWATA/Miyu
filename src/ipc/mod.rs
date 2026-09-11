@@ -247,10 +247,7 @@ mod tests {
         assert!(password.exists());
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
-            [
-                std::ffi::OsStr::new("--port"),
-                std::ffi::OsStr::new("9412"),
-            ]
+            [std::ffi::OsStr::new("--port"), std::ffi::OsStr::new("9412"),]
         );
     }
 

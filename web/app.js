@@ -9024,8 +9024,8 @@
       const status = await fetch("/api/auth/status", { cache: "no-store" }).then((response) => response.json());
       if (!document.body.classList.contains("is-login") || !elements.loginForm || elements.loginForm.hidden) return;
       if (status?.setup_pending) {
-        elements.blockedMessage.textContent = "首次使用:输入内置密码 miyu,登录后创建管理员账号。";
-        elements.loginUsername.placeholder = "首次使用留空";
+        elements.blockedMessage.textContent = "首次使用:用户名 miyu、密码 miyu 登录,然后创建管理员账号。";
+        elements.loginUsername.placeholder = "miyu";
       } else {
         elements.blockedMessage.textContent = "输入用户名和密码以继续。";
         elements.loginUsername.placeholder = "用户名";
@@ -9042,7 +9042,7 @@
     elements.emptyState.hidden = true;
     elements.blockedState.hidden = false;
     elements.blockedTitle.textContent = "创建管理员账号";
-    elements.blockedMessage.textContent = "内置密码只用这一次;建好账号后用它登录,别人凭邀请码注册。";
+    elements.blockedMessage.textContent = "内置账号 miyu 只用这一次;建好账号后用它登录,别人凭邀请码注册。";
     elements.loginForm.hidden = true;
     elements.registerForm.hidden = true;
     elements.setupForm.hidden = false;
@@ -9327,6 +9327,12 @@
     if (state.loginSubmitting) return;
     const username = elements.loginUsername.value.trim();
     const password = elements.loginPassword.value;
+    if (!username) {
+      elements.loginError.textContent = "请输入用户名";
+      elements.loginError.hidden = false;
+      elements.loginUsername.focus();
+      return;
+    }
     if (!password) {
       elements.loginError.textContent = "请输入密码";
       elements.loginError.hidden = false;
@@ -9339,13 +9345,13 @@
     try {
       await apiRequest("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify(username ? { username, password } : { password })
+        body: JSON.stringify({ username, password })
       });
       elements.loginPassword.value = "";
       await loadBootstrap();
     } catch (error) {
       elements.loginError.textContent = error.status === 401
-        ? (username ? "用户名或密码不正确，请重试" : "密码不正确，请重试")
+        ? "用户名或密码不正确，请重试"
         : error.message || "登录失败";
       elements.loginError.hidden = false;
       window.requestAnimationFrame(() => {

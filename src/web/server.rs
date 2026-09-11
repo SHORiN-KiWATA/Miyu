@@ -124,8 +124,8 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         Some(memory_organizer_handle),
     )?;
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-    // 多用户(09-11 起 WebUI 永远要登录):没建管理员账号之前,内置口令 `miyu`
-    // 登录即管理员,登录后先建号;建完号内置口令失效,只剩账号登录与邀请码注册。
+    // 多用户(09-11 起 WebUI 永远要登录):没建管理员账号之前,内置账号 miyu/miyu
+    // 登录即管理员,登录后先建号;建完号内置账号失效,只剩账号登录与邀请码注册。
     let state = DaemonState {
         auth: WebAuth::new(Some(BUILTIN_SETUP_PASSWORD)),
         boot_id,
@@ -172,8 +172,8 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         eprintln!(
             "{}",
             t(
-                "First visit: sign in with the built-in password `miyu` and create the admin account; the built-in password stops working afterwards.",
-                "首次访问：用内置口令 miyu 登录并创建管理员账号，建完号内置口令即失效。"
+                "First visit: sign in as the built-in account (username `miyu`, password `miyu`) and create the admin account; the built-in account stops working afterwards.",
+                "首次访问：用内置账号登录（用户名 miyu，密码 miyu）并创建管理员账号，建完号内置账号即失效。"
             )
         );
     }

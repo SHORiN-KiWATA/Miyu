@@ -1,6 +1,6 @@
 """WebUI 测具共用的登录小工具(09-11 起 WebUI 永远要登录)。
 
-daemon 不带 -p 起来时,首次登录用内置口令 `miyu`,登录后创建管理员账号,之后内置
+首次登录用内置账号(用户名 `miyu`,密码 `miyu`),登录后创建管理员账号,之后内置
 口令失效、只能用账号登录。这里把这套走一遍,给接口层一个带 cookie 的 opener,给
 Playwright 页面一个「看到登录页就登进去」的帮手。
 """
@@ -8,6 +8,7 @@ import http.cookiejar
 import json
 import urllib.request
 
+BUILTIN_USERNAME = "miyu"
 BUILTIN_PASSWORD = "miyu"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "miyu-test"
@@ -27,7 +28,7 @@ def _post(base, path, payload):
 
 def bootstrap(base, username=ADMIN_USERNAME, password=ADMIN_PASSWORD, builtin=BUILTIN_PASSWORD):
     """内置口令登录 → 建管理员 → 用账号重新登录。管理员已存在就直接账号登录。"""
-    status = _post(base, "/api/auth/login", {"password": builtin})
+    status = _post(base, "/api/auth/login", {"username": BUILTIN_USERNAME, "password": builtin})
     if status == 204:
         status = _post(base, "/api/auth/setup-admin", {"username": username, "display_name": "", "password": password})
         assert status == 204, f"setup-admin {status}"

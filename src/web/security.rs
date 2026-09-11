@@ -24,6 +24,8 @@ pub(in crate::web) struct LoginRequest {
 
 /// 首次访问的内置口令(09-11):没建管理员账号之前,用它登录就是管理员,登录后
 /// 必须先建号;建完号它就失效,不知道它的人只能凭邀请码注册。`-p` 可以换掉它。
+/// 内置账号还有个用户名(09-11):用户名 `miyu`、密码 `miyu`。
+pub(in crate::web) const BUILTIN_SETUP_USERNAME: &str = "miyu";
 pub(in crate::web) const BUILTIN_SETUP_PASSWORD: &str = "miyu";
 
 #[derive(Deserialize)]
@@ -145,35 +147,43 @@ pub(in crate::web) async fn auth_login(
         .as_deref()
         .map(str::trim)
         .filter(|username| !username.is_empty());
-    let attempt = match username {
-        None => {
-            // 内置口令只到建号为止:有了管理员账号,只填口令一律拒。
-            // 不计入限流:这条路上没有可猜的口令,记失败只会把同一台机器上紧接着的
-            // 正常账号登录一起限掉。
-            if state.state_store.has_admin_account().unwrap_or(false) {
-                return Err(ApiError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "the built-in password is disabled once an admin account exists; sign in with a username",
-                ));
-            }
-            state.auth.login(peer.ip(), &request.password)
-        }
-        Some(username) => {
-            state
-                .auth
-                .login_account(peer.ip(), username, &request.password, &state.state_store)
-        }
+    let Some(username) = username else {
+        // 只填密码的登录没有了:内置账号也有用户名。
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "username is required",
+        ));
+    };
+    // 内置账号 miyu/miyu 只到建号为止:有了管理员账号,同名就走账号表(管理员
+    // 可以真叫 miyu),没有这个账号就是普通的用户名或密码错误。
+    let builtin = username.eq_ignore_ascii_case(BUILTIN_SETUP_USERNAME)
+        && !state.state_store.has_admin_account().unwrap_or(true);
+    let attempt = if builtin {
+        state.auth.login(peer.ip(), &request.password)
+    } else if username.eq_ignore_ascii_case(BUILTIN_SETUP_USERNAME)
+        && state
+            .state_store
+            .account_by_username(username)
+            .ok()
+            .flatten()
+            .is_none()
+    {
+        // 建号之后再拿 miyu/miyu 来:这不是在猜谁的密码,不计入限流,直接拒。
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "the built-in account is disabled once an admin account exists; sign in with your own account",
+        ));
+    } else {
+        state
+            .auth
+            .login_account(peer.ip(), username, &request.password, &state.state_store)
     };
     let session = match attempt {
         Ok(session) => session,
         Err(LoginFailure::Invalid) => {
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
-                if username.is_some() {
-                    "invalid username or password"
-                } else {
-                    "invalid password"
-                },
+                "invalid username or password",
             ));
         }
         Err(LoginFailure::RateLimited) => return Ok(rate_limited_response()),

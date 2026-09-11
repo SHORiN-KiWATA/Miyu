@@ -34,7 +34,8 @@ RUNTIME = OUT / "runtime"
 PORT = int(os.environ.get("PORT", "18491"))
 STUB_PORT = int(os.environ.get("STUB_PORT", "18497"))
 BASE = f"http://127.0.0.1:{PORT}"
-BUILTIN_PASSWORD = "miyu"  # 首次访问的内置口令,建完管理员就失效
+BUILTIN_USERNAME = "miyu"  # 首次访问的内置账号 miyu/miyu,建完管理员就失效
+BUILTIN_PASSWORD = "miyu"
 ADMIN_PASSWORD = "hunter2-admin"
 # MIYU_ADMIN_USER 固定成 admin:管理员用户名 = 家目录名,不能随跑测试的系统用户名变。
 ENV = dict(os.environ, MIYU_HOME=str(HOME), XDG_RUNTIME_DIR=str(RUNTIME),
@@ -117,7 +118,7 @@ def bootstrap_admin(client, username="admin", password=None):
     """09-11 起 WebUI 永远要登录:内置口令(测试 daemon 带 -p,就是 ADMIN_PASSWORD)登录 →
     建管理员 → 用账号重新登录;管理员已存在就直接账号登录。"""
     password = password or ADMIN_PASSWORD
-    status, _ = client.login(BUILTIN_PASSWORD)
+    status, _ = client.login(BUILTIN_PASSWORD, BUILTIN_USERNAME)
     if status == 204:
         status, boot = client.call("GET", "/api/bootstrap")
         if boot.get("account", {}).get("setup_pending"):
@@ -213,9 +214,11 @@ def main():
         status, auth_status = anon.call("GET", "/api/auth/status")
         check("建号前 /api/auth/status 说 setup_pending", status == 200 and auth_status.get("setup_pending") is True
               and auth_status.get("setup_username") == "admin", json.dumps(auth_status))
+        status, _ = Client().login(BUILTIN_PASSWORD)
+        check("只填密码不能登录 401", status == 401, str(status))
         admin = Client()
-        status, _ = admin.login(BUILTIN_PASSWORD)
-        check("建号前内置口令 miyu 能登录", status == 204, str(status))
+        status, _ = admin.login(BUILTIN_PASSWORD, BUILTIN_USERNAME)
+        check("建号前内置账号 miyu/miyu 能登录", status == 204, str(status))
         status, boot = admin.call("GET", "/api/bootstrap")
         check("建号前 bootstrap 标记 setup_pending", boot.get("account", {}).get("setup_pending") is True
               and boot.get("account", {}).get("setup_username") == "admin", json.dumps(boot.get("account")))
@@ -229,8 +232,8 @@ def main():
         check("管理员 bootstrap admin=true", status == 200 and boot.get("capabilities", {}).get("admin") is True
               and boot.get("capabilities", {}).get("multi_user") is True
               and boot.get("account", {}).get("setup_pending") is False, json.dumps(boot.get("capabilities")))
-        status, _ = Client().login(BUILTIN_PASSWORD)
-        check("建号后内置口令失效 401", status == 401, str(status))
+        status, _ = Client().login(BUILTIN_PASSWORD, BUILTIN_USERNAME)
+        check("建号后内置账号失效 401", status == 401, str(status))
         status, auth_status = anon.call("GET", "/api/auth/status")
         check("建号后 /api/auth/status 不再 setup_pending", auth_status.get("setup_pending") is False, json.dumps(auth_status))
         admin_named = Client()
