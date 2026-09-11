@@ -10,6 +10,21 @@ use std::path::PathBuf;
 tokio::task_local! {
     static TURN_WORKSPACE: PathBuf;
     static TURN_SESSION: std::sync::Arc<str>;
+    // 当前是否在子代理循环里跑。子代理的模型和主池可能不同,且子代理循环不做
+    // 主回合那套 inline 媒体接力(把图塞进下一条消息的 content parts)——所以
+    // 子代理里的 vision_analyze 一律走旁路转写(拿到的是文字,任何模型都能吃),
+    // 不走 inline 寄存,否则图片被寄存却没人取,子代理只看到一个 ref 标记。
+    static IN_SUBAGENT: bool;
+}
+
+/// Runs `future` marked as executing inside a subagent loop.
+pub async fn with_subagent<F: Future>(future: F) -> F::Output {
+    IN_SUBAGENT.scope(true, future).await
+}
+
+/// True when the current task is running inside a subagent loop.
+pub fn in_subagent() -> bool {
+    IN_SUBAGENT.try_with(|flag| *flag).unwrap_or(false)
 }
 
 /// Runs `future` with the given session id as the ambient turn session.
@@ -323,5 +338,15 @@ mod image_limit_tests {
             assert!(try_allow_image());
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn subagent_flag_is_scoped() {
+        assert!(!in_subagent(), "外层不该带子代理标记");
+        with_subagent(async {
+            assert!(in_subagent(), "with_subagent 里应为真");
+        })
+        .await;
+        assert!(!in_subagent(), "作用域外恢复");
     }
 }

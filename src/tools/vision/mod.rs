@@ -860,6 +860,12 @@ fn try_inline_targets(config: &AppConfig, targets: &[String]) -> Result<Option<S
     if !config.plugins.vision.enabled {
         return Ok(None);
     }
+    // 子代理里不 inline:子代理循环不做 inline 媒体接力,寄存的图没人取,模型只
+    // 会看到一个 ref 标记(09-11 实测 vision_analyze 在子代理里等于空转)。改走
+    // 旁路转写,拿回的是文字,子代理的模型(可能与主池不同)也一定能消费。
+    if crate::tools::workspace::in_subagent() {
+        return Ok(None);
+    }
     let mut items = Vec::with_capacity(targets.len());
     for target in targets {
         let target = target.trim();

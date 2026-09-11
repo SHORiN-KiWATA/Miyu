@@ -19,6 +19,7 @@ const SUBAGENT_SYSTEM_PROMPT: &str = include_str!("../prompts/subagent-general.m
 pub(in crate::tools) const SUBAGENT_EXCLUDED: &[&str] = &[
     "task",
     "task_agent",
+    "send_subagent_message",
     "deep_research",
     "load_skill",
     "manage_skill",
@@ -91,6 +92,68 @@ pub fn register(
             async move { run_task(args, context, progress).await }
         },
     ).writes());
+
+    // 给正在运行的后台子代理发一条 follow-up 排队指令(像给主会话排队消息),
+    // 子代理下一步开始前取走、并入对话——用于运行途中调整任务目标。
+    registry.register(ToolSpec::new(
+        "send_subagent_message",
+        "Queue a follow-up instruction to a RUNNING background subagent (one you started with task(background=true)). It works like queuing a message to the main agent mid-run: the subagent picks it up before its next step, so you can steer or adjust its goal while it works. Pass the job_id from the background task's result. Only works while that subagent is still running.",
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "The background subagent's job_id, from the task(background=true) result."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The follow-up instruction to inject into the running subagent."
+                }
+            },
+            "required": ["job_id", "message"],
+            "additionalProperties": false
+        }),
+        move |args| async move { send_subagent_message(args) },
+    ));
+}
+
+fn send_subagent_message(args: Value) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let message = args
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if job_id.is_empty() {
+        bail!("job_id is required (the background subagent's id from the task result)");
+    }
+    if message.is_empty() {
+        bail!("message is required");
+    }
+    if crate::tools::subagent_runner::deliver_to_subagent(&job_id, &message) {
+        Ok(serde_json::to_string_pretty(&json!({
+            "ok": true,
+            "job_id": job_id,
+            "queued": message,
+            "note": "The subagent will incorporate this before its next step."
+        }))?)
+    } else {
+        let running = crate::tools::subagent_runner::running_subagent_ids();
+        let hint = if running.is_empty() {
+            "no background subagent is running right now".to_string()
+        } else {
+            format!("running background subagents: {}", running.join(", "))
+        };
+        bail!(
+            "no running background subagent with job_id '{job_id}' (it may have already finished). {hint}"
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -174,7 +237,8 @@ async fn run_task(
     {
         return spawn_background_task(context, params, anchor, progress).await;
     }
-    Ok(run_task_core(context, progress, params, anchor)
+    // 前台子代理阻塞在本次 task 调用里,主体无从中途插话,不开收件箱。
+    Ok(run_task_core(context, progress, params, anchor, None)
         .await?
         .output)
 }
@@ -199,13 +263,36 @@ async fn spawn_background_task(
     progress: crate::tools::ToolProgress,
 ) -> Result<String> {
     let description = params.description.clone();
+    // 后台子代理起在 tokio::spawn 的新任务上,回合的 task-local(工作区/会话/
+    // 沙盒)到那儿全空了:工具的相对路径会退回 daemon 的 cwd、Landlock 也失效。
+    // 在还处于父回合作用域的此刻抓下来,到 spawn 里再套回去(09-11)。
+    let carried_workspace = crate::tools::workspace::try_workspace();
+    let carried_session = crate::tools::workspace::try_session();
+    let carried_sandbox = crate::tools::sandbox::current_sandbox();
     crate::tools::jobs::spawn_background_subagent(
         None,
         &description,
         &progress,
         move |job_id, log_path| async move {
             let bridge = spawn_subagent_log_bridge(log_path.clone());
-            let run = run_task_core(context, bridge, params, anchor).await;
+            // 后台子代理:用后台任务 id 作收件箱键,主体可用 send_subagent_message
+            // 中途投递 follow-up。主体从 task 的后台返回里拿到这个 job_id。
+            let core = run_task_core(context, bridge, params, anchor, Some(job_id.clone()));
+            let scoped = crate::tools::sandbox::with_sandbox(carried_sandbox, async move {
+                match (carried_workspace, carried_session) {
+                    (Some(ws), Some(sess)) => {
+                        crate::tools::workspace::with_workspace(
+                            ws,
+                            crate::tools::workspace::with_session(sess, core),
+                        )
+                        .await
+                    }
+                    (Some(ws), None) => crate::tools::workspace::with_workspace(ws, core).await,
+                    (None, Some(sess)) => crate::tools::workspace::with_session(sess, core).await,
+                    (None, None) => core.await,
+                }
+            });
+            let run = scoped.await;
             let state_label = match &run {
                 Ok(run) => run.state,
                 Err(_) => "error",
@@ -289,6 +376,7 @@ async fn run_task_core(
     progress: crate::tools::ToolProgress,
     params: TaskParams,
     anchor: AuditAnchor,
+    inbox_id: Option<String>,
 ) -> Result<TaskRun> {
     let TaskParams {
         description,
@@ -322,11 +410,33 @@ async fn run_task_core(
     let runner = SubagentRunner::new(client, SUBAGENT_SYSTEM_PROMPT, tools, sa_progress)
         .max_steps(max_steps)
         .timeout_seconds(tool_timeout)
-        .excluded_tools(SUBAGENT_EXCLUDED);
+        .excluded_tools(SUBAGENT_EXCLUDED)
+        .inbox_id(inbox_id.clone());
+
+    // 后台子代理开收件箱:主体可在运行途中投递 follow-up(见 subagent_runner)。
+    // 用 drop guard 关箱,覆盖所有退出路径(正常返回 / `?` 早退 / panic)。
+    struct InboxGuard(Option<String>);
+    impl Drop for InboxGuard {
+        fn drop(&mut self) {
+            if let Some(id) = &self.0 {
+                crate::tools::subagent_runner::close_subagent_inbox(id);
+            }
+        }
+    }
+    if let Some(id) = &inbox_id {
+        crate::tools::subagent_runner::open_subagent_inbox(id);
+    }
+    let _inbox_guard = InboxGuard(inbox_id.clone());
 
     // 子代理不设总时长上限:它自然结束于任务完成或步数预算;逐工具超时
     // (tool_timeout)仍然兜底单步挂死。
-    let (result, stats) = match runner.run_with_resume(&prompt, resume_id.as_deref()).await {
+    // 标记「在子代理里」:vision_analyze 据此走旁路转写而非 inline 寄存
+    // (子代理循环不接力 inline 媒体,见 workspace::in_subagent)。
+    let (result, stats) = match crate::tools::workspace::with_subagent(
+        runner.run_with_resume(&prompt, resume_id.as_deref()),
+    )
+    .await
+    {
         Ok((result, stats)) => (result, stats),
         Err(err) => {
             let output = serde_json::to_string_pretty(&json!({

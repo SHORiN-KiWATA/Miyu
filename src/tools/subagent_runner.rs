@@ -291,6 +291,55 @@ pub fn finalization_prompt() -> &'static str {
     "<tool_budget_reached>The tool budget is exhausted. Do not request any more tools. Produce the final result based only on the task description above and the tool results already executed; state explicitly where information is missing.</tool_budget_reached>"
 }
 
+/// 后台子代理的收件箱:主智能体在子代理运行途中可以塞一条 follow-up 进来
+/// (像用户给主会话发排队消息),子代理下一轮开头取走、并入对话继续跑,
+/// 从而中途调整任务目标。进程内、按后台任务 id 归键。前台子代理阻塞在 task
+/// 调用里,主体无从插话,所以只有后台子代理开收件箱。
+fn subagent_inbox() -> &'static Mutex<HashMap<String, std::collections::VecDeque<String>>> {
+    static INBOX: OnceLock<Mutex<HashMap<String, std::collections::VecDeque<String>>>> =
+        OnceLock::new();
+    INBOX.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 子代理开跑时开一个收件箱:此后这个 id 被视为「在运行、可投递」。
+pub(crate) fn open_subagent_inbox(id: &str) {
+    subagent_inbox()
+        .lock()
+        .unwrap()
+        .entry(id.to_string())
+        .or_default();
+}
+
+/// 结束时关闭并清空。
+pub(crate) fn close_subagent_inbox(id: &str) {
+    subagent_inbox().lock().unwrap().remove(id);
+}
+
+/// 投递一条 follow-up。id 没开收件箱(已结束或从不存在)返回 false。
+pub(crate) fn deliver_to_subagent(id: &str, message: &str) -> bool {
+    let mut guard = subagent_inbox().lock().unwrap();
+    match guard.get_mut(id) {
+        Some(queue) => {
+            queue.push_back(message.to_string());
+            true
+        }
+        None => false,
+    }
+}
+
+/// 正在运行、可投递的后台子代理 id(供工具枚举可选目标)。
+pub(crate) fn running_subagent_ids() -> Vec<String> {
+    subagent_inbox().lock().unwrap().keys().cloned().collect()
+}
+
+fn drain_subagent_inbox(id: &str) -> Vec<String> {
+    let mut guard = subagent_inbox().lock().unwrap();
+    guard
+        .get_mut(id)
+        .map(|queue| queue.drain(..).collect())
+        .unwrap_or_default()
+}
+
 pub struct SubagentRunner {
     client: OpenAiCompatibleClient,
     system_prompt: String,
@@ -299,6 +348,7 @@ pub struct SubagentRunner {
     max_steps: usize,
     timeout_seconds: u64,
     progress: SubagentProgress,
+    inbox_id: Option<String>,
 }
 
 impl SubagentRunner {
@@ -316,7 +366,15 @@ impl SubagentRunner {
             max_steps: 0,
             timeout_seconds: 60,
             progress,
+            inbox_id: None,
         }
+    }
+
+    /// 后台子代理的收件箱 id(= 后台任务 id):设了它,循环每轮开头会取走
+    /// 主体投递的 follow-up 并入对话。前台子代理不设。
+    pub fn inbox_id(mut self, id: Option<String>) -> Self {
+        self.inbox_id = id;
+        self
     }
 
     pub fn max_steps(mut self, n: usize) -> Self {
@@ -460,6 +518,18 @@ impl SubagentRunner {
         let mut steps = initial_steps;
 
         loop {
+            // 每轮开头取走主体投递的 follow-up(后台子代理才有收件箱),作为
+            // 用户消息并入对话——子代理据此中途调整任务目标。
+            if let Some(id) = &self.inbox_id {
+                for message in drain_subagent_inbox(id) {
+                    self.progress.phase(format!("收到主体追加的指令:{message}"));
+                    messages.push(ChatMessage::plain(
+                        "user",
+                        format!("[主体在运行途中追加的指令] {message}"),
+                    ));
+                }
+            }
+
             if self.max_steps > 0 && steps >= self.max_steps {
                 stats.budget_reached = true;
                 messages.push(ChatMessage::plain("user", finalization_prompt()));
