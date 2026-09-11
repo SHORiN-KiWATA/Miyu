@@ -169,6 +169,19 @@ impl Agent {
                 }
                 request_messages.splice(offset..offset, context_messages.clone());
             }
+            // 发出去之前配平 tool_calls / tool 结果:任一回放或续传路径漏了一条
+            // tool 结果,严格网关(deepseek)会 400 且会话永久不可用。补占位兜底,
+            // 补过就留痕,以便回溯真正漏结果的路径(理论上不该触发)。
+            let balance_repairs =
+                crate::agent::context::enforce_tool_call_result_balance(&mut request_messages);
+            if balance_repairs > 0 {
+                tracing::warn!(
+                    session_id = %self.state.session_id(),
+                    turn_id = %current_turn_id,
+                    repaired = balance_repairs,
+                    "补齐了缺失的 tool 结果:存在未配平的 assistant tool_calls,已兜底防 400"
+                );
+            }
             let mut reasoning_filter = ReasoningTitleFilter::default();
             // 与 reasoning_filter 同生命周期:一轮模型调用 = 一条 assistant
             // 消息,批量提示要的正是"这条消息里的第几个工具调用"。

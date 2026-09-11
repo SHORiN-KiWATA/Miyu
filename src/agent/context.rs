@@ -923,3 +923,94 @@ mod tool_token_cache_tests {
         assert!(TOOL_TOKEN_CACHE.lock().unwrap().len() <= TOOL_TOKEN_CACHE_CAP);
     }
 }
+
+/// 发请求前的最后一道配平闸:任何带 `tool_calls` 的 assistant 消息,后面必须紧跟
+/// 覆盖每一个 `tool_call_id` 的 tool 消息,否则 deepseek 等严格网关直接 400
+/// (`An assistant message with 'tool_calls' must be followed by tool messages
+/// responding to each 'tool_call_id'`)。多条回放/续传路径里任一条 tool 结果缺失
+/// (跨供应商混用、中断恢复、化石回放边界),会让会话从此永久不可用。这里给缺失
+/// 的 id 依原序补一条占位结果兜底,返回补的条数,>0 时调用方留痕以便定位真源。
+pub(in crate::agent) fn enforce_tool_call_result_balance(messages: &mut Vec<ChatMessage>) -> usize {
+    let mut repairs = 0usize;
+    let mut index = 0usize;
+    while index < messages.len() {
+        let call_ids: Vec<String> =
+            match (messages[index].role.as_str(), &messages[index].tool_calls) {
+                ("assistant", Some(calls)) if !calls.is_empty() => {
+                    calls.iter().map(|call| call.id.clone()).collect()
+                }
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+        // 紧跟其后的 tool 消息覆盖了哪些 id;遇到第一条非 tool 消息即停。
+        let mut cursor = index + 1;
+        let mut covered = std::collections::HashSet::new();
+        while cursor < messages.len() && messages[cursor].role == "tool" {
+            if let Some(id) = &messages[cursor].tool_call_id {
+                covered.insert(id.clone());
+            }
+            cursor += 1;
+        }
+        // cursor 指向 tool 块之后的第一条(或末尾),缺失的 id 依原序补占位。
+        let mut insert_at = cursor;
+        for id in &call_ids {
+            if !covered.contains(id) {
+                messages.insert(
+                    insert_at,
+                    ChatMessage::tool(id.clone(), "(no result was persisted for this tool call)"),
+                );
+                insert_at += 1;
+                repairs += 1;
+            }
+        }
+        index = insert_at.max(index + 1);
+    }
+    repairs
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::enforce_tool_call_result_balance;
+    use crate::llm::{ChatMessage, ToolCall, ToolCallFunction};
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: ToolCallFunction {
+                name: "Bash".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn missing_tool_result_is_backfilled() {
+        let mut messages = vec![
+            ChatMessage::plain("user", "hi"),
+            ChatMessage::assistant("", Some(vec![call("a"), call("b")])),
+            ChatMessage::tool("a", "done"),
+            ChatMessage::plain("user", "next"),
+        ];
+        let repaired = enforce_tool_call_result_balance(&mut messages);
+        assert_eq!(repaired, 1);
+        // 补的占位结果紧跟在已有 tool 块之后、下一条 user 之前。
+        assert_eq!(messages[3].role, "tool");
+        assert_eq!(messages[3].tool_call_id.as_deref(), Some("b"));
+        assert_eq!(messages[4].role, "user");
+    }
+
+    #[test]
+    fn balanced_flow_is_untouched() {
+        let mut messages = vec![
+            ChatMessage::assistant("", Some(vec![call("a"), call("b")])),
+            ChatMessage::tool("a", "x"),
+            ChatMessage::tool("b", "y"),
+        ];
+        let before = messages.len();
+        assert_eq!(enforce_tool_call_result_balance(&mut messages), 0);
+        assert_eq!(messages.len(), before);
+    }
+}

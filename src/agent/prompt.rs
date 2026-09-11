@@ -139,23 +139,8 @@ fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     });
-    let effort = {
-        let preferences = crate::llm::ThinkingVariantPreferences::load(paths);
-        let mut efforts = choices
-            .iter()
-            .map(|choice| {
-                preferences
-                    .selected(&choice.provider_id, &choice.model)
-                    .map(str::to_string)
-            })
-            .collect::<Vec<_>>();
-        efforts.dedup();
-        match efforts.as_slice() {
-            [] => None,
-            [only] => only.clone(),
-            _ => Some("mixed".to_string()),
-        }
-    };
+    // effort 不再进主机环境块(09-11 用户拍板):思考档位在对话中会切换,把它写进
+    // 系统提示词会让每次改档都掰断前缀缓存。档位与缓存前缀就此解耦。
     // 沙盒回合(成员):工作区就是他能动的地方。
     let sandbox_workspace = config
         .accounts
@@ -165,7 +150,7 @@ fn host_environment_for(config: &AppConfig, paths: &MiyuPaths) -> String {
     crate::host_info::host_environment_block_full(
         &paths.root_dir,
         model_label.as_deref(),
-        effort.as_deref(),
+        None,
         sandbox_workspace.as_deref(),
     )
 }
