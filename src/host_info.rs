@@ -152,6 +152,17 @@ pub(crate) fn host_environment_block_with(
     model: Option<&str>,
     effort: Option<&str>,
 ) -> String {
+    host_environment_block_full(root_dir, model, effort, None)
+}
+
+/// 再带上沙盒信息(09-11):成员回合里模型得知道自己只能动工作区,别去猜
+/// 为什么读 ~/.miyu 会 Permission denied。
+pub(crate) fn host_environment_block_full(
+    root_dir: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
+    sandbox_workspace: Option<&Path>,
+) -> String {
     let (os, kernel) = host_os_facts();
     let mut block = format!("<host-environment os=\"{}\"", xml_attr_escape(os));
     // Omitted rather than reported as "unknown": an absent attribute costs
@@ -172,6 +183,12 @@ pub(crate) fn host_environment_block_with(
     }
     if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
         block.push_str(&format!(" effort=\"{}\"", xml_attr_escape(effort)));
+    }
+    if let Some(workspace) = sandbox_workspace {
+        block.push_str(&format!(
+            " sandbox=\"landlock\" workspace=\"{}\" writable=\"workspace, /tmp\" readable=\"workspace, /tmp, system dirs (/usr /etc /proc …)\"",
+            xml_attr_escape(&workspace.display().to_string())
+        ));
     }
     block.push_str("/>");
     block

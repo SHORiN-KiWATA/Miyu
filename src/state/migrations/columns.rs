@@ -303,6 +303,19 @@ pub(in crate::state) fn apply_v32_sponsor_records(conn: &Connection) -> Result<(
 /// `compact_extras` 是摘要行的 JSON 附件(压后回灌的文件正文 + 折叠转录的
 /// 磁盘路径),每次请求跟在 checkpoint 后面重新渲染。state 层不认识 agent 的
 /// 类型,只存取字符串。
+/// v35: 输出速度落库(09-11)。`generation_tokens` / `generation_ms` 是回合层测的
+/// 「首块到末块」时长与对应 completion tokens(见 `llm::Usage`),此前只在
+/// run.completed 事件里飘一次,刷新页面「每秒 x toks」就没了。0 = 没测到。
+pub(in crate::state) fn apply_v35_generation_speed(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "turns",
+        "generation_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(conn, "turns", "generation_ms", "INTEGER NOT NULL DEFAULT 0")
+}
+
 pub(in crate::state) fn apply_v33_compact_v3(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "turns", "token_context_end", "INTEGER")?;
     add_column_if_missing(conn, "turns", "compact_extras", "TEXT")

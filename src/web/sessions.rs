@@ -286,6 +286,9 @@ pub(in crate::web) async fn session_turns_http(
             .or_default()
             .push(artifact);
     }
+    let generation_by_turn = store
+        .load_turn_generation(&session_id)
+        .map_err(ApiError::internal)?;
     let turns: Vec<SafeTurn> = store
         .load_turns()
         .map_err(ApiError::internal)?
@@ -294,7 +297,12 @@ pub(in crate::web) async fn session_turns_http(
         .map(|turn| {
             let assets = assets_by_turn.remove(&turn.turn_id).unwrap_or_default();
             let artifacts = artifacts_by_turn.remove(&turn.turn_id).unwrap_or_default();
-            SafeTurn::from_turn(turn, assets, artifacts)
+            let mut safe = SafeTurn::from_turn(turn, assets, artifacts);
+            if let Some((tokens, millis)) = generation_by_turn.get(&safe.id) {
+                safe.generation_tokens = *tokens;
+                safe.generation_ms = *millis;
+            }
+            safe
         })
         .collect();
     let running_target = store

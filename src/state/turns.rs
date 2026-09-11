@@ -197,6 +197,17 @@ impl StateStore {
         self.conv_db.set_turn_context_end(turn_id, tokens)
     }
 
+    pub fn set_turn_generation(&self, turn_id: &str, tokens: u64, millis: u64) -> Result<()> {
+        self.conv_db.set_turn_generation(turn_id, tokens, millis)
+    }
+
+    pub fn load_turn_generation(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::HashMap<String, (u64, u64)>> {
+        self.conv_db.load_turn_generation(session_id)
+    }
+
     pub fn load_context_anchor(&self) -> Result<Option<crate::state::ContextAnchor>> {
         self.conv_db.load_context_anchor(&self.session())
     }

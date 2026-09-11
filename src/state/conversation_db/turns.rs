@@ -636,6 +636,41 @@ impl ConversationDb {
         Ok(recoveries)
     }
 
+    /// 记下该回合的输出速度样本(tokens / 毫秒),都是 0 = 没测到。
+    pub fn set_turn_generation(&self, turn_id: &str, tokens: u64, millis: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE turns SET generation_tokens = ?1, generation_ms = ?2 WHERE turn_id = ?3",
+            params![tokens as i64, millis as i64, turn_id],
+        )?;
+        Ok(())
+    }
+
+    /// 一个会话里每条回合的输出速度样本(turn_id → (tokens, ms)),只带非零的。
+    pub fn load_turn_generation(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::HashMap<String, (u64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT turn_id, generation_tokens, generation_ms FROM turns
+              WHERE session_id = ?1 AND generation_tokens > 0 AND generation_ms > 0",
+        )?;
+        let rows = statement.query_map(params![session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?.max(0) as u64,
+                row.get::<_, i64>(2)?.max(0) as u64,
+            ))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (turn_id, tokens, millis) = row?;
+            map.insert(turn_id, (tokens, millis));
+        }
+        Ok(map)
+    }
+
     /// 记下该回合最后一次请求的上下文占用(供应商真实计数)。None = 未知,
     /// 此时上下文表继续用本地估算。
     pub fn set_turn_context_end(&self, turn_id: &str, tokens: Option<u64>) -> Result<()> {

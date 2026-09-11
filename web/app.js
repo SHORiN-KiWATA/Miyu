@@ -1496,6 +1496,11 @@
     } catch (_) {
       throw new ApiError("无法连接 Miyu WebUI", 0);
     }
+    if (response.status === 401 && !state.blocked && !path.startsWith("/api/auth/")) {
+      // 登录态没了(daemon 重启、令牌过期):直接回登录页,别等用户发消息时弹一句英文。
+      showBlockedState(true, "", { expired: true });
+      throw new ApiError("登录已过期,请重新登录", 401);
+    }
     if (!response.ok) throw new ApiError(await readErrorMessage(response), response.status);
     return response;
   }
@@ -5892,6 +5897,10 @@
     tokenPrompt = 0,
     tokenCached = 0,
     tokenEstimated = false,
+    // 刷新后也要有的「累计」与「每秒」(09-11):累计由 renderConversation 按顺序算好
+    cumulative = null,
+    generationTokens = 0,
+    generationMs = 0,
     providerId = "",
     model = "",
     activeContext = true,
@@ -5982,11 +5991,18 @@
       endpoint.textContent = [providerId, model].map((value) => String(value || "").trim()).filter(Boolean).join(" / ");
       meta.appendChild(endpoint);
     }
+    // 刷新后的回合也带「累计」与「每秒」:累计按会话里到这一轮为止的顺序求和(与
+    // run.completed 事件里 daemon 算的口径一致),速度用落库的样本。
     const usageText = formatUsageMeta({
       turnTotal: tokenTotal,
       turnPrompt: tokenPrompt,
       turnCached: tokenCached,
-      estimated: tokenEstimated
+      estimated: tokenEstimated,
+      cumulative: cumulative?.total,
+      cumulativePrompt: cumulative?.prompt,
+      cumulativeCached: cumulative?.cached,
+      generationTokens: generationTokens,
+      generationMs: generationMs
     });
     if (usageText) {
       const token = document.createElement("span");
@@ -6191,6 +6207,9 @@
         tokenPrompt: turn?.token_prompt,
         tokenCached: turn?.token_cache_read,
         tokenEstimated: Boolean(turn?.token_usage_estimated),
+        cumulative: state.cumulativeByTurn?.get(turnId) || null,
+        generationTokens: turn?.generation_tokens,
+        generationMs: turn?.generation_ms,
         activeContext: turn?.active_context !== false,
         turnId,
         segmentKind: "final",
@@ -6211,6 +6230,19 @@
     elements.loadingState.hidden = true;
     elements.blockedState.hidden = true;
     clearQuestionDock();
+    // 每条回合的「累计」=会话里到它为止的顺序求和(与 run.completed 里 daemon 报的口径一致)
+    state.cumulativeByTurn = new Map();
+    {
+      let total = 0;
+      let prompt = 0;
+      let cached = 0;
+      for (const turn of state.turns) {
+        total += asFiniteNumber(turn?.token_total);
+        prompt += asFiniteNumber(turn?.token_prompt);
+        cached += asFiniteNumber(turn?.token_cache_read);
+        state.cumulativeByTurn.set(String(turn?.id || ""), { total, prompt, cached });
+      }
+    }
     // 回合运行期间每秒轮询都可能整段重建（refreshViewSnapshot）。用户正往回
     // 翻历史时不能每秒被拽回底部：只有明确导航（换会话/启动）或用户本来就
     // 跟着输出走时才滚到底，否则原地恢复滚动位置。
@@ -9002,7 +9034,7 @@
     for (const name of EVENT_NAMES) source.addEventListener(name, (event) => handleSseEvent(name, event));
   }
 
-  function showBlockedState(unauthorized, message = "") {
+  function showBlockedState(unauthorized, message = "", { expired = false } = {}) {
     state.blocked = true;
     document.body.classList.toggle("is-login", Boolean(unauthorized));
     document.body.classList.toggle("is-blocked", true);
@@ -9016,7 +9048,9 @@
     elements.emptyState.hidden = true;
     elements.blockedState.hidden = false;
     elements.blockedTitle.textContent = unauthorized ? "登录 Miyu" : "无法载入 Miyu WebUI";
-    elements.blockedMessage.textContent = unauthorized ? "输入访问密码以继续。" : message || "本地服务暂时无法访问";
+    elements.blockedMessage.textContent = unauthorized
+      ? (expired ? "登录已过期,请重新登录。" : "输入用户名和密码以继续。")
+      : message || "本地服务暂时无法访问";
     elements.loginForm.hidden = !unauthorized;
     elements.registerForm.hidden = true;
     elements.setupForm.hidden = true;
@@ -9038,6 +9072,7 @@
     try {
       const status = await fetch("/api/auth/status", { cache: "no-store" }).then((response) => response.json());
       if (!document.body.classList.contains("is-login") || !elements.loginForm || elements.loginForm.hidden) return;
+      if (elements.blockedMessage.textContent.startsWith("登录已过期")) return;
       if (status?.setup_pending) {
         elements.blockedMessage.textContent = "首次使用:用户名 miyu、密码 miyu 登录,然后创建管理员账号。";
         elements.loginUsername.placeholder = "miyu";

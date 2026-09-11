@@ -204,8 +204,11 @@ fn rate_limited_response() -> Response {
 }
 
 fn session_cookie_response(session: &str) -> std::result::Result<Response, ApiError> {
-    let cookie =
-        format!("{AUTH_COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400");
+    // 30 天:与服务端保留期同一个数。以前 1 天,手机上隔天打开就得重登。
+    let cookie = format!(
+        "{AUTH_COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        crate::runtime::WEB_SESSION_TTL_SECS
+    );
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         SET_COOKIE,

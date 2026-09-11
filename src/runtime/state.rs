@@ -208,6 +208,29 @@ pub(crate) struct WebAuth {
     /// 每个令牌记着登录者是谁(阶段 5 多用户)。
     pub(crate) sessions: Arc<Mutex<Vec<(String, WebIdentity)>>>,
     pub(crate) attempts: Arc<Mutex<HashMap<IpAddr, LoginAttempt>>>,
+    /// 令牌落盘的文件(09-11):daemon 一重启所有人被登出,手机上表现是「离开一会
+    /// 就要重新登录」。只存令牌的 sha256 与身份,0600。None = 不落盘(测试)。
+    pub(crate) store_path: Option<Arc<std::path::PathBuf>>,
+}
+
+/// 落盘的一条登录态。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredWebSession {
+    token_sha256: String,
+    account_id: String,
+    username: String,
+    display_name: String,
+    admin: bool,
+    issued_at: i64,
+}
+
+/// 登录态保留多久(秒):cookie 与服务端同一个数。
+pub(crate) const WEB_SESSION_TTL_SECS: i64 = 30 * 24 * 3600;
+
+fn sha256_hex(value: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(value.as_bytes());
+    hex::encode(digest.finalize())
 }
 
 /// 登录后的身份(09-10 分层架构阶段 5,多用户)。
@@ -276,6 +299,65 @@ impl WebAuth {
             password_digest,
             sessions: Arc::new(Mutex::new(Vec::new())),
             attempts: Arc::new(Mutex::new(HashMap::new())),
+            store_path: None,
+        }
+    }
+
+    /// 挂上落盘文件并把上次的登录态读回来(过期的丢掉)。
+    pub(crate) fn with_store(mut self, path: std::path::PathBuf) -> Self {
+        let now = chrono::Utc::now().timestamp();
+        let restored = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Vec<StoredWebSession>>(&text).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| now - entry.issued_at < WEB_SESSION_TTL_SECS)
+            .map(|entry| {
+                (
+                    entry.token_sha256,
+                    WebIdentity {
+                        account_id: entry.account_id,
+                        username: entry.username,
+                        display_name: entry.display_name,
+                        admin: entry.admin,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        *self.sessions.lock().unwrap() = restored;
+        self.store_path = Some(Arc::new(path));
+        self
+    }
+
+    /// 把当前登录态写盘。失败只记日志:登录本身不能因为磁盘问题失败。
+    fn persist(&self) {
+        let Some(path) = &self.store_path else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp();
+        let entries = self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(hash, identity)| StoredWebSession {
+                token_sha256: hash.clone(),
+                account_id: identity.account_id.clone(),
+                username: identity.username.clone(),
+                display_name: identity.display_name.clone(),
+                admin: identity.admin,
+                issued_at: now,
+            })
+            .collect::<Vec<_>>();
+        let text = match serde_json::to_string(&entries) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!(error = %error, "serializing web sessions");
+                return;
+            }
+        };
+        if let Err(error) = crate::ipc::write_private_state(path, text.as_bytes()) {
+            tracing::warn!(error = %error, path = %path.display(), "persisting web sessions");
         }
     }
 
@@ -293,19 +375,22 @@ impl WebAuth {
             return Some(WebIdentity::local_admin());
         }
         let token = supplied?;
+        let hash = sha256_hex(token);
         self.sessions
             .lock()
             .unwrap()
             .iter()
-            .find(|(existing, _)| existing == token)
+            .find(|(existing, _)| *existing == hash)
             .map(|(_, identity)| identity.clone())
     }
 
     pub(crate) fn logout(&self, token: &str) {
+        let hash = sha256_hex(token);
         self.sessions
             .lock()
             .unwrap()
-            .retain(|(existing, _)| existing != token);
+            .retain(|(existing, _)| *existing != hash);
+        self.persist();
     }
 
     /// 限流闸:同一来源窗口内失败超限就拒。登录与凭邀请码注册共用。
@@ -349,12 +434,16 @@ impl WebAuth {
     /// 给已验明的身份发一枚令牌。
     pub(crate) fn issue(&self, identity: WebIdentity) -> String {
         let token = random_token(32);
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions.push((token.clone(), identity));
-        // 第 65 个登录淘汰最旧的一个令牌;此前是 sessions.clear() 全员登出。
-        if sessions.len() > 64 {
-            sessions.remove(0);
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            // 表里只放 sha256:落盘文件被读走也换不来登录态。
+            sessions.push((sha256_hex(&token), identity));
+            // 第 65 个登录淘汰最旧的一个令牌;此前是 sessions.clear() 全员登出。
+            if sessions.len() > 64 {
+                sessions.remove(0);
+            }
         }
+        self.persist();
         token
     }
 

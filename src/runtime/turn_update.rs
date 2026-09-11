@@ -72,7 +72,9 @@ pub(crate) fn enqueue_turn_update(
     let session_id = run.session_id.clone();
     let supersede = run.supersede.clone();
     let prompt_id = random_id("queued", 18);
-    let store = state.state_store.pinned(&session_id);
+    // 会话按人分库:排队条目要写进这条会话所在的库,否则「目标回合不在跑」
+    // (成员在 AI 输出时发消息 409,09-11 实测)。
+    let store = state.stores.for_session(&session_id).pinned(&session_id);
     store.recover_stale_turns()?;
     let prompt = store.enqueue_prompt_for_target_with_uploads(
         &target,

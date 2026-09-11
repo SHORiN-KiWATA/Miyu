@@ -127,7 +127,8 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     // 多用户(09-11 起 WebUI 永远要登录):没建管理员账号之前,内置账号 miyu/miyu
     // 登录即管理员,登录后先建号;建完号内置账号失效,只剩账号登录与邀请码注册。
     let state = DaemonState {
-        auth: WebAuth::new(Some(BUILTIN_SETUP_PASSWORD)),
+        auth: WebAuth::new(Some(BUILTIN_SETUP_PASSWORD))
+            .with_store(paths.state_dir.join("web-sessions.json")),
         boot_id,
         web_port: port,
         web_public: !bind_ip.is_loopback(),
@@ -736,6 +737,13 @@ pub(in crate::web) async fn bootstrap(
             manager.context,
         )
     };
+    // manager.context 是管理员当前会话(终端车道)的快照;成员看自己的会话,
+    // 累计/缓存率得按他的库算,否则 footer 里的「累计」是别人的数。
+    let context = if identity.admin {
+        context
+    } else {
+        crate::runtime::cold_context(&config, &state.paths, &store).unwrap_or(context)
+    };
     let running_target = store
         .running_turn_queue_target()
         .map_err(ApiError::internal)?;
@@ -757,6 +765,9 @@ pub(in crate::web) async fn bootstrap(
             .or_default()
             .push(artifact);
     }
+    let generation_by_turn = store
+        .load_turn_generation(&current_session)
+        .map_err(ApiError::internal)?;
     let turns = store
         .load_turns()
         .map_err(ApiError::internal)?
@@ -765,7 +776,12 @@ pub(in crate::web) async fn bootstrap(
         .map(|turn| {
             let assets = assets_by_turn.remove(&turn.turn_id).unwrap_or_default();
             let artifacts = artifacts_by_turn.remove(&turn.turn_id).unwrap_or_default();
-            SafeTurn::from_turn(turn, assets, artifacts)
+            let mut safe = SafeTurn::from_turn(turn, assets, artifacts);
+            if let Some((tokens, millis)) = generation_by_turn.get(&safe.id) {
+                safe.generation_tokens = *tokens;
+                safe.generation_ms = *millis;
+            }
+            safe
         })
         .collect();
     let usage = state

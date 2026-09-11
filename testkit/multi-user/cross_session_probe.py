@@ -109,6 +109,20 @@ def main():
         check("A 跑着时删会话 B", status == 200, f"{status} {data}")
         status, data = admin.call("POST", "/api/conversation/reset", {"session_id": sid_a})
         check("A 自己在跑时 reset A 被拒(409)", status == 409, f"{status} {data}")
+        # 成员:AI 输出时再发一条要能排进队(09-11 成员实测排不进——排队检查盯着管理员库)
+        status, invite = admin.call("POST", "/api/admin/invites", {})
+        member = e2e.Client()
+        status, _ = member.call("POST", "/api/auth/register", {"invite": invite["code"], "username": "queueuser", "display_name": "", "password": "queue-pass"})
+        assert status == 204, status
+        status, boot = member.call("GET", "/api/bootstrap")
+        sid_m = boot["current_session_id"]
+        status, data = member.call("POST", "/api/turns", {"content": "成员的长回复", "session_id": sid_m})
+        check("成员起回合", status in (200, 201, 202), f"{status} {data}")
+        time.sleep(1.5)
+        status, data = member.call("POST", "/api/turns", {"content": "成员追加一条", "session_id": sid_m})
+        check("成员在 AI 输出时发消息进排队", status in (200, 201, 202) and data.get("queued") is True, f"{status} {json.dumps(data)[:120]}")
+        status, view = member.call("GET", f"/api/sessions/{sid_m}/turns")
+        check("成员回合视图带排队条目", status == 200 and bool(view.get("queued_prompts")) or bool(view.get("turns", [{}])[-1].get("followups")), json.dumps(view.get("queued_prompts"))[:100])
         # 等 A 结束
         deadline = time.time() + 60
         while time.time() < deadline:
@@ -117,6 +131,15 @@ def main():
                 break
             time.sleep(0.5)
         check("A 跑完", not view.get("runs") and view.get("turns"), str(len(view.get("turns", []))))
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            status, view_m = member.call("GET", f"/api/sessions/{sid_m}/turns")
+            if status == 200 and not view_m.get("runs") and view_m.get("turns"):
+                break
+            time.sleep(0.5)
+        last = (view_m.get("turns") or [{}])[-1]
+        check("成员回合跑完且输出速度样本落库", not view_m.get("runs") and int(last.get("generation_ms") or 0) > 0 and int(last.get("generation_tokens") or 0) > 0,
+              f"gen_ms={last.get('generation_ms')} gen_tokens={last.get('generation_tokens')}")
     finally:
         if daemon:
             daemon.terminate()

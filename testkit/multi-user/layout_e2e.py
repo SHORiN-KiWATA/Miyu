@@ -111,6 +111,9 @@ def main():
         # 5. 回滚后再起 daemon:不自动搬,数据还在
         daemon = start_daemon()
         check("opt-out 生效:没有自动搬回去", not marker.exists() and (HOME / "state/conversation.db").is_file())
+        # 登录态落盘(09-11):daemon 重启后上一份 cookie 还能用,不用重登
+        status, _ = admin.call("GET", "/api/bootstrap")
+        check("daemon 重启后旧登录态仍有效(令牌落盘)", status == 200, str(status))
         admin = e2e.Client()
         e2e.bootstrap_admin(admin)
         status, view = admin.call("GET", f"/api/sessions/{session_id}/turns")

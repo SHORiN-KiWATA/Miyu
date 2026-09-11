@@ -100,20 +100,44 @@ pub(in crate::agent) fn with_host_environment(
         return system_prompt;
     }
     system_prompt.push_str("\n\n");
-    // 当前模型(主力那一个)与它的思考档位(state 里存的偏好)。
-    let primary = config.active_provider_model_choices().into_iter().next();
-    let model_label = primary
-        .as_ref()
-        .map(|choice| format!("{}/{}", choice.provider_id, choice.model));
-    let effort = primary.as_ref().and_then(|choice| {
-        crate::llm::ThinkingVariantPreferences::load(paths)
-            .selected(&choice.provider_id, &choice.model)
-            .map(str::to_string)
+    // 当前模型池与思考档位(state 里存的偏好):池里不止一个就全列(逗号分隔),
+    // 档位各模型不一致就写 mixed——模型知道自己可能是其中之一,别把 mixed 当档位名。
+    let choices = config.active_provider_model_choices();
+    let model_label = (!choices.is_empty()).then(|| {
+        choices
+            .iter()
+            .map(|choice| format!("{}/{}", choice.provider_id, choice.model))
+            .collect::<Vec<_>>()
+            .join(", ")
     });
-    system_prompt.push_str(&crate::host_info::host_environment_block_with(
+    let effort = {
+        let preferences = crate::llm::ThinkingVariantPreferences::load(paths);
+        let mut efforts = choices
+            .iter()
+            .map(|choice| {
+                preferences
+                    .selected(&choice.provider_id, &choice.model)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        efforts.dedup();
+        match efforts.as_slice() {
+            [] => None,
+            [only] => only.clone(),
+            _ => Some("mixed".to_string()),
+        }
+    };
+    // 沙盒回合(成员):工作区就是他能动的地方。
+    let sandbox_workspace = config
+        .accounts
+        .home_dir
+        .as_deref()
+        .map(|home| std::path::Path::new(home).join("workspace"));
+    system_prompt.push_str(&crate::host_info::host_environment_block_full(
         &paths.root_dir,
         model_label.as_deref(),
         effort.as_deref(),
+        sandbox_workspace.as_deref(),
     ));
     // 渲染能力说明(仅 owner 会话):终端与 WebUI 都支持 LaTeX。
     // 不放人格提示词里——QQ 等平台的排版能力不同,不该看到这段。

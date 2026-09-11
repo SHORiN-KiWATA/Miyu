@@ -179,6 +179,9 @@ pub(in crate::web) struct SafeTurn {
     pub(in crate::web) token_prompt: u64,
     pub(in crate::web) token_cache_read: u64,
     pub(in crate::web) token_usage_estimated: bool,
+    /// 输出速度样本(09-11 落库):0 = 没测到,前端不显示「每秒」。
+    pub(in crate::web) generation_tokens: u64,
+    pub(in crate::web) generation_ms: u64,
     pub(in crate::web) question_exchanges: Vec<crate::question::QuestionExchange>,
     /// 这一轮调过哪些工具、拿到什么结果。
     ///
@@ -350,6 +353,8 @@ impl SafeTurn {
             token_prompt: turn.token_prompt,
             token_cache_read: turn.token_cache_read,
             token_usage_estimated: turn.token_usage_estimated,
+            generation_tokens: 0,
+            generation_ms: 0,
             question_exchanges: turn.question_exchanges,
             tool_flow: turn
                 .tool_flow

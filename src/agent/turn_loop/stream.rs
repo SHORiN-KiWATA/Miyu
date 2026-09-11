@@ -187,6 +187,15 @@ impl Agent {
             &turn_id,
             crate::agent::context_meter::context_end_tokens(&result),
         )?;
+        if let Some(usage) = result.usage.as_ref() {
+            if usage.generation_tokens > 0 && usage.generation_ms > 0 {
+                self.state.set_turn_generation(
+                    &turn_id,
+                    usage.generation_tokens,
+                    usage.generation_ms,
+                )?;
+            }
+        }
         if let (Some(provider), Some(model)) = (&result.provider_id, &result.model) {
             self.last_request_endpoint = Some((provider.clone(), model.clone()));
         }

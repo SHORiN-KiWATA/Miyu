@@ -152,7 +152,12 @@ def main():
             page.fill("#loginUsername", "admin")
             page.fill("#loginPassword", e2e.ADMIN_PASSWORD)
             page.click("#loginSubmit")
-            page.wait_for_selector("#consoleButton", timeout=20000)
+            try:
+                page.wait_for_selector("#consoleButton", timeout=40000)
+            except Exception:
+                print("DEBUG relogin", page.evaluate("() => ({body: document.body.className, msg: document.getElementById('blockedMessage').textContent, err: document.getElementById('loginError').textContent, loginHidden: document.getElementById('loginForm').hidden, blockedHidden: document.getElementById('blockedState').hidden, consoleBtn: Boolean(document.getElementById('consoleButton'))})"))
+                page.screenshot(path=str(OUT / "ui-relogin-fail.png"))
+                raise
             page.wait_for_timeout(1000)
             page.click("#consoleButton")
             page.wait_for_selector("#consoleView:not([hidden])")

@@ -261,8 +261,11 @@ pub(in crate::web) fn queue_into_running_session(
     display_content: &str,
     uploaded_attachment_ids: &[String],
 ) -> std::result::Result<Option<TurnUpdateReceipt>, ApiError> {
+    // 会话按人分库:成员的会话在成员库里,盯着管理员库看永远「没在跑」,成员
+    // 在 AI 输出时发的消息就排不进队(09-11 成员实测)。
     if !state
-        .state_store
+        .stores
+        .for_session(session_id)
         .pinned(session_id)
         .has_running_turns()
         .map_err(ApiError::internal)?
@@ -491,7 +494,8 @@ pub(in crate::web) async fn remove_queue_prompt(
     let session_id = run.session_id.clone();
     drop(manager);
     let removed = state
-        .state_store
+        .stores
+        .for_session(&session_id)
         .pinned(&session_id)
         .remove_queued_prompt_for_target(&target, &prompt_id)
         .map_err(ApiError::internal)?;
