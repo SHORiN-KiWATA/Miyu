@@ -100,6 +100,7 @@ impl ReferenceResolver {
 }
 
 pub(crate) fn read_reference_file(path: &Path) -> Result<ReferenceImage> {
+    crate::tools::sandbox::guard_read(path)?;
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("failed to stat reference image {}", path.display()))?;
     if !metadata.is_file() {

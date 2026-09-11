@@ -877,11 +877,13 @@ fn path_arg(value: &str) -> Result<PathBuf> {
         }
     }
     let path = Path::new(value);
-    Ok(if path.is_absolute() {
+    let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
         super::workspace::effective_workdir().join(path)
-    })
+    };
+    super::sandbox::guard_write(&path)?;
+    Ok(path)
 }
 
 fn ensure_artifact_session_dir(root: &Path, session_id: &str) -> Result<PathBuf> {

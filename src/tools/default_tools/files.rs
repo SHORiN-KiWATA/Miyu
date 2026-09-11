@@ -17,6 +17,7 @@ pub(in crate::tools) const SEARCH_TIMEOUT_SECONDS: u64 = 30;
 
 pub(crate) fn read_file(args: Value) -> Result<String> {
     let path = path_arg(&args, "path")?;
+    crate::tools::sandbox::guard_read(&path)?;
     let offset = args
         .get("offset")
         .and_then(Value::as_u64)
@@ -105,6 +106,7 @@ pub(crate) fn read_file(args: Value) -> Result<String> {
 
 pub(in crate::tools) fn edit_file(args: Value, progress: ToolProgress) -> Result<String> {
     let path = path_arg(&args, "path")?;
+    crate::tools::sandbox::guard_write(&path)?;
     ensure_editable_file_path(&path)?;
     let start_line = args
         .get("start_line")
@@ -174,6 +176,9 @@ pub(in crate::tools) fn trash_paths_with(
     mut move_to_trash: impl FnMut(&Path) -> Result<()>,
 ) -> Result<String> {
     let inputs = paths_arg(&args)?;
+    for input in &inputs {
+        crate::tools::sandbox::guard_write(input)?;
+    }
     let total = inputs.len();
     let mut moved_paths = Vec::new();
     let mut failures = Vec::new();
@@ -252,24 +257,27 @@ pub(in crate::tools) fn paths_arg(args: &Value) -> Result<Vec<PathBuf>> {
 
 pub(in crate::tools) async fn glob_files(args: Value) -> Result<String> {
     let path = optional_path(&args).unwrap_or_else(crate::tools::workspace::effective_workdir);
+    crate::tools::sandbox::guard_read(&path)?;
     let search_path = prepare_search_path(&path)?;
     let pattern = required(&args, "pattern")?;
     let max_results = max_results(&args);
+    let mut command = Command::new("rg");
+    command
+        .arg("--no-config")
+        .arg("--files")
+        .arg("--no-messages")
+        .arg("--hidden")
+        .arg(format!("--iglob={pattern}"))
+        .args(search_exclude_args(&search_path))
+        .arg(".")
+        .current_dir(&search_path)
+        .stdin(Stdio::null())
+        // 超时丢弃 future 时同步回收 rg,否则孤儿进程继续扫整盘。
+        .kill_on_drop(true);
+    crate::tools::sandbox::confine(&mut command);
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(SEARCH_TIMEOUT_SECONDS),
-        Command::new("rg")
-            .arg("--no-config")
-            .arg("--files")
-            .arg("--no-messages")
-            .arg("--hidden")
-            .arg(format!("--iglob={pattern}"))
-            .args(search_exclude_args(&search_path))
-            .arg(".")
-            .current_dir(&search_path)
-            .stdin(Stdio::null())
-            // 超时丢弃 future 时同步回收 rg,否则孤儿进程继续扫整盘。
-            .kill_on_drop(true)
-            .output(),
+        command.output(),
     )
     .await??;
     search_output_limited(output, max_results)
@@ -277,6 +285,7 @@ pub(in crate::tools) async fn glob_files(args: Value) -> Result<String> {
 
 pub(in crate::tools) async fn grep_text(args: Value) -> Result<String> {
     let path = optional_path(&args).unwrap_or_else(crate::tools::workspace::effective_workdir);
+    crate::tools::sandbox::guard_read(&path)?;
     let is_file = path.is_file();
     let search_root = if is_file {
         path.parent()
@@ -289,6 +298,7 @@ pub(in crate::tools) async fn grep_text(args: Value) -> Result<String> {
     let pattern = required(&args, "pattern")?;
     let max_results = max_results(&args);
     let mut command = Command::new("rg");
+    crate::tools::sandbox::confine(&mut command);
     command
         .arg("--no-config")
         .arg("--line-number")

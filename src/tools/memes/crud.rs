@@ -60,6 +60,7 @@ pub(crate) async fn add_meme(args: Value, config: &AppConfig, paths: &MiyuPaths)
     let library_lock = library_lock(&library);
     let _guard = library_lock.lock().await;
     let source = expand_path(required_str(&args, "image")?);
+    crate::tools::sandbox::guard_read(&source)?;
     let metadata = std::fs::metadata(&source)
         .with_context(|| format!("failed to stat image {}", source.display()))?;
     if !metadata.is_file() {

@@ -23,6 +23,78 @@ pub struct SandboxPolicy {
     pub read_only: Vec<PathBuf>,
     /// 内核能管的全部文件系统权限。
     pub read_write: Vec<PathBuf>,
+    /// 子进程的 HOME(成员的工作区):登录 shell 读 ~/.profile、程序写 ~/.cache
+    /// 都落在这里,而不是撞在管理员家门口的 Permission denied 上。
+    pub home: Option<PathBuf>,
+}
+
+/// 进程内工具(read/edit/glob/grep/print_image/看图……)读路径前过一遍:
+/// 有沙盒策略时,路径必须落在只读或可写根之下;没有策略原样放行。
+pub fn guard_read(path: &std::path::Path) -> anyhow::Result<()> {
+    guard(path, false)
+}
+
+/// 同上,写路径:只认可写根。
+pub fn guard_write(path: &std::path::Path) -> anyhow::Result<()> {
+    guard(path, true)
+}
+
+fn guard(path: &std::path::Path, write: bool) -> anyhow::Result<()> {
+    let Some(policy) = current_sandbox() else {
+        return Ok(());
+    };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        crate::tools::workspace::effective_workdir().join(path)
+    };
+    let resolved = resolve_existing_prefix(&absolute);
+    let allowed = policy
+        .read_write
+        .iter()
+        .chain(if write {
+            [].iter()
+        } else {
+            policy.read_only.iter()
+        })
+        .any(|root| {
+            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            resolved.starts_with(&root)
+        });
+    if allowed {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "sandbox: {} is outside your workspace ({} not allowed there)",
+            path.display(),
+            if write { "writing" } else { "reading" }
+        )
+    }
+}
+
+/// 把路径里已存在的最长前缀 canonicalize(跟符号链接走),剩下的原样接回去——
+/// 还不存在的文件也能判在哪个根下,`..` 与软链绕不出去。
+fn resolve_existing_prefix(path: &std::path::Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut resolved = existing.canonicalize().unwrap_or(existing);
+    for name in rest.into_iter().rev() {
+        if name == ".." {
+            resolved.pop();
+        } else if name != "." {
+            resolved.push(name);
+        }
+    }
+    resolved
 }
 
 tokio::task_local! {
@@ -45,6 +117,9 @@ pub fn current_sandbox() -> Option<Arc<SandboxPolicy>> {
 /// 有策略在身就给 Command 挂 `pre_exec`(在子进程里装规则再 exec);没有就原样。
 pub fn confine(command: &mut tokio::process::Command) {
     if let Some(policy) = current_sandbox() {
+        if let Some(home) = &policy.home {
+            command.env("HOME", home);
+        }
         let rules = Rules::prepare(&policy);
         // SAFETY: 闭包只做裸 syscall / open / close,不碰锁、不分配。
         unsafe {
@@ -56,6 +131,9 @@ pub fn confine(command: &mut tokio::process::Command) {
 pub fn confine_std(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     if let Some(policy) = current_sandbox() {
+        if let Some(home) = &policy.home {
+            command.env("HOME", home);
+        }
         let rules = Rules::prepare(&policy);
         // SAFETY: 同上。
         unsafe {
@@ -246,6 +324,7 @@ mod tests {
         let policy = Arc::new(SandboxPolicy {
             read_only: vec![PathBuf::from("/")],
             read_write: vec![allowed.clone(), PathBuf::from("/dev/null")],
+            home: Some(allowed.clone()),
         });
         let script = format!(
             "echo ok > {}/a.txt && ! (echo no > {}/b.txt) 2>/dev/null && cat /etc/hostname >/dev/null",
@@ -262,6 +341,36 @@ mod tests {
         assert!(status.success(), "sandboxed shell script failed: {status}");
         assert!(allowed.join("a.txt").is_file());
         assert!(!denied.join("b.txt").exists());
+    }
+
+    /// 进程内守卫:可写根里能读能写,只读根里只能读,别处都不行;`..` 绕不出去。
+    #[tokio::test]
+    async fn in_process_guard_follows_the_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let rw = temp.path().join("rw");
+        let ro = temp.path().join("ro");
+        std::fs::create_dir_all(&rw).unwrap();
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::write(ro.join("a.txt"), "a").unwrap();
+        let policy = Arc::new(SandboxPolicy {
+            read_only: vec![ro.clone()],
+            read_write: vec![rw.clone()],
+            home: None,
+        });
+        let outside = temp.path().join("outside.txt");
+        let outside_in = outside.clone();
+        with_sandbox(Some(policy), async move {
+            let outside = outside_in;
+            assert!(guard_read(&ro.join("a.txt")).is_ok());
+            assert!(guard_write(&ro.join("a.txt")).is_err());
+            assert!(guard_read(&rw.join("new.txt")).is_ok());
+            assert!(guard_write(&rw.join("new.txt")).is_ok());
+            assert!(guard_read(&outside).is_err());
+            assert!(guard_write(&rw.join("../outside.txt")).is_err());
+            assert!(guard_read(std::path::Path::new("/etc/hostname")).is_err());
+        })
+        .await;
+        assert!(guard_read(&outside).is_ok(), "no policy = no guard");
     }
 
     #[tokio::test]

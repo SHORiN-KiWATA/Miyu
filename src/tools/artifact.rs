@@ -80,6 +80,7 @@ fn present_artifact(args: Value, progress: ToolProgress) -> Result<String> {
         bail!("path is required");
     }
     let path = expand_path(raw_path);
+    crate::tools::sandbox::guard_read(&path)?;
     let metadata = std::fs::metadata(&path)?;
     if !metadata.is_file() {
         bail!("artifact path is not a file: {}", path.display());

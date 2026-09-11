@@ -406,6 +406,7 @@ const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024;
 
 pub(crate) fn local_pdf_data_url(value: &str) -> Result<String> {
     let path = expand_path(value);
+    crate::tools::sandbox::guard_read(&path)?;
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("failed to read pdf {}", path.display()))?;
     if metadata.len() > MAX_PDF_BYTES {
@@ -433,6 +434,7 @@ pub(crate) fn local_pdf_data_url(value: &str) -> Result<String> {
 pub(crate) fn pdf_inline_media(path: &str) -> Result<Vec<crate::state::TurnInlineMedia>> {
     let mime = pdf_mime(path).context("not a PDF path")?;
     let expanded = expand_path(path);
+    crate::tools::sandbox::guard_read(&expanded)?;
     let metadata = std::fs::metadata(&expanded)
         .with_context(|| format!("failed to stat pdf {}", expanded.display()))?;
     if !metadata.is_file() {
@@ -466,6 +468,7 @@ const MAX_VIDEO_BYTES: u64 = 200 * 1024 * 1024;
 
 pub(crate) fn local_video_data_url(value: &str, mime: &str) -> Result<String> {
     let path = expand_path(value);
+    crate::tools::sandbox::guard_read(&path)?;
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("failed to stat video {}", path.display()))?;
     if !metadata.is_file() {
@@ -654,6 +657,7 @@ async fn analyze_scoped_image_one(
     let image = expand_path(image)
         .canonicalize()
         .context("failed to resolve the requested image")?;
+    crate::tools::sandbox::guard_read(&image)?;
     // 已经懒下载进 platform_files 缓存的文件(read_platform_file / 上一次
     // vision_analyze 落下的)按路径也放行:目录只装本会话链路下来的东西。
     if is_platform_cache_path(&paths.cache_dir, &image) {
@@ -912,6 +916,7 @@ fn try_inline_targets(config: &AppConfig, targets: &[String]) -> Result<Option<S
 /// 只校验不读:视频内联时正文由重放方按需从文件读。
 fn local_video_data_url_check(value: &str) -> Result<()> {
     let path = expand_path(value);
+    crate::tools::sandbox::guard_read(&path)?;
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("failed to stat video {}", path.display()))?;
     if !metadata.is_file() {
@@ -963,6 +968,7 @@ fn vision_client(config: &AppConfig, paths: &MiyuPaths) -> Result<OpenAiCompatib
 
 pub(crate) fn local_image_bytes(value: &str) -> Result<(&'static str, Vec<u8>)> {
     let path = expand_path(value);
+    crate::tools::sandbox::guard_read(&path)?;
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("failed to stat image {}", path.display()))?;
     if !metadata.is_file() {

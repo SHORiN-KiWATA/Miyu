@@ -44,6 +44,7 @@ pub(crate) async fn print_image(
         bail!("{}", "image is required")
     }
     let path = expand_path(image);
+    crate::tools::sandbox::guard_read(&path)?;
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("{} {}", "failed to stat image", path.display()))?;
     if !metadata.is_file() {

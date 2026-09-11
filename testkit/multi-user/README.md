@@ -8,6 +8,7 @@ BIN=~/.cache/miyu-arch-fixes/target/release/miyu python3 testkit/multi-user/layo
 
 - 三个脚本都固定 `MIYU_ADMIN_USER=admin`:管理员用户名 = 家目录名,不能随跑测试的系统用户名变。
 - 09-11 起 daemon 不带口令:测具先用内置账号 miyu/miyu 登录、`POST /api/auth/setup-admin` 建号(`e2e.bootstrap_admin`),之后用账号登录;WebUI 测具(webui-timeline / webui-fixes)共用 `testkit/webui-fixes/authlib.py`。
+- `member_tools_probe.py`:成员工具走查(桩模型 `stub_member_tools.py` 按 STUB_CALLS 把脚本/read/glob/edit/run_command/print_image 叫一遍):显示名、沙盒读写边界、图片资源可取;管理员同套对照。
 - `typing_probe.py`:打字抖动取证(逐字敲、采滚动/几何/layout-shift,`SPAWN=1 TURN=1` 自起桩 daemon 并在流式中/结束后各敲一遍;`WEB=` 指向哪份前端就测哪份,A/B 用)。
 - e2e.py 里的档案断言靠桩模型的 `STUB_DUMP_SYSTEM=<文件>`(每个请求的 system 消息一行 JSON):
   成员回合带成员档案、不带属主档案;管理员回合反之。

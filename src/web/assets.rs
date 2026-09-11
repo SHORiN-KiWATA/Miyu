@@ -639,7 +639,7 @@ pub(in crate::web) async fn image_asset(
     headers: HeaderMap,
     Path(asset_id): Path<String>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     if asset_id.len() > 96
         || asset_id.is_empty()
         || !asset_id
@@ -651,8 +651,12 @@ pub(in crate::web) async fn image_asset(
             "image asset not found",
         ));
     }
-    let Some(asset) = state
-        .state_store
+    // 会话库按人分:图在谁的库里就从谁的库取(成员的 print_image 以前一律 404)。
+    let store = state
+        .stores
+        .for_identity(&identity)
+        .map_err(ApiError::internal)?;
+    let Some(asset) = store
         .load_image_asset(&asset_id)
         .map_err(ApiError::internal)?
     else {
@@ -688,7 +692,7 @@ pub(in crate::web) async fn artifact_asset(
     Path(asset_id): Path<String>,
     Query(query): Query<ArtifactQuery>,
 ) -> std::result::Result<Response, ApiError> {
-    require_auth(&headers, &state)?;
+    let identity = require_identity(&headers, &state)?;
     if asset_id.len() > 96
         || asset_id.is_empty()
         || !asset_id
@@ -697,8 +701,11 @@ pub(in crate::web) async fn artifact_asset(
     {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "artifact not found"));
     }
-    let Some(artifact) = state
-        .state_store
+    let store = state
+        .stores
+        .for_identity(&identity)
+        .map_err(ApiError::internal)?;
+    let Some(artifact) = store
         .load_artifact_asset(&asset_id)
         .map_err(ApiError::internal)?
     else {
