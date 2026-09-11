@@ -169,6 +169,22 @@ pub(crate) fn render_title_url_line(line: &str) -> Option<String> {
     if label.is_empty() || label.contains("://") || label.ends_with(']') {
         return None;
     }
+    // 标题是一句话、不是一段话:整段正文末尾跟个「(地址)」不该把整段都变成链接
+    // (09-11 手机端实测一整段中文被下划线包了)。句中有句号/问号/叹号/分号,
+    // 或者长得离谱,就只让地址那半截成链。
+    if label.chars().count() > 120 || label.chars().any(|ch| "。！？；".contains(ch)) {
+        return None;
+    }
+    // 英文句界:句点/问号/叹号 + 空格 + 大写或汉字("vs." 后面跟小写不算)。
+    let chars: Vec<char> = label.chars().collect();
+    let english_sentence_break = chars.windows(3).any(|window| {
+        matches!(window[0], '.' | '!' | '?')
+            && window[1].is_whitespace()
+            && (window[2].is_ascii_uppercase() || ('\u{4e00}'..='\u{9fff}').contains(&window[2]))
+    });
+    if english_sentence_break {
+        return None;
+    }
     let gap = &label_raw[label.len()..];
     let inner =
         format!("{LINK_LABEL_STYLE}{label}{RESET}{gap}{open}{URL_STYLE}{url}{RESET}{close}");

@@ -234,6 +234,14 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Android Chrome:body 的 100% 是「工具栏收起」的大布局视口,而外壳只有可视视口那么高,
+   文档比可见区域长出一截,到底后继续拖会把可视视口往下平移,外壳整体上移——输入框
+   底部被推出屏幕、顶部也被切掉(09-11 手机端实测)。文档高度也钉在可视视口上。 */
+body {
+  height: var(--app-height, 100%);
 }
 
 body {

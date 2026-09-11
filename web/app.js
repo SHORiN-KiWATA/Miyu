@@ -3830,6 +3830,11 @@
     // 标题里再有地址就不是「标题 (地址)」;结尾是 ] 说明这其实是 [label](url),
     // 那条本来就有自己的分支——不拦住的话整条 Markdown 会被当成标题原样漏出来。
     if (title.includes("://") || title.endsWith("]")) return null;
+    // 标题是一句话、不是一段话:句中有句号/问号/叹号/分号或长得离谱,就只让地址成链
+    // (09-11 手机端实测一整段中文正文被下划线包成一个链接)。
+    // 判据:中文句末标点直接算散文;英文只认「句点/问号/叹号 + 空格 + 大写或汉字」这种
+    // 句界——"vs." 这类缩写后面跟小写,不算。
+    if ([...title].length > 120 || /[。！？；]/.test(title) || /[.!?]\s+[A-Z\u4e00-\u9fff]/.test(title)) return null;
     const href = validLinkUrl(url);
     return href ? { length: line.length, indent, title, gap, open, url, close, href } : null;
   }
